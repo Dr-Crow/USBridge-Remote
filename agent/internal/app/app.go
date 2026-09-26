@@ -939,6 +939,7 @@ func (a *App) startSunshineNow() {
 	// tick from sunshineWatchdog is the only thing that ever re-checks and
 	// fixes a stale output_name for an already-"running" process.
 	a.reconcileOutputName()
+	a.reconcileAudioSink()
 	if err := a.stream.Start(a.cfg.SunshinePort); err != nil {
 		log.Printf("[app] failed to start Sunshine: %v", err)
 	} else {
@@ -4121,6 +4122,41 @@ func (a *App) reconcileOutputName() {
 	log.Printf("[app] output_name %q no longer matches any current capture device (stale/disconnected monitor); snapping to the only one currently reported: %q (%q)", current, only.Key, only.OutputName)
 	if err := a.SetSunshineOutputName(only.OutputName); err != nil {
 		log.Printf("[app] failed to auto-correct output_name: %v", err)
+	}
+}
+
+// reconcileAudioSink clears a persisted audio_sink that no longer names any
+// sink on this host (e.g. an Intel HDMI output left over from a hardware
+// change: "alsa_output.pci-0000_00_1f.3.hdmi-stereo" on a box that now only
+// has USB + NVIDIA HDMI). Sunshine doesn't fall back on its own: it fails
+// "Couldn't set default-sink [...]: No such entity" and streams with no audio
+// at all, while RustShine silently uses the default sink -- which is why the
+// same stale value only ever broke audio under Sunshine. An empty audio_sink
+// makes both backends capture the system default sink.
+func (a *App) reconcileAudioSink() {
+	if a.stream == nil {
+		return
+	}
+	current := a.stream.AudioSink()
+	if current == "" || strings.HasPrefix(current, "sink-sunshine-") {
+		// Sunshine's own virtual sinks only exist while it runs, so their
+		// absence right now isn't staleness.
+		return
+	}
+	sinks, err := audio.ListSinks()
+	if err != nil || len(sinks) == 0 {
+		// PipeWire/PulseAudio not up yet (headless boot) -- nothing to
+		// validate against.
+		return
+	}
+	for _, s := range sinks {
+		if s.Name == current {
+			return
+		}
+	}
+	log.Printf("[app] audio_sink %q matches none of %d current sinks; resetting to the system default sink", current, len(sinks))
+	if err := a.SetAudioSink(""); err != nil {
+		log.Printf("[app] failed to reset stale audio_sink: %v", err)
 	}
 }
 
