@@ -17,12 +17,14 @@
 #   USBRIDGE_SKIP_SUNSHINE=1     skip bundling Sunshine entirely (offline/dev builds)
 #   USBRIDGE_SUNSHINE_FORCE=1    rebuild/re-download even if already staged
 #   USBRIDGE_SUNSHINE_VERSION=x  pin a release tag instead of "latest"
-#   USBRIDGE_SUNSHINE_CUDA=1     (Linux only) build with Nvidia CUDA/NVENC support
+#   USBRIDGE_SUNSHINE_CUDA=1     (Linux only, source build) build with Nvidia CUDA/NVENC support
+#                                (fork releases are already built with CUDA in CI)
+#   USBRIDGE_SUNSHINE_JOBS=n     parallel jobs for a source build (default: MemAvailable/2GB)
 
 _sunshine_repo="itsme228/Sunshine"
 
 # Принудительно устанавливаем нужную версию и заставляем скрипт обновлять бинарники
-export USBRIDGE_SUNSHINE_VERSION="${USBRIDGE_SUNSHINE_VERSION:-v2026.805.2-test.usbridge}"
+export USBRIDGE_SUNSHINE_VERSION="${USBRIDGE_SUNSHINE_VERSION:-v2026.927.1.usbridge}"
 export USBRIDGE_SUNSHINE_FORCE="${USBRIDGE_SUNSHINE_FORCE:-1}"
 
 _sunshine_require() {
@@ -83,6 +85,29 @@ try:
 except Exception:
     pass
 " 2>/dev/null || true
+}
+
+# _sunshine_build_jobs
+# Parallel job count for a Sunshine source build. Its C++ TUs (boost, nvcc'd
+# cuda.cu) peak at ~1.5-2 GB each, so -j$(nproc) on e.g. 20 threads / 8 GB RAM
+# OOMs the whole desktop. Cap at MemAvailable/2GB (min 1), overridable with
+# USBRIDGE_SUNSHINE_JOBS.
+_sunshine_build_jobs() {
+    if [[ -n "${USBRIDGE_SUNSHINE_JOBS:-}" ]]; then
+        echo "$USBRIDGE_SUNSHINE_JOBS"
+        return 0
+    fi
+    local cpus mem_kb jobs
+    cpus="$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+    if [[ -r /proc/meminfo ]]; then
+        mem_kb="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+    else
+        mem_kb="$(( $(sysctl -n hw.memsize) / 1024 ))"
+    fi
+    jobs=$(( mem_kb / (2 * 1024 * 1024) ))
+    (( jobs < 1 )) && jobs=1
+    (( jobs > cpus )) && jobs=$cpus
+    echo "$jobs"
 }
 
 _sunshine_resolve_tag() {
@@ -170,7 +195,7 @@ build_sunshine_linux() {
         -DSUNSHINE_PUBLISHER_WEBSITE="https://github.com/itsme228/usbridge_agent" \
         -DSUNSHINE_PUBLISHER_ISSUE_URL="https://github.com/itsme228/usbridge_agent/issues"
 
-    cmake --build "$src_dir/build" -j "$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
+    cmake --build "$src_dir/build" -j "$(_sunshine_build_jobs)"
 
     rm -rf "$dest"
     DESTDIR="$dest" cmake --install "$src_dir/build" --prefix /usr
@@ -305,7 +330,7 @@ build_sunshine_macos() {
         -DSUNSHINE_PUBLISHER_WEBSITE="https://github.com/itsme228/usbridge_agent" \
         -DSUNSHINE_PUBLISHER_ISSUE_URL="https://github.com/itsme228/usbridge_agent/issues"
 
-    cmake --build "$src_dir/build" -j "$(sysctl -n hw.ncpu)"
+    cmake --build "$src_dir/build" -j "$(_sunshine_build_jobs)"
     (cd "$src_dir/build" && cpack -G DragNDrop --config CPackConfig.cmake)
 
     local dmg_file
