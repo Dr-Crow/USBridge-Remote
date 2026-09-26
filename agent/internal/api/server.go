@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -112,6 +113,9 @@ type Server struct {
 
 	virtMu          sync.Mutex
 	virtualDisplays []VideoDeviceInfo
+
+	// mouseHold -- see mouse_hold.go.
+	mouseHold mouseHold
 }
 
 type loggingResponseWriter struct {
@@ -288,7 +292,7 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Auth-Signature, X-Auth-Timestamp, X-USBridge-Video-Trace")
 		w.Header().Set("Access-Control-Max-Age", "600")
-		
+
 		// Private Network Access (PNA) requirement for Chrome:
 		// If the browser preflights a private network request, it sends this header.
 		if r.Header.Get("Access-Control-Request-Private-Network") == "true" {
@@ -615,6 +619,10 @@ func (s *Server) mouse(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[api] mouse action=%s", req.Action)
 
+	owner := nextMouseOwner()
+	if s.noteMouse(owner, req) {
+		s.releaseHTTPMouseLater(owner)
+	}
 	if err := s.applyMouse(req); err != nil {
 		log.Printf("[api] mouse failed: %v", err)
 		s.fail(w, http.StatusInternalServerError, "mouse_failed", err)
@@ -638,9 +646,20 @@ func (s *Server) mouseWS(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[api] mouse_ws upgraded successfully for %s", r.RemoteAddr)
 	defer conn.Close()
 
+	// A new mouse connection is a (re)connect: nothing held by a previous
+	// one may carry over. Released on close only if still ours.
+	owner := nextMouseOwner()
+	s.releaseHeldMouse(0, "new mouse_ws connection")
+	defer s.releaseHeldMouse(owner, "mouse_ws closed")
+
+	// lastSeen: any message or pong from the client (unix nanos).
+	var lastSeen atomic.Int64
+	lastSeen.Store(time.Now().UnixNano())
+
 	// Refresh read deadline on every pong so idle connections survive NAT/Tailscale
 	conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
 	conn.SetPongHandler(func(string) error {
+		lastSeen.Store(time.Now().UnixNano())
 		conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
 		return nil
 	})
@@ -661,33 +680,37 @@ func (s *Server) mouseWS(w http.ResponseWriter, r *http.Request) {
 	stopPush := make(chan struct{})
 	defer close(stopPush)
 
+	// Keepalive pings every wsPingInterval; while this connection holds a
+	// button, ping every mouseWSHeldPing instead and treat mouseWSHeldStale
+	// of total silence as a dead client: release and close, rather than
+	// leaving the host mouse held until wsReadTimeout (90s) expires.
 	go func() {
-		pingTicker := time.NewTicker(wsPingInterval)
-		defer pingTicker.Stop()
+		tick := time.NewTicker(mouseWSHeldPing)
+		defer tick.Stop()
+		lastPing := time.Now()
 
 		for {
 			select {
 			case <-stopPush:
 				return
-			case <-pingTicker.C:
+			case now := <-tick.C:
+				held := s.mouseHeldBy(owner)
+				if held && now.Sub(time.Unix(0, lastSeen.Load())) > mouseWSHeldStale {
+					log.Printf("[api] mouse_ws silent for >%s with buttons held, releasing and closing", mouseWSHeldStale)
+					s.releaseHeldMouse(owner, "mouse_ws went silent")
+					conn.Close()
+					return
+				}
+				if !held && now.Sub(lastPing) < wsPingInterval {
+					continue
+				}
+				lastPing = now
 				if err := safePing(); err != nil {
 					log.Printf("[api] mouse_ws ping failed, closing: %v", err)
 					conn.Close()
 					return
 				}
 			}
-		}
-	}()
-
-	// Last absolute_event seen with buttons still down: Input().AbsoluteEvent
-	// latches buttonState across calls, so a socket dropped mid-press (flaky
-	// reconnect, client killed) would leave that button held on the host
-	// until the next absolute event. Released at the last known position.
-	var heldAbs *MouseRequest
-	defer func() {
-		if heldAbs != nil {
-			log.Printf("[api] mouse_ws closed with buttons held (mask=%d), releasing", ptrUint8(heldAbs.ButtonState))
-			_ = s.app.Input().AbsoluteEvent(0, uint16(ptrInt(heldAbs.X)), uint16(ptrInt(heldAbs.Y)), 0)
 		}
 	}()
 
@@ -699,15 +722,8 @@ func (s *Server) mouseWS(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		switch req.Action {
-		case "touch", "touch_position", "absolute_event":
-			if ptrUint8(req.ButtonState) != 0 {
-				held := req
-				heldAbs = &held
-			} else {
-				heldAbs = nil
-			}
-		}
+		lastSeen.Store(time.Now().UnixNano())
+		s.noteMouse(owner, req)
 		if err := s.applyMouse(req); err != nil {
 			log.Printf("[api] mouse_ws failed action=%s: %v", req.Action, err)
 			_ = safeWriteJSON(APIResponse{Success: false, Error: "mouse_failed", Details: err.Error()})
