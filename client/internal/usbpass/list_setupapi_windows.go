@@ -13,15 +13,7 @@ import (
 
 // listSetupAPI enumerates local USB devices directly via SetupAPI -- the
 // Windows counterpart to listSysfs (Linux) / listHIDDarwin (macOS) /
-// listUSBAndroid (Android), so a Windows client can show the Devices tab's
-// USB passthrough candidates without the closed usbridge-usb-broker --list
-// helper. See listSysfs's own doc comment: "Attach still needs the broker
-// binary" holds here too (usbaes_attach.go's AES control-plane handshake
-// launches it with --role client on mount, on every platform) -- only
-// *listing* was Windows-exclusively broker-gated before this file existed,
-// which is what left the Devices tab unable to show anything at all on a
-// machine that had no broker staged next to the client .exe, regardless of
-// how a target device's driver was bound (see ResolveBroker in list.go).
+// listUSBAndroid (Android) behind the Devices tab's USB passthrough list.
 //
 // Walks every present device node under the "USB" enumerator (the same
 // scope Zadig's own Options > List All Devices covers), not just

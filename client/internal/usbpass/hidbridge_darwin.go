@@ -208,8 +208,8 @@ static int hidDeviceHasUSBAncestor(io_service_t svc) {
 // enumerateAllHIDDevices fills ids/names/vids/pids with up to maxDevices
 // entries for every currently connected HID device -- no vendor/usage-page
 // filter, unlike pen_capture_darwin.go's Wacom-only enumeratePenTablets --
-// matching how the Windows/Linux raw-USB path (list.go's listSysfs/
-// listViaBroker) already lists every USB device with no class restriction.
+// matching how the Windows/Linux raw-USB path (listSysfs/listSetupAPI)
+// already lists every USB device with no class restriction.
 // Three exclusions keep the list to real, claimable devices:
 //   - no real IOUSBHostDevice/IOUSBDevice ancestor (hidDeviceHasUSBAncestor):
 //     drops software-synthesized HID devices. Live-verified: without this,

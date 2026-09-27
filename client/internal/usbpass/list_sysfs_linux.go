@@ -13,9 +13,8 @@ import (
 
 const sysfsUSB = "/sys/bus/usb/devices"
 
-// listSysfs enumerates local USB devices from sysfs so a Linux client can
-// show the Passthrough section without the closed usbridge-usb-broker --list
-// helper (Windows SetupAPI path). Attach still needs the broker binary.
+// listSysfs enumerates local USB devices from sysfs for the Linux client's
+// Passthrough section.
 func listSysfs() ([]models.USBPassthroughDevice, error) {
 	entries, err := os.ReadDir(sysfsUSB)
 	if err != nil {

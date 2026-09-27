@@ -95,29 +95,6 @@ mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/applications" "$APPDIR/usr/share/i
 
 cp "$OUTPUT_PATH" "$APPDIR/usr/bin/$EXE_NAME"
 
-# Closed rust-shine USB passthrough AES helper (bin/usb-broker → usbridge-usb-broker).
-# Go client launches this with --role client on mount; export itself is in-process Go.
-# Prefer an explicit path, else a sibling rust-shine release build.
-USB_BROKER_SRC="${USBRIDGE_USB_BROKER:-}"
-if [[ -z "$USB_BROKER_SRC" || ! -f "$USB_BROKER_SRC" ]]; then
-    for cand in \
-        "$REPO_ROOT/../rust-shine/target/release/usbridge-usb-broker" \
-        "$HOME/Projects/rust-shine/target/release/usbridge-usb-broker"
-    do
-        if [[ -f "$cand" ]]; then
-            USB_BROKER_SRC="$cand"
-            break
-        fi
-    done
-fi
-if [[ -n "$USB_BROKER_SRC" && -f "$USB_BROKER_SRC" ]]; then
-    cp "$USB_BROKER_SRC" "$APPDIR/usr/bin/usbridge-usb-broker"
-    chmod 755 "$APPDIR/usr/bin/usbridge-usb-broker"
-    echo -e "${GREEN}✓${NC} usr/bin/usbridge-usb-broker (from $USB_BROKER_SRC)"
-else
-    echo -e "${YELLOW}⚠${NC} usbridge-usb-broker not found — USB passthrough attach will fail until you build rust-shine -p usb-broker and rebuild, or set USBRIDGE_USB_BROKER"
-fi
-
 # local ui.parse ONNX offload (internal/localui, AI Vision's detector): the
 # runtime lib is dlopen'd at runtime (via onnxruntime_go), not link-time
 # linked, so linuxdeploy's ldd-based dependency walk below can never see or
