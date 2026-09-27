@@ -321,6 +321,12 @@ func (dw *DiskWidget) combineDrives() {
 
 	if dw.devicesTraceBudget > 0 {
 		logrus.Infof("[devices-ui] combineDrives: api localDrives=%d", len(dw.localDrives))
+		// Charged even with zero drives to iterate below -- otherwise this
+		// summary line alone never decrements the budget and logs on every
+		// combineDrives call forever whenever localDrives is empty (the
+		// common case before any device is plugged in). Confirmed live:
+		// this was spamming "api localDrives=0" once a second indefinitely.
+		dw.devicesTraceBudget--
 		for idx, drive := range dw.localDrives {
 			if dw.devicesTraceBudget <= 0 {
 				break
@@ -588,7 +594,17 @@ func (dw *DiskWidget) loadGamepadDevices() {
 	for _, g := range gamepads {
 		ids = append(ids, fmt.Sprintf("%s %q %s:%s", g.ID, g.Name, g.VendorID, g.ProductID))
 	}
-	logrus.Infof("🎮 gamepads found: %d %v", len(gamepads), ids)
+	// Logged only when the result changes -- this runs on a 1s poll for the
+	// browser build's whole widget lifetime (browserGamepadPollInterval),
+	// so logging unconditionally spams "gamepads found: 0 []" indefinitely
+	// whenever nothing is plugged in. Native platforms only call this from
+	// an explicit Refresh(), where an unconditional log is fine, but the
+	// dedupe is harmless there too (each Refresh still logs on its own
+	// first call, and again only if the result actually changed).
+	if sig := fmt.Sprintf("%d %v", len(gamepads), ids); sig != dw.lastGamepadLogSig {
+		dw.lastGamepadLogSig = sig
+		logrus.Infof("🎮 gamepads found: %d %v", len(gamepads), ids)
+	}
 	dw.updateUIAsync(func() {
 		dw.gamepadDevices = gamepads
 		dw.scheduleCombine()

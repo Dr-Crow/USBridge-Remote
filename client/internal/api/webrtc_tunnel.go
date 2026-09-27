@@ -9,22 +9,13 @@ import (
 )
 
 // webrtcAPITransport implements http.RoundTripper by tunneling HTTP/1.1 requests
-// over a WebRTC DataChannel (label "api-tunnel"). This allows the browser web
-// client to reach the agent's REST API without triggering mixed-content blocks
-// when loaded over HTTPS.
-//
-// fallback is nil on the wasm build (see usbClientDataChannelFallback in
-// usb_client_fallback_wasm.go): a browser session has no legitimate second
-// transport to fall back to here -- any direct fetch() this transport could
-// attempt instead is exactly the request that shows up permanently
-// "(blocked)" in devtools against a relay/WebRTC-only session (mixed
-// content, or Chrome's Local Network Access policy blocking a fetch to a
-// private-network host from a public-network page), so retrying it every
-// poll cycle only spams the console without ever succeeding. Direct/
-// Tailscale HTTP stays desktop-native only -- see
-// service.MoonlightService.OpenDataChannel's doc comment for why fallback
-// is never nil there (its openDataChannel always errors, so every request
-// already goes through fallback exactly as before this transport existed).
+// over a WebRTC DataChannel (label "api-tunnel") when one can be opened,
+// falling back to the client's original transport otherwise -- see
+// USBClient.SetOpenDataChannel's doc comment for why that fallback is
+// always kept (on every platform, wasm included): by the time this
+// transport is ever installed, the connect flow has already proven the
+// fallback transport works. fallback is only ever nil in a test that
+// constructs this struct directly.
 type webrtcAPITransport struct {
 	openDataChannel func(label string) (net.Conn, error)
 	fallback        http.RoundTripper

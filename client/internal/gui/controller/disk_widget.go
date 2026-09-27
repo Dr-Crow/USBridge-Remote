@@ -181,6 +181,12 @@ type DiskWidget struct {
 	selectedItemsMu       sync.RWMutex
 	devicesTraceBudget    int
 	lastDrivesTraceSig    string
+	// lastGamepadLogSig is the last logged EnumerateGamepads() result (see
+	// loadGamepadDevices) -- logged only when it changes, since the wasm
+	// build polls this every second for the widget's whole lifetime
+	// (browserGamepadPollInterval) and an unconditional log there spams
+	// "gamepads found: 0 []" forever whenever nothing is plugged in.
+	lastGamepadLogSig string
 	preferredMouseMode    string
 	observedMouseMode     string
 	preferredDisplayIndex int // 0-based display index for absolute mouse (0 = first)

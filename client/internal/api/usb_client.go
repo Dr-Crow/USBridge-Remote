@@ -204,43 +204,42 @@ func (c *USBClient) SetCursorUpdateHandler(handler func(models.CursorState)) {
 	c.cursorUpdateHandler = handler
 }
 
-// SetOpenDataChannel wires this client's requests to ride the WebRTC
-// PeerConnection's "api-tunnel" DataChannel -- the same optional-interface-
-// probe pattern already used for browser USB/gamepad/pen passthrough and
-// clipboard sync (see ClipboardSync.SetOpenDataChannel's doc comment). fn is
-// wired unconditionally from gui.attachUSBClient regardless of connection
-// mode (mw.videoClient's OpenDataChannel is a real method on every
-// platform, see service.VideoClient's doc comment).
+// SetOpenDataChannel wires this client's requests to prefer the WebRTC
+// PeerConnection's "api-tunnel" DataChannel over a direct fetch() whenever
+// one can be opened -- the same optional-interface-probe pattern already
+// used for browser USB/gamepad/pen passthrough and clipboard sync (see
+// ClipboardSync.SetOpenDataChannel's doc comment). fn is wired
+// unconditionally from gui.attachUSBClient regardless of connection mode
+// (mw.videoClient's OpenDataChannel is a real method on every platform, see
+// service.VideoClient's doc comment), and webrtcAPITransport.RoundTrip only
+// actually uses the tunnel once fn succeeds -- which it can't until a
+// WebRTC PeerConnection exists -- falling back to the client's original
+// transport otherwise.
 //
-// Whether a failed/unopened channel falls back to a normal fetch()-backed
-// round trip depends on usbClientDataChannelFallback (see
-// usb_client_fallback_default.go/usb_client_fallback_wasm.go): true on
-// desktop-native, so Direct/Tailscale mode keeps working exactly as before
-// (OpenDataChannel always errors there anyway -- see
-// service.MoonlightService's doc comment -- so every request already went
-// through this fallback); false on the wasm build, where a direct fetch()
-// from a relay/remote browser session (no LAN route, no OS-level Tailscale
-// peer, mixed-content or Local-Network-Access blocking every direct
-// http(s):// fetch from an https-loaded page to the agent's private
-// address) is exactly the request that used to sit permanently
-// "(blocked)" in devtools -- the web client has no legitimate second
-// transport to retry there, only the tunnel.
+// That fallback is always kept, on every platform: by the time
+// attachUSBClient runs at all, gui.doConnectWithProtocol has *already*
+// proven this exact client's direct fetch()/dial works (every connect path
+// -- Direct, Tailscale, Auto -- calls TestConnectionWithContext through a
+// scheme-matched NewDirectUSBClient before ever reaching attachUSBClient;
+// see that function's own doc comment on why the wasm build's scheme
+// already avoids mixed-content blocking). Disabling this fallback on wasm
+// was tried and reverted: it broke verifyActiveConnectionWithContext's own
+// GetDeviceInfoWithContext call -- which runs through this exact transport,
+// moments after the connect flow's own proof that fetch works -- for every
+// ordinary LAN/Tailscale browser session, since the DataChannel is never
+// open that early (no video/control connection exists until the user
+// presses Start). Confirmed live: "connection verification failed ...
+// webrtc api transport: open data channel: webrtc video: not connected"
+// on a same-LAN connect that had just passed its own reachability check
+// seconds earlier.
 func (c *USBClient) SetOpenDataChannel(fn func(label string) (net.Conn, error)) {
 	c.openDataChannel = fn
 	if fn == nil || c.httpClient == nil {
 		return
 	}
-	fallback := c.httpClient.Transport
-	if !usbClientDataChannelFallback {
-		// wasm build: never fall back to a direct fetch() -- see
-		// webrtcAPITransport's own doc comment for why that fetch is
-		// exactly the request that used to sit permanently "(blocked)" in
-		// devtools instead of ever succeeding.
-		fallback = nil
-	}
 	c.httpClient.Transport = &webrtcAPITransport{
 		openDataChannel: fn,
-		fallback:        fallback,
+		fallback:        c.httpClient.Transport,
 	}
 }
 

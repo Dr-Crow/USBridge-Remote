@@ -114,14 +114,13 @@ func (t *testFallbackTransport) RoundTrip(req *http.Request) (*http.Response, er
 	return t.resp, nil
 }
 
-// TestWebRTCAPITransport_NoFallback exercises the exact branch the wasm
-// build takes (usbClientDataChannelFallback == false, see
-// usb_client_fallback_wasm.go): fallback is nil, so a failed/unopened
-// DataChannel must return an error straight away instead of dereferencing
-// a nil RoundTripper -- this can't be run under GOOS=js in this sandbox (no
-// wasm exec wrapper available), but the branch itself has no platform-
-// specific code, so exercising it natively verifies the same logic wasm
-// runs.
+// TestWebRTCAPITransport_NoFallback pins RoundTrip's defensive nil-fallback
+// handling: a failed/unopened DataChannel with no fallback configured must
+// return an error straight away instead of dereferencing a nil
+// RoundTripper. USBClient.SetOpenDataChannel never actually constructs this
+// transport with a nil fallback in production (see its own doc comment),
+// but the zero-value struct is a legitimate way to use this type directly,
+// so RoundTrip must handle it safely regardless.
 func TestWebRTCAPITransport_NoFallback(t *testing.T) {
 	transport := &webrtcAPITransport{
 		openDataChannel: func(label string) (net.Conn, error) {
