@@ -48,6 +48,14 @@ type dcConn struct {
 	readBuf []byte
 
 	onOpen, onMsg, onErr, onClose js.Func
+
+	// releaseOnce guards release() itself: js.Func.Release() panics if
+	// called a second time on the same Func, and release() can otherwise
+	// be reached from more than one path in a single dcConn's lifetime
+	// (e.g. a caller that double-Closes the same connCloser -- resp.Body
+	// gets Close()'d more than once by both an explicit call and a
+	// deferred cleanup in some net/http-adjacent code paths).
+	releaseOnce sync.Once
 }
 
 // dcOpenTimeout bounds how long OpenDataChannel waits for the channel's
@@ -56,7 +64,9 @@ type dcConn struct {
 // association should be near-instant (no new ICE/DTLS handshake, just a
 // DCEP control message) compared to a fresh WebSocket's full TCP+HTTP
 // upgrade round-trip.
-const dcOpenTimeout = 10 * time.Second
+// A var, not a const, purely so a test can shrink it instead of waiting out
+// the real 10s -- every production caller sees the real value.
+var dcOpenTimeout = 10 * time.Second
 
 // OpenDataChannel creates a new DataChannel labeled label on this client's
 // already-connected RTCPeerConnection and blocks until it opens (or fails),
@@ -140,6 +150,7 @@ func (c *WebRTCClient) OpenDataChannel(label string) (net.Conn, error) {
 	case <-openCh:
 		select {
 		case <-conn.done:
+			dc.Call("close")
 			conn.release()
 			return nil, conn.doneErr
 		default:
@@ -147,6 +158,11 @@ func (c *WebRTCClient) OpenDataChannel(label string) (net.Conn, error) {
 		}
 	case <-time.After(dcOpenTimeout):
 		conn.fail(errors.New("datachannel: open timeout"))
+		// Explicitly close -- otherwise this abandoned channel is never
+		// actually torn down (just never read from again), leaking an
+		// open RTCDataChannel on the shared PeerConnection for the rest
+		// of the session.
+		dc.Call("close")
 		conn.release()
 		return nil, errors.New("datachannel: open timeout for label " + label)
 	}
@@ -159,11 +175,33 @@ func (c *dcConn) fail(err error) {
 	})
 }
 
+// release detaches every event listener before releasing the Go-side
+// js.Func wrappers backing them. Order matters: dc.Call("close") below
+// fires its "close" event asynchronously (a later JS microtask/event-loop
+// turn, not synchronously within the call), so releasing the funcs first
+// and removing listeners after -- or not removing them at all, as this
+// used to -- lets that (or a late "message") event land on an already-
+// released js.Func, crashing wasm_exec.js with "call to released
+// function". Confirmed live: this fired on every single api-tunnel
+// request (a fresh DataChannel is opened and closed per HTTP call, see
+// webrtcAPITransport.RoundTrip), spamming the console and visibly
+// stalling the UI -- Go's wasm scheduler resumes through the same
+// event-dispatch path this panic unwound.
+func (c *dcConn) removeListeners() {
+	c.dc.Call("removeEventListener", "open", c.onOpen)
+	c.dc.Call("removeEventListener", "message", c.onMsg)
+	c.dc.Call("removeEventListener", "error", c.onErr)
+	c.dc.Call("removeEventListener", "close", c.onClose)
+}
+
 func (c *dcConn) release() {
-	c.onOpen.Release()
-	c.onMsg.Release()
-	c.onErr.Release()
-	c.onClose.Release()
+	c.releaseOnce.Do(func() {
+		c.removeListeners()
+		c.onOpen.Release()
+		c.onMsg.Release()
+		c.onErr.Release()
+		c.onClose.Release()
+	})
 }
 
 func (c *dcConn) Read(p []byte) (int, error) {
