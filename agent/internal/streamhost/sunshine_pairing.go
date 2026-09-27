@@ -124,13 +124,19 @@ func (b *sunshineBackend) SubmitPIN(adminPort int, pin string) error {
 		log.Printf("[sunshine] csrf-token fetch failed, submitting PIN without one: %v", err)
 	}
 
-	fields := map[string]string{"pin": pin}
-	pairingID, err := pendingPairingID(adminPort, user, pass)
+	pending, err := pendingPairing(adminPort, user, pass)
 	if err != nil {
 		return err
 	}
-	if pairingID != "" {
-		fields["pairing_id"] = pairingID
+	// Sunshine 2026.9+ rejects a PIN without a client name (1-128 bytes);
+	// use the device name Moonlight sent with its pairing request, as the
+	// web UI pre-fills it.
+	fields := map[string]string{"pin": pin, "name": pending.Name}
+	if fields["name"] == "" {
+		fields["name"] = defaultPairingClientName
+	}
+	if pending.ID != "" {
+		fields["pairing_id"] = pending.ID
 	}
 	body, _ := json.Marshal(fields)
 	url := fmt.Sprintf("https://%s:%d/api/pin", adminHost(), adminPort)
@@ -143,7 +149,7 @@ func (b *sunshineBackend) SubmitPIN(adminPort int, pin string) error {
 		req.Header.Set("X-CSRF-Token", token)
 	}
 	req.SetBasicAuth(user, pass)
-	resp, err := sunshineAdminHTTPClient.Do(req)
+	resp, err := sunshinePinHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("Sunshine unreachable: %w", err)
 	}
@@ -151,7 +157,27 @@ func (b *sunshineBackend) SubmitPIN(adminPort int, pin string) error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("sunshine returned HTTP %d: %s", resp.StatusCode, readErrBody(resp))
 	}
+	// A wrong PIN or a handshake that didn't finish is still HTTP 200, with
+	// {"status": false}.
+	var result struct {
+		Status *bool `json:"status"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&result) == nil && result.Status != nil && !*result.Status {
+		return fmt.Errorf("sunshine rejected the PIN (wrong PIN, or the client's pairing handshake did not finish)")
+	}
 	return nil
+}
+
+// defaultPairingClientName names a paired client whose pairing request
+// carried no device name.
+const defaultPairingClientName = "USBridge Client"
+
+// sunshinePinHTTPClient is sunshineAdminHTTPClient with room for POST
+// /api/pin, which in Sunshine 2026.9+ only answers once the client has
+// finished the whole pairing handshake (up to Sunshine's ping_timeout).
+var sunshinePinHTTPClient = &http.Client{
+	Timeout:   30 * time.Second,
+	Transport: sunshineAdminHTTPClient.Transport,
 }
 
 // pendingPairingWait bounds how long SubmitPIN waits for Sunshine to list
@@ -160,30 +186,34 @@ func (b *sunshineBackend) SubmitPIN(adminPort int, pin string) error {
 // the request can show up a moment after the PIN does.
 var pendingPairingWait = 5 * time.Second
 
-// pendingPairingID returns the id newer Sunshine builds require in
-// POST /api/pin's "pairing_id" (they keep several pending pairing requests
-// and reject a PIN without one: "pairing_id must contain exactly 32
-// hexadecimal characters"), read from GET /api/pin's "pairings" list the
-// same way Sunshine's own web UI does (Pin.vue). With several pending, the
-// newest (last listed) is the one the just-relayed PIN is for. Returns ""
-// for older builds, which have no GET /api/pin and take the PIN alone.
-func pendingPairingID(adminPort int, user, pass string) (string, error) {
+// pairingRequest is one entry of GET /api/pin's "pairings" list.
+type pairingRequest struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// pendingPairing returns the pairing request newer Sunshine builds require
+// the PIN to name (they keep several pending and reject a PIN without its
+// "pairing_id": "pairing_id must contain exactly 32 hexadecimal
+// characters"), read from GET /api/pin the same way Sunshine's own web UI
+// does. The list is oldest first, so with several pending the last one is
+// the request the just-relayed PIN belongs to. Returns a zero value for
+// older builds, which have no GET /api/pin and take the PIN alone.
+func pendingPairing(adminPort int, user, pass string) (pairingRequest, error) {
 	url := fmt.Sprintf("https://%s:%d/api/pin", adminHost(), adminPort)
 	deadline := time.Now().Add(pendingPairingWait)
 	for {
 		req, err := http.NewRequest(http.MethodGet, url, nil)
 		if err != nil {
-			return "", err
+			return pairingRequest{}, err
 		}
 		req.SetBasicAuth(user, pass)
 		resp, err := sunshineAdminHTTPClient.Do(req)
 		if err != nil {
-			return "", fmt.Errorf("Sunshine unreachable: %w", err)
+			return pairingRequest{}, fmt.Errorf("Sunshine unreachable: %w", err)
 		}
 		var result struct {
-			Pairings []struct {
-				ID string `json:"id"`
-			} `json:"pairings"`
+			Pairings []pairingRequest `json:"pairings"`
 		}
 		ok := resp.StatusCode == http.StatusOK
 		if ok {
@@ -192,13 +222,13 @@ func pendingPairingID(adminPort int, user, pass string) (string, error) {
 		resp.Body.Close()
 		if !ok {
 			// Older Sunshine: no pending-pairing list, PIN goes alone.
-			return "", nil
+			return pairingRequest{}, nil
 		}
 		if n := len(result.Pairings); n > 0 {
-			return result.Pairings[n-1].ID, nil
+			return result.Pairings[n-1], nil
 		}
 		if time.Now().After(deadline) {
-			return "", fmt.Errorf("sunshine has no pending pairing request for this PIN")
+			return pairingRequest{}, fmt.Errorf("sunshine has no pending pairing request for this PIN")
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
