@@ -2,6 +2,35 @@
 
 See [docs/GAMEPADS.md](docs/GAMEPADS.md) for what is supported today.
 
+## Streamer benchmark
+
+See [docs/STREAMER_BENCHMARK.md](docs/STREAMER_BENCHMARK.md) for what it does today.
+
+- **Browser/WebRTC benchmark path.** `service.BenchSupported()` is hard-wired
+  `false` on the web (wasm) build, so the gear menu's *Run benchmark* item
+  doesn't exist there today. The whole per-frame recorder
+  (`internal/service/bench_recorder.go`, `bench_frames.c`) is built on
+  `dr_submit`'s `DECODE_UNIT` callback from the native moonlight decode
+  path, which the web client doesn't have (it decodes in the browser over
+  WebRTC, see `webrtcweb/client_wasm.go`) -- so this needs a second
+  `BenchRecorder`-shaped implementation sourced from `getStats()` polling
+  (bytesReceived, framesDecoded, packetsLost, jitter -- see
+  `net_graph_wasm.go`'s existing `netGraphWasmNetworkStats` for the same
+  translation already done for the live HUD) rather than a small tweak to
+  the existing one.
+  - Once that recorder exists, the benchmark setup dialog
+    (`showBenchmarkSetup` in `internal/gui/benchmark_dialog.go`) should
+    offer a third, browser-only backend choice -- "USBridge (WebRTC)" --
+    and on a wasm build show *only* that one, not the desktop pair
+    (Sunshine / USBridge Streamer classic transport), since a browser can
+    only ever reach the host over WebRTC in the first place.
+  - Whether "USBridge (WebRTC)" is really a distinct agent-side backend
+    kind or just the existing `"rustshine"` backend measured through a
+    different client transport needs deciding before touching
+    `BenchStatus`/`BenchSetBackend` -- leaning toward the latter (no new
+    agent API surface, `showBenchmarkSetup` just changes which client is
+    doing the measuring).
+
 ## Gamepads
 
 - **Verify on hardware what is only unit-tested:** two pads at once through the real

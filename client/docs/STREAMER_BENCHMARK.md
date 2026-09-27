@@ -1,9 +1,12 @@
 # Streamer benchmark
 
 Gear menu (Control header) → **Run benchmark**. Compares Sunshine and
-RustShine on the connected host under identical conditions. It is available
-in the native clients (Linux, Windows, macOS, Android), not in the web
-client, because it needs the moonlight decode hook.
+USBridge Streamer (`"rustshine"` on the wire and in code -- see
+`service.BenchBackendLabel`) on the connected host under identical
+conditions. It is available in the native clients (Linux, Windows, macOS,
+Android), not in the web client, because it needs the moonlight decode
+hook -- see [TODO.md](../TODO.md#streamer-benchmark) for what a browser/
+WebRTC benchmark path would need.
 
 ## What one run does
 
@@ -17,8 +20,8 @@ For each streamer that is ticked:
 3. After 1 s of settling, the agent starts the test video fullscreen on the
    host (`POST /api/bench/video/start`): a 30 s, 1080p, native 60 fps cut of
    Blender's "Big Buck Bunny" (CC-BY, about 14 MB, downloaded once into the
-   agent's state dir), played back as-is by ffplay, mpv or VLC. Being
-   natively 60 fps, every display refresh is already a genuinely new
+   agent's state dir), played back as-is by VLC (preferred), ffplay or mpv.
+   Being natively 60 fps, every display refresh is already a genuinely new
    picture -- no fps-conversion or marker-overlay filter chain is needed
    (an earlier 24 fps trailer needed both, and the filter chain itself
    could bottleneck a modest host into a slideshow). If the download fails,
@@ -43,7 +46,14 @@ Per frame, from `dr_submit` (`internal/service/bench_frames.c`):
   it was handed to the decoder (all on the client clock).
 
 Every 100 ms: RTT and its variance, playout jitter and delay, packet, FEC
-and loss counters, and frames presented by the renderer.
+and loss counters, and frames presented by the renderer. The same 100 ms
+tick also drives the live Net Graph HUD (Control footer's graph toggle),
+which since the benchmark work also shows a streamer/codec/bitrate line:
+the active backend (pushed once per stream start from
+`GET /api/bench/status`, not polled live), the codec moonlight-common-c
+actually negotiated (`NegotiatedVideoCodecName`), and a live bitrate
+averaged over the last ~1 s from a cumulative decoded-bytes counter
+(`dr_submit`'s `DECODE_UNIT.fullLength`, see `net_graph.go`'s `BytesVideo`).
 
 ## How it is analysed (`internal/service/bench_analysis.go`)
 
@@ -73,12 +83,15 @@ as loss or network.
 
 ## Results
 
-The results dialog has a comparison table (the best value is in green),
-frame-time timelines per streamer with every stall marked in its cause's
-color, overlaid fps / host encode time / network jitter / RTT charts,
-startup bars, and a list of every stall. `results.json` (all raw frames and
-ticks) and `chart.png` are saved to
-`<user config dir>/usbridge-client/benchmarks/<timestamp>/`.
+The results dialog has a comparison table (the best value is in green,
+plus a Codec row from each run's own `NegotiatedVideoCodecName`), frame-time
+timelines per streamer with every stall marked in its cause's color,
+overlaid fps / host encode time / network jitter / RTT charts, startup
+bars, and a list of every stall. `results.json` (all raw frames and ticks)
+and `chart.png` are auto-saved to
+`<user config dir>/usbridge-client/benchmarks/<timestamp>/`; the dialog's
+**Save results…** button additionally copies both files to a folder of the
+operator's choosing.
 
 ## Agent endpoints
 
@@ -92,4 +105,4 @@ ticks) and `chart.png` are saved to
 The player stops on its own after 15 minutes if no client stops it. On
 Windows it is launched into the interactive session (a Session 0 window
 would be invisible to capture). `USBRIDGE_BENCH_VIDEO=/path/file` uses a
-local video instead of the trailer.
+local video instead of the downloaded clip.
