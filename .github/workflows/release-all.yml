@@ -76,8 +76,8 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Tag/name for the combined release (e.g. release-2026.07.15)"
-        required: true
+        description: "Tag/name for the combined release (e.g. release-2026.07.15) -- leave blank to use release-v<agent/VERSION>"
+        required: false
       prerelease:
         description: "Mark as a pre-release and skip setting it as /releases/latest (used for test builds)"
         required: false
@@ -1032,12 +1032,24 @@ jobs:
             -app agent -version "$AGENT_VERSION" -dir out \
             -manifest-out out/manifest-agent.json -sig-out out/manifest-agent.json.sig
 
+      - name: Derive release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.release_tag }}" ]; then
+            tag="${{ inputs.release_tag }}"
+          else
+            agent_ver="$(tr -d ' \t\n\r' < agent/VERSION)"
+            tag="release-v${agent_ver}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
       - name: Create combined GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.release_tag }}
+          tag_name: ${{ steps.tag.outputs.tag }}
           files: out/*
-          name: USBridge ${{ inputs.release_tag }}
+          name: USBridge ${{ steps.tag.outputs.tag }}
           generate_release_notes: true
           draft: false
           prerelease: ${{ inputs.prerelease }}
