@@ -42,8 +42,8 @@ func (w *Window) showTokenDialog(parent fyne.Window) {
 
 	copyLinkBtn := newIconActionButton(loc().CopyLink, theme.ContentCopyIcon(), func() {
 		masterKey := strings.TrimSpace(w.cfg.MasterKey)
-		internalHost, tailscaleHost, protocol := w.quickConnectTargets()
-		link := buildQuickConnectLink(internalHost, tailscaleHost, masterKey, protocol)
+		internalHost, tailscaleHost, protocol, hwID := w.quickConnectTargets()
+		link := buildQuickConnectLink(internalHost, tailscaleHost, masterKey, protocol, hwID)
 		if link != "" {
 			parent.Clipboard().SetContent(link)
 		}
@@ -66,8 +66,8 @@ func (w *Window) showTokenDialog(parent fyne.Window) {
 		if masterKey == "" {
 			masterKey = "unavailable"
 		}
-		internalHost, tailscaleHost, protocol := w.quickConnectTargets()
-		link := buildQuickConnectLink(internalHost, tailscaleHost, masterKey, protocol)
+		internalHost, tailscaleHost, protocol, hwID := w.quickConnectTargets()
+		link := buildQuickConnectLink(internalHost, tailscaleHost, masterKey, protocol, hwID)
 
 		linkEntry.SetFrozen(link)
 		if link == "" {

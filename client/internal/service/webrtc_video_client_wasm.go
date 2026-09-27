@@ -56,6 +56,7 @@ type WebRTCVideoClient struct {
 	mu             sync.Mutex
 	host           string
 	apiSecret      string // hex, same format webrtcweb.NewWebRTCClient expects
+	hwID           string // see SetHwID's doc comment
 	client         *webrtcweb.WebRTCClient
 	connected      atomic.Bool
 	stopFrameWatch func()
@@ -139,6 +140,20 @@ func (c *WebRTCVideoClient) SetAPISecret(secret []byte) {
 	c.mu.Unlock()
 }
 
+// SetHwID records the agent's hw_id (from the pairing QR/deep link -- see
+// gui.MainWindow.attachUSBClient, which probes for this optional method the
+// same way it does for SetAPISecret) so ConnectToMoonlight can pass it into
+// webrtcweb.NewWebRTCClient's postOffer, letting it fall back to usbridge-
+// entitlement's WebRTC signaling relay when this agent isn't directly
+// reachable -- see client_wasm.go's postOffer doc comment. "" (no hw_id
+// known, e.g. a manual entry) just means no relay fallback is possible,
+// same as before this existed.
+func (c *WebRTCVideoClient) SetHwID(hwID string) {
+	c.mu.Lock()
+	c.hwID = hwID
+	c.mu.Unlock()
+}
+
 // SetTailscaleService exists only so this type satisfies the same optional
 // interface main_window.go probes MoonlightService for
 // (`interface{ SetTailscaleService(*TailscaleService) }`); a real tailnet
@@ -150,6 +165,7 @@ func (c *WebRTCVideoClient) ConnectToMoonlight() error {
 	c.mu.Lock()
 	host := c.host
 	secret := c.apiSecret
+	hwID := c.hwID
 	bitrateKbps := c.bitrateKbps
 	videoMode := c.videoMode
 	c.mu.Unlock()
@@ -203,7 +219,7 @@ func (c *WebRTCVideoClient) ConnectToMoonlight() error {
 		return fmt.Errorf("%s: %w", streamer, ErrStreamerUnsupportedWebRTC)
 	}
 
-	client := webrtcweb.NewWebRTCClient(baseURL, secret)
+	client := webrtcweb.NewWebRTCClient(baseURL, secret, hwID)
 	client.SetBitrateKbps(bitrateKbps)
 	client.SetVideoCodec(videoMode)
 	sessionID := uuid.NewString()

@@ -16,7 +16,9 @@ import (
 
 // SaveConnection saves the connection directly.
 // masterKey — API master secret (from device QR code).
-func (cm *ConnectionManager) SaveConnection(name, internalHost, tailscaleHost, masterKey, protocol string, tailscaleRegister bool) string {
+// hwID — the agent's hw_id if the QR/deep link carried one (see
+// SavedConnection.HwID's doc comment); "" for a manual entry.
+func (cm *ConnectionManager) SaveConnection(name, internalHost, tailscaleHost, masterKey, protocol, hwID string, tailscaleRegister bool) string {
 	internalHost = strings.TrimSpace(internalHost)
 	tailscaleHost = strings.TrimSpace(tailscaleHost)
 	if internalHost == "" && tailscaleHost == "" {
@@ -47,6 +49,7 @@ func (cm *ConnectionManager) SaveConnection(name, internalHost, tailscaleHost, m
 		Protocol:          normalizeConnectionProtocol(protocol),
 		TailscaleRegister: tailscaleRegister,
 		Origin:            connectionOriginLocal,
+		HwID:              strings.TrimSpace(hwID),
 	}
 	conn.Host = fallbackText(conn.InternalHost, conn.TailscaleHost)
 	cm.connections = append(cm.connections, conn)
@@ -123,7 +126,7 @@ func (cm *ConnectionManager) RememberResolvedTailscaleHost(currentHost, internal
 	// the reasons above, an auto-selected Tailscale protocol isn't safe to
 	// assume works, especially in the browser build.
 	logrus.Warnf("⚠️ [TS] No matching connection found for currentHost=%q; saving as NEW connection", currentHost)
-	name := cm.SaveConnection("", internalHost, tailscaleHost, masterKey, models.ConnectionProtocolAuto, false)
+	name := cm.SaveConnection("", internalHost, tailscaleHost, masterKey, models.ConnectionProtocolAuto, "", false)
 	logrus.Infof("Saved new connection %q with resolved tailscale host=%s", name, tailscaleHost)
 }
 

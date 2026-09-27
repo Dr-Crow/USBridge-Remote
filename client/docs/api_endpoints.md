@@ -182,3 +182,21 @@ GET /api/healthz
     standalone/dev use of `gamestream-server` outside the agent, where the endpoint stays
     unauthenticated (logs a startup warning) — see rust-shine's `docs/WEBRTC.md` "Authentication"
     section, which also has the live-verification notes (real agent install, real device).
+
+    **Signaling relay fallback (pro/enterprise only)**: `client_wasm.go`'s `postOffer` tries the
+    direct fetch above first; only on a genuine network-level failure (connection refused, DNS
+    failure, mixed content or Local Network Access blocking the request — i.e. the agent was never
+    actually reached, as opposed to a real HTTP rejection like a 401) does it retry the identical
+    signed request against `usbridge-entitlement`'s
+    `POST /v1/webrtc/signal-relay/offer {hw_id, sdp, bitrate_kbps?, codec?}`, which forwards it to
+    the agent over a persistent outbound WebSocket (`agent/internal/app/webrtc_signal_relay.go`)
+    instead of requiring the browser to reach it directly — for a browser with zero LAN/Tailscale
+    route to an agent sitting behind NAT/CGNAT. `hw_id` comes from the pairing QR/deep link
+    (`SavedConnection.HwID`) — absent for a manual host:key entry or an unsaved QR/deep-link
+    "Connect now", both of which just mean no relay fallback is available, same as before this
+    existed. Gated server-side to RustShine Pro/Enterprise (a free-tier `hw_id` gets a clean
+    `403 not_pro`, surfaced as a distinct "remote connect requires RustShine Pro" error rather than
+    the generic network failure that triggered the fallback) — see
+    `usbridge-entitlement-backend/README.md`'s "WebRTC signaling relay" section for the full
+    Worker/Durable-Object design. The relay carries only this one-shot offer/answer exchange; once
+    negotiated, media/data ride the same DTLS-SRTP `RTCPeerConnection` either way.

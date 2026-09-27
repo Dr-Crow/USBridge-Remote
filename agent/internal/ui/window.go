@@ -27,6 +27,7 @@ import (
 	"usbridge_agent/internal/capture"
 	"usbridge_agent/internal/config"
 	"usbridge_agent/internal/entitlement"
+	"usbridge_agent/internal/hwid"
 	"usbridge_agent/internal/netutil"
 	"usbridge_agent/internal/streamhost"
 	"usbridge_agent/internal/tailscale"
@@ -2909,7 +2910,7 @@ func isActiveTailscalePeer(p tailscale.Peer) bool {
 	return false
 }
 
-func buildQuickConnectLink(internalHost, tailscaleHost string, masterKey, protocol string) string {
+func buildQuickConnectLink(internalHost, tailscaleHost string, masterKey, protocol, hwID string) string {
 	masterKey = strings.TrimSpace(masterKey)
 	if masterKey == "" || masterKey == "unavailable" {
 		return ""
@@ -2929,6 +2930,9 @@ func buildQuickConnectLink(internalHost, tailscaleHost string, masterKey, protoc
 	if strings.TrimSpace(protocol) != "" {
 		values.Set("protocol", strings.TrimSpace(protocol))
 	}
+	if strings.TrimSpace(hwID) != "" {
+		values.Set("hw_id", strings.TrimSpace(hwID))
+	}
 	return fmt.Sprintf("usbridge://connect?%s", values.Encode())
 }
 
@@ -2941,7 +2945,7 @@ func buildQuickConnectLink(internalHost, tailscaleHost string, masterKey, protoc
 // a browser web client select the trusted device wildcard cert via SNI
 // (never sent for a bare-IP connection). Falls back to the bare LAN IP
 // when no hostname is registered yet.
-func (w *Window) quickConnectTargets() (internalHost string, tailscaleHost string, protocol string) {
+func (w *Window) quickConnectTargets() (internalHost string, tailscaleHost string, protocol string, hwID string) {
 	internalHost = localQuickConnectIPv4()
 	if deviceHost := w.deviceHostname(); deviceHost != "" {
 		internalHost = deviceHost
@@ -2956,14 +2960,18 @@ func (w *Window) quickConnectTargets() (internalHost string, tailscaleHost strin
 			}
 		}
 	}
+	// Best-effort -- see buildQRLink's doc comment (app.go) for why an
+	// empty hw_id (just omitted from the link) is an acceptable degrade
+	// rather than a hard failure here.
+	hwID, _ = hwid.Get()
 
 	if tailscaleHost != "" {
-		return internalHost, tailscaleHost, "tailscale"
+		return internalHost, tailscaleHost, "tailscale", hwID
 	}
 	if internalHost != "" {
-		return internalHost, "", "direct"
+		return internalHost, "", "direct", hwID
 	}
-	return "", "", ""
+	return "", "", "", hwID
 }
 
 func localQuickConnectIPv4() string {

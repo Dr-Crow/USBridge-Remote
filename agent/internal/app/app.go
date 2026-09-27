@@ -794,6 +794,7 @@ func (a *App) Run(headless, startHidden bool) error {
 	go a.entitlementWatchdog(ctx)
 	go a.streamerUpdateWatchdog(ctx)
 	go a.turnCredentialsWatchdog(ctx)
+	go a.webrtcSignalRelayWatchdog(ctx)
 	go a.usbBrokerWatchdog(ctx)
 	go a.recheckEntitlement(ctx) // one immediate check, don't wait a full entitlementRecheckInterval after a restart
 	go func() { _ = a.server.ListenAndServe() }()
@@ -3481,7 +3482,18 @@ func (a *App) QRLink() (string, string) {
 			}
 		}
 	}
-	link := buildQRLink(internalHost, tailscaleHost, masterKey)
+	// hwID (best-effort -- an empty string just omits hw_id from the link,
+	// same "degrade gracefully" posture every other field here already has)
+	// lets a browser client that later can't reach this agent directly
+	// address the Cloudflare signaling relay for it (see
+	// agent/internal/streamhost/webrtc_signal_relay.go and
+	// client/internal/webrtcweb/client_wasm.go's postOffer). Not a new
+	// exposure: master_key, the actual API credential, is already in this
+	// same plaintext link -- hw_id alone only lets someone request a
+	// free-tier entitlement token for it (see desktopLicense.ts's
+	// documented trust model), no new capability against this device.
+	hwID, _ := hwid.Get()
+	link := buildQRLink(internalHost, tailscaleHost, masterKey, hwID)
 	return link, masterKey
 }
 
@@ -3548,7 +3560,7 @@ func (a *App) CertStatus() tlshost.CertStatus {
 	return a.tlsMgr.CertStatus()
 }
 
-func buildQRLink(internalHost, tailscaleHost, masterKey string) string {
+func buildQRLink(internalHost, tailscaleHost, masterKey, hwID string) string {
 	if masterKey == "" {
 		return ""
 	}
@@ -3563,6 +3575,9 @@ func buildQRLink(internalHost, tailscaleHost, masterKey string) string {
 		values.Set("tailscale_host", tailscaleHost)
 	}
 	values.Set("master_key", masterKey)
+	if hwID != "" {
+		values.Set("hw_id", hwID)
+	}
 	return "usbridge://connect?" + values.Encode()
 }
 

@@ -41,8 +41,8 @@ func TestResolveDeepLinkHost_DeviceHostIgnoredWhenNotBrowserHTTPS(t *testing.T) 
 
 func TestParseDeepLink_ExtractsDeviceHost(t *testing.T) {
 	h := NewDeepLinkHandler(nil, nil)
-	internalHost, tailscaleHost, deviceHost, masterKey, protocol, immediate, err := h.parseDeepLink(
-		"usbridge://connect?internal_host=192.168.1.5&device_host=abc123.device.usbridge.io&master_key=secret&protocol=direct&immediate=true",
+	internalHost, tailscaleHost, deviceHost, masterKey, protocol, hwID, immediate, err := h.parseDeepLink(
+		"usbridge://connect?internal_host=192.168.1.5&device_host=abc123.device.usbridge.io&master_key=secret&protocol=direct&hw_id=hw-abc123&immediate=true",
 	)
 	if err != nil {
 		t.Fatalf("parseDeepLink: %v", err)
@@ -62,6 +62,9 @@ func TestParseDeepLink_ExtractsDeviceHost(t *testing.T) {
 	if protocol != "direct" {
 		t.Errorf("protocol = %q, want direct", protocol)
 	}
+	if hwID != "hw-abc123" {
+		t.Errorf("hwID = %q, want hw-abc123", hwID)
+	}
 	if !immediate {
 		t.Error("immediate = false, want true")
 	}
@@ -69,11 +72,14 @@ func TestParseDeepLink_ExtractsDeviceHost(t *testing.T) {
 
 func TestParseDeepLink_DeviceHostOptional(t *testing.T) {
 	h := NewDeepLinkHandler(nil, nil)
-	_, _, deviceHost, _, _, _, err := h.parseDeepLink("usbridge://connect?internal_host=192.168.1.5&master_key=secret")
+	_, _, deviceHost, _, _, hwID, _, err := h.parseDeepLink("usbridge://connect?internal_host=192.168.1.5&master_key=secret")
 	if err != nil {
 		t.Fatalf("parseDeepLink: %v", err)
 	}
 	if deviceHost != "" {
 		t.Errorf("deviceHost = %q, want empty when the link never set it (older agent build)", deviceHost)
+	}
+	if hwID != "" {
+		t.Errorf("hwID = %q, want empty when the link never set it (older agent build, or hw_id-less agent)", hwID)
 	}
 }

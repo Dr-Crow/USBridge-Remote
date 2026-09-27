@@ -47,6 +47,17 @@ type SavedConnection struct {
 	// memory overlay, gone on logout). Empty is treated as local so
 	// existing connections.json files keep working.
 	Origin string `json:"origin,omitempty"`
+	// HwID is the agent's hardware id (agent/internal/hwid), carried in the
+	// pairing QR/deep link's hw_id param (see agent/internal/app's
+	// buildQRLink) when the agent that generated it knew one. Lets the wasm
+	// build's postOffer (client/internal/webrtcweb/client_wasm.go) address
+	// usbridge-entitlement's WebRTC signaling relay when this agent isn't
+	// directly reachable at all -- see that relay's own doc comment
+	// (usbridge-entitlement-backend's webrtcSignalRelay.ts) for why. Empty
+	// for any connection saved before this field existed, or made without a
+	// hw_id-carrying QR/link (e.g. manual host:key entry) -- both just mean
+	// "no relay fallback available for this one", same as today.
+	HwID string `json:"hw_id,omitempty"`
 }
 
 type ConnectionManager struct {
@@ -275,8 +286,8 @@ func NewConnectionManager(app fyne.App, window fyne.Window, config *models.AppCo
 			}
 			logrus.Infof("QR connect: host=%s", host)
 		},
-		func(name, internalHost, tailscaleHost, masterKey, protocol string, tailscaleRegister bool) {
-			cm.SaveConnection(name, internalHost, tailscaleHost, masterKey, protocol, tailscaleRegister)
+		func(name, internalHost, tailscaleHost, masterKey, protocol, hwID string, tailscaleRegister bool) {
+			cm.SaveConnection(name, internalHost, tailscaleHost, masterKey, protocol, hwID, tailscaleRegister)
 			fyne.Do(func() {
 				cm.applyConnectionToForm(resolveScannedHost(protocol, internalHost, tailscaleHost), masterKey, protocol)
 			})
@@ -455,6 +466,21 @@ func (cm *ConnectionManager) SelectConnection(idx int) {
 	if cm.onSelect != nil {
 		cm.onSelect(conn.TailscaleRegister)
 	}
+}
+
+// SelectedConnectionHwID returns the hw_id of the SavedConnection currently
+// populating the form (see SelectConnection/HandleFormEdited for how
+// selectedIndex tracks that), or "" when no saved connection is selected --
+// a manual entry, or a QR/deep-link "Connect now" that never went through
+// Save (both of those explicitly clear the selection, see
+// NewQRScanner's onConnect wiring). Consumed by attachUSBClient
+// (main_window.go) to address the WebRTC signaling relay when this agent
+// isn't directly reachable -- see SavedConnection.HwID's own doc comment.
+func (cm *ConnectionManager) SelectedConnectionHwID() string {
+	if cm == nil || cm.selectedIndex < 0 || cm.selectedIndex >= len(cm.connections) {
+		return ""
+	}
+	return cm.connections[cm.selectedIndex].HwID
 }
 
 func (cm *ConnectionManager) applyConnectionToForm(host, masterKey, protocol string) {

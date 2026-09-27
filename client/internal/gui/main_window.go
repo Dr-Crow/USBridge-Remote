@@ -414,6 +414,24 @@ func (mw *MainWindow) attachUSBClient(client *api.USBClient) *api.USBClient {
 		}
 	}
 
+	// Same optional-interface-probe pattern as SetAPISecret above -- only
+	// WebRTCVideoClient (wasm build) implements this, nil on every other
+	// platform (desktop never calls /webrtc/offer at all, see
+	// MoonlightService's own doc comments). Sourced from whichever
+	// SavedConnection is currently selected in the connection list (empty
+	// for a manual entry or a QR/deep-link "Connect now" that was never
+	// saved -- see SelectedConnectionHwID's own doc comment for that scope
+	// boundary), so postOffer (client_wasm.go) can fall back to
+	// usbridge-entitlement's WebRTC signaling relay when this agent isn't
+	// directly reachable at all -- see SavedConnection.HwID's doc comment.
+	if setter, ok := mw.videoClient.(interface{ SetHwID(string) }); ok {
+		hwID := ""
+		if mw.connectionManager != nil {
+			hwID = mw.connectionManager.SelectedConnectionHwID()
+		}
+		setter.SetHwID(hwID)
+	}
+
 	mw.startClipboardSync(client)
 
 	return client

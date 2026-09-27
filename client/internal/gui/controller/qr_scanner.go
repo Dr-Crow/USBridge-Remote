@@ -27,7 +27,7 @@ type QRScanner struct {
 	window fyne.Window
 
 	onConnect func(host, masterKey, protocol string, tailscaleRegister bool)
-	onSave    func(name, internalHost, tailscaleHost, masterKey, protocol string, tailscaleRegister bool)
+	onSave    func(name, internalHost, tailscaleHost, masterKey, protocol, hwID string, tailscaleRegister bool)
 	onPrefill func(internalHost, tailscaleHost, masterKey, protocol string, scanned bool)
 
 	scanSession       atomic.Uint64
@@ -37,7 +37,7 @@ type QRScanner struct {
 func NewQRScanner(
 	app fyne.App,
 	onConnect func(host, masterKey, protocol string, tailscaleRegister bool),
-	onSave func(name, internalHost, tailscaleHost, masterKey, protocol string, tailscaleRegister bool),
+	onSave func(name, internalHost, tailscaleHost, masterKey, protocol, hwID string, tailscaleRegister bool),
 	onPrefill func(internalHost, tailscaleHost, masterKey, protocol string, scanned bool),
 ) *QRScanner {
 	return &QRScanner{
@@ -92,7 +92,7 @@ func (qs *QRScanner) scanQRCode(img image.Image, parent fyne.Window) {
 }
 
 func (qs *QRScanner) parseAndApply(qrText string, parent fyne.Window) {
-	internalHost, tailscaleHost, masterKey, protocol, err := parseQRContents(qrText)
+	internalHost, tailscaleHost, masterKey, protocol, hwID, err := parseQRContents(qrText)
 	if err != nil {
 		view.ShowErrorDialog(errors.New(fmt.Sprintf(i18n.Current.InvalidQRFormat, qrText)), parent)
 		return
@@ -111,14 +111,14 @@ func (qs *QRScanner) parseAndApply(qrText string, parent fyne.Window) {
 			return
 		}
 
-		qs.showPreview(internalHost, tailscaleHost, masterKey, protocol, parent)
+		qs.showPreview(internalHost, tailscaleHost, masterKey, protocol, hwID, parent)
 	})
 }
 
-func parseQRContents(qrText string) (internalHost, tailscaleHost, masterKey, protocol string, err error) {
+func parseQRContents(qrText string) (internalHost, tailscaleHost, masterKey, protocol, hwID string, err error) {
 	qrText = strings.TrimSpace(qrText)
 	if qrText == "" {
-		return "", "", "", "", fmt.Errorf("empty QR code")
+		return "", "", "", "", "", fmt.Errorf("empty QR code")
 	}
 
 	if strings.HasPrefix(qrText, "usbridge://sync") {
@@ -127,7 +127,7 @@ func parseQRContents(qrText string) (internalHost, tailscaleHost, masterKey, pro
 			host := u.Query().Get("host")
 			secret := u.Query().Get("secret")
 			if host != "" && secret != "" {
-				return host, "", secret, "", nil
+				return host, "", secret, "", "", nil
 			}
 		}
 	}
@@ -135,10 +135,10 @@ func parseQRContents(qrText string) (internalHost, tailscaleHost, masterKey, pro
 	if strings.HasPrefix(qrText, "usbridge://") {
 		u, parseErr := url.Parse(qrText)
 		if parseErr != nil {
-			return "", "", "", "", parseErr
+			return "", "", "", "", "", parseErr
 		}
 		if u.Scheme != "usbridge" || u.Host != "connect" {
-			return "", "", "", "", fmt.Errorf("unsupported deep link format")
+			return "", "", "", "", "", fmt.Errorf("unsupported deep link format")
 		}
 
 		query := u.Query()
@@ -157,16 +157,17 @@ func parseQRContents(qrText string) (internalHost, tailscaleHost, masterKey, pro
 			masterKey = strings.TrimSpace(query.Get("token"))
 		}
 		protocol = strings.TrimSpace(query.Get("protocol"))
+		hwID = strings.TrimSpace(query.Get("hw_id"))
 
 		if (internalHost != "" || tailscaleHost != "") && masterKey != "" {
-			return internalHost, tailscaleHost, masterKey, protocol, nil
+			return internalHost, tailscaleHost, masterKey, protocol, hwID, nil
 		}
-		return "", "", "", "", fmt.Errorf("host or auth data is missing in the link")
+		return "", "", "", "", "", fmt.Errorf("host or auth data is missing in the link")
 	}
 
 	parts := strings.SplitN(qrText, ":", 2)
 	if len(parts) != 2 {
-		return "", "", "", "", fmt.Errorf("expected format host:master_key or usbridge://connect?host=X&master_key=Y")
+		return "", "", "", "", "", fmt.Errorf("expected format host:master_key or usbridge://connect?host=X&master_key=Y")
 	}
 
 	host := strings.TrimSpace(parts[0])
@@ -176,10 +177,10 @@ func parseQRContents(qrText string) (internalHost, tailscaleHost, masterKey, pro
 	} else {
 		internalHost = host
 	}
-	return internalHost, tailscaleHost, masterKey, "", nil
+	return internalHost, tailscaleHost, masterKey, "", "", nil
 }
 
-func (qs *QRScanner) showPreview(internalHost, tailscaleHost, masterKey, protocol string, parent fyne.Window) {
+func (qs *QRScanner) showPreview(internalHost, tailscaleHost, masterKey, protocol, hwID string, parent fyne.Window) {
 	host := resolveScannedHost(protocol, internalHost, tailscaleHost)
 
 	masterKeyLabel := widget.NewLabel(i18n.Current.TokenLabel)
@@ -197,7 +198,7 @@ func (qs *QRScanner) showPreview(internalHost, tailscaleHost, masterKey, protoco
 			d.Hide()
 		}
 		if qs.onSave != nil {
-			qs.onSave("", internalHost, tailscaleHost, masterKey, protocol, false)
+			qs.onSave("", internalHost, tailscaleHost, masterKey, protocol, hwID, false)
 			logrus.Infof("QR saved: internal=%s tailscale=%s", internalHost, tailscaleHost)
 		}
 	})

@@ -95,7 +95,7 @@ func connect(this js.Value, args []js.Value) interface{} {
 		onLog.Invoke(msg)
 	}
 
-	client := webrtcweb.NewWebRTCClient(baseURL, masterKey)
+	client := webrtcweb.NewWebRTCClient(baseURL, masterKey, "")
 	activeClient = client
 	client.OnStateChange(func(state string) {
 		log("connection state: " + state)

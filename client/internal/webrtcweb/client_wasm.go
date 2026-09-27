@@ -41,6 +41,12 @@ type WebRTCClient struct {
 	// produces headers, they just won't match anything rustshine expects,
 	// same as any other wrong/missing key.
 	masterKey string
+	// hwID is the agent's hw_id (from the pairing QR/deep link, "" if none
+	// was carried -- see SavedConnection.HwID's doc comment), used only to
+	// address usbridge-entitlement's WebRTC signaling relay in postOffer's
+	// fallback path when a direct fetch to baseURL fails outright. Never
+	// sent to the agent itself.
+	hwID string
 
 	// bitrateKbps: this session's requested bitrate ceiling, sent as
 	// OfferRequest.bitrate_kbps in postOffer's body -- see
@@ -82,8 +88,8 @@ type WebRTCClient struct {
 // this reimplements the same HMAC-SHA256 signature scheme the desktop
 // client uses, byte for byte, so it authenticates against the exact same
 // agent API without any protocol changes on the agent side.
-func NewWebRTCClient(baseURL, masterKey string) *WebRTCClient {
-	return &WebRTCClient{baseURL: baseURL, masterKey: masterKey}
+func NewWebRTCClient(baseURL, masterKey, hwID string) *WebRTCClient {
+	return &WebRTCClient{baseURL: baseURL, masterKey: masterKey, hwID: hwID}
 }
 
 // signHMAC reproduces agent/internal/api/security.go's CalculateHMAC:
@@ -395,11 +401,29 @@ func (c *WebRTCClient) waitForICEGatheringComplete(pc js.Value) {
 // {"sdp"}}), which silently failed against rustshine's flat response
 // (parsed.Success stayed false, masking a perfectly good SDP answer as a
 // rejected offer) once the client was pointed at rustshine directly.
+// postOffer's fallback path, when a direct fetch() to the agent fails
+// outright (connection refused, DNS failure, mixed content or Chrome's
+// Local Network Access blocking a fetch to a private-network agent from a
+// public-network page -- see this session's earlier "api-tunnel" fix for
+// exactly this class of failure): retries the identical offer against
+// usbridge-entitlement's WebRTC signaling relay (see
+// usbridge-entitlement-backend's webrtcSignalRelay.ts), which forwards it
+// to the agent over its own persistent outbound WebSocket
+// (agent/internal/app/webrtc_signal_relay.go) instead of requiring the
+// browser to reach it directly. Pro/enterprise tier only -- a free-tier
+// hwID gets a clean, distinct error from the relay itself (403 not_pro)
+// rather than the generic network failure that triggered this fallback in
+// the first place. See shouldFallbackToRelay's doc comment for exactly
+// when this fires, and signal_relay.go for the platform-independent parts
+// (URL/body construction, the fallback decision itself) that are unit-
+// tested there -- this function is wasm-only (syscall/js fetch) glue
+// around them.
 func (c *WebRTCClient) postOffer(sessionID, offerSDP string) (string, error) {
 	_ = sessionID // rustshine's endpoint doesn't take a session id -- one PeerConnection per POST, matching its own signaling.rs
 	c.mu.Lock()
 	bitrateKbps := c.bitrateKbps
 	videoCodec := c.videoCodec
+	hwID := c.hwID
 	c.mu.Unlock()
 	// bitrate_kbps omitted entirely (not sent as 0) when unset -- matches
 	// rust-shine's OfferRequest.bitrate_kbps, an Option<u32> on the wire
@@ -418,43 +442,61 @@ func (c *WebRTCClient) postOffer(sessionID, offerSDP string) (string, error) {
 		return "", err
 	}
 	path := "/webrtc/offer"
-
 	ts, sig := c.signHMAC("POST", path, string(reqBody))
+	authHeaders := map[string]string{"X-Auth-Timestamp": ts, "X-Auth-Signature": sig}
 
-	headers := js.Global().Get("Object").New()
-	headers.Set("Content-Type", "application/json")
-	headers.Set("X-Auth-Timestamp", ts)
-	headers.Set("X-Auth-Signature", sig)
+	respBody, err := doOfferFetch(c.baseURL+path, reqBody, authHeaders)
+	if err != nil {
+		if !shouldFallbackToRelay(err, hwID) {
+			return "", fmt.Errorf("webrtc: fetch /webrtc/offer: %w", err)
+		}
+		relayBody, relayErr := buildRelayOfferBody(hwID, offerSDP, bitrateKbps, videoCodec)
+		if relayErr != nil {
+			return "", fmt.Errorf("webrtc: fetch /webrtc/offer: %w", err)
+		}
+		respBody, err = doOfferFetch(signalRelayOfferURL(), relayBody, authHeaders)
+		if err != nil {
+			if httpErr, ok := err.(*offerHTTPError); ok && httpErr.Status == 403 {
+				return "", fmt.Errorf("webrtc: remote connect requires RustShine Pro (signaling relay refused: %s)", httpErr.Body)
+			}
+			return "", fmt.Errorf("webrtc: fetch signal relay offer: %w", err)
+		}
+	}
+
+	return parseOfferAnswer(respBody)
+}
+
+// doOfferFetch performs one fetch() POST and returns the raw response body
+// on a 2xx status, or an *offerHTTPError wrapping the status/body on any
+// other status -- the browser/wasm-only half of the fetch, kept minimal so
+// the decision logic around it (shouldFallbackToRelay et al., signal_relay.go)
+// stays platform-independent and unit-testable.
+func doOfferFetch(url string, body []byte, headers map[string]string) ([]byte, error) {
+	jsHeaders := js.Global().Get("Object").New()
+	jsHeaders.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		jsHeaders.Set(k, v)
+	}
 
 	opts := js.Global().Get("Object").New()
 	opts.Set("method", "POST")
-	opts.Set("headers", headers)
-	opts.Set("body", string(reqBody))
+	opts.Set("headers", jsHeaders)
+	opts.Set("body", string(body))
 
-	fetchPromise := js.Global().Call("fetch", c.baseURL+path, opts)
+	fetchPromise := js.Global().Call("fetch", url, opts)
 	respVal, err := awaitPromise(fetchPromise)
 	if err != nil {
-		return "", fmt.Errorf("webrtc: fetch /webrtc/offer: %w", err)
+		return nil, err
 	}
 	textPromise := respVal.Call("text")
 	textVal, err := awaitPromise(textPromise)
 	if err != nil {
-		return "", fmt.Errorf("webrtc: reading response body: %w", err)
+		return nil, fmt.Errorf("reading response body: %w", err)
 	}
 	if !respVal.Get("ok").Bool() {
-		return "", fmt.Errorf("webrtc: rustshine returned HTTP %d: %s", respVal.Get("status").Int(), textVal.String())
+		return nil, &offerHTTPError{Status: respVal.Get("status").Int(), Body: textVal.String()}
 	}
-
-	var parsed struct {
-		SDP string `json:"sdp"`
-	}
-	if err := json.Unmarshal([]byte(textVal.String()), &parsed); err != nil {
-		return "", fmt.Errorf("webrtc: decoding rustshine response: %w", err)
-	}
-	if parsed.SDP == "" {
-		return "", fmt.Errorf("webrtc: rustshine response had no sdp")
-	}
-	return parsed.SDP, nil
+	return []byte(textVal.String()), nil
 }
 
 // StartStatsLogging polls RTCPeerConnection.getStats() every interval and

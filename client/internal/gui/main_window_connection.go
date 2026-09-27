@@ -60,7 +60,7 @@ func (mw *MainWindow) handleConnectionFromManager(host, masterKey, protocol stri
 }
 
 // handleSaveFromDeepLink saves data from a deep link WITHOUT connecting.
-func (mw *MainWindow) handleSaveFromDeepLink(name, internalHost, tailscaleHost, masterKey, protocol string, tailscaleRegister bool) {
+func (mw *MainWindow) handleSaveFromDeepLink(name, internalHost, tailscaleHost, masterKey, protocol, hwID string, tailscaleRegister bool) {
 	host := strings.TrimSpace(tailscaleHost)
 	if host == "" {
 		host = strings.TrimSpace(internalHost)
@@ -76,7 +76,7 @@ func (mw *MainWindow) handleSaveFromDeepLink(name, internalHost, tailscaleHost, 
 	})
 
 	if mw.connectionManager != nil {
-		generatedName := mw.connectionManager.SaveConnection(name, internalHost, tailscaleHost, masterKey, protocol, tailscaleRegister)
+		generatedName := mw.connectionManager.SaveConnection(name, internalHost, tailscaleHost, masterKey, protocol, hwID, tailscaleRegister)
 		logrus.Infof("✅ Connection '%s' saved", generatedName)
 		fyne.Do(func() {
 			logrus.Infof("💾 Saved as: %s", generatedName)

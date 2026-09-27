@@ -751,6 +751,7 @@ func (cm *ConnectionManager) saveGridCardEdit(idx int, name, internalHost, tails
 		TailscaleRegister: conn.TailscaleRegister,
 		RemoteOS:          conn.RemoteOS,
 		RemoteProtocol:    conn.RemoteProtocol,
+		HwID:              conn.HwID,
 	})
 	cm.selectedIndex = idx
 	cm.editingGridIndex = -1

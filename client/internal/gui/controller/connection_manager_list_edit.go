@@ -145,6 +145,7 @@ func (cm *ConnectionManager) saveListEditPanel(idx int, name, internalHost, tail
 		TailscaleRegister: conn.TailscaleRegister,
 		RemoteOS:          conn.RemoteOS,
 		RemoteProtocol:    conn.RemoteProtocol,
+		HwID:              conn.HwID,
 	})
 	cm.selectedIndex = idx
 	cm.editingListIndex = -1

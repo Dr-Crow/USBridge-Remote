@@ -1862,6 +1862,7 @@ func (cm *ConnectionManager) showEditDialog(idx int) {
 				TailscaleRegister: tailscaleRegister,
 				RemoteOS:          conn.RemoteOS,
 				RemoteProtocol:    conn.RemoteProtocol,
+				HwID:              conn.HwID,
 			})
 			cm.selectedIndex = idx
 			fyne.Do(func() {
@@ -1948,7 +1949,7 @@ func (cm *ConnectionManager) showPrefilledAddDialog(name, internalHost, tailscal
 			}
 			host := resolveHostForDialog(selectedProtocol, internalHost, tailscaleHost)
 
-			cm.SaveConnection(name, internalHost, tailscaleHost, masterKey, selectedProtocol, tailscaleRegister)
+			cm.SaveConnection(name, internalHost, tailscaleHost, masterKey, selectedProtocol, "", tailscaleRegister)
 			fyne.Do(func() {
 				cm.applyConnectionToForm(host, masterKey, selectedProtocol)
 				cm.refreshConnectionsList()
@@ -2353,7 +2354,7 @@ func newConnectionDialogInlinePasteView(parent fyne.Window, onApply func(interna
 	}
 
 	parseLink := func() (string, string, string, error) {
-		ih, th, mk, _, err := parseQRContents(entry.Text)
+		ih, th, mk, _, _, err := parseQRContents(entry.Text)
 		if err != nil {
 			errLabel.Text = "Invalid link format"
 			errLabel.Refresh()

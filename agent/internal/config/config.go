@@ -86,6 +86,19 @@ type Config struct {
 	// matching gamestream-server's own default) so existing installs keep
 	// the web client working without needing to opt in.
 	RustShineWebRTCDisabled bool `yaml:"rustshine_webrtc_disabled,omitempty"`
+	// WebRTCSignalRelayEnabled gates the agent's outbound WebSocket to
+	// usbridge-entitlement's WebRTC signaling relay (see
+	// internal/app/webrtc_signal_relay.go, usbridge-entitlement-backend's
+	// webrtcSignalRelay.ts) -- lets a browser client with no LAN/Tailscale
+	// route to this agent still deliver its "POST /webrtc/offer" signaling
+	// request. Nil (omitted in YAML) means on -- same nil-means-default-true
+	// convention as TLSEnabled/StreamerAutoUpdate -- so a pro/enterprise box
+	// dials out by default; already gated server-side to that tier (free
+	// tier gets a clean 403, never reaches this flag's meaning at all), this
+	// exists purely so a user/support can opt a pro/enterprise box OUT of
+	// the outbound relay connection entirely (e.g. a locked-down network
+	// policy), independent of tier.
+	WebRTCSignalRelayEnabled *bool `yaml:"webrtc_signal_relay_enabled,omitempty"`
 
 	// StreamerAutoUpdate is the General Settings "USBridge protocol auto-update"
 	// checkbox for USBridge-streamer. Nil (omitted in YAML) means on --
@@ -172,6 +185,15 @@ func (c Config) StreamerAutoUpdateEnabled() bool {
 // matching StreamerAutoUpdateEnabled's identical pattern.
 func (c Config) TLSEnabledOK() bool {
 	return c.TLSEnabled == nil || *c.TLSEnabled
+}
+
+// WebRTCSignalRelayEnabledOK is true unless the user explicitly turned the
+// outbound signaling-relay connection off. Omitted YAML (nil) is on, same
+// pattern as TLSEnabledOK -- the actual pro/enterprise tier gate happens
+// server-side (see webrtcSignalRelayWatchdog), this only controls whether a
+// tier-eligible box dials out at all.
+func (c Config) WebRTCSignalRelayEnabledOK() bool {
+	return c.WebRTCSignalRelayEnabled == nil || *c.WebRTCSignalRelayEnabled
 }
 
 // RemoteWindowLockEnabled is true only when the user turned the General

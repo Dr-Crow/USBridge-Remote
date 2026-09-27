@@ -20,13 +20,13 @@ import (
 
 // DeepLinkHandler handles deep links
 type DeepLinkHandler struct {
-	onConnect func(host, masterKey, protocol string, tailscaleRegister bool)                              // Connect
-	onSave    func(name, internalHost, tailscaleHost, masterKey, protocol string, tailscaleRegister bool) // Save only, without connecting
-	lastURI   string                                                                                      // Last processed URI (to avoid processing twice)
+	onConnect func(host, masterKey, protocol string, tailscaleRegister bool)                                    // Connect
+	onSave    func(name, internalHost, tailscaleHost, masterKey, protocol, hwID string, tailscaleRegister bool) // Save only, without connecting
+	lastURI   string                                                                                            // Last processed URI (to avoid processing twice)
 }
 
 // NewDeepLinkHandler creates a new handler
-func NewDeepLinkHandler(onConnect func(host, masterKey, protocol string, tailscaleRegister bool), onSave func(name, internalHost, tailscaleHost, masterKey, protocol string, tailscaleRegister bool)) *DeepLinkHandler {
+func NewDeepLinkHandler(onConnect func(host, masterKey, protocol string, tailscaleRegister bool), onSave func(name, internalHost, tailscaleHost, masterKey, protocol, hwID string, tailscaleRegister bool)) *DeepLinkHandler {
 	return &DeepLinkHandler{
 		onConnect: onConnect,
 		onSave:    onSave,
@@ -60,7 +60,7 @@ func (h *DeepLinkHandler) CheckAndHandleDeepLink(parent fyne.Window) {
 	h.lastURI = uri
 
 	// Parse the URI
-	internalHost, tailscaleHost, deviceHost, masterKey, protocol, immediate, err := h.parseDeepLink(uri)
+	internalHost, tailscaleHost, deviceHost, masterKey, protocol, hwID, immediate, err := h.parseDeepLink(uri)
 	if err != nil {
 		logrus.Errorf("❌ Failed to parse deep link: %v", err)
 		view.ShowConnectionErrorDialog(fmt.Errorf(i18n.Current.DeepLinkError, err), parent)
@@ -77,7 +77,7 @@ func (h *DeepLinkHandler) CheckAndHandleDeepLink(parent fyne.Window) {
 	}
 
 	// Show the confirmation dialog
-	h.showConfirmDialog(internalHost, tailscaleHost, deviceHost, masterKey, protocol, parent)
+	h.showConfirmDialog(internalHost, tailscaleHost, deviceHost, masterKey, protocol, hwID, parent)
 }
 
 // parseDeepLink parses the deep link URI. deviceHost is the agent's own
@@ -86,21 +86,21 @@ func (h *DeepLinkHandler) CheckAndHandleDeepLink(parent fyne.Window) {
 // agent hadn't registered one yet when it built this link. See
 // resolveDeepLinkHost for why the browser/wasm build needs this over
 // internalHost/tailscaleHost specifically.
-func (h *DeepLinkHandler) parseDeepLink(uri string) (internalHost, tailscaleHost, deviceHost, masterKey, protocol string, immediate bool, err error) {
+func (h *DeepLinkHandler) parseDeepLink(uri string) (internalHost, tailscaleHost, deviceHost, masterKey, protocol, hwID string, immediate bool, err error) {
 	// Parse the URL
 	u, err := url.Parse(uri)
 	if err != nil {
-		return "", "", "", "", "", false, fmt.Errorf("invalid link format: %v", err)
+		return "", "", "", "", "", "", false, fmt.Errorf("invalid link format: %v", err)
 	}
 
 	// Check the scheme (only usbridge://)
 	if u.Scheme != "usbridge" {
-		return "", "", "", "", "", false, fmt.Errorf("unsupported scheme: %s (use usbridge://)", u.Scheme)
+		return "", "", "", "", "", "", false, fmt.Errorf("unsupported scheme: %s (use usbridge://)", u.Scheme)
 	}
 
 	// Format: usbridge://connect?host=192.168.1.1&master_key=secret
 	if u.Host != "connect" {
-		return "", "", "", "", "", false, fmt.Errorf("unsupported path: %s (use usbridge://connect)", u.Host)
+		return "", "", "", "", "", "", false, fmt.Errorf("unsupported path: %s (use usbridge://connect)", u.Host)
 	}
 
 	// Get the parameters
@@ -121,24 +121,25 @@ func (h *DeepLinkHandler) parseDeepLink(uri string) (internalHost, tailscaleHost
 		masterKey = query.Get("token")
 	}
 	protocol = query.Get("protocol")
+	hwID = query.Get("hw_id")
 	immediate = query.Get("immediate") == "true"
 
 	// Check the required parameters
 	if internalHost == "" && tailscaleHost == "" {
-		return "", "", "", "", "", false, fmt.Errorf("missing host parameter")
+		return "", "", "", "", "", "", false, fmt.Errorf("missing host parameter")
 	}
 
 	if masterKey == "" {
-		return "", "", "", "", "", false, fmt.Errorf("missing master_key parameter")
+		return "", "", "", "", "", "", false, fmt.Errorf("missing master_key parameter")
 	}
 
 	logrus.Infof("✅ Deep link parsed: internal=%s tailscale=%s device=%s masterKey=%s protocol=%s immediate=%v", internalHost, tailscaleHost, deviceHost, maskSensitiveToken(masterKey), protocol, immediate)
-	return internalHost, tailscaleHost, deviceHost, masterKey, protocol, immediate, nil
+	return internalHost, tailscaleHost, deviceHost, masterKey, protocol, hwID, immediate, nil
 }
 
 // showConfirmDialog shows the connection confirmation dialog with an option to save
 // IMPORTANT: must be called from the UI thread (inside fyne.Do)
-func (h *DeepLinkHandler) showConfirmDialog(internalHost, tailscaleHost, deviceHost, masterKey, protocol string, parent fyne.Window) {
+func (h *DeepLinkHandler) showConfirmDialog(internalHost, tailscaleHost, deviceHost, masterKey, protocol, hwID string, parent fyne.Window) {
 	host := resolveDeepLinkHost(protocol, internalHost, tailscaleHost, deviceHost)
 	// Create a preview with the data
 	titleLabel := widget.NewLabelWithStyle(
@@ -176,7 +177,7 @@ func (h *DeepLinkHandler) showConfirmDialog(internalHost, tailscaleHost, deviceH
 		}
 		// Call the save callback with an empty name - it will be generated automatically
 		if h.onSave != nil {
-			h.onSave("", internalHost, tailscaleHost, masterKey, protocol, false)
+			h.onSave("", internalHost, tailscaleHost, masterKey, protocol, hwID, false)
 		}
 	})
 	saveBtn.Importance = widget.MediumImportance
