@@ -4,6 +4,7 @@ import (
 	"image"
 	"image/color"
 	"image/draw"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -88,6 +89,14 @@ type netGraphRawNetworkStats struct {
 	// ENet's network-level RTT variance estimate).
 	JitterMs       float64
 	PlayoutDelayMs float64
+	// BytesVideo is the cumulative compressed video bytes handed to the
+	// decoder (sum of DECODE_UNIT.fullLength -- see
+	// moonlight_cgo_shared.h's dr_submit), diffed into a per-tick delta the
+	// same way as the packet counters above, then turned into the HUD's
+	// live bitrate readout (see netGraphRecentBitrateKbps). uint64, not
+	// uint32 like the packet counters: at typical streaming bitrates a
+	// uint32 byte counter would wrap in well under an hour.
+	BytesVideo uint64
 }
 
 // NetGraphSample is one 100ms tick's worth of HUD data, kept in a rolling
@@ -128,6 +137,12 @@ type NetGraphSample struct {
 	HostLatencyValid bool
 	JitterMs         float64
 	PlayoutDelayMs   float64
+
+	// BytesDelta is this tick's compressed-video byte delta (see
+	// netGraphRawNetworkStats.BytesVideo) -- the HUD averages a short window
+	// of these into a live bitrate rather than showing one noisy 100ms
+	// sample (frames don't arrive evenly spaced within a tick).
+	BytesDelta uint64
 }
 
 var (
@@ -144,8 +159,13 @@ var (
 	// Windows, see frame_smoothing_windows.go) -- nil on platforms without
 	// that feature, same "nil hook = no data yet" contract as the others.
 	netGraphConcealedFramesFn func() int64
-	netGraphMetalPush         func(img *image.RGBA)
-	netGraphMetalClear        func()
+	// netGraphCodecFn returns the codec moonlight-common-c actually
+	// negotiated for the current session (see NegotiatedVideoCodecName on
+	// each platform's cgo wrapper) -- nil hook, same "no data yet" contract
+	// as the others, until a session has reported one.
+	netGraphCodecFn    func() (string, bool)
+	netGraphMetalPush  func(img *image.RGBA)
+	netGraphMetalClear func()
 	// netGraphScalePush applies the on-screen HUD scale (Vulkan quad /
 	// Metal layer frame) without changing the 640x400 canvas -- nil on
 	// platforms that only blit via ApplyNetGraphOverlay.
@@ -183,7 +203,35 @@ var (
 	// comment). Updated every tick alongside the netGraphMetalPush call,
 	// nil when disabled.
 	netGraphCachedImg atomic.Pointer[image.RGBA]
+
+	// netGraphStreamerBackend is which agent-side streamer (sunshine/
+	// rustshine) is currently active, for the HUD's streamer/codec/bitrate
+	// line -- pushed from the GUI layer (see SetActiveStreamerBackend's own
+	// doc comment for why this is a push, not a pull hook like the others).
+	netGraphStreamerBackend atomic.Pointer[string]
 )
+
+// SetActiveStreamerBackend records which agent-side streamer ("sunshine" or
+// "rustshine") is currently active, shown on the HUD's streamer/codec/
+// bitrate line via BenchBackendLabel. This is a push, not a pull hook like
+// netGraphRenderFPS etc., because the only way to know it is
+// client.BenchStatus() -- an HTTP round trip to the agent, too slow to call
+// from the 10Hz HUD tick. The GUI layer calls this once when a stream
+// starts (see VideoWidget.SetStreaming); an empty label clears it.
+func SetActiveStreamerBackend(backend string) {
+	netGraphStreamerBackend.Store(&backend)
+}
+
+// netGraphStreamerLabel reads the most recently pushed streamer backend, ok
+// is false before the first SetActiveStreamerBackend call or after it was
+// cleared with an empty string.
+func netGraphStreamerLabel() (string, bool) {
+	p := netGraphStreamerBackend.Load()
+	if p == nil || *p == "" {
+		return "", false
+	}
+	return *p, true
+}
 
 // netGraphHudMargin is the gap, in pixels, between the HUD box and the
 // bottom/right edges of the frame -- used by the CPU-buffer compositing
@@ -225,6 +273,7 @@ func SetNetGraphEnabled(enabled bool) {
 		netGraphSamples = nil
 		netGraphMu.Unlock()
 		netGraphCachedImg.Store(nil)
+		SetActiveStreamerBackend("")
 		if clear := netGraphMetalClear; clear != nil {
 			clear()
 		}
@@ -388,6 +437,7 @@ func collectNetGraphSample() NetGraphSample {
 		s.FecFailed = netGraphDeltaU32(raw.PacketCountFecFailed, prev.PacketCountFecFailed)
 		s.PacketsOOS = netGraphDeltaU32(raw.PacketCountOOS, prev.PacketCountOOS)
 		s.PacketsInvalid = netGraphDeltaU32(raw.PacketCountInvalid, prev.PacketCountInvalid)
+		s.BytesDelta = netGraphDeltaU64(raw.BytesVideo, prev.BytesVideo)
 		if concealedTotal > prevConcealed {
 			s.ConcealedFrames = uint32(concealedTotal - prevConcealed)
 		}
@@ -405,6 +455,16 @@ func collectNetGraphSample() NetGraphSample {
 // wrapping when cur < prev -- which happens once, harmlessly, whenever a
 // fresh session resets moonlight-common-c's statics to zero.
 func netGraphDeltaU32(cur, prev uint32) uint32 {
+	if cur < prev {
+		return 0
+	}
+	return cur - prev
+}
+
+// netGraphDeltaU64 is netGraphDeltaU32's counterpart for BytesVideo, which
+// needs the wider type to avoid wrapping within a single long session (see
+// that field's own doc comment).
+func netGraphDeltaU64(cur, prev uint64) uint64 {
 	if cur < prev {
 		return 0
 	}
@@ -540,6 +600,27 @@ func buildNetGraphHUD(samples []NetGraphSample) *image.RGBA {
 		hostColor = netGraphWarn
 	}
 	netGraphDrawText(img, marginX, row, netGraphFmtMs("HOST", latest.HostLatencyMs), hostColor)
+
+	// Streamer/codec/bitrate: what's actually producing this picture. A
+	// single line rather than three separate rows/columns -- unlike RTT/
+	// LOSS/JIT/etc, these three barely ever change mid-session, so they
+	// don't need the graphs' or the numeric rows' own dedicated space.
+	row += netGraphLineH
+	streamerLabel := "--"
+	if backend, ok := netGraphStreamerLabel(); ok {
+		streamerLabel = BenchBackendLabel(backend)
+	}
+	codecLabel := "--"
+	if fn := netGraphCodecFn; fn != nil {
+		if name, ok := fn(); ok && name != "" {
+			codecLabel = strings.ToUpper(name)
+		}
+	}
+	line := streamerLabel + "  " + codecLabel
+	if kbps := netGraphRecentBitrateKbps(samples, 10); kbps > 0 {
+		line += "  " + netGraphFmtMbps(kbps)
+	}
+	netGraphDrawText(img, marginX, row, line, netGraphText)
 
 	graphTop := row + 12
 	graphH := (netGraphCanvasH - graphTop - marginX - 2*8) / 3
@@ -688,6 +769,35 @@ func netGraphLossPercent(s NetGraphSample) float64 {
 	}
 	lost := s.FecRecovered + s.FecFailed + s.PacketsInvalid
 	return float64(lost) / float64(total) * 100
+}
+
+// netGraphRecentBitrateKbps averages the last n samples' byte deltas into a
+// kbps figure -- a single 100ms tick is too noisy to show on its own
+// (frames don't land evenly spaced inside one tick, so BytesDelta alone
+// swings hard from sample to sample), but a ~1s window (n=10 at the 10Hz
+// tick rate) reads as a stable, still-live number. 0 when there aren't
+// enough samples yet or nothing has been decoded.
+func netGraphRecentBitrateKbps(samples []NetGraphSample, n int) float64 {
+	if len(samples) == 0 {
+		return 0
+	}
+	if n > len(samples) {
+		n = len(samples)
+	}
+	var bytes uint64
+	for _, s := range samples[len(samples)-n:] {
+		bytes += s.BytesDelta
+	}
+	seconds := float64(n) * netGraphInterval.Seconds()
+	if seconds <= 0 {
+		return 0
+	}
+	return float64(bytes) * 8 / 1000 / seconds
+}
+
+// netGraphFmtMbps formats a kbps value as the HUD's compact "N.N Mbps".
+func netGraphFmtMbps(kbps float64) string {
+	return netGraphFmtFloat(kbps/1000) + "Mbps"
 }
 
 // netGraphDrawPointGraph plots one scalar per sample as an ISOLATED dot at

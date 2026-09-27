@@ -17,6 +17,7 @@ func init() {
 	netGraphNetworkStatsFn = netGraphWasmNetworkStats
 	netGraphRenderFPS = netGraphWasmRenderFPS
 	netGraphDecodeMs = netGraphWasmDecodeMs
+	netGraphCodecFn = netGraphWasmCodecName
 	netGraphMetalPush = pushNetGraphWasmOverlay
 	netGraphMetalClear = clearNetGraphWasmOverlay
 }
@@ -61,6 +62,16 @@ func netGraphWasmLerpU32(prev, cur uint32, frac float64) uint32 {
 	return prev + uint32(float64(cur-prev)*frac)
 }
 
+// netGraphWasmLerpU64 is netGraphWasmLerpU32's counterpart for
+// BytesReceived, which needs the wider type (see net_graph.go's BytesVideo
+// doc comment).
+func netGraphWasmLerpU64(prev, cur uint64, frac float64) uint64 {
+	if cur <= prev {
+		return cur
+	}
+	return prev + uint64(float64(cur-prev)*frac)
+}
+
 // netGraphWasmNetworkStats adapts webrtcweb's cumulative getStats()
 // snapshots into net_graph.go's own cumulative-counter shape --
 // collectNetGraphSample diffs it into per-tick deltas exactly like it
@@ -91,7 +102,19 @@ func netGraphWasmNetworkStats() netGraphRawNetworkStats {
 		JitterMs:             cur.JitterMs,
 		RTTMs:                cur.RTTMs,
 		RTTValid:             cur.RTTValid,
+		BytesVideo:           netGraphWasmLerpU64(prev.BytesReceived, cur.BytesReceived, frac),
 	}
+}
+
+// netGraphWasmCodecName reads the codec piggybacked on the latest stats
+// snapshot (see NetGraphSnapshot.Codec's own doc comment) -- wired as
+// net_graph.go's netGraphCodecFn hook.
+func netGraphWasmCodecName() (string, bool) {
+	_, cur, ok := netGraphWasmPair()
+	if !ok || cur.Codec == "" {
+		return "", false
+	}
+	return cur.Codec, true
 }
 
 // netGraphWasmRenderFPS derives a render-fps proxy from framesDecoded's

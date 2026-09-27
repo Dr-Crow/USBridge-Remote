@@ -753,10 +753,18 @@ static unsigned int g_latency_log_ctr;
 // has //export directives), causing "multiple definition" at link time.
 extern volatile uint16_t g_last_host_latency_tenths_ms;
 
+// g_total_video_bytes: Windows counterpart to moonlight_cgo_shared.h's
+// identically-named static -- same "defined in net_graph_stats_windows.c,
+// extern-declared here" split as g_last_host_latency_tenths_ms above, for
+// the same multiple-definition reason. Read by do_get_total_video_bytes
+// (net_graph_windows.go's GetTotalVideoBytes).
+extern volatile uint64_t g_total_video_bytes;
+
 #include "bench_frames.h"
 
 static int dr_submit(PDECODE_UNIT du) {
     g_last_host_latency_tenths_ms = du->frameHostProcessingLatency;
+    g_total_video_bytes += (uint64_t)du->fullLength;
     bench_frames_note(du);
     if (++g_latency_log_ctr >= LATENCY_LOG_FRAMES) {
         g_latency_log_ctr = 0;
@@ -844,6 +852,7 @@ int do_get_estimated_rtt_info(uint32_t *out);
 uint16_t do_get_last_host_latency_tenths_ms(void);
 uint64_t do_get_playout_jitter_us(void);
 uint64_t do_get_playout_applied_delay_us(void);
+uint64_t do_get_total_video_bytes(void);
 
 // ── LiStartConnection entrypoint ─────────────────────────────────────────────
 
@@ -1259,6 +1268,14 @@ func (w *MoonlightCgoWrapper) IsInputActive() bool { return liStartConnectionAct
 // negotiated with the server for the current session (from dr_setup's
 // NegotiatedVideoFormat), matching the macOS/Linux implementation.
 func (w *MoonlightCgoWrapper) NegotiatedVideoCodecName() (string, bool) {
+	return windowsNegotiatedVideoCodecNameNow()
+}
+
+// windowsNegotiatedVideoCodecNameNow is NegotiatedVideoCodecName's
+// package-level body, split out so net_graph_windows.go's netGraphCodecFn
+// hook (no MoonlightCgoWrapper instance to call a method on) can wire it
+// directly -- matches moonlight_cgo_wrapper.go's negotiatedVideoCodecNameNow.
+func windowsNegotiatedVideoCodecNameNow() (string, bool) {
 	if !liStartConnectionActive.Load() {
 		return "", false
 	}

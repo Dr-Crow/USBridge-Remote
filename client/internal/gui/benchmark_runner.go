@@ -141,7 +141,10 @@ func (mw *MainWindow) benchmarkOne(ctx context.Context, run *service.BenchRun, r
 		return fmt.Errorf("stream: %w", err)
 	}
 	run.StartupMs = float64(startup.Microseconds()) / 1000
-	logrus.Infof("📈 [Benchmark] %s: switch %.0fms, first frame %.0fms", run.Backend, run.SwitchMs, run.StartupMs)
+	if codec, ok := vw.NegotiatedVideoCodecName(); ok {
+		run.Codec = codec
+	}
+	logrus.Infof("📈 [Benchmark] %s: switch %.0fms, first frame %.0fms, codec %s", run.Backend, run.SwitchMs, run.StartupMs, run.Codec)
 
 	if err := sleepCtx(ctx, benchmarkSettleTime); err != nil {
 		return err

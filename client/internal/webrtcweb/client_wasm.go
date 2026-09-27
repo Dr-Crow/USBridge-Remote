@@ -554,6 +554,16 @@ type NetGraphSnapshot struct {
 	TotalDecodeTimeMs float64
 	RTTMs             float64
 	RTTValid          bool
+	// BytesReceived is the inbound-rtp video track's cumulative
+	// bytesReceived -- net_graph_wasm.go diffs successive snapshots into a
+	// live bitrate, same convention as native platforms' BytesVideo (see
+	// net_graph.go's own doc comment on that field).
+	BytesReceived uint64
+	// Codec is NegotiatedVideoCodecName's result at the time this snapshot
+	// was polled -- piggybacked on the stats snapshot rather than its own
+	// hook since it rarely changes and this file has no package-level
+	// "active client" singleton to call a method on from net_graph_wasm.go.
+	Codec string
 	// At is when this snapshot's getStats() resolved. Consumers sampling
 	// faster than netGraphStatsPollInterval use it to tell a fresh snapshot
 	// from the one they already saw.
@@ -626,6 +636,10 @@ func (c *WebRTCClient) StartNetGraphStatsPolling() func() {
 					snap.PacketsLost = uint32(jsFloatOr(report, "packetsLost", 0))
 					snap.JitterMs = jsFloatOr(report, "jitter", 0) * 1000
 					snap.TotalDecodeTimeMs = jsFloatOr(report, "totalDecodeTime", 0) * 1000
+					snap.BytesReceived = uint64(jsFloatOr(report, "bytesReceived", 0))
+					if name, ok := c.NegotiatedVideoCodec(); ok {
+						snap.Codec = name
+					}
 				case "candidate-pair":
 					rtt := report.Get("currentRoundTripTime")
 					if rtt.IsUndefined() || rtt.IsNull() {

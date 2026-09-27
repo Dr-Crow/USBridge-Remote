@@ -10,6 +10,7 @@ extern int      do_get_estimated_rtt_info(uint32_t *out);
 extern uint16_t do_get_last_host_latency_tenths_ms(void);
 extern uint64_t do_get_playout_jitter_us(void);
 extern uint64_t do_get_playout_applied_delay_us(void);
+extern uint64_t do_get_total_video_bytes(void);
 extern double   win_get_last_decode_ms(void);
 
 extern int  vk_hud_set_pixels(const uint8_t *rgba, int w, int h);
@@ -80,6 +81,13 @@ func GetPlayoutAppliedDelayMs() float64 {
 	return float64(uint64(C.do_get_playout_applied_delay_us())) / 1000.0
 }
 
+// GetTotalVideoBytes: Windows counterpart to moonlight_cgo_wrapper.go's
+// identically-named function -- see net_graph_stats_windows.c's
+// do_get_total_video_bytes.
+func GetTotalVideoBytes() uint64 {
+	return uint64(C.do_get_total_video_bytes())
+}
+
 // GetDecodeMs returns the most recent win_deliver_frame/
 // win_deliver_frame_vulkan call's wall time (moonlight_cgo_windows.go) --
 // decode plus, on the zero-copy path, the HUD/AI-Vision overlay draw calls
@@ -114,8 +122,10 @@ func init() {
 			HostLatencyValid:        hostLatencyOk,
 			JitterMs:                GetPlayoutJitterMs(),
 			PlayoutDelayMs:          GetPlayoutAppliedDelayMs(),
+			BytesVideo:              GetTotalVideoBytes(),
 		}
 	}
+	netGraphCodecFn = windowsNegotiatedVideoCodecNameNow
 	netGraphRenderFPS = netGraphWindowsNativeFPS
 	netGraphDecodeMs = GetDecodeMs
 	// Frame smoothing's running synthesized-frame count (see

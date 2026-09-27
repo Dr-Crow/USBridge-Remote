@@ -51,7 +51,7 @@ func BenchBackendLabel(backend string) string {
 	case "sunshine":
 		return "Sunshine"
 	case "rustshine":
-		return "RustShine"
+		return "USBridge Streamer"
 	}
 	return backend
 }

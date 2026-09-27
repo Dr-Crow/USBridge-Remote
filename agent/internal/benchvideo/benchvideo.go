@@ -1,19 +1,25 @@
 // Package benchvideo plays the streamer benchmark's test content on the
-// host: a fast-cut open-movie trailer (Blender's "Sintel" trailer, CC-BY)
-// fullscreen and looping, with a small white marker sliding along the
-// bottom edge at 60fps on top of it.
+// host: a native 60fps 1080p clip (a 30s cut of Blender's "Big Buck Bunny",
+// CC-BY) fullscreen and looping, played as-is with no filter chain.
 //
-// The marker is what makes the benchmark measure the streamer rather than
-// the content: the trailer itself is 24fps, so without it the screen only
-// changes 24 times a second and a capture path that only wakes on real
+// This used to be the (24fps) Sintel trailer with an ffmpeg filter chain
+// bolted on: an fps=60 conversion plus a small white marker square overlaid
+// and re-timed to 60fps, needed because a 24fps source only changes the
+// screen 24 times a second, and a capture path that only wakes on real
 // damage (DXGI Desktop Duplication, see rust-shine's scripts/
-// bench_animator.ps1) would legitimately send fewer frames. With it, every
-// display refresh up to 60Hz is a genuinely new picture on both streamers,
-// so every missing frame on the client is a real stall.
+// bench_animator.ps1) would legitimately send fewer frames at that rate.
+// That software filter chain (fps conversion + overlay compositing, both
+// per-frame CPU work on top of decode) was itself the bottleneck on modest
+// hosts: ffplay's *output* dropped to a 0.5-1fps slideshow even though the
+// source decoded fine, which made the benchmark measure ffplay's filter
+// chain instead of the streamer. A source that's already native 60fps
+// (every one of its own frames is a new picture) needs neither the fps
+// conversion nor the marker, so there's no filter chain left to bottleneck
+// on, and no marker square left to show up in every recorded frame either.
 //
 // The client's benchmark (client/internal/gui/benchmark_runner.go) starts
 // the content only after its stream has shown the first frame, so the
-// streamers' different startup times never shift which part of the trailer
+// streamers' different startup times never shift which part of the clip
 // each one is measured on.
 package benchvideo
 
@@ -33,12 +39,13 @@ import (
 )
 
 const (
-	// ContentURL is the Sintel trailer (Blender Foundation, CC-BY 3.0):
-	// 52s of fast cuts, fire, snow and camera shake -- a game-trailer-like
-	// load for an encoder -- and only ~15MB, so the first run doesn't
+	// ContentURL is a 30s cut of Blender's "Big Buck Bunny" (CC-BY 3.0),
+	// natively encoded at 1920x1080@60fps -- every frame is already a new
+	// picture, unlike the 24fps trailer this replaced (see this package's
+	// doc comment for why that mattered). ~14MB, so the first run doesn't
 	// stall on a download.
-	ContentURL  = "https://download.blender.org/durian/trailer/sintel_trailer-1080p.mp4"
-	contentName = "sintel_trailer-1080p.mp4"
+	ContentURL  = "https://raw.githubusercontent.com/bower-media-samples/big-buck-bunny-1080p-60fps-30s/master/video.mp4"
+	contentName = "big_buck_bunny_1080p_60fps_30s.mp4"
 	// contentMinBytes rejects an HTML error page saved as the video.
 	contentMinBytes = 1 << 20
 
@@ -49,10 +56,6 @@ const (
 
 	windowTitle = "USBridge Benchmark"
 )
-
-// markerFilter overlays a 64px white square that crosses the frame every
-// ~1.3s, re-timed to 60fps so every output frame differs from the last.
-const markerFilter = "fps=60[v];color=white:s=64x64:r=60[c];[v][c]overlay=x='mod(t*1440\\,W-w)':y=H-h-24:shortest=1"
 
 // Info describes the player state reported to the client.
 type Info struct {
@@ -245,7 +248,7 @@ func playerArgs(player, content string) (args []string, label string, err error)
 	case "ffplay":
 		args = []string{"-hide_banner", "-loglevel", "error", "-fs", "-an", "-alwaysontop", "-window_title", windowTitle}
 		if content != "" {
-			return append(args, "-loop", "0", "-vf", markerFilter, content), filepath.Base(content), nil
+			return append(args, "-loop", "0", content), filepath.Base(content), nil
 		}
 		return append(args, "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=60"), "testsrc2 1080p60", nil
 	case "mpv":
@@ -262,10 +265,11 @@ func playerArgs(player, content string) (args []string, label string, err error)
 	return nil, "", fmt.Errorf("unsupported player %q", player)
 }
 
-// findPlayer returns the first usable player: ffplay (the only one that
-// can overlay the 60fps marker), then mpv, then VLC.
+// findPlayer returns the first usable player: VLC first (preferred), then
+// ffplay (the only one that can also fall back to a generated testsrc2
+// pattern when the content download fails), then mpv.
 func findPlayer() (name, path string) {
-	for _, name := range []string{"ffplay", "mpv", "vlc"} {
+	for _, name := range []string{"vlc", "ffplay", "mpv"} {
 		if path := lookPlayer(name); path != "" {
 			return name, path
 		}

@@ -15,12 +15,13 @@ For each streamer that is ticked:
    the **first-frame** time. Both startup numbers are shown separately and
    never enter any other metric.
 3. After 1 s of settling, the agent starts the test video fullscreen on the
-   host (`POST /api/bench/video/start`): the Blender "Sintel" trailer
-   (CC-BY, fast cuts, about 15 MB, downloaded once into the agent's state
-   dir) played by ffplay with a white marker sliding along the bottom at
-   60 fps. Because of the marker every display refresh is a genuinely new
-   picture, even though the trailer itself is 24 fps. mpv or VLC are used
-   when ffplay is missing, without the marker. If the download fails,
+   host (`POST /api/bench/video/start`): a 30 s, 1080p, native 60 fps cut of
+   Blender's "Big Buck Bunny" (CC-BY, about 14 MB, downloaded once into the
+   agent's state dir), played back as-is by ffplay, mpv or VLC. Being
+   natively 60 fps, every display refresh is already a genuinely new
+   picture -- no fps-conversion or marker-overlay filter chain is needed
+   (an earlier 24 fps trailer needed both, and the filter chain itself
+   could bottleneck a modest host into a slideshow). If the download fails,
    ffplay's `testsrc2` pattern is used instead. The video always starts
    from its first frame, after the stream is up, so both streamers are
    measured on the same content.

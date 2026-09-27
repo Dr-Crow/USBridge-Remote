@@ -97,6 +97,9 @@ type LocalizedStrings struct {
 	BenchFailed                       string
 	BenchResultsTitle                 string
 	BenchSavedTo                      string
+	BenchSaveResults                  string
+	BenchSaveResultsDone              string
+	BenchSaveResultsFailed            string
 	BenchStalls                       string
 	BenchNoStalls                     string
 	MenuWebsite                       string
@@ -723,6 +726,9 @@ func EN() *LocalizedStrings {
 		BenchFailed:                       "Benchmark failed",
 		BenchResultsTitle:                 "Benchmark results",
 		BenchSavedTo:                      "Saved to %s",
+		BenchSaveResults:                  "Save results…",
+		BenchSaveResultsDone:              "Results saved to %s",
+		BenchSaveResultsFailed:            "Couldn't save results: %v",
 		BenchStalls:                       "Every stall",
 		BenchNoStalls:                     "no stalls",
 		MenuWebsite:                       "Website",
@@ -985,7 +991,7 @@ func EN() *LocalizedStrings {
 		PointCameraAtQR:         "Point the camera at QR code...",
 		QRScanning:              "QR code scanning",
 		ErrorStartingCamera:     "Failed to start camera: %v",
-		ErrorSunshineNoWebRTC:   "This device is running Sunshine, which doesn't support WebRTC video in the browser. Switch it to RustShine (available with a subscription) to watch and control it from the web client.",
+		ErrorSunshineNoWebRTC:   "This device is running Sunshine, which doesn't support WebRTC video in the browser. Switch it to USBridge Streamer (available with a subscription) to watch and control it from the web client.",
 
 		// Dialogs
 		Yes:                          "Yes",
@@ -1173,14 +1179,14 @@ func EN() *LocalizedStrings {
 		AIVision:                             "AI Vision Detection Overlay",
 		AIVisionHint:                         "Overlays live object detection (Set-of-Mark bounding boxes + hex IDs) on the video feed, mirroring an agent's ui.parse() telemetry call.",
 		AIVisionBadge:                        "Experimental",
-		Color444:                             "4:4:4 Color (RustShine)",
+		Color444:                             "4:4:4 Color (USBridge)",
 		Color444Hint:                         "Captures full-resolution chroma instead of the usual 4:2:0 subsampling -- sharper on-screen text and fine detail, at a higher bitrate cost.",
-		Color444UnavailableHint:              "Requires RustShine Pro and a GPU with HEVC 4:4:4 hardware encode.",
+		Color444UnavailableHint:              "Requires USBridge Pro and a GPU with HEVC 4:4:4 hardware encode.",
 		Color444RequiresH265Hint:             "Only available with the H.265 codec -- select it above to use 4:4:4 color.",
 		Color444Badge:                        "Pro",
-		Hdr:                                  "HDR Color (RustShine)",
+		Hdr:                                  "HDR Color (USBridge)",
 		HdrHint:                              "Captures and streams high dynamic range video (BT.2020 color, PQ curve) instead of standard SDR -- brighter highlights and a wider color range on an HDR-capable display, at a higher bitrate cost.",
-		HdrUnavailableHint:                   "Requires RustShine Pro and a Mac with HEVC Main10 hardware encode (Apple Silicon).",
+		HdrUnavailableHint:                   "Requires USBridge Pro and a Mac with HEVC Main10 hardware encode (Apple Silicon).",
 		HdrRequiresH265Hint:                  "Only available with the H.265 codec -- select it above to use HDR.",
 		HdrBadge:                             "Pro",
 		NetGraph:                             "Net Graph",
@@ -1493,10 +1499,10 @@ func ES() *LocalizedStrings {
 	locale.AIVisionHint = "Deteccion en vivo (cajas + IDs hex) sobre el video, como ui.parse() del agent."
 	locale.AIVisionBadge = "Prueba"
 	locale.Color444Hint = "Croma 4:4:4 completa en vez de 4:2:0: texto mas nitido, mas bitrate."
-	locale.Color444UnavailableHint = "Requiere RustShine Pro y GPU con HEVC 4:4:4."
+	locale.Color444UnavailableHint = "Requiere USBridge Pro y GPU con HEVC 4:4:4."
 	locale.Color444RequiresH265Hint = "Solo con codec H.265 -- seleccionalo arriba."
 	locale.HdrHint = "Flujo HDR (BT.2020, PQ) en vez de SDR: luces mas brillantes en pantalla HDR."
-	locale.HdrUnavailableHint = "Requiere RustShine Pro y Mac con HEVC Main10 (Apple Silicon)."
+	locale.HdrUnavailableHint = "Requiere USBridge Pro y Mac con HEVC Main10 (Apple Silicon)."
 	locale.HdrRequiresH265Hint = "Solo con codec H.265 -- seleccionalo arriba."
 	locale.VideoJPEGRTPHint = "JPEG RTP: MJPEG se reenvia; YUYV se codifica a JPEG antes de enviar."
 	locale.VideoRawYUYVHint = "RAW YUYV: video sin comprimir por RTP. Solo en enlaces locales rapidos."
@@ -1571,6 +1577,9 @@ func ES() *LocalizedStrings {
 	locale.BenchFailed = "El benchmark falló"
 	locale.BenchResultsTitle = "Resultados del benchmark"
 	locale.BenchSavedTo = "Guardado en %s"
+	locale.BenchSaveResults = "Guardar resultados…"
+	locale.BenchSaveResultsDone = "Resultados guardados en %s"
+	locale.BenchSaveResultsFailed = "No se pudieron guardar los resultados: %v"
 	locale.BenchStalls = "Todas las congelaciones"
 	locale.BenchNoStalls = "sin congelaciones"
 	locale.MenuHotkeys = "Atajos de teclado"
@@ -1863,10 +1872,10 @@ func UKProper() *LocalizedStrings {
 	locale.AIVisionHint = "Живе розпізнавання (рамки + hex ID) поверх відео, як ui.parse() агента."
 	locale.AIVisionBadge = "Тест"
 	locale.Color444Hint = "Повна хрома 4:4:4 замість 4:2:0 — чіткіший текст, вищий бітрейт."
-	locale.Color444UnavailableHint = "Потрібні RustShine Pro і GPU з HEVC 4:4:4."
+	locale.Color444UnavailableHint = "Потрібні USBridge Pro і GPU з HEVC 4:4:4."
 	locale.Color444RequiresH265Hint = "Лише з кодеком H.265 — оберіть його вище."
 	locale.HdrHint = "HDR-потік (BT.2020, PQ) замість SDR — яскравіші світла на HDR-екрані."
-	locale.HdrUnavailableHint = "Потрібні RustShine Pro і Mac з HEVC Main10 (Apple Silicon)."
+	locale.HdrUnavailableHint = "Потрібні USBridge Pro і Mac з HEVC Main10 (Apple Silicon)."
 	locale.HdrRequiresH265Hint = "Лише з кодеком H.265 — оберіть його вище."
 	locale.VideoJPEGRTPHint = "JPEG RTP: MJPEG іде напряму; YUYV кодується в JPEG перед відправкою."
 	locale.VideoRawYUYVHint = "RAW YUYV: без стиснення по RTP. Лише на швидкому LAN."
@@ -1940,6 +1949,9 @@ func UKProper() *LocalizedStrings {
 	locale.BenchFailed = "Бенчмарк не вдався"
 	locale.BenchResultsTitle = "Результати бенчмарку"
 	locale.BenchSavedTo = "Збережено в %s"
+	locale.BenchSaveResults = "Зберегти результати…"
+	locale.BenchSaveResultsDone = "Результати збережено в %s"
+	locale.BenchSaveResultsFailed = "Не вдалося зберегти результати: %v"
 	locale.BenchStalls = "Усі фризи"
 	locale.BenchNoStalls = "без фризів"
 	locale.MenuHotkeys = "Гарячі клавіші"

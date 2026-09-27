@@ -37,6 +37,7 @@ extern int do_get_estimated_rtt_info(uint32_t *out);
 extern uint16_t do_get_last_host_latency_tenths_ms(void);
 extern uint64_t do_get_playout_jitter_us(void);
 extern uint64_t do_get_playout_applied_delay_us(void);
+extern uint64_t do_get_total_video_bytes(void);
 */
 import "C"
 
@@ -133,6 +134,14 @@ func GetPlayoutAppliedDelayMs() float64 {
 	return float64(uint64(C.do_get_playout_applied_delay_us())) / 1000.0
 }
 
+// GetTotalVideoBytes reads the cumulative compressed video bytes handed to
+// the decoder so far (moonlight_cgo_shared.h's g_total_video_bytes) --
+// net_graph.go diffs successive calls into a per-tick delta, same
+// convention as GetRTPVideoStats' packet counters.
+func GetTotalVideoBytes() uint64 {
+	return uint64(C.do_get_total_video_bytes())
+}
+
 // init wires net_graph.go's platform-agnostic network-stats hook to the
 // getters above -- same "core stays tag-free, platform files wire the
 // hooks" split as metal_video_darwin.go's own init() for the render/decode/
@@ -158,8 +167,10 @@ func init() {
 			HostLatencyValid:        hostLatencyOk,
 			JitterMs:                GetPlayoutJitterMs(),
 			PlayoutDelayMs:          GetPlayoutAppliedDelayMs(),
+			BytesVideo:              GetTotalVideoBytes(),
 		}
 	}
+	netGraphCodecFn = negotiatedVideoCodecNameNow
 }
 
 // startRTPStatsLoggerIfEnabled logs GetRTPVideoStats() periodically for the
@@ -602,6 +613,13 @@ func goVideoFormatNegotiated(format C.int) {
 // the client's requested mode or the agent's best-effort guess, it reflects
 // what the server actually accepted.
 func (w *MoonlightCgoWrapper) NegotiatedVideoCodecName() (string, bool) {
+	return negotiatedVideoCodecNameNow()
+}
+
+// negotiatedVideoCodecNameNow is NegotiatedVideoCodecName's package-level
+// body, split out so net_graph.go's netGraphCodecFn hook (which has no
+// MoonlightCgoWrapper instance to call a method on) can wire it directly.
+func negotiatedVideoCodecNameNow() (string, bool) {
 	if !liStartConnectionActive.Load() {
 		return "", false
 	}

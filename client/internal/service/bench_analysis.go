@@ -35,6 +35,7 @@ type BenchStall struct {
 // BenchMetrics is the summary of one run.
 type BenchMetrics struct {
 	Backend     string  `json:"backend"`
+	Codec       string  `json:"codec,omitempty"`
 	DurationSec float64 `json:"duration_sec"`
 	SwitchMs    float64 `json:"switch_ms"`
 	StartupMs   float64 `json:"startup_ms"`
@@ -137,6 +138,7 @@ func AnalyzeBenchRun(run *BenchRun) BenchMetrics {
 		return m
 	}
 	m.Backend = run.Backend
+	m.Codec = run.Codec
 	m.SwitchMs = run.SwitchMs
 	m.StartupMs = run.StartupMs
 	m.Error = run.Error

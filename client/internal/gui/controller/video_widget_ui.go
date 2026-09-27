@@ -1377,7 +1377,42 @@ func (vw *VideoWidget) SetStreaming(streaming bool) {
 	vw.updateButtons()
 	if streaming {
 		vw.ensureInputFocusAsync("set-streaming", 300*time.Millisecond)
+		vw.refreshNetGraphStreamerBackend()
+	} else {
+		service.SetActiveStreamerBackend("")
 	}
+}
+
+// refreshNetGraphStreamerBackend asks the agent once which streamer
+// (sunshine/rustshine) is currently active, for the Net Graph HUD's
+// streamer/codec/bitrate line -- best-effort and async, same as
+// ensureInputFocusAsync above: a slow or failed /api/bench/status must
+// never delay or fail the stream start itself. Not polled continuously
+// (the backend essentially never changes mid-session; see
+// service.SetActiveStreamerBackend's own doc comment for why this is a
+// one-shot push rather than a live pull hook).
+func (vw *VideoWidget) refreshNetGraphStreamerBackend() {
+	client := vw.usbClient
+	if client == nil {
+		return
+	}
+	go func() {
+		status, err := client.BenchStatus()
+		if err != nil || status == nil {
+			return
+		}
+		service.SetActiveStreamerBackend(status.ActiveBackend)
+	}()
+}
+
+// NegotiatedVideoCodecName reports the codec the current session actually
+// negotiated (see service.VideoClient.NegotiatedVideoCodecName) -- used by
+// the streamer benchmark's results table alongside BenchMetrics.BitrateMbps.
+func (vw *VideoWidget) NegotiatedVideoCodecName() (string, bool) {
+	if vw.videoClient == nil {
+		return "", false
+	}
+	return vw.videoClient.NegotiatedVideoCodecName()
 }
 
 // StopVideo stops the video stream via the widget's public API.

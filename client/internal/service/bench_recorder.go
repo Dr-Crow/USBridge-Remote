@@ -68,7 +68,12 @@ type BenchRun struct {
 	Ticks       []BenchTick  `json:"ticks"`
 	RingDropped uint32       `json:"ring_dropped,omitempty"`
 	Content     string       `json:"content,omitempty"`
-	Error       string       `json:"error,omitempty"`
+	// Codec is what NegotiatedVideoCodecName reported once this run's
+	// stream was up -- the server's actual choice, not the client's
+	// request, same ground-truth distinction as the Net Graph HUD's own
+	// codec line. Empty when the platform doesn't wire that hook yet.
+	Codec string `json:"codec,omitempty"`
+	Error string `json:"error,omitempty"`
 }
 
 var (

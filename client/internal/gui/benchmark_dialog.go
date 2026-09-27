@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"image/color"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/sirupsen/logrus"
 
@@ -121,14 +124,86 @@ func (l *benchMinWidthLayout) MinSize(objs []fyne.CanvasObject) fyne.Size {
 	return fyne.NewSize(l.width, h)
 }
 
+// benchStyledPanel wraps body in the app's own dark bordered panel (bg
+// design.ColorGray900, 1px design.ColorBorder, a centered title + an "X"
+// close icon) instead of handing it to fyne's stock dialog.NewCustom. That
+// package's panel background comes from theme.ColorNameOverlayBackground,
+// which BrandTheme (design/theme.go) deliberately leaves transparent --
+// every OTHER dialog in this app paints its own opaque panel as part of its
+// content (see view.ShowCustomConfirmDialog), a convention dialog.NewCustom
+// doesn't know about, so its panel showed through as the Fyne default
+// (light) theme instead: white background, and this file's own
+// design.ColorTextLight text on top of it read as white-on-white.
+func benchStyledPanel(title string, body fyne.CanvasObject, onClose func()) fyne.CanvasObject {
+	titleText := view.NewBrandText(title, 19, design.ColorTextLight, true)
+	titleText.Alignment = fyne.TextAlignCenter
+	closeBtn := widget.NewButtonWithIcon("", theme.CancelIcon(), onClose)
+	closeBtn.Importance = widget.LowImportance
+	titleBar := container.NewBorder(nil, nil, nil, closeBtn, titleText)
+
+	bg := canvas.NewRectangle(design.ColorGray900)
+	bg.CornerRadius = design.RadiusMD
+	border := canvas.NewRectangle(color.Transparent)
+	border.CornerRadius = design.RadiusMD
+	border.StrokeColor = design.ColorBorder
+	border.StrokeWidth = 1
+
+	content := container.NewVBox(titleBar, view.NewInset(body, 0, 0, 16, 14))
+	return container.NewStack(bg, view.NewInset(content, 18, 18, 16, 16), border)
+}
+
+// showBenchStyledDialog shows body in benchStyledPanel's dark panel via the
+// app's own overlay popup machinery (view.ShowOverlayPopup), sized by
+// sizeFn -- the "how big" policy the two callers below need differs (the
+// progress dialog sizes to its own small content, the results dialog wants
+// most of the window), so it's left to the caller rather than baked in
+// here. onClose (may be nil) runs once, from the title bar's close icon,
+// before the popup hides.
+func showBenchStyledDialog(parent fyne.Window, title string, body fyne.CanvasObject,
+	sizeFn func(canvasSize fyne.Size, panel fyne.CanvasObject) fyne.Size, onClose func()) *widget.PopUp {
+	var popup *widget.PopUp
+	panel := benchStyledPanel(title, body, func() {
+		if onClose != nil {
+			onClose()
+		}
+		if popup != nil {
+			popup.Hide()
+		}
+	})
+	popup = view.ShowOverlayPopup(parent, view.OverlayPopupSpec{
+		Panel:     panel,
+		DimColor:  color.NRGBA{R: 0x00, G: 0x00, B: 0x00, A: 0x72},
+		PanelSize: sizeFn,
+	})
+	return popup
+}
+
+// benchContentSizeFn sizes the panel to its own content (clamped to the
+// available width) -- the progress dialog's status line + progress bar
+// never need more room than that.
+func benchContentSizeFn(canvasSize fyne.Size, panel fyne.CanvasObject) fyne.Size {
+	const margin = 24
+	maxWidth := canvasSize.Width - margin*2
+	min := panel.MinSize()
+	if min.Width > maxWidth {
+		min.Width = maxWidth
+	}
+	return min
+}
+
+// benchResultsSizeFn sizes the results panel to most of the window
+// regardless of its (large, scrollable) content's own MinSize -- matches
+// the fyne dialog.NewCustom-based version's previous d.Resize(sz*0.94).
+func benchResultsSizeFn(canvasSize fyne.Size, _ fyne.CanvasObject) fyne.Size {
+	return fyne.NewSize(canvasSize.Width*0.94, canvasSize.Height*0.94)
+}
+
 func (mw *MainWindow) startBenchmark(backends []string, window time.Duration) {
 	ctx, cancel := context.WithCancel(context.Background())
 	status := widget.NewLabel(i18n.Current.BenchStepStatus)
 	bar := widget.NewProgressBar()
 	content := container.New(&benchMinWidthLayout{width: 420}, container.NewVBox(status, bar))
-	d := dialog.NewCustom(i18n.Current.BenchTitle, i18n.Current.Cancel, content, mw.window)
-	d.SetOnClosed(cancel)
-	d.Show()
+	popup := showBenchStyledDialog(mw.window, i18n.Current.BenchTitle, content, benchContentSizeFn, cancel)
 
 	go func() {
 		res, err := mw.runBenchmark(ctx, backends, window, func(text string, f float64) {
@@ -138,7 +213,7 @@ func (mw *MainWindow) startBenchmark(backends []string, window time.Duration) {
 			})
 		})
 		cancelled := ctx.Err() != nil
-		fyne.Do(func() { d.Hide() })
+		fyne.Do(func() { popup.Hide() })
 		cancel()
 		if cancelled {
 			return
@@ -176,6 +251,8 @@ func benchmarkRows() []benchmarkRow {
 		return func(m service.BenchMetrics) (float64, bool) { return f(m), m.HostTimingOK }
 	}
 	return []benchmarkRow{
+		{"", "Codec", func(m service.BenchMetrics) (float64, bool) { return 0, m.Codec != "" }, "", true},
+
 		{"Startup (measured separately)", "Host streamer switch", always(func(m service.BenchMetrics) float64 { return m.SwitchMs / 1000 }), "%.2f s", true},
 		{"", "Stream start → first frame", always(func(m service.BenchMetrics) float64 { return m.StartupMs / 1000 }), "%.2f s", true},
 		{"", "Total", always(func(m service.BenchMetrics) float64 { return (m.SwitchMs + m.StartupMs) / 1000 }), "%.2f s", true},
@@ -257,6 +334,8 @@ func (mw *MainWindow) showBenchmarkResults(res *benchmarkResult, dir string) {
 			case m.Error != "":
 				s = "failed"
 			case !oks[i]:
+			case row.label == "Codec":
+				s = strings.ToUpper(m.Codec)
 			case row.label == "Frame time p50 / p95":
 				s = fmt.Sprintf("%.1f / %.1f ms", m.IntervalP50, m.IntervalP95)
 			case row.label == "Recovered by IDR / RFI":
@@ -307,6 +386,10 @@ func (mw *MainWindow) showBenchmarkResults(res *benchmarkResult, dir string) {
 	header := container.NewVBox()
 	if dir != "" {
 		header.Add(widget.NewLabel(fmt.Sprintf(i18n.Current.BenchSavedTo, dir)))
+		saveBtn := widget.NewButtonWithIcon(i18n.Current.BenchSaveResults, theme.DocumentSaveIcon(), func() {
+			mw.exportBenchmarkResults(dir)
+		})
+		header.Add(saveBtn)
 	}
 	for _, e := range errs {
 		header.Add(text(e, service.BenchCauseColor(service.BenchCauseLoss), false))
@@ -316,10 +399,48 @@ func (mw *MainWindow) showBenchmarkResults(res *benchmarkResult, dir string) {
 	}
 
 	scroll := container.NewVScroll(container.NewVBox(header, table, widget.NewSeparator(), chart, widget.NewSeparator(), stalls))
-	d := dialog.NewCustom(i18n.Current.BenchResultsTitle, i18n.Current.Close, scroll, mw.window)
-	sz := mw.window.Canvas().Size()
-	d.Resize(fyne.NewSize(sz.Width*0.94, sz.Height*0.94))
-	d.Show()
+	showBenchStyledDialog(mw.window, i18n.Current.BenchResultsTitle, scroll, benchResultsSizeFn, nil)
+}
+
+// exportBenchmarkResults lets the operator copy the already-saved results.json
+// + chart.png (see saveBenchmarkResult; srcDir is that call's own return
+// value) to a folder of their choosing -- the auto-save location is a
+// user-config directory most people never look inside.
+func (mw *MainWindow) exportBenchmarkResults(srcDir string) {
+	fd := dialog.NewFolderOpen(func(uri fyne.ListableURI, err error) {
+		if err != nil || uri == nil {
+			return
+		}
+		destDir := uri.Path()
+		if err := copyBenchmarkResultFiles(srcDir, destDir); err != nil {
+			dialog.ShowError(fmt.Errorf(i18n.Current.BenchSaveResultsFailed, err), mw.window)
+			return
+		}
+		dialog.ShowInformation(i18n.Current.BenchResultsTitle, fmt.Sprintf(i18n.Current.BenchSaveResultsDone, destDir), mw.window)
+	}, mw.window)
+	fd.Show()
+}
+
+// copyBenchmarkResultFiles copies every regular file in srcDir (results.json,
+// chart.png) into destDir.
+func copyBenchmarkResultFiles(srcDir, destDir string) error {
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(srcDir, e.Name()))
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(destDir, e.Name()), data, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // benchmarkBest returns the index of the best value, or -1 when there is

@@ -51,6 +51,15 @@ static volatile uint64_t g_ar_muted_count = 0; // frames silenced because muted
 // treatment for free.
 static volatile uint16_t g_last_host_latency_tenths_ms = 0;
 
+// Cumulative compressed video bytes handed to the decoder (sum of every
+// DECODE_UNIT.fullLength seen by dr_submit below) -- read by
+// do_get_total_video_bytes for net_graph.go's live bitrate readout. uint64
+// so a long session never wraps it (see net_graph.go's BytesVideo doc
+// comment). Same "one cheap always-on global" approach as
+// g_last_host_latency_tenths_ms above, not the heavier opt-in per-frame
+// bench_frames_note recorder below.
+static volatile uint64_t g_total_video_bytes = 0;
+
 #include "bench_frames.h"
 
 // These functions are called from moonlight_cgo_wrapper.go's TU via extern declarations.
@@ -166,6 +175,7 @@ static void dr_cleanup(void) {}
 
 static int dr_submit(PDECODE_UNIT du) {
     g_last_host_latency_tenths_ms = du->frameHostProcessingLatency;
+    g_total_video_bytes += (uint64_t)du->fullLength;
     bench_frames_note(du);
     return platform_dr_submit(du);
 }
@@ -343,6 +353,13 @@ int do_get_estimated_rtt_info(uint32_t *out) {
 // simply not filling it in).
 uint16_t do_get_last_host_latency_tenths_ms(void) {
     return g_last_host_latency_tenths_ms;
+}
+
+// do_get_total_video_bytes returns g_total_video_bytes -- see that global's
+// own doc comment. net_graph.go diffs successive calls into a per-tick
+// delta the same way it already does for the RTP packet counters.
+uint64_t do_get_total_video_bytes(void) {
+    return g_total_video_bytes;
 }
 
 // do_get_playout_jitter_us/do_get_playout_applied_delay_us expose

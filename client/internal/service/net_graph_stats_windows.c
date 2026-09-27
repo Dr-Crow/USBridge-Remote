@@ -20,6 +20,12 @@
 // next to its extern declaration of this symbol for why.
 volatile uint16_t g_last_host_latency_tenths_ms = 0;
 
+// Defined here (not just declared) -- see moonlight_cgo_windows.go's comment
+// next to its extern declaration of this symbol for why. Read by
+// do_get_total_video_bytes below for net_graph_windows.go's
+// GetTotalVideoBytes.
+volatile uint64_t g_total_video_bytes = 0;
+
 // g_last_decode_ms: most recent win_deliver_frame/win_deliver_frame_vulkan
 // call's wall time (moonlight_cgo_windows.go), i.e. decode + (on the
 // zero-copy path) HUD/AI-Vision GPU work + submit -- the closest Windows
@@ -63,6 +69,10 @@ uint64_t do_get_playout_jitter_us(void) {
 
 uint64_t do_get_playout_applied_delay_us(void) {
     return LiGetPlayoutAppliedDelayUs();
+}
+
+uint64_t do_get_total_video_bytes(void) {
+    return g_total_video_bytes;
 }
 
 #endif // _WIN32
