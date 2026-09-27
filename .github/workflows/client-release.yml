@@ -47,12 +47,8 @@ on:
     inputs:
       version:
         description: >-
-          Version to release (e.g. 2.2.0) -- becomes tag client-v<version>.
-          Required for a manual run: unlike a "push: tags" run, there's no
-          tag to derive this from (GITHUB_REF_NAME is just the branch name),
-          and the release step used to fail outright with "GitHub Releases
-          requires a tag" when this was left unset. Ignored on a real
-          client-v* tag push, which still derives the version the old way.
+          Version override (e.g. 2.2.0) -- becomes tag client-v<version>.
+          Leave blank to use client/VERSION file. Leading 'v' or 'client-v' will be stripped automatically.
         required: false
 
 permissions:
@@ -464,12 +460,15 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if [ -z "${{ inputs.version }}" ]; then
-              echo "::error::workflow_dispatch requires the 'version' input (e.g. 2.2.0) -- there's no tag to derive it from on a manual run."
-              exit 1
+            if [ -n "${{ inputs.version }}" ]; then
+              raw_ver="${{ inputs.version }}"
+              raw_ver="${raw_ver#client-v}"
+              raw_ver="${raw_ver#v}"
+            else
+              raw_ver="$(tr -d '[:space:]' < client/VERSION)"
             fi
-            echo "tag=client-v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-            echo "version=v${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "tag=client-v${raw_ver}" >> "$GITHUB_OUTPUT"
+            echo "version=v${raw_ver}" >> "$GITHUB_OUTPUT"
           else
             echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
             echo "version=${GITHUB_REF_NAME#client-}" >> "$GITHUB_OUTPUT"
