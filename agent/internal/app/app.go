@@ -1392,7 +1392,7 @@ func (a *App) RestartSunshine() error {
 	// Waiting here for the same admin port the client's own Launch() call
 	// hits closes that window.
 	if err == nil {
-		a.stream.WaitReady(a.cfg.SunshinePort, 5*time.Second)
+		a.stream.WaitReady(a.cfg.SunshinePort, streamReadyTimeout)
 		a.waitForMonitorCorrelation()
 	}
 	a.restartStreamProxy()
@@ -1467,7 +1467,7 @@ func (a *App) SetStreamBackend(kind string) error {
 	// third attempt finally landed after the backend had caught up on its
 	// own. WaitReady closes that window instead of relying on the client's
 	// own retry/backoff to eventually paper over it.
-	a.stream.WaitReady(a.cfg.SunshinePort, 5*time.Second)
+	a.stream.WaitReady(a.cfg.SunshinePort, streamReadyTimeout)
 	a.waitForMonitorCorrelation()
 	a.restartStreamProxy()
 
@@ -1478,6 +1478,14 @@ func (a *App) SetStreamBackend(kind string) error {
 	}
 	return nil
 }
+
+// streamReadyTimeout bounds how long a backend (re)start waits for the
+// backend to bind its listeners before telling clients it's up. WaitReady
+// returns as soon as the port answers, so this only matters for a slow
+// start: Sunshine 2026.9 takes ~25s (gamepad driver probing plus encoder
+// probing) before it binds anything, and with the old 5s the client
+// reconnected into closed ports and gave up on the stream.
+const streamReadyTimeout = 45 * time.Second
 
 func (a *App) currentStreamKind() string {
 	a.streamMu.Lock()
