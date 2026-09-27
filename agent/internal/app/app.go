@@ -793,6 +793,7 @@ func (a *App) Run(headless, startHidden bool) error {
 	// watchdog now" bookkeeping.
 	go a.entitlementWatchdog(ctx)
 	go a.streamerUpdateWatchdog(ctx)
+	go a.turnCredentialsWatchdog(ctx)
 	go a.usbBrokerWatchdog(ctx)
 	go a.recheckEntitlement(ctx) // one immediate check, don't wait a full entitlementRecheckInterval after a restart
 	go func() { _ = a.server.ListenAndServe() }()
@@ -2266,6 +2267,90 @@ func (a *App) tickStreamerUpdate(ctx context.Context) {
 		return
 	}
 	a.checkRustShineUpdate(ctx, token)
+}
+
+// turnCredentialsRefreshInterval is how often turnCredentialsWatchdog mints
+// a fresh Cloudflare Realtime TURN credential (see usbridge-entitlement-
+// backend's webrtcTurn.ts) and writes it for rust-shine to pick up.
+// Deliberately much shorter than entitlementRecheckInterval (6h): a minted
+// credential is only valid for usbridge-entitlement's own
+// TURN_CREDENTIAL_TTL_SECONDS (1h) -- this refreshes comfortably before
+// that expires, and stays well under the backend's 12-mints/hour rate limit
+// per hardware id (this is the only caller of FetchTurnCredentials, ticking
+// once per interval, so there's no risk of this loop alone exhausting it).
+const turnCredentialsRefreshInterval = 50 * time.Minute
+
+// turnCredentialsWatchdog periodically mints a fresh TURN credential for
+// this hardware id and writes it to entitlement.TurnCredentialsFilePath,
+// which rust-shine's own background poller picks up (see crates/webrtc-
+// video's turn_credentials module) -- entirely additive to an ordinary
+// WebRTC session: a free-tier install, one that's never linked, or a
+// backend that's briefly unreachable all just mean "no TURN server offered
+// this tick", never a hard failure. Mirrors streamerUpdateWatchdog's shape
+// (fire once immediately, then on a ticker) so a freshly started agent's
+// first WebRTC session doesn't wait out a full interval for TURN to become
+// available.
+func (a *App) turnCredentialsWatchdog(ctx context.Context) {
+	a.tickTurnCredentials(ctx)
+	ticker := time.NewTicker(turnCredentialsRefreshInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.tickTurnCredentials(ctx)
+		}
+	}
+}
+
+func (a *App) tickTurnCredentials(ctx context.Context) {
+	// Cheap local pre-filter before ever making a network call: a hw_id
+	// whose cached token doesn't even locally verify as pro/enterprise has
+	// no chance of getting a credential (the backend's own live KV check is
+	// still the actual authority -- see webrtcTurn.ts -- this just avoids a
+	// wasted round trip for the common free-tier case). Also skips outright
+	// if RustShine isn't even staged, same gate tickStreamerUpdate uses --
+	// no WebRTC session exists to hand a TURN server to otherwise.
+	if !a.rustshineStaged() {
+		return
+	}
+	hwID, err := hwid.Get()
+	if err != nil {
+		return
+	}
+	claims, verifyErr := entitlement.VerifyForHardware(a.cfg.EntitlementToken, hwID)
+	if verifyErr != nil || (claims.Tier != "pro" && claims.Tier != "enterprise") {
+		// Not currently pro/enterprise (or no token at all yet) -- clear
+		// any previously written credential rather than leaving a stale one
+		// sitting there for up to its own remaining TTL after a downgrade.
+		if err := entitlement.ClearTurnCredentialsFile(a.cfg.StateDir); err != nil {
+			log.Printf("[app] warning: failed to clear turn credentials file: %v", err)
+		}
+		return
+	}
+
+	fetchedAt := time.Now()
+	creds, err := entitlement.FetchTurnCredentials(ctx, hwID)
+	if err != nil {
+		if refused, ok := err.(*entitlement.TurnCredentialsRefused); ok && refused.Reason == "not_pro" {
+			// Backend's own live tier check disagrees with our locally
+			// cached claims (a lapsed subscription the local token hasn't
+			// caught up to yet, e.g.) -- trust it, same as above.
+			if err := entitlement.ClearTurnCredentialsFile(a.cfg.StateDir); err != nil {
+				log.Printf("[app] warning: failed to clear turn credentials file: %v", err)
+			}
+			return
+		}
+		// rate_limited, network error, or a backend hiccup -- leave
+		// whatever's already on disk alone (it may well still be fresh)
+		// and just try again next tick.
+		log.Printf("[app] turn credentials refresh failed (will retry next tick): %v", err)
+		return
+	}
+	if err := entitlement.WriteTurnCredentialsFile(a.cfg.StateDir, creds, fetchedAt); err != nil {
+		log.Printf("[app] warning: failed to write turn credentials file: %v", err)
+	}
 }
 
 // deviceCertRegisterInterval is how often deviceCertWatchdog re-registers

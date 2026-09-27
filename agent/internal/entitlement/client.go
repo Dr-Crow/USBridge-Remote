@@ -152,6 +152,80 @@ func resolveDownload(ctx context.Context, entitlementToken, platform, app string
 	return &out, nil
 }
 
+// TurnCredentials is what usbridge-entitlement's POST
+// /v1/webrtc/turn-credentials returns on success -- ready to hand straight
+// to rust-shine (see streamhost.WriteTurnCredentialsFile) as an
+// RTCIceServer{urls, username, credential}.
+type TurnCredentials struct {
+	URLs       []string
+	Username   string
+	Credential string
+	// ExpiresIn is seconds, same convention as IssueResult.ExpiresIn.
+	ExpiresIn int
+}
+
+// TurnCredentialsRefused is FetchTurnCredentials' error type when the
+// backend explicitly refused (403/429), as opposed to a transient/network
+// failure -- callers (turnCredentialsWatchdog) use this to tell "genuinely
+// not entitled right now" (Reason == "not_pro") apart from "still entitled,
+// just ask again later" (Reason == "rate_limited", or any other backend-
+// reported reason), which matters because the right response differs: the
+// former should clear any cached credential file, the latter should leave
+// a still-fresh one alone and just retry next tick.
+type TurnCredentialsRefused struct{ Reason string }
+
+func (e *TurnCredentialsRefused) Error() string {
+	return fmt.Sprintf("entitlement: turn credentials refused: %s", e.Reason)
+}
+
+// FetchTurnCredentials asks the backend to mint a short-lived Cloudflare
+// Realtime TURN credential for hwID's WebRTC sessions -- pro/enterprise
+// tier only, rate limited server-side (see usbridge-entitlement-backend's
+// webrtcTurn.ts). Doesn't use doJSON like every other call in this file:
+// unlike those, a non-200 here is an expected, meaningful outcome (403/429)
+// that the caller needs to distinguish, not just a generic failure.
+func FetchTurnCredentials(ctx context.Context, hwID string) (*TurnCredentials, error) {
+	reqBody, _ := json.Marshal(map[string]string{"hw_id": hwID})
+	req, err := newRequest(ctx, http.MethodPost, "/v1/webrtc/turn-credentials", reqBody)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := httpClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("entitlement: request /v1/webrtc/turn-credentials: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+		var refusal struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(respBody, &refusal)
+		if refusal.Error == "" {
+			refusal.Error = fmt.Sprintf("http_%d", resp.StatusCode)
+		}
+		return nil, &TurnCredentialsRefused{Reason: refusal.Error}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("entitlement: /v1/webrtc/turn-credentials: HTTP %d: %s", resp.StatusCode, truncate(respBody))
+	}
+	var raw struct {
+		IceServers struct {
+			URLs       []string `json:"urls"`
+			Username   string   `json:"username"`
+			Credential string   `json:"credential"`
+		} `json:"iceServers"`
+		ExpiresIn int `json:"expires_in"`
+	}
+	if err := json.Unmarshal(respBody, &raw); err != nil {
+		return nil, fmt.Errorf("entitlement: parse turn-credentials response: %w", err)
+	}
+	return &TurnCredentials{URLs: raw.IceServers.URLs, Username: raw.IceServers.Username, Credential: raw.IceServers.Credential, ExpiresIn: raw.ExpiresIn}, nil
+}
+
 func newRequest(ctx context.Context, method, path string, body []byte) (*http.Request, error) {
 	var reader io.Reader
 	if body != nil {
