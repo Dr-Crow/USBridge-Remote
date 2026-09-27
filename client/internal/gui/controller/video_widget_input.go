@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"usbridge-client/internal/api/moonlight"
 	"usbridge-client/internal/input"
 	"usbridge-client/internal/models"
 	"usbridge-client/internal/service"
@@ -160,6 +161,9 @@ func (vw *VideoWidget) handlePhysicalKeyDown(event *fyne.KeyEvent) {
 			}
 		}
 	}
+	if vw.handleHotkeyDown(event) {
+		return
+	}
 	if vw.routesKeystrokeAsText(event) {
 		// Fyne's TypedRune (handlePhysicalRunePress) will deliver this
 		// keystroke's actual character; sending the raw VK here too would
@@ -206,6 +210,9 @@ func (vw *VideoWidget) handlePhysicalKeyUp(event *fyne.KeyEvent) {
 				break
 			}
 		}
+	}
+	if vw.consumeHotkeyUp(event) {
+		return
 	}
 	if vw.routesKeystrokeAsText(event) {
 		return
@@ -432,11 +439,32 @@ func (vw *VideoWidget) handlePhysicalRunePress(r rune) {
 	if vw.keysModeActive() {
 		return
 	}
+	vw.sendRune(r, true)
+}
+
+// typeRune types one character into the host the way text mode does,
+// regardless of the keyboard mode (used by the paste hotkey).
+func (vw *VideoWidget) typeRune(r rune) {
+	vw.sendRune(r, false)
+}
+
+// sendRune is text-mode typing of one character. dedupe collapses the
+// duplicate TypedRune Fyne delivers for soft-keyboard input; a paste must
+// keep repeated characters.
+func (vw *VideoWidget) sendRune(r rune, dedupe bool) {
+	mi := vw.moonlightInput()
+	if mi == nil {
+		return
+	}
 	if vw.typesViaHostLayout() && vw.sendRuneViaHostLayout(r) {
 		return
 	}
 	if r > 127 {
-		vw.sendSoftIMERune(r)
+		if dedupe {
+			vw.sendSoftIMERune(r)
+		} else {
+			vw.enqueueSend(func() { mi.SendMoonlightUtf8Text(string(r)) })
+		}
 		return
 	}
 	if !vw.isWindowsAgent() {
@@ -755,10 +783,14 @@ func (vw *VideoWidget) GetShowMouseCursor() bool {
 
 // SetShowMouseCursor sets the flag for showing the cursor in the captured video.
 func (vw *VideoWidget) SetShowMouseCursor(show bool) {
+	// Always recorded, even unchanged: the default (false) must still
+	// reach /launch explicitly, or the host keeps its own default (drawn).
+	moonlight.SetDisplayCursor(show)
 	if vw.showMouseCursor == show {
 		return
 	}
 	vw.showMouseCursor = show
+	vw.syncHostCursor()
 	vw.refreshCursorOverlay()
 }
 
@@ -777,6 +809,12 @@ func (vw *VideoWidget) UsesWaylandCursorOverlay() bool {
 }
 
 func (vw *VideoWidget) ShouldRenderCursorOverlay() bool {
+	// Over a Moonlight stream the host draws its own cursor into the video
+	// when Show Mouse is on (usbridgeDisplayCursor / Ctrl+Alt+Shift+N), so
+	// a local overlay on top would show it twice.
+	if vw.moonlightInput() != nil {
+		return false
+	}
 	return vw.showMouseCursor && vw.isMouseConnected && vw.UsesWaylandCursorOverlay()
 }
 

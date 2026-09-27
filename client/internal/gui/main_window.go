@@ -332,6 +332,7 @@ func NewMainWindow(cfg *models.AppConfig) *MainWindow {
 	mw.diskWidget.SetPeerConnection(mw.videoClient)
 	mw.videoWidget = controller.NewVideoWidget(w, nil, mw.videoClient, mw.updateStatus)
 	mw.videoWidget.SetShowMouseCursor(a.Preferences().BoolWithFallback("show_mouse_cursor", false))
+	mw.wireVideoHotkeys()
 	mw.videoWidget.SetKeyboardInputMode(a.Preferences().StringWithFallback(keyboardInputModePref, controller.KeyboardInputModeText))
 	mw.videoWidget.SetTailscaleService(mw.tailscaleService)
 	mw.wireMobileKeyboardStackCallbacks()

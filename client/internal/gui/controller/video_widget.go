@@ -133,21 +133,24 @@ type VideoWidget struct {
 	// still in flight. beginVideoTrace clears it when the next connection
 	// attempt starts.
 	videoSilenceReconnectFired atomic.Bool
-	fpsWindowStart             atomic.Int64 // for Go-level frame arrival FPS logging
-	metalFPSWarned             atomic.Bool  // gates the one-shot Metal FPS mismatch warning
-	isMetalFullscreen          atomic.Bool  // true while Metal overlay covers the full fullscreen window
-	onNativeReady              func()       // one-shot: called on main thread when native overlay (Metal/GL) is first created
-	lastVideoImgW              float32      // pixel width of the last decoded video frame (for resize recalc when frame=nil)
-	lastVideoImgH              float32      // pixel height of the last decoded video frame
-	hostDesktopW               float32      // native host monitor width (capture modes[0] / max)
-	hostDesktopH               float32      // native host monitor height
-	agentProtocol              string       // agent tariff: opensource (Sunshine) or rustshine free/pro/enterprise
+	fpsWindowStart             atomic.Int64    // for Go-level frame arrival FPS logging
+	metalFPSWarned             atomic.Bool     // gates the one-shot Metal FPS mismatch warning
+	isMetalFullscreen          atomic.Bool     // true while Metal overlay covers the full fullscreen window
+	onNativeReady              func()          // one-shot: called on main thread when native overlay (Metal/GL) is first created
+	lastVideoImgW              float32         // pixel width of the last decoded video frame (for resize recalc when frame=nil)
+	lastVideoImgH              float32         // pixel height of the last decoded video frame
+	hostDesktopW               float32         // native host monitor width (capture modes[0] / max)
+	hostDesktopH               float32         // native host monitor height
+	agentProtocol              string          // agent tariff: opensource (Sunshine) or rustshine free/pro/enterprise
 	hostLayout                 hostLayoutState // host keyboard layout the text path last set (video_widget_host_layout.go)
-	onAgentProtocolChanged     func(string) // persist plaque when the live agent tariff changes
-	frameContentX              float32      // normalized active frame area on X without black bars
-	frameContentY              float32      // normalized active frame area on Y without black bars
-	frameContentW              float32      // normalized width of the active frame area
-	frameContentH              float32      // normalized height of the active frame area
+	hotkeyActions              HotkeyActions   // Ctrl+Alt+Shift hotkeys needing the main window (video_widget_hotkeys.go)
+	hotkeysHeld                map[int16]bool  // hotkey keys whose KeyDown was consumed, so their KeyUp is too
+	hostCursorShown            bool            // whether the host is drawing its cursor this session, as far as this client told it
+	onAgentProtocolChanged     func(string)    // persist plaque when the live agent tariff changes
+	frameContentX              float32         // normalized active frame area on X without black bars
+	frameContentY              float32         // normalized active frame area on Y without black bars
+	frameContentW              float32         // normalized width of the active frame area
+	frameContentH              float32         // normalized height of the active frame area
 
 	// Dialogs
 	fullscreenDialog         *FullscreenDialog
@@ -440,6 +443,9 @@ func (vw *VideoWidget) beginVideoTrace(reason string) uint64 {
 	vw.videoTraceStartedAt.Store(startedAt.UnixNano())
 	vw.videoTraceFirstFrame.Store(0)
 	vw.videoTraceFirstPaint.Store(0)
+	// A new session starts with the host cursor exactly as /launch asked
+	// (usbridgeDisplayCursor, see SetShowMouseCursor).
+	vw.hostCursorShown = vw.showMouseCursor
 	vw.videoSilenceReconnectFired.Store(false)
 	// Do not zero lastVideoImgW/H here. Native GPU paths deliver frame=nil, so
 	// updateFrameContentRect never runs; wiping the size made contentRect fill

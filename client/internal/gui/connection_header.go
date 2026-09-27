@@ -107,6 +107,8 @@ type headerSettingsMenuActions struct {
 	// OnRunBenchmark opens the streamer benchmark (nil hides the row --
 	// the web build has no per-frame recorder).
 	OnRunBenchmark func()
+	// OnShowHotkeys opens the Ctrl+Alt+Shift hotkey reference.
+	OnShowHotkeys func()
 }
 
 // newHeaderSettingsMenuButton builds a single gear-icon button that opens a
@@ -144,6 +146,7 @@ func newHeaderSettingsMenuButton(actions headerSettingsMenuActions) fyne.CanvasO
 				},
 				actions.OnOpenAccount,
 				actions.OnRunBenchmark,
+				actions.OnShowHotkeys,
 			)
 			return
 		}
@@ -183,6 +186,9 @@ func newHeaderSettingsMenuButton(actions headerSettingsMenuActions) fyne.CanvasO
 					actions.OnOpenAccount()
 				}
 			}},
+		}
+		if actions.OnShowHotkeys != nil {
+			items = append(items, view.StyledMenuItem{Label: i18n.Current.MenuHotkeys, Icon: assets.KeyboardIconTeal, OnTap: actions.OnShowHotkeys})
 		}
 		if actions.OnRunBenchmark != nil {
 			items = append(items, view.StyledMenuItem{Label: i18n.Current.MenuBenchmark, Icon: assets.ChartIconTeal, OnTap: actions.OnRunBenchmark})

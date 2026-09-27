@@ -57,3 +57,27 @@ The client sends physical keystrokes in one of two ways.
     before Latin text.
   * Where the host can't switch layouts (not KDE), Cyrillic falls back to
     UTF-8 text.
+
+## Show Mouse (host cursor) and hotkeys
+
+**Show Mouse** (mouse menu, or Ctrl+Alt+Shift+N) decides whether the host draws its own
+cursor into the video.
+* The client sends the setting on every `/launch` (`usbridgeDisplayCursor=0|1`). Both
+  Sunshine (usbridge fork, `v2026.927.2.usbridge`+) and RustShine start the session that way.
+* A change mid-stream sends the Moonlight Ctrl+Alt+Shift+N shortcut, which both hosts toggle
+  on. The client tracks what it told the host, so the two can't drift apart.
+* RustShine draws the cursor on Linux KMS capture: it reads the hardware cursor plane and
+  blends it on the GPU.
+
+Hotkeys follow the official Moonlight client and are matched by physical key position, so
+they work in any layout. The list is also in the gear menu → **Hotkeys**:
+
+| Ctrl+Alt+Shift + | |
+|---|---|
+| Q | stop the stream |
+| X | toggle fullscreen |
+| S | show/hide the Net Graph |
+| M | switch the mouse mode (touchpad / absolute) |
+| N | show/hide the host cursor |
+| V | type the clipboard text into the host |
+| F1…F12 | passed to the host (Sunshine switches monitors) |

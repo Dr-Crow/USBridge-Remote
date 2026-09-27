@@ -71,6 +71,16 @@ type LocalizedStrings struct {
 	MenuCommunity                     string
 	MenuAccount                       string
 	MenuBenchmark                     string
+	MenuHotkeys                       string
+	HotkeysTitle                      string
+	HotkeyQuit                        string
+	HotkeyFullscreen                  string
+	HotkeyStats                       string
+	HotkeyMouseMode                   string
+	HotkeyCursor                      string
+	HotkeyPaste                       string
+	HotkeyDisplays                    string
+	HotkeysNote                       string
 	BenchTitle                        string
 	BenchHint                         string
 	BenchDuration                     string
@@ -687,6 +697,16 @@ func EN() *LocalizedStrings {
 		MenuCommunity:                     "Community",
 		MenuAccount:                       "Account",
 		MenuBenchmark:                     "Run benchmark",
+		MenuHotkeys:                       "Hotkeys",
+		HotkeysTitle:                      "Hotkeys (Ctrl+Alt+Shift + key)",
+		HotkeyQuit:                        "Stop the stream",
+		HotkeyFullscreen:                  "Toggle fullscreen",
+		HotkeyStats:                       "Show / hide the Net Graph statistics",
+		HotkeyMouseMode:                   "Switch mouse mode (touchpad / absolute)",
+		HotkeyCursor:                      "Show / hide the host's mouse cursor",
+		HotkeyPaste:                       "Type the clipboard text into the host",
+		HotkeyDisplays:                    "Switch the host monitor (Sunshine)",
+		HotkeysNote:                       "Keys are matched by position, so they work in any keyboard layout.",
 		BenchTitle:                        "Streamer benchmark",
 		BenchHint:                         "Each selected streamer is switched on the host, started from scratch and shown the same fast-moving video with the Net Graph on. Startup is timed separately; the video starts only once the stream is up.",
 		BenchDuration:                     "Measure each streamer for",
@@ -1553,6 +1573,16 @@ func ES() *LocalizedStrings {
 	locale.BenchSavedTo = "Guardado en %s"
 	locale.BenchStalls = "Todas las congelaciones"
 	locale.BenchNoStalls = "sin congelaciones"
+	locale.MenuHotkeys = "Atajos de teclado"
+	locale.HotkeysTitle = "Atajos (Ctrl+Alt+Shift + tecla)"
+	locale.HotkeyQuit = "Detener la transmisión"
+	locale.HotkeyFullscreen = "Pantalla completa"
+	locale.HotkeyStats = "Mostrar / ocultar estadísticas (Net Graph)"
+	locale.HotkeyMouseMode = "Cambiar modo de ratón (touchpad / absoluto)"
+	locale.HotkeyCursor = "Mostrar / ocultar el cursor del host"
+	locale.HotkeyPaste = "Escribir el texto del portapapeles en el host"
+	locale.HotkeyDisplays = "Cambiar el monitor del host (Sunshine)"
+	locale.HotkeysNote = "Las teclas se reconocen por posición: funcionan con cualquier distribución."
 	return locale
 }
 
@@ -1912,6 +1942,16 @@ func UKProper() *LocalizedStrings {
 	locale.BenchSavedTo = "Збережено в %s"
 	locale.BenchStalls = "Усі фризи"
 	locale.BenchNoStalls = "без фризів"
+	locale.MenuHotkeys = "Гарячі клавіші"
+	locale.HotkeysTitle = "Гарячі клавіші (Ctrl+Alt+Shift + клавіша)"
+	locale.HotkeyQuit = "Зупинити стрім"
+	locale.HotkeyFullscreen = "Повний екран"
+	locale.HotkeyStats = "Показати / сховати статистику (Net Graph)"
+	locale.HotkeyMouseMode = "Перемкнути режим миші (тачпад / абсолютний)"
+	locale.HotkeyCursor = "Показати / сховати курсор хоста"
+	locale.HotkeyPaste = "Надрукувати текст із буфера на хості"
+	locale.HotkeyDisplays = "Перемкнути монітор хоста (Sunshine)"
+	locale.HotkeysNote = "Клавіші розпізнаються за положенням, тож працюють у будь-якій розкладці."
 	return locale
 }
 

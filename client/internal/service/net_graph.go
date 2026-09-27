@@ -42,7 +42,7 @@ import (
 // few more hooks, not rewriting buildNetGraphHUD.
 const (
 	netGraphInterval   = 100 * time.Millisecond // 10Hz -- fast enough that a single dropped packet or a one-frame stall shows up as its own visible tick
-	netGraphHistoryLen = 600                    // ring buffer length; also (approx) the graph plot width in px -- see netGraphCanvasW below
+	netGraphHistoryLen = 616                    // ring buffer length = the graph plot width in px (canvas 640 minus the 12px margins), one column per sample, so a full history reaches the left margin like the text does
 	// netGraphCanvasW/H: 2x the original 320x200 (sized for netGraphFace's
 	// Go Medium @ 13px) -- the HUD read as too small/cramped to make out at
 	// normal viewing distance, so this doubles the canvas, the font size
@@ -456,7 +456,12 @@ func buildNetGraphHUD(samples []NetGraphSample) *image.RGBA {
 	}
 
 	const marginX = 12
-	const col2 = 350
+	// The right column ends where the graphs end (the canvas' right
+	// margin): a fixed x left its text finishing well short of the graphs'
+	// right edge, so the graphs visibly stuck out past the text block.
+	// Sized from the widest value each right-column row can show, so the
+	// column doesn't move as the numbers change.
+	col2 := netGraphCanvasW - marginX - netGraphRightColumnW()
 	row := netGraphLineH
 	rttColor := netGraphGood
 	switch {
@@ -567,15 +572,15 @@ func buildNetGraphHUD(samples []NetGraphSample) *image.RGBA {
 // corner, alpha-composited over the video pixels -- the CPU-buffer
 // counterpart to netGraphMetalPush's native compositor layer (macOS/iOS,
 // see metal_video_darwin.go/metal_video_ios.go): Linux and Windows already
-	// run every decoded frame through a CPU-readable RGBA buffer on its way to
-	// vk_video_try_submit/gl_video_try_submit (see moonlight_cgo_linux.go's
-	// deliver_frame and moonlight_cgo_windows.go's win_deliver_frame), exactly
-	// like ai_vision.go's drawCachedOverlay already does for AI Vision on those
-	// platforms -- so there's no need for a separate compositor layer there.
-	// Android uses the same blit, but only while the HUD is on: its default
-	// path is AHardwareBuffer zero-copy (no CPU pixels), so
-	// moonlight_cgo_android.go's dr_submit falls back to glReadPixels +
-	// android_vk_try_submit for as long as the checkbox is ticked.
+// run every decoded frame through a CPU-readable RGBA buffer on its way to
+// vk_video_try_submit/gl_video_try_submit (see moonlight_cgo_linux.go's
+// deliver_frame and moonlight_cgo_windows.go's win_deliver_frame), exactly
+// like ai_vision.go's drawCachedOverlay already does for AI Vision on those
+// platforms -- so there's no need for a separate compositor layer there.
+// Android uses the same blit, but only while the HUD is on: its default
+// path is AHardwareBuffer zero-copy (no CPU pixels), so
+// moonlight_cgo_android.go's dr_submit falls back to glReadPixels +
+// android_vk_try_submit for as long as the checkbox is ticked.
 // Called once per decoded frame; the disabled case (the default) costs one
 // atomic load, same philosophy as ApplyAIVisionOverlay.
 // bgr: true when dst's byte order is BGRA rather than RGBA -- Windows's GDI
@@ -856,6 +861,28 @@ func init() {
 	if h := m.Height.Round(); h > 0 {
 		netGraphLineH = h
 	}
+}
+
+var (
+	netGraphRightColOnce sync.Once
+	netGraphRightColW    int
+)
+
+// netGraphRightColumnW is the pixel width of the widest text the HUD's
+// right column (LOSS/BUF/DEC) can show, measured once from the font.
+func netGraphRightColumnW() int {
+	netGraphRightColOnce.Do(func() {
+		if netGraphFace == nil {
+			netGraphRightColW = 160
+			return
+		}
+		for _, sample := range []string{"LOSS 100.0%", "BUF 999.9ms", "DEC 999.9ms"} {
+			if w := font.MeasureString(netGraphFace, sample).Ceil(); w > netGraphRightColW {
+				netGraphRightColW = w
+			}
+		}
+	})
+	return netGraphRightColW
 }
 
 // netGraphDrawText renders dark-outlined, top-lit-gradient HUD text: an

@@ -619,6 +619,7 @@ func (mw *MainWindow) createMainAddressBar() *fyne.Container {
 			mw.showAccountDialog()
 		},
 		OnRunBenchmark: mw.benchmarkMenuAction(),
+		OnShowHotkeys:  mw.showHotkeysDialog,
 	})
 	// mw.mainExitBtn no longer has a protocol badge stuck on top of it (see
 	// connectionProtocolLabel) -- it just sizes itself to its own icon+text
@@ -2013,13 +2014,7 @@ func (mw *MainWindow) showMouseModeMenuAt(anchor fyne.CanvasObject) {
 	items = append(items, view.StyledMenuItem{
 		Label:    i18n.Current.ShowMouseCursor,
 		Selected: showMouse,
-		OnTap: func() {
-			next := !mw.app.Preferences().BoolWithFallback("show_mouse_cursor", false)
-			mw.app.Preferences().SetBool("show_mouse_cursor", next)
-			if mw.videoWidget != nil {
-				mw.videoWidget.SetShowMouseCursor(next)
-			}
-		},
+		OnTap:    mw.toggleShowMouse,
 	})
 	if view.IsMobile() {
 		view.ShowMobileStyledMenuAbove(anchor, items)

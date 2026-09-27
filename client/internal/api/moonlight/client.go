@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -191,6 +192,22 @@ func (c *Client) GetAppList() ([]App, error) {
 	return root.Apps, nil
 }
 
+// displayCursor is the client's "Show Mouse" setting, sent on every
+// /launch and /resume as usbridgeDisplayCursor so the host starts the
+// session with its cursor drawn (1) or hidden (0) -- Sunshine (usbridge
+// fork) and RustShine both honor it. 0 = never set: the parameter is left
+// out and the host keeps its own default.
+var displayCursor atomic.Int32
+
+// SetDisplayCursor records the Show Mouse setting for the next launch.
+func SetDisplayCursor(show bool) {
+	if show {
+		displayCursor.Store(2)
+	} else {
+		displayCursor.Store(1)
+	}
+}
+
 type launchRoot struct {
 	SessionUrl string `xml:"sessionUrl0"`
 	Resume     int    `xml:"resume"`
@@ -223,6 +240,12 @@ func (c *Client) Launch(appId int, codecFormat string, width, height, fps, bitra
 		"gc":                    "1",
 		"localAudioPlayMode":    "2",
 		"surroundAudioInfo":     "196610",
+	}
+	switch displayCursor.Load() {
+	case 1:
+		sessionParams["usbridgeDisplayCursor"] = "0"
+	case 2:
+		sessionParams["usbridgeDisplayCursor"] = "1"
 	}
 
 	// Try /launch first; fall back to /resume if an app is already running.
