@@ -124,7 +124,15 @@ func (b *sunshineBackend) SubmitPIN(adminPort int, pin string) error {
 		log.Printf("[sunshine] csrf-token fetch failed, submitting PIN without one: %v", err)
 	}
 
-	body, _ := json.Marshal(map[string]string{"pin": pin})
+	fields := map[string]string{"pin": pin}
+	pairingID, err := pendingPairingID(adminPort, user, pass)
+	if err != nil {
+		return err
+	}
+	if pairingID != "" {
+		fields["pairing_id"] = pairingID
+	}
+	body, _ := json.Marshal(fields)
 	url := fmt.Sprintf("https://%s:%d/api/pin", adminHost(), adminPort)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -144,6 +152,56 @@ func (b *sunshineBackend) SubmitPIN(adminPort int, pin string) error {
 		return fmt.Errorf("sunshine returned HTTP %d: %s", resp.StatusCode, readErrBody(resp))
 	}
 	return nil
+}
+
+// pendingPairingWait bounds how long SubmitPIN waits for Sunshine to list
+// the pairing request the PIN belongs to: the client relays the PIN at
+// about the same moment Moonlight's own /pair request reaches Sunshine, so
+// the request can show up a moment after the PIN does.
+var pendingPairingWait = 5 * time.Second
+
+// pendingPairingID returns the id newer Sunshine builds require in
+// POST /api/pin's "pairing_id" (they keep several pending pairing requests
+// and reject a PIN without one: "pairing_id must contain exactly 32
+// hexadecimal characters"), read from GET /api/pin's "pairings" list the
+// same way Sunshine's own web UI does (Pin.vue). With several pending, the
+// newest (last listed) is the one the just-relayed PIN is for. Returns ""
+// for older builds, which have no GET /api/pin and take the PIN alone.
+func pendingPairingID(adminPort int, user, pass string) (string, error) {
+	url := fmt.Sprintf("https://%s:%d/api/pin", adminHost(), adminPort)
+	deadline := time.Now().Add(pendingPairingWait)
+	for {
+		req, err := http.NewRequest(http.MethodGet, url, nil)
+		if err != nil {
+			return "", err
+		}
+		req.SetBasicAuth(user, pass)
+		resp, err := sunshineAdminHTTPClient.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("Sunshine unreachable: %w", err)
+		}
+		var result struct {
+			Pairings []struct {
+				ID string `json:"id"`
+			} `json:"pairings"`
+		}
+		ok := resp.StatusCode == http.StatusOK
+		if ok {
+			ok = json.NewDecoder(resp.Body).Decode(&result) == nil
+		}
+		resp.Body.Close()
+		if !ok {
+			// Older Sunshine: no pending-pairing list, PIN goes alone.
+			return "", nil
+		}
+		if n := len(result.Pairings); n > 0 {
+			return result.Pairings[n-1].ID, nil
+		}
+		if time.Now().After(deadline) {
+			return "", fmt.Errorf("sunshine has no pending pairing request for this PIN")
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 }
 
 // UnpairClient removes the Moonlight client with the given uniqueID from
