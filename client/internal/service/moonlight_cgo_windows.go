@@ -753,8 +753,11 @@ static unsigned int g_latency_log_ctr;
 // has //export directives), causing "multiple definition" at link time.
 extern volatile uint16_t g_last_host_latency_tenths_ms;
 
+#include "bench_frames.h"
+
 static int dr_submit(PDECODE_UNIT du) {
     g_last_host_latency_tenths_ms = du->frameHostProcessingLatency;
+    bench_frames_note(du);
     if (++g_latency_log_ctr >= LATENCY_LOG_FRAMES) {
         g_latency_log_ctr = 0;
         uint64_t nowUs = PltGetMicroseconds();

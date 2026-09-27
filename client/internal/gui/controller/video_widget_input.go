@@ -432,6 +432,9 @@ func (vw *VideoWidget) handlePhysicalRunePress(r rune) {
 	if vw.keysModeActive() {
 		return
 	}
+	if vw.typesViaHostLayout() && vw.sendRuneViaHostLayout(r) {
+		return
+	}
 	if r > 127 {
 		vw.sendSoftIMERune(r)
 		return
@@ -1418,6 +1421,7 @@ func (vw *VideoWidget) SetAgentProtocol(protocol string) {
 		return
 	}
 	vw.agentProtocol = p
+	vw.resetHostLayout()
 	vw.updateInStreamContentRect()
 	logrus.Infof("[ABS] agent protocol=%q stream-space mouse=%v", p, vw.hostMapsMouseInStreamSpace())
 	if p != "" && vw.onAgentProtocolChanged != nil {

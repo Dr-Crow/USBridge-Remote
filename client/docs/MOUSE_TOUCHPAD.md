@@ -35,3 +35,25 @@ All mouse control commands (`POST /api/mouse`) now require:
 }
 ```
 Coordinate range for absolute modes: **0..4095**.
+
+## Keyboard: text mode vs keys mode
+
+The client sends physical keystrokes in one of two ways.
+
+* **Keys mode** sends the physical key position (scan code → VK). What the
+  host types depends on the host's own layout, the same as a local
+  keyboard plugged into it.
+* **Text mode** sends the character the client's own layout produced.
+  * ASCII goes as a VK + Shift press.
+  * A non-ASCII character goes as Moonlight UTF-8 text. That works on
+    RustShine (it switches the KDE layout itself), and on Windows and
+    macOS hosts (native Unicode injection).
+  * Sunshine on a **Linux** host is the exception. Its Unicode injection
+    is an IBus Ctrl+Shift+U hex sequence, so KDE and most non-GTK apps
+    print the hex digits (typing "и" produced "438"). For Sunshine on Linux
+    the client instead asks the agent to switch the host layout
+    (`POST /api/keyboard/layout`, KDE Wayland) to Russian, then presses the
+    key that character sits on in ЙЦУКЕН. It switches back to English
+    before Latin text.
+  * Where the host can't switch layouts (not KDE), Cyrillic falls back to
+    UTF-8 text.

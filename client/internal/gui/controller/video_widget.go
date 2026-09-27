@@ -142,6 +142,7 @@ type VideoWidget struct {
 	hostDesktopW               float32      // native host monitor width (capture modes[0] / max)
 	hostDesktopH               float32      // native host monitor height
 	agentProtocol              string       // agent tariff: opensource (Sunshine) or rustshine free/pro/enterprise
+	hostLayout                 hostLayoutState // host keyboard layout the text path last set (video_widget_host_layout.go)
 	onAgentProtocolChanged     func(string) // persist plaque when the live agent tariff changes
 	frameContentX              float32      // normalized active frame area on X without black bars
 	frameContentY              float32      // normalized active frame area on Y without black bars

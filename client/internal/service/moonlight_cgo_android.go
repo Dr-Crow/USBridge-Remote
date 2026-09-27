@@ -17,6 +17,7 @@ package service
 #include <android/native_window_jni.h>
 #include <jni.h>
 #include <Limelight.h>
+#include "bench_frames.h"
 #include <opus_multistream.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -360,6 +361,7 @@ static int dr_setup(int fmt, int w, int h, int rate, void *ctx, int flags) {
 
 static int dr_submit(PDECODE_UNIT du) {
     g_last_host_latency_tenths_ms = du->frameHostProcessingLatency;
+    bench_frames_note(du);
     if (!g_amc) return DR_NEED_IDR;
 
     // Never silently drop a decode unit: if the codec has no free input buffer

@@ -95,6 +95,7 @@ func GetDecodeMs() float64 {
 // (render fps) -- same "core stays tag-free, platform files wire the hooks"
 // split as metal_video_darwin.go's init() for macOS.
 func init() {
+	benchRenderedFramesFn = netGraphWindowsRenderedFrames
 	netGraphNetworkStatsFn = func() netGraphRawNetworkStats {
 		rtp := GetRTPVideoStats()
 		rttMs, rttVarianceMs, rttOk := GetEstimatedRttInfo()
@@ -167,6 +168,18 @@ func pushNetGraphOverlayToVulkan(img *image.RGBA) {
 // (now stale) HUD texture. See vk_hud_clear's doc comment.
 func vulkanClearHudOverlay() {
 	C.vk_hud_clear()
+}
+
+// netGraphWindowsRenderedFrames is the active renderer's running count of
+// presented frames, for the streamer benchmark's client-side fps.
+func netGraphWindowsRenderedFrames() (int64, bool) {
+	if VKVideoIsActive() {
+		return VKVideoGetStats().Rendered, true
+	}
+	if GLVideoIsActive() {
+		return GLVideoGetStats().Rendered, true
+	}
+	return 0, false
 }
 
 func netGraphWindowsNativeFPS() float64 {

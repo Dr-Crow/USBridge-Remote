@@ -618,6 +618,7 @@ func (mw *MainWindow) createMainAddressBar() *fyne.Container {
 		OnOpenAccount: func() {
 			mw.showAccountDialog()
 		},
+		OnRunBenchmark: mw.benchmarkMenuAction(),
 	})
 	// mw.mainExitBtn no longer has a protocol badge stuck on top of it (see
 	// connectionProtocolLabel) -- it just sizes itself to its own icon+text

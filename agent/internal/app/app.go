@@ -29,6 +29,7 @@ import (
 	"usbridge_agent/internal/api"
 	"usbridge_agent/internal/audio"
 	"usbridge_agent/internal/autostart"
+	"usbridge_agent/internal/benchvideo"
 	"usbridge_agent/internal/capture"
 	"usbridge_agent/internal/clipboard"
 	"usbridge_agent/internal/config"
@@ -60,6 +61,9 @@ type deviceState struct {
 type App struct {
 	cfgPath string
 	cfg     config.Config
+
+	benchOnce   sync.Once
+	benchPlayer *benchvideo.Player
 
 	state     *deviceState
 	input     *input.Controller

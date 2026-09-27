@@ -70,6 +70,25 @@ type LocalizedStrings struct {
 	MenuInfo                          string
 	MenuCommunity                     string
 	MenuAccount                       string
+	MenuBenchmark                     string
+	BenchTitle                        string
+	BenchHint                         string
+	BenchDuration                     string
+	BenchNotInstalled                 string
+	BenchNeedOne                      string
+	BenchStart                        string
+	BenchStepStatus                   string
+	BenchStepPrepare                  string
+	BenchStepSwitch                   string
+	BenchStepStart                    string
+	BenchStepVideo                    string
+	BenchStepRecord                   string
+	BenchStepRestore                  string
+	BenchFailed                       string
+	BenchResultsTitle                 string
+	BenchSavedTo                      string
+	BenchStalls                       string
+	BenchNoStalls                     string
 	MenuWebsite                       string
 	TabLabelControl                   string
 	TabLabelDevices                   string
@@ -667,6 +686,25 @@ func EN() *LocalizedStrings {
 		MenuInfo:                          "Info",
 		MenuCommunity:                     "Community",
 		MenuAccount:                       "Account",
+		MenuBenchmark:                     "Run benchmark",
+		BenchTitle:                        "Streamer benchmark",
+		BenchHint:                         "Each selected streamer is switched on the host, started from scratch and shown the same fast-moving video with the Net Graph on. Startup is timed separately; the video starts only once the stream is up.",
+		BenchDuration:                     "Measure each streamer for",
+		BenchNotInstalled:                 "not installed on the host",
+		BenchNeedOne:                      "Select at least one streamer.",
+		BenchStart:                        "Start",
+		BenchStepStatus:                   "Asking the host…",
+		BenchStepPrepare:                  "Preparing the test video on the host…",
+		BenchStepSwitch:                   "%s: switching the host streamer…",
+		BenchStepStart:                    "%s: starting the stream…",
+		BenchStepVideo:                    "%s: starting the test video…",
+		BenchStepRecord:                   "%s: measuring, %d s left",
+		BenchStepRestore:                  "Restoring the previous streamer…",
+		BenchFailed:                       "Benchmark failed",
+		BenchResultsTitle:                 "Benchmark results",
+		BenchSavedTo:                      "Saved to %s",
+		BenchStalls:                       "Every stall",
+		BenchNoStalls:                     "no stalls",
 		MenuWebsite:                       "Website",
 		TabLabelControl:                   "Control",
 		TabLabelDevices:                   "Devices",
@@ -1496,6 +1534,25 @@ func ES() *LocalizedStrings {
 	locale.ScriptsStateIdle = "Idle"
 	locale.ScriptsStateStopped = "Parado"
 	locale.ScriptsStateRunning = "Activo"
+	locale.MenuBenchmark = "Ejecutar benchmark"
+	locale.BenchTitle = "Benchmark de streamers"
+	locale.BenchHint = "Cada streamer seleccionado se activa en el host, se inicia desde cero y muestra el mismo vídeo dinámico con el Net Graph activo. El arranque se mide aparte; el vídeo empieza cuando el stream ya está en marcha."
+	locale.BenchDuration = "Medir cada streamer durante"
+	locale.BenchNotInstalled = "no instalado en el host"
+	locale.BenchNeedOne = "Selecciona al menos un streamer."
+	locale.BenchStart = "Iniciar"
+	locale.BenchStepStatus = "Consultando al host…"
+	locale.BenchStepPrepare = "Preparando el vídeo de prueba en el host…"
+	locale.BenchStepSwitch = "%s: cambiando el streamer del host…"
+	locale.BenchStepStart = "%s: iniciando el stream…"
+	locale.BenchStepVideo = "%s: iniciando el vídeo de prueba…"
+	locale.BenchStepRecord = "%s: midiendo, quedan %d s"
+	locale.BenchStepRestore = "Restaurando el streamer anterior…"
+	locale.BenchFailed = "El benchmark falló"
+	locale.BenchResultsTitle = "Resultados del benchmark"
+	locale.BenchSavedTo = "Guardado en %s"
+	locale.BenchStalls = "Todas las congelaciones"
+	locale.BenchNoStalls = "sin congelaciones"
 	return locale
 }
 
@@ -1836,6 +1893,25 @@ func UKProper() *LocalizedStrings {
 	locale.ScriptsStateIdle = "Idle"
 	locale.ScriptsStateStopped = "Стоп"
 	locale.ScriptsStateRunning = "Онлайн"
+	locale.MenuBenchmark = "Запустити бенчмарк"
+	locale.BenchTitle = "Бенчмарк стрімерів"
+	locale.BenchHint = "Кожен вибраний стрімер вмикається на хості, запускається з нуля й показує те саме динамічне відео з увімкненим Net Graph. Час запуску рахується окремо; відео стартує лише після запуску стріму."
+	locale.BenchDuration = "Вимірювати кожен стрімер"
+	locale.BenchNotInstalled = "не встановлено на хості"
+	locale.BenchNeedOne = "Виберіть хоча б один стрімер."
+	locale.BenchStart = "Почати"
+	locale.BenchStepStatus = "Запит до хоста…"
+	locale.BenchStepPrepare = "Підготовка тестового відео на хості…"
+	locale.BenchStepSwitch = "%s: перемикання стрімера на хості…"
+	locale.BenchStepStart = "%s: запуск стріму…"
+	locale.BenchStepVideo = "%s: запуск тестового відео…"
+	locale.BenchStepRecord = "%s: вимірювання, лишилось %d с"
+	locale.BenchStepRestore = "Відновлення попереднього стрімера…"
+	locale.BenchFailed = "Бенчмарк не вдався"
+	locale.BenchResultsTitle = "Результати бенчмарку"
+	locale.BenchSavedTo = "Збережено в %s"
+	locale.BenchStalls = "Усі фризи"
+	locale.BenchNoStalls = "без фризів"
 	return locale
 }
 

@@ -104,6 +104,9 @@ type headerSettingsMenuActions struct {
 	OnOpenHardwareAgent func()
 	OnOpenSoftwareAgent func()
 	OnOpenAccount       func()
+	// OnRunBenchmark opens the streamer benchmark (nil hides the row --
+	// the web build has no per-frame recorder).
+	OnRunBenchmark func()
 }
 
 // newHeaderSettingsMenuButton builds a single gear-icon button that opens a
@@ -140,10 +143,11 @@ func newHeaderSettingsMenuButton(actions headerSettingsMenuActions) fyne.CanvasO
 					}
 				},
 				actions.OnOpenAccount,
+				actions.OnRunBenchmark,
 			)
 			return
 		}
-		view.ShowStyledMenuTeal(btn, []view.StyledMenuItem{
+		items := []view.StyledMenuItem{
 			{Label: i18n.Current.MenuPowerReset, Icon: assets.PowerResetIconTeal, OnTap: func() {
 				if actions.OnPowerReset != nil {
 					actions.OnPowerReset()
@@ -179,7 +183,11 @@ func newHeaderSettingsMenuButton(actions headerSettingsMenuActions) fyne.CanvasO
 					actions.OnOpenAccount()
 				}
 			}},
-		})
+		}
+		if actions.OnRunBenchmark != nil {
+			items = append(items, view.StyledMenuItem{Label: i18n.Current.MenuBenchmark, Icon: assets.ChartIconTeal, OnTap: actions.OnRunBenchmark})
+		}
+		view.ShowStyledMenuTeal(btn, items)
 	})
 	btn.SetBadgeText("")
 	btn.SetIconSize(fyne.NewSize(15, 15))

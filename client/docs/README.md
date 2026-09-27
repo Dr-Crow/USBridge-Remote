@@ -7,6 +7,7 @@ Technical reference for the USBridge Client — the cross-platform control app (
 * **[Interface Guide](./interface-guide.md)** — the four tabs (Control, Devices, Snapshots, Scripts) and what each one does.
 * **[Mouse & Touchpad Modes](./MOUSE_TOUCHPAD.md)** — relative/absolute pointer translation math.
 * **[Virtual Keyboard](./virtual_keyboard.md)** — the on-screen keyboard used in fullscreen mode (mobile/touch).
+* **[Streamer benchmark](./STREAMER_BENCHMARK.md)** — the gear menu's Sunshine vs RustShine comparison: startup, smoothness, host encode, network and loss recovery, with every stall attributed.
 * **[Supported input devices](./INPUT_DEVICES.md)** — one table of the gamepads and pen tablets the client supports and which of them have been tried on real hardware.
 * **[Pen tablets](./TABLETS.md)** — exporting a Wacom tablet to the host as the original USB device (no Zadig/WinUSB), the model database, the local-input switch-off on Windows, and the list of covered tablets.
 * **[Gamepads](./GAMEPADS.md)** — how a physical pad is captured and mapped to an Xbox 360 controller on the host, several pads at once, rumble back to the pad, and a table of what is supported and what has been tried on hardware.

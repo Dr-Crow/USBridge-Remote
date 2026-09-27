@@ -51,6 +51,8 @@ static volatile uint64_t g_ar_muted_count = 0; // frames silenced because muted
 // treatment for free.
 static volatile uint16_t g_last_host_latency_tenths_ms = 0;
 
+#include "bench_frames.h"
+
 // These functions are called from moonlight_cgo_wrapper.go's TU via extern declarations.
 // They must have external (non-static) linkage so the linker can resolve them
 // from the platform CGO file's object. Build tags ensure only one platform file
@@ -164,6 +166,7 @@ static void dr_cleanup(void) {}
 
 static int dr_submit(PDECODE_UNIT du) {
     g_last_host_latency_tenths_ms = du->frameHostProcessingLatency;
+    bench_frames_note(du);
     return platform_dr_submit(du);
 }
 

@@ -1,0 +1,120 @@
+package api
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+)
+
+// Streamer benchmark endpoints (agent/internal/api/bench.go).
+
+// BenchStatus is the agent's GET /api/bench/status payload.
+type BenchStatus struct {
+	ActiveBackend     string   `json:"active_backend"`
+	AvailableBackends []string `json:"available_backends"`
+	Video             struct {
+		Player      string `json:"player"`
+		Content     string `json:"content"`
+		Playing     bool   `json:"playing"`
+		ContentPath string `json:"content_path"`
+	} `json:"video"`
+}
+
+type agentResponse struct {
+	Success bool            `json:"success"`
+	Message string          `json:"message"`
+	Error   string          `json:"error"`
+	Details string          `json:"details"`
+	Data    json.RawMessage `json:"data"`
+}
+
+func decodeAgentResponse(body []byte, err error, out any) error {
+	if err != nil {
+		// The agent's error body is JSON; surface its details, not the
+		// whole "HTTP error 500: {...}" string.
+		msg := err.Error()
+		if i := strings.Index(msg, "{"); i >= 0 {
+			var r agentResponse
+			if json.Unmarshal([]byte(msg[i:]), &r) == nil && (r.Details != "" || r.Error != "") {
+				if r.Details != "" {
+					return fmt.Errorf("%s", r.Details)
+				}
+				return fmt.Errorf("%s", r.Error)
+			}
+		}
+		return err
+	}
+	var r agentResponse
+	if err := json.Unmarshal(body, &r); err != nil {
+		return fmt.Errorf("failed to parse response: %v", err)
+	}
+	if !r.Success {
+		if r.Details != "" {
+			return fmt.Errorf("%s", r.Details)
+		}
+		return fmt.Errorf("%s", r.Error)
+	}
+	if out != nil && len(r.Data) > 0 {
+		return json.Unmarshal(r.Data, out)
+	}
+	return nil
+}
+
+// BenchStatus reports the agent's active/available streamers and player.
+func (c *USBClient) BenchStatus() (*BenchStatus, error) {
+	body, err := c.makeRequest("GET", "/api/bench/status", nil)
+	var st BenchStatus
+	if err := decodeAgentResponse(body, err, &st); err != nil {
+		return nil, err
+	}
+	return &st, nil
+}
+
+// BenchSetBackend switches the agent to kind and returns how long the agent
+// took (stop old + start new + listener up).
+func (c *USBClient) BenchSetBackend(kind string) (switchMs float64, err error) {
+	payload, _ := json.Marshal(map[string]string{"kind": kind})
+	body, err := c.PostRawWithTimeout("/api/bench/backend", payload, 2*time.Minute)
+	var out struct {
+		SwitchMs float64 `json:"switch_ms"`
+	}
+	if err := decodeAgentResponse(body, err, &out); err != nil {
+		return 0, err
+	}
+	return out.SwitchMs, nil
+}
+
+// BenchPrepare has the agent download the benchmark content. ready=false
+// means it will fall back to a generated pattern (reason in note).
+func (c *USBClient) BenchPrepare() (ready bool, note string, err error) {
+	body, err := c.PostRawWithTimeout("/api/bench/prepare", []byte("{}"), 4*time.Minute)
+	var out struct {
+		Ready bool   `json:"ready"`
+		Error string `json:"error"`
+	}
+	if err := decodeAgentResponse(body, err, &out); err != nil {
+		return false, "", err
+	}
+	return out.Ready, out.Error, nil
+}
+
+// BenchVideoStart starts the content fullscreen on the host from its first
+// frame and returns what is playing.
+func (c *USBClient) BenchVideoStart() (content string, err error) {
+	body, err := c.PostRawWithTimeout("/api/bench/video/start", []byte("{}"), 4*time.Minute)
+	var out struct {
+		Player  string `json:"player"`
+		Content string `json:"content"`
+	}
+	if err := decodeAgentResponse(body, err, &out); err != nil {
+		return "", err
+	}
+	return out.Content + " (" + out.Player + ")", nil
+}
+
+// BenchVideoStop closes the host-side player.
+func (c *USBClient) BenchVideoStop() error {
+	body, err := c.PostRawWithTimeout("/api/bench/video/stop", []byte("{}"), 20*time.Second)
+	return decodeAgentResponse(body, err, nil)
+}

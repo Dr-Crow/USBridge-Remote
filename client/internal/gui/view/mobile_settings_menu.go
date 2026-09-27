@@ -64,7 +64,7 @@ func ShowMobileSettingsMenu(anchor fyne.CanvasObject, mode string, onViewMode fu
 // ShowMobileControlSettingsMenu is the phone Control gear panel: same
 // 13px / 38-tall / 220-wide teal rows as Connections, plus Power Reset
 // and Account (no Grid/List toggle).
-func ShowMobileControlSettingsMenu(anchor fyne.CanvasObject, onPowerReset, onHardwareAgent, onSoftwareAgent, onInfo, onCommunity, onLanguage, onAccount func()) {
+func ShowMobileControlSettingsMenu(anchor fyne.CanvasObject, onPowerReset, onHardwareAgent, onSoftwareAgent, onInfo, onCommunity, onLanguage, onAccount, onBenchmark func()) {
 	if anchor == nil {
 		return
 	}
@@ -88,6 +88,9 @@ func ShowMobileControlSettingsMenu(anchor fyne.CanvasObject, onPowerReset, onHar
 		newMobileSettingsRow(i18n.Current.Language, assets.LanguageIconTeal, func() { hideThen(onLanguage) }),
 		newMobileSettingsRow(i18n.Current.MenuAccount, assets.AccountIconTeal, func() { hideThen(onAccount) }),
 	)
+	if onBenchmark != nil {
+		content.Add(newMobileSettingsRow(i18n.Current.MenuBenchmark, assets.ChartIconTeal, func() { hideThen(onBenchmark) }))
+	}
 	popup = showStyledPanel(anchor, content, 236, false)
 }
 

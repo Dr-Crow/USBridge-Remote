@@ -347,6 +347,10 @@ func IsPrintableKey(keyName fyne.KeyName) bool {
 	}
 }
 
+// RussianLayoutRuneToLatin returns the US-layout character on the same
+// physical key as r in the Russian (ЙЦУКЕН) layout.
+func RussianLayoutRuneToLatin(r rune) (rune, bool) { return mapRussianLayoutRuneToLatin(r) }
+
 func mapRussianLayoutRuneToLatin(r rune) (rune, bool) {
 	layoutMap := map[rune]rune{
 		'ё': '`', 'Ё': '~',

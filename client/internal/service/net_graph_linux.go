@@ -42,6 +42,7 @@ import (
 // the CPU burn-in still draws there).
 func init() {
 	netGraphRenderFPS = netGraphLinuxNativeFPS
+	benchRenderedFramesFn = netGraphLinuxRenderedFrames
 	netGraphMetalPush = pushNetGraphOverlayToVulkan
 	netGraphMetalClear = func() { C.vk_hud_clear() }
 	netGraphScalePush = func(scale float32) { C.vk_hud_set_scale(C.float(scale)) }
@@ -71,4 +72,16 @@ func netGraphLinuxNativeFPS() float64 {
 		}
 	}
 	return 0
+}
+
+// netGraphLinuxRenderedFrames is the active renderer's running count of
+// presented frames, for the streamer benchmark's client-side fps.
+func netGraphLinuxRenderedFrames() (int64, bool) {
+	if VKVideoIsActive() {
+		return VKVideoGetStats().Rendered, true
+	}
+	if GLVideoIsActive() {
+		return GLVideoGetStats().Rendered, true
+	}
+	return 0, false
 }
