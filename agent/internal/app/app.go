@@ -64,6 +64,12 @@ type App struct {
 
 	benchOnce   sync.Once
 	benchPlayer *benchvideo.Player
+	// benchMonitor is the monitor the running benchmark captures and plays
+	// on (a monitors.Monitor ID, "" when none is pinned); benchOrigOutput
+	// holds each backend's own output pick from before the benchmark
+	// changed it, restored when the pin is cleared. Guarded by streamMu.
+	benchMonitor    string
+	benchOrigOutput map[string]string
 
 	state     *deviceState
 	input     *input.Controller
@@ -1453,6 +1459,8 @@ func (a *App) SetStreamBackend(kind string) error {
 	if pw, ok := next.(streamhost.ProcessWatcher); ok {
 		pw.SetOnExit(a.startSunshine)
 	}
+	// Before the start, so the backend comes up on the benchmark's monitor.
+	_, benchPinned := a.applyBenchMonitor(next, kind)
 
 	a.startSunshine() // generic despite the name -- starts whatever a.stream now is
 
@@ -1469,6 +1477,15 @@ func (a *App) SetStreamBackend(kind string) error {
 	// own retry/backoff to eventually paper over it.
 	a.stream.WaitReady(a.cfg.SunshinePort, streamReadyTimeout)
 	a.waitForMonitorCorrelation()
+	if !benchPinned && a.benchMonitor != "" {
+		// Sunshine names monitors by a GUID only its own log reveals, so a
+		// Sunshine that never ran here could only be pinned once it's up.
+		if changed, ok := a.applyBenchMonitor(a.stream, kind); ok && changed {
+			if err := a.RestartSunshine(); err != nil {
+				log.Printf("[bench] restarting %s on monitor %s: %v", kind, a.benchMonitor, err)
+			}
+		}
+	}
 	a.restartStreamProxy()
 
 	saved := a.cfg

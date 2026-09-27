@@ -92,6 +92,7 @@ func (b *rustshineBackend) ListCaptureDevices() []CaptureDevice {
 		devices = append(devices, CaptureDevice{
 			OutputName:  m[1], // monitor_index expects the numeric index, stringified
 			DisplayName: strings.TrimSpace(m[2]),
+			GDIName:     rustshineGDIName(m[2]),
 			Width:       width,
 			Height:      height,
 		})
@@ -101,3 +102,15 @@ func (b *rustshineBackend) ListCaptureDevices() []CaptureDevice {
 
 // firstKmsCardPath: KMS/DRM is Linux-only — see rustshine_devices_linux.go.
 func (b *rustshineBackend) firstKmsCardPath() string { return "" }
+
+// rustshineGDIName pulls the GDI device name out of a --list-capture-devices
+// row's device_name capture. The regex can't split device_name from a
+// multi-word adapter name (`\\.\DISPLAY1       AMD Radeon 780M` lands in
+// one group), but the GDI name itself never contains spaces.
+func rustshineGDIName(field string) string {
+	f := strings.Fields(field)
+	if len(f) == 0 || !strings.HasPrefix(f[0], `\\.\`) {
+		return ""
+	}
+	return f[0]
+}

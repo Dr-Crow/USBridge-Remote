@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
 
 	"usbridge_agent/internal/benchvideo"
+	"usbridge_agent/internal/monitors"
 )
 
 // benchApplication is what the streamer benchmark needs from the app
@@ -18,6 +20,9 @@ type benchApplication interface {
 	BenchPlayer() *benchvideo.Player
 	BenchStreamBackends() (active string, available []string)
 	SetStreamBackend(kind string) error
+	BenchMonitors() ([]monitors.Monitor, error)
+	BenchMonitor() string
+	SetBenchMonitor(id string) error
 }
 
 // BenchStatus is GET /api/bench/status.
@@ -25,6 +30,10 @@ type BenchStatus struct {
 	ActiveBackend     string          `json:"active_backend"`
 	AvailableBackends []string        `json:"available_backends"`
 	Video             benchvideo.Info `json:"video"`
+	// Monitors the benchmark can be pinned to (empty where the host can't
+	// enumerate them), and the one it's pinned to now ("" for none).
+	Monitors []monitors.Monitor `json:"monitors,omitempty"`
+	Monitor  string             `json:"monitor,omitempty"`
 }
 
 func (s *Server) benchApp(w http.ResponseWriter) (benchApplication, bool) {
@@ -41,11 +50,40 @@ func (s *Server) benchStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	active, available := b.BenchStreamBackends()
+	mons, err := b.BenchMonitors()
+	if err != nil && !errors.Is(err, monitors.ErrUnsupported) {
+		log.Printf("[api] bench monitors: %v", err)
+	}
 	s.ok(w, "bench_status", BenchStatus{
 		ActiveBackend:     active,
 		AvailableBackends: available,
 		Video:             b.BenchPlayer().Status(),
+		Monitors:          mons,
+		Monitor:           b.BenchMonitor(),
 	})
+}
+
+// benchMonitor pins both streamers' capture, and the test video, to one
+// monitor for the benchmark ({"monitor": "<id>"}), or releases the pin
+// ({"monitor": ""}), putting each streamer's own monitor back.
+func (s *Server) benchMonitor(w http.ResponseWriter, r *http.Request) {
+	b, ok := s.benchApp(w)
+	if !ok {
+		return
+	}
+	var req struct {
+		Monitor string `json:"monitor"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.fail(w, http.StatusBadRequest, "invalid_json", err)
+		return
+	}
+	if err := b.SetBenchMonitor(req.Monitor); err != nil {
+		log.Printf("[api] bench monitor %q: %v", req.Monitor, err)
+		s.fail(w, http.StatusBadRequest, "bench_monitor_failed", err)
+		return
+	}
+	s.ok(w, "bench_monitor", map[string]any{"monitor": req.Monitor})
 }
 
 // benchBackend switches the stream backend and reports how long the agent
@@ -103,7 +141,21 @@ func (s *Server) benchVideoStart(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 	defer cancel()
-	info, err := b.BenchPlayer().Start(ctx)
+	var target *monitors.Monitor
+	if id := b.BenchMonitor(); id != "" {
+		mons, err := b.BenchMonitors()
+		if err != nil {
+			s.fail(w, http.StatusInternalServerError, "bench_video_failed", err)
+			return
+		}
+		m, found := monitors.Find(mons, id)
+		if !found {
+			s.fail(w, http.StatusInternalServerError, "bench_video_failed", fmt.Errorf("monitor %s is gone", id))
+			return
+		}
+		target = &m
+	}
+	info, err := b.BenchPlayer().Start(ctx, target)
 	if err != nil {
 		log.Printf("[api] bench video start failed: %v", err)
 		s.fail(w, http.StatusInternalServerError, "bench_video_failed", err)

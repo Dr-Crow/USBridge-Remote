@@ -8,6 +8,7 @@ type cmdProcess struct{ cmd *exec.Cmd }
 
 func (c cmdProcess) Kill() error { return c.cmd.Process.Kill() }
 func (c cmdProcess) Wait() error { return c.cmd.Wait() }
+func (c cmdProcess) Pid() int    { return c.cmd.Process.Pid }
 
 // launch starts the player with the agent's own environment: the Linux
 // user unit and the macOS LaunchAgent both run inside the desktop session,

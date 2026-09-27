@@ -19,6 +19,31 @@ type BenchStatus struct {
 		Playing     bool   `json:"playing"`
 		ContentPath string `json:"content_path"`
 	} `json:"video"`
+	// Monitors the benchmark can be pinned to (empty on hosts that can't
+	// enumerate them, and on agents from before this existed); Monitor is
+	// the current pin, "" for none.
+	Monitors []BenchMonitor `json:"monitors"`
+	Monitor  string         `json:"monitor"`
+}
+
+// BenchMonitor is one host monitor (agent/internal/monitors.Monitor).
+type BenchMonitor struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	X       int    `json:"x"`
+	Y       int    `json:"y"`
+	Width   int    `json:"width"`
+	Height  int    `json:"height"`
+	Primary bool   `json:"primary"`
+}
+
+// BenchVideo is what BenchVideoStart started: the content and player, and
+// the monitor the player was asked for vs. the one its window is really on
+// ("" when the agent couldn't see it).
+type BenchVideo struct {
+	Content          string
+	RequestedMonitor string
+	Monitor          string
 }
 
 type agentResponse struct {
@@ -85,6 +110,16 @@ func (c *USBClient) BenchSetBackend(kind string) (switchMs float64, err error) {
 	return out.SwitchMs, nil
 }
 
+// BenchSetMonitor pins both streamers' capture and the test video to one
+// host monitor for the benchmark; "" releases the pin and puts each
+// streamer's own monitor back. Changing the active streamer's monitor
+// restarts it, hence the long timeout.
+func (c *USBClient) BenchSetMonitor(id string) error {
+	payload, _ := json.Marshal(map[string]string{"monitor": id})
+	body, err := c.PostRawWithTimeout("/api/bench/monitor", payload, 2*time.Minute)
+	return decodeAgentResponse(body, err, nil)
+}
+
 // BenchPrepare has the agent download the benchmark content. ready=false
 // means it will fall back to a generated pattern (reason in note).
 func (c *USBClient) BenchPrepare() (ready bool, note string, err error) {
@@ -100,17 +135,20 @@ func (c *USBClient) BenchPrepare() (ready bool, note string, err error) {
 }
 
 // BenchVideoStart starts the content fullscreen on the host from its first
-// frame and returns what is playing.
-func (c *USBClient) BenchVideoStart() (content string, err error) {
+// frame, on the pinned monitor if there is one, and reports what's playing
+// where.
+func (c *USBClient) BenchVideoStart() (BenchVideo, error) {
 	body, err := c.PostRawWithTimeout("/api/bench/video/start", []byte("{}"), 4*time.Minute)
 	var out struct {
-		Player  string `json:"player"`
-		Content string `json:"content"`
+		Player           string `json:"player"`
+		Content          string `json:"content"`
+		RequestedMonitor string `json:"requested_monitor"`
+		Monitor          string `json:"monitor"`
 	}
 	if err := decodeAgentResponse(body, err, &out); err != nil {
-		return "", err
+		return BenchVideo{}, err
 	}
-	return out.Content + " (" + out.Player + ")", nil
+	return BenchVideo{Content: out.Content + " (" + out.Player + ")", RequestedMonitor: out.RequestedMonitor, Monitor: out.Monitor}, nil
 }
 
 // BenchVideoStop closes the host-side player.

@@ -14,10 +14,12 @@ type cmdProcess struct{ cmd *exec.Cmd }
 
 func (c cmdProcess) Kill() error { return c.cmd.Process.Kill() }
 func (c cmdProcess) Wait() error { return c.cmd.Wait() }
+func (c cmdProcess) Pid() int    { return c.cmd.Process.Pid }
 
 type sessionProcess struct{ h *sessionlaunch.Handle }
 
 func (s sessionProcess) Kill() error { return s.h.Kill() }
+func (s sessionProcess) Pid() int    { return s.h.Pid() }
 func (s sessionProcess) Wait() error {
 	code, err := s.h.Wait()
 	s.h.Close()

@@ -36,6 +36,8 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	"usbridge_agent/internal/monitors"
 )
 
 const (
@@ -64,6 +66,12 @@ type Info struct {
 	Playing     bool      `json:"playing"`
 	StartedAt   time.Time `json:"started_at,omitempty"`
 	ContentPath string    `json:"content_path,omitempty"`
+	// RequestedMonitor is the monitor Start was asked to play on ("" for
+	// the player's own default); Monitor is where its window actually is,
+	// "" when that couldn't be seen (the player runs in a session this
+	// process can't inspect).
+	RequestedMonitor string `json:"requested_monitor,omitempty"`
+	Monitor          string `json:"monitor,omitempty"`
 }
 
 // process is a started player: an *exec.Cmd, or on Windows possibly a
@@ -71,6 +79,7 @@ type Info struct {
 type process interface {
 	Kill() error
 	Wait() error
+	Pid() int
 }
 
 // Player owns at most one running player process.
@@ -171,10 +180,11 @@ func (p *Player) cachedContent() (string, bool) {
 	return "", false
 }
 
-// Start (re)starts the content from its first frame. If the trailer can't
-// be fetched it falls back to ffplay's built-in testsrc2 pattern (still
-// full-motion 60fps), which only ffplay can generate.
-func (p *Player) Start(ctx context.Context) (Info, error) {
+// Start (re)starts the content from its first frame, fullscreen on target
+// (nil: the player's default monitor). If the trailer can't be fetched it
+// falls back to ffplay's built-in testsrc2 pattern (still full-motion
+// 60fps), which only ffplay can generate.
+func (p *Player) Start(ctx context.Context, target *monitors.Monitor) (Info, error) {
 	p.Stop()
 
 	content, prepErr := p.Prepare(ctx)
@@ -188,6 +198,9 @@ func (p *Player) Start(ctx context.Context) (Info, error) {
 	args, label, err := playerArgs(player, content)
 	if err != nil {
 		return Info{}, err
+	}
+	if target != nil {
+		args = append(placementArgs(player, *target), args...)
 	}
 	proc, err := launch(path, args)
 	if err != nil {
@@ -205,6 +218,10 @@ func (p *Player) Start(ctx context.Context) (Info, error) {
 	}
 
 	info := Info{Player: player, Content: label, Playing: true, StartedAt: time.Now(), ContentPath: content}
+	if target != nil {
+		info.RequestedMonitor = target.ID
+		info.Monitor = ensureOnMonitor(proc.Pid(), *target)
+	}
 	p.mu.Lock()
 	p.proc = proc
 	p.info = info
@@ -240,6 +257,62 @@ func (p *Player) Stop() {
 	if proc != nil {
 		_ = proc.Kill()
 		log.Printf("[bench] benchmark video stopped")
+	}
+}
+
+// placementArgs asks the player to open on m. Each player takes this
+// differently: ffplay (SDL) positions its window in DPI-unaware
+// coordinates and goes fullscreen on the monitor that window is on, mpv
+// names the screen directly, VLC places its video window.
+func placementArgs(player string, m monitors.Monitor) []string {
+	switch player {
+	case "ffplay":
+		x, y, ok := monitors.LogicalOrigin(m.ID)
+		if !ok {
+			x, y = m.X, m.Y
+		}
+		return []string{"-left", fmt.Sprint(x + 50), "-top", fmt.Sprint(y + 50)}
+	case "mpv":
+		return []string{"--screen-name=" + m.ID, "--fs-screen-name=" + m.ID}
+	case "vlc":
+		return []string{fmt.Sprintf("--video-x=%d", m.X+50), fmt.Sprintf("--video-y=%d", m.Y+50)}
+	}
+	return nil
+}
+
+// placementTimeout bounds how long ensureOnMonitor waits for the player's
+// window to show up and settle.
+var placementTimeout = 5 * time.Second
+
+// ensureOnMonitor checks which monitor pid's window landed on and moves it
+// onto target when the player's own placement missed. Returns the monitor
+// the window ends up on, "" if its window can't be seen from here.
+func ensureOnMonitor(pid int, target monitors.Monitor) string {
+	deadline := time.Now().Add(placementTimeout)
+	moved := false
+	for {
+		if id, ok := monitors.ProcessMonitor(pid); ok {
+			if id == target.ID {
+				return id
+			}
+			if !moved {
+				log.Printf("[bench] player opened on %s instead of %s -- moving it", id, target.ID)
+				if err := monitors.MoveProcessWindows(pid, target); err != nil {
+					log.Printf("[bench] moving the player to %s: %v", target.ID, err)
+					return id
+				}
+				moved = true
+				continue
+			}
+			if time.Now().After(deadline) {
+				log.Printf("[bench] player still on %s, not %s", id, target.ID)
+				return id
+			}
+		} else if time.Now().After(deadline) {
+			log.Printf("[bench] can't see the player's window to check its monitor")
+			return ""
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 

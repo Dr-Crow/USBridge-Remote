@@ -84,6 +84,8 @@ type LocalizedStrings struct {
 	BenchTitle                        string
 	BenchHint                         string
 	BenchDuration                     string
+	BenchMonitor                      string // label of the benchmark's host monitor pick
+	BenchMonitorPrimary               string // suffix marking the host's primary monitor
 	BenchNotInstalled                 string
 	BenchNeedOne                      string
 	BenchStart                        string
@@ -713,6 +715,8 @@ func EN() *LocalizedStrings {
 		BenchTitle:                        "Streamer benchmark",
 		BenchHint:                         "Each selected streamer is switched on the host, started from scratch and shown the same fast-moving video with the Net Graph on. Startup is timed separately; the video starts only once the stream is up.",
 		BenchDuration:                     "Measure each streamer for",
+		BenchMonitor:                      "Host monitor (capture + test video)",
+		BenchMonitorPrimary:               "primary",
 		BenchNotInstalled:                 "not installed on the host",
 		BenchNeedOne:                      "Select at least one streamer.",
 		BenchStart:                        "Start",
@@ -1564,6 +1568,8 @@ func ES() *LocalizedStrings {
 	locale.BenchTitle = "Benchmark de streamers"
 	locale.BenchHint = "Cada streamer seleccionado se activa en el host, se inicia desde cero y muestra el mismo vídeo dinámico con el Net Graph activo. El arranque se mide aparte; el vídeo empieza cuando el stream ya está en marcha."
 	locale.BenchDuration = "Medir cada streamer durante"
+	locale.BenchMonitor = "Monitor del host (captura + vídeo de prueba)"
+	locale.BenchMonitorPrimary = "principal"
 	locale.BenchNotInstalled = "no instalado en el host"
 	locale.BenchNeedOne = "Selecciona al menos un streamer."
 	locale.BenchStart = "Iniciar"
@@ -1936,6 +1942,8 @@ func UKProper() *LocalizedStrings {
 	locale.BenchTitle = "Бенчмарк стрімерів"
 	locale.BenchHint = "Кожен вибраний стрімер вмикається на хості, запускається з нуля й показує те саме динамічне відео з увімкненим Net Graph. Час запуску рахується окремо; відео стартує лише після запуску стріму."
 	locale.BenchDuration = "Вимірювати кожен стрімер"
+	locale.BenchMonitor = "Монітор хоста (захоплення + тестове відео)"
+	locale.BenchMonitorPrimary = "основний"
 	locale.BenchNotInstalled = "не встановлено на хості"
 	locale.BenchNeedOne = "Виберіть хоча б один стрімер."
 	locale.BenchStart = "Почати"

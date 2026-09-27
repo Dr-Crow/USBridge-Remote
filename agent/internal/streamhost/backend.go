@@ -158,6 +158,11 @@ type CaptureDevice struct {
 	DisplayName   string
 	Primary       bool
 	Width, Height int
+	// GDIName is the monitor's Windows GDI device name (`\\.\DISPLAY1`),
+	// "" elsewhere. Both Windows backends report it, so it is what ties one
+	// physical monitor to each backend's own OutputName (Sunshine's
+	// device_id GUID, rustshine's DXGI index).
+	GDIName string
 }
 
 // CaptureDeviceLister is the platform-specific device/monitor-correlation

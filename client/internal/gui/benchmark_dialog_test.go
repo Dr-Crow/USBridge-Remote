@@ -26,6 +26,14 @@ import (
 
 type benchRunStub func(ctx context.Context, backends []string, window time.Duration, progress benchmarkProgress) (*benchmarkResult, error)
 
+// benchTestStatus is the fake agent's /api/bench/status data; tests that
+// need monitors swap it (see withBenchStatus).
+var benchTestStatus = `{"active_backend":"sunshine","available_backends":["sunshine","rustshine"]}`
+
+// benchTestMonitor records the monitor the last benchmark run was started
+// with.
+var benchTestMonitor atomic.Value
+
 // newBenchTestWindow wires a MainWindow to a fake agent and replaces the
 // real benchmark run and result saving for the test.
 func newBenchTestWindow(t *testing.T, run benchRunStub) (*MainWindow, fyne.Window) {
@@ -41,12 +49,13 @@ func newBenchTestWindow(t *testing.T, run benchRunStub) (*MainWindow, fyne.Windo
 			http.NotFound(rw, r)
 			return
 		}
-		_, _ = rw.Write([]byte(`{"success":true,"data":{"active_backend":"sunshine","available_backends":["sunshine","rustshine"]}}`))
+		_, _ = rw.Write([]byte(`{"success":true,"data":` + benchTestStatus + `}`))
 	}))
 	t.Cleanup(srv.Close)
 
 	prevRun, prevSave := benchmarkRunFn, saveBenchmarkResultFn
-	benchmarkRunFn = func(_ *MainWindow, ctx context.Context, backends []string, window time.Duration, progress benchmarkProgress) (*benchmarkResult, error) {
+	benchmarkRunFn = func(_ *MainWindow, ctx context.Context, backends []string, monitor string, window time.Duration, progress benchmarkProgress) (*benchmarkResult, error) {
+		benchTestMonitor.Store(monitor)
 		return run(ctx, backends, window, progress)
 	}
 	saveBenchmarkResultFn = func(*benchmarkResult) (string, error) { return "/tmp/bench", nil }

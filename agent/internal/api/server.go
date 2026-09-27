@@ -215,6 +215,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/screen", sec.LimitPolling(s.screen))
 	mux.HandleFunc("GET /api/bench/status", sec.LimitPolling(s.benchStatus))
 	mux.HandleFunc("POST /api/bench/backend", sec.LimitPolling(s.benchBackend))
+	mux.HandleFunc("POST /api/bench/monitor", sec.LimitPolling(s.benchMonitor))
 	mux.HandleFunc("POST /api/bench/prepare", sec.LimitPolling(s.benchPrepare))
 	mux.HandleFunc("POST /api/bench/video/start", sec.LimitPolling(s.benchVideoStart))
 	mux.HandleFunc("POST /api/bench/video/stop", sec.LimitPolling(s.benchVideoStop))

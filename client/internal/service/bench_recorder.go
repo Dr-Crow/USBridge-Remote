@@ -68,6 +68,9 @@ type BenchRun struct {
 	Ticks       []BenchTick  `json:"ticks"`
 	RingDropped uint32       `json:"ring_dropped,omitempty"`
 	Content     string       `json:"content,omitempty"`
+	// Monitor is the host monitor the test video played on, as the agent
+	// saw its window ("" when it couldn't tell or none was pinned).
+	Monitor string `json:"monitor,omitempty"`
 	// Codec is what NegotiatedVideoCodecName reported once this run's
 	// stream was up -- the server's actual choice, not the client's
 	// request, same ground-truth distinction as the Net Graph HUD's own

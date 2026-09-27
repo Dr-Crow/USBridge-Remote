@@ -21,6 +21,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"github.com/sirupsen/logrus"
 
+	"usbridge-client/internal/api"
 	"usbridge-client/internal/gui/design"
 	"usbridge-client/internal/gui/i18n"
 	"usbridge-client/internal/gui/view"
@@ -61,12 +62,39 @@ func (mw *MainWindow) showBenchmarkDialog() {
 				dialog.ShowError(fmt.Errorf("%s: %v", i18n.Current.BenchFailed, err), mw.window)
 				return
 			}
-			mw.showBenchmarkSetup(status.AvailableBackends)
+			mw.showBenchmarkSetup(status.AvailableBackends, status.Monitors)
 		})
 	}()
 }
 
-func (mw *MainWindow) showBenchmarkSetup(available []string) {
+// benchMonitorChoice is one entry of the setup dialog's monitor list.
+type benchMonitorChoice struct {
+	label string
+	id    string
+}
+
+// benchMonitorChoices labels the host's monitors for the setup dialog and
+// picks the default: the primary monitor, else the first listed.
+func benchMonitorChoices(mons []api.BenchMonitor) (choices []benchMonitorChoice, def int) {
+	for i, m := range mons {
+		name := m.Name
+		short := strings.TrimPrefix(m.ID, `\\.\`)
+		if name == "" {
+			name = short
+		} else if short != m.ID {
+			name += " (" + short + ")"
+		}
+		label := fmt.Sprintf("%s · %dx%d", name, m.Width, m.Height)
+		if m.Primary {
+			label += " · " + i18n.Current.BenchMonitorPrimary
+			def = i
+		}
+		choices = append(choices, benchMonitorChoice{label: label, id: m.ID})
+	}
+	return choices, def
+}
+
+func (mw *MainWindow) showBenchmarkSetup(available []string, mons []api.BenchMonitor) {
 	has := map[string]bool{}
 	for _, b := range available {
 		has[b] = true
@@ -93,13 +121,27 @@ func (mw *MainWindow) showBenchmarkSetup(available []string) {
 	durSel := widget.NewSelect(labels, nil)
 	durSel.SetSelected(benchmarkWindows[1].label)
 
+	// Both streamers capture, and the test video plays on, the one monitor
+	// picked here -- otherwise each streamer used its own saved monitor and
+	// the video landed wherever the player opened. Hidden when the host
+	// can't list its monitors (then nothing is pinned).
+	choices, defChoice := benchMonitorChoices(mons)
+	var monSel *widget.Select
+	settings := []fyne.CanvasObject{container.NewVBox(boxes...)}
+	if len(choices) > 0 {
+		var monLabels []string
+		for _, c := range choices {
+			monLabels = append(monLabels, c.label)
+		}
+		monSel = widget.NewSelect(monLabels, nil)
+		monSel.SetSelected(choices[defChoice].label)
+		settings = append(settings, widget.NewLabel(i18n.Current.BenchMonitor), monSel)
+	}
+	settings = append(settings, container.NewHBox(widget.NewLabel(i18n.Current.BenchDuration), durSel))
+
 	hint := widget.NewLabel(i18n.Current.BenchHint)
 	hint.Wrapping = fyne.TextWrapWord
-	content := container.NewVBox(
-		container.New(&benchMinWidthLayout{width: 420}, hint),
-		container.NewVBox(boxes...),
-		container.NewHBox(widget.NewLabel(i18n.Current.BenchDuration), durSel),
-	)
+	content := container.NewVBox(append([]fyne.CanvasObject{container.New(&benchMinWidthLayout{width: 420}, hint)}, settings...)...)
 	view.ShowCustomConfirmDialog(i18n.Current.BenchTitle, i18n.Current.BenchStart, i18n.Current.Cancel, content, func(ok bool) {
 		if !ok {
 			benchmarkBusy.Store(false)
@@ -122,7 +164,15 @@ func (mw *MainWindow) showBenchmarkSetup(available []string) {
 				window = w.d
 			}
 		}
-		mw.startBenchmark(picked, window)
+		monitor := ""
+		if monSel != nil {
+			for _, c := range choices {
+				if c.label == monSel.Selected {
+					monitor = c.id
+				}
+			}
+		}
+		mw.startBenchmark(picked, monitor, window)
 	}, mw.window)
 }
 
@@ -222,7 +272,7 @@ func benchResultsSizeFn(canvasSize fyne.Size, _ fyne.CanvasObject) fyne.Size {
 	return fyne.NewSize(canvasSize.Width*0.94, canvasSize.Height*0.94)
 }
 
-func (mw *MainWindow) startBenchmark(backends []string, window time.Duration) {
+func (mw *MainWindow) startBenchmark(backends []string, monitor string, window time.Duration) {
 	// No progress popup: the setup dialog closes on Start and nothing else
 	// opens until the results. Any Fyne overlay over the stream hides the
 	// native video (black picture on Windows, see
@@ -232,7 +282,7 @@ func (mw *MainWindow) startBenchmark(backends []string, window time.Duration) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		res, err := benchmarkRunFn(mw, ctx, backends, window, func(text string, f float64) {
+		res, err := benchmarkRunFn(mw, ctx, backends, monitor, window, func(text string, f float64) {
 			service.SetNetGraphBanner(fmt.Sprintf("%s  %.0f%%", text, math.Min(math.Max(f, 0), 1)*100))
 		})
 		service.SetNetGraphBanner("")

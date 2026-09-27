@@ -12,6 +12,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 
+	"usbridge-client/internal/api"
 	"usbridge-client/internal/gui/i18n"
 	"usbridge-client/internal/service"
 )
@@ -42,7 +43,9 @@ type benchmarkProgress func(text string, fraction float64)
 // runBenchmark performs the whole benchmark; it blocks, so call it from a
 // goroutine. The stream and the host's original streamer are restored on
 // every exit path.
-func (mw *MainWindow) runBenchmark(ctx context.Context, backends []string, window time.Duration, progress benchmarkProgress) (*benchmarkResult, error) {
+// monitor (a host monitor ID, "" to leave each streamer's own) pins both
+// streamers' capture and the test video to one monitor for the whole run.
+func (mw *MainWindow) runBenchmark(ctx context.Context, backends []string, monitor string, window time.Duration, progress benchmarkProgress) (*benchmarkResult, error) {
 	client := mw.usbClient
 	vw := mw.videoWidget
 	if client == nil || vw == nil {
@@ -67,8 +70,14 @@ func (mw *MainWindow) runBenchmark(ctx context.Context, backends []string, windo
 		if !netGraphWas {
 			service.SetNetGraphEnabled(false)
 		}
-		// Put the host back the way the user had it.
+		// Put the host back the way the user had it: each streamer's own
+		// monitor first, so the restored streamer starts on it.
 		vw.BenchmarkStopStream()
+		if monitor != "" {
+			if err := client.BenchSetMonitor(""); err != nil {
+				logrus.Warnf("📈 [Benchmark] restoring the streamers' monitors: %v", err)
+			}
+		}
 		if original != "" {
 			if st, err := client.BenchStatus(); err == nil && st.ActiveBackend != original {
 				progress(i18n.Current.BenchStepRestore, 1)
@@ -83,6 +92,13 @@ func (mw *MainWindow) runBenchmark(ctx context.Context, backends []string, windo
 			}
 		}
 	}()
+
+	if monitor != "" {
+		if err := client.BenchSetMonitor(monitor); err != nil {
+			return nil, fmt.Errorf("monitor %s: %w", monitor, err)
+		}
+		logrus.Infof("📈 [Benchmark] capturing and playing on host monitor %s", monitor)
+	}
 
 	progress(i18n.Current.BenchStepPrepare, 0)
 	if ready, note, err := client.BenchPrepare(); err != nil {
@@ -150,11 +166,15 @@ func (mw *MainWindow) benchmarkOne(ctx context.Context, run *service.BenchRun, r
 		return err
 	}
 	step(i18n.Current.BenchStepVideo, 0.1)
-	content, err := client.BenchVideoStart()
+	video, err := client.BenchVideoStart()
 	if err != nil {
 		return fmt.Errorf("video: %w", err)
 	}
-	run.Content = content
+	run.Content = video.Content
+	run.Monitor = video.Monitor
+	if err := benchVideoPlacementError(video); err != nil {
+		return err
+	}
 
 	recorder.Start(run)
 	started := time.Now()
@@ -177,6 +197,24 @@ func (mw *MainWindow) benchmarkOne(ctx context.Context, run *service.BenchRun, r
 	_ = client.BenchVideoStop()
 	vw.BenchmarkStopStream()
 	logrus.Infof("📈 [Benchmark] %s: recorded %d frames", run.Backend, len(run.Frames))
+	return nil
+}
+
+// benchVideoPlacementError fails a run whose test video isn't on the monitor
+// the benchmark pinned: the streamer would then be measured on a different
+// picture than the other one. A window the agent couldn't see is let
+// through (it can't tell), with a warning.
+func benchVideoPlacementError(v api.BenchVideo) error {
+	if v.RequestedMonitor == "" {
+		return nil
+	}
+	if v.Monitor == "" {
+		logrus.Warnf("📈 [Benchmark] the host couldn't confirm the test video is on %s", v.RequestedMonitor)
+		return nil
+	}
+	if v.Monitor != v.RequestedMonitor {
+		return fmt.Errorf("test video opened on %s instead of %s", v.Monitor, v.RequestedMonitor)
+	}
 	return nil
 }
 
