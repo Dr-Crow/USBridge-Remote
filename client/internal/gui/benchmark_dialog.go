@@ -1,13 +1,16 @@
 package gui
 
 import (
+	"archive/zip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"image/color"
+	"image/png"
+	"io"
 	"math"
-	"os"
-	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -29,9 +32,24 @@ var benchmarkWindows = []struct {
 	d     time.Duration
 }{{"30 s", 30 * time.Second}, {"60 s", time.Minute}, {"2 min", 2 * time.Minute}, {"5 min", 5 * time.Minute}}
 
+// benchmarkBusy is set from opening the setup dialog until the benchmark
+// ends (or the dialog is cancelled), so a repeated menu click can't stack a
+// second dialog or start a second run on top of the first.
+var benchmarkBusy atomic.Bool
+
+// benchmarkRunFn and saveBenchmarkResultFn are variables only so tests can
+// drive the dialog flow without a host.
+var (
+	benchmarkRunFn        = (*MainWindow).runBenchmark
+	saveBenchmarkResultFn = saveBenchmarkResult
+)
+
 // showBenchmarkDialog asks which streamers to compare and for how long.
 func (mw *MainWindow) showBenchmarkDialog() {
 	if mw.usbClient == nil || mw.videoWidget == nil {
+		return
+	}
+	if !benchmarkBusy.CompareAndSwap(false, true) {
 		return
 	}
 	client := mw.usbClient
@@ -39,6 +57,7 @@ func (mw *MainWindow) showBenchmarkDialog() {
 		status, err := client.BenchStatus()
 		fyne.Do(func() {
 			if err != nil {
+				benchmarkBusy.Store(false)
 				dialog.ShowError(fmt.Errorf("%s: %v", i18n.Current.BenchFailed, err), mw.window)
 				return
 			}
@@ -83,6 +102,7 @@ func (mw *MainWindow) showBenchmarkSetup(available []string) {
 	)
 	view.ShowCustomConfirmDialog(i18n.Current.BenchTitle, i18n.Current.BenchStart, i18n.Current.Cancel, content, func(ok bool) {
 		if !ok {
+			benchmarkBusy.Store(false)
 			return
 		}
 		var picked []string
@@ -92,6 +112,7 @@ func (mw *MainWindow) showBenchmarkSetup(available []string) {
 			}
 		}
 		if len(picked) == 0 {
+			benchmarkBusy.Store(false)
 			dialog.ShowInformation(i18n.Current.BenchTitle, i18n.Current.BenchNeedOne, mw.window)
 			return
 		}
@@ -148,7 +169,10 @@ func benchStyledPanel(title string, body fyne.CanvasObject, onClose func()) fyne
 	border.StrokeColor = design.ColorBorder
 	border.StrokeWidth = 1
 
-	content := container.NewVBox(titleBar, view.NewInset(body, 0, 0, 16, 14))
+	// Border, not VBox: a VBox only ever gives body its MinSize, which for
+	// the results dialog's scroll is one line -- everything below "Saved
+	// to" was clipped.
+	content := container.NewBorder(titleBar, nil, nil, nil, view.NewInset(body, 0, 0, 16, 14))
 	return container.NewStack(bg, view.NewInset(content, 18, 18, 16, 16), border)
 }
 
@@ -199,21 +223,21 @@ func benchResultsSizeFn(canvasSize fyne.Size, _ fyne.CanvasObject) fyne.Size {
 }
 
 func (mw *MainWindow) startBenchmark(backends []string, window time.Duration) {
+	// No progress popup: the setup dialog closes on Start and nothing else
+	// opens until the results. Any Fyne overlay over the stream hides the
+	// native video (black picture on Windows, see
+	// VideoWidget.syncCanvasOverlayHidden) -- exactly the stream being
+	// measured -- so progress goes to the Net Graph HUD, which the
+	// benchmark turns on anyway.
 	ctx, cancel := context.WithCancel(context.Background())
-	status := widget.NewLabel(i18n.Current.BenchStepStatus)
-	bar := widget.NewProgressBar()
-	content := container.New(&benchMinWidthLayout{width: 420}, container.NewVBox(status, bar))
-	popup := showBenchStyledDialog(mw.window, i18n.Current.BenchTitle, content, benchContentSizeFn, cancel)
 
 	go func() {
-		res, err := mw.runBenchmark(ctx, backends, window, func(text string, f float64) {
-			fyne.Do(func() {
-				status.SetText(text)
-				bar.SetValue(math.Min(math.Max(f, 0), 1))
-			})
+		res, err := benchmarkRunFn(mw, ctx, backends, window, func(text string, f float64) {
+			service.SetNetGraphBanner(fmt.Sprintf("%s  %.0f%%", text, math.Min(math.Max(f, 0), 1)*100))
 		})
+		service.SetNetGraphBanner("")
+		benchmarkBusy.Store(false)
 		cancelled := ctx.Err() != nil
-		fyne.Do(func() { popup.Hide() })
 		cancel()
 		if cancelled {
 			return
@@ -222,7 +246,7 @@ func (mw *MainWindow) startBenchmark(backends []string, window time.Duration) {
 			fyne.Do(func() { dialog.ShowError(fmt.Errorf("%s: %v", i18n.Current.BenchFailed, err), mw.window) })
 			return
 		}
-		dir, err := saveBenchmarkResult(res)
+		dir, err := saveBenchmarkResultFn(res)
 		if err != nil {
 			logrus.Warnf("📈 [Benchmark] saving results: %v", err)
 		}
@@ -296,80 +320,164 @@ func benchmarkRows() []benchmarkRow {
 	}
 }
 
-func (mw *MainWindow) showBenchmarkResults(res *benchmarkResult, dir string) {
-	metrics := res.Metrics
-	cols := 1 + len(metrics)
-	var cells []fyne.CanvasObject
-	text := func(s string, c color.Color, bold bool) fyne.CanvasObject {
-		t := canvas.NewText(s, c)
-		t.TextSize = 13
-		t.TextStyle.Bold = bold
-		return t
-	}
-	cells = append(cells, text("", design.ColorTextLight, true))
-	for _, m := range metrics {
-		cells = append(cells, text(service.BenchBackendLabel(m.Backend), service.BenchBackendColor(m.Backend), true))
-	}
-	best := color.NRGBA{R: 0x4a, G: 0xd6, B: 0x6d, A: 0xff}
-	for _, row := range benchmarkRows() {
-		if row.section != "" {
-			cells = append(cells, text(row.section, design.ColorTextLight, true))
-			for range metrics {
-				cells = append(cells, text("", design.ColorTextLight, false))
-			}
-		}
-		cells = append(cells, text("   "+row.label, design.ColorTextMuted, false))
+// benchBestColor marks the best value of a row or summary tile.
+var benchBestColor = color.NRGBA{R: 0x4a, G: 0xd6, B: 0x6d, A: 0xff}
+
+func benchText(s string, c color.Color, size float32, bold bool) *canvas.Text {
+	t := canvas.NewText(s, c)
+	t.TextSize = size
+	t.TextStyle.Bold = bold
+	return t
+}
+
+// benchCard is a rounded surface panel with an optional colored outline.
+func benchCard(body fyne.CanvasObject, outline color.Color) fyne.CanvasObject {
+	bg := canvas.NewRectangle(design.ColorSurface)
+	bg.CornerRadius = design.RadiusMD
+	border := canvas.NewRectangle(color.Transparent)
+	border.CornerRadius = design.RadiusMD
+	border.StrokeColor = outline
+	border.StrokeWidth = 1
+	return container.NewStack(bg, view.NewInset(body, 14, 14, 12, 12), border)
+}
+
+// benchSummaryTile is one metric in a streamer's summary card: a large
+// value over a small caption, the value green when it's the best of all
+// streamers.
+type benchSummaryTile struct {
+	caption string
+	value   func(m service.BenchMetrics) (float64, bool)
+	format  string
+	lower   bool
+}
+
+var benchSummaryTiles = []benchSummaryTile{
+	{"avg fps", func(m service.BenchMetrics) (float64, bool) { return m.AvgFPS, true }, "%.1f", false},
+	{"1% low fps", func(m service.BenchMetrics) (float64, bool) { return m.Low1FPS, true }, "%.1f", false},
+	{"stalls", func(m service.BenchMetrics) (float64, bool) { return float64(m.StallCount), true }, "%.0f", true},
+	{"encode avg", func(m service.BenchMetrics) (float64, bool) { return m.HostLatencyAvg, true }, "%.1f ms", true},
+	{"bitrate", func(m service.BenchMetrics) (float64, bool) { return m.BitrateMbps, true }, "%.1f Mbps", false},
+	{"startup", func(m service.BenchMetrics) (float64, bool) { return (m.SwitchMs + m.StartupMs) / 1000, true }, "%.1f s", true},
+}
+
+// benchSummaryCards builds one card per streamer with its headline numbers
+// side by side, so the comparison reads at a glance before the full table.
+func benchSummaryCards(metrics []service.BenchMetrics) fyne.CanvasObject {
+	best := make([]int, len(benchSummaryTiles))
+	for t, tile := range benchSummaryTiles {
 		vals := make([]float64, len(metrics))
 		oks := make([]bool, len(metrics))
 		for i, m := range metrics {
-			vals[i], oks[i] = row.value(m)
+			vals[i], oks[i] = tile.value(m)
+			oks[i] = oks[i] && m.Error == ""
+		}
+		best[t] = benchmarkBest(vals, oks, tile.lower)
+	}
+	var cards []fyne.CanvasObject
+	for i, m := range metrics {
+		accent := service.BenchBackendColor(m.Backend)
+		title := benchText(service.BenchBackendLabel(m.Backend), accent, 17, true)
+		sub := ""
+		if m.Codec != "" {
+			sub = strings.ToUpper(m.Codec)
+		}
+		head := container.NewBorder(nil, nil, title, benchText(sub, design.ColorTextMuted, 12, false))
+		if m.Error != "" {
+			msg := widget.NewLabel(m.Error)
+			msg.Wrapping = fyne.TextWrapWord
+			cards = append(cards, benchCard(container.NewVBox(head, benchText("failed", design.ColorDanger, 22, true), msg), accent))
+			continue
+		}
+		var tiles []fyne.CanvasObject
+		for t, tile := range benchSummaryTiles {
+			v, ok := tile.value(m)
+			s := "n/a"
+			if ok {
+				s = fmt.Sprintf(tile.format, v)
+			}
+			c := color.Color(design.ColorTextLight)
+			if best[t] == i {
+				c = benchBestColor
+			}
+			tiles = append(tiles, container.NewVBox(benchText(s, c, 22, true), benchText(tile.caption, design.ColorTextMuted, 11, false)))
+		}
+		cards = append(cards, benchCard(container.NewVBox(head, container.NewGridWithColumns(3, tiles...)), accent))
+	}
+	return container.NewGridWithColumns(len(cards), cards...)
+}
+
+// benchResultsTable is the full per-metric comparison: section header
+// rows, then striped metric rows with the best value in green.
+func benchResultsTable(metrics []service.BenchMetrics) fyne.CanvasObject {
+	cols := 1 + len(metrics)
+	row := func(cells []fyne.CanvasObject, fill color.Color) fyne.CanvasObject {
+		grid := container.NewGridWithColumns(cols, cells...)
+		if fill == nil {
+			return view.NewInset(grid, 8, 8, 3, 3)
+		}
+		bg := canvas.NewRectangle(fill)
+		bg.CornerRadius = 4
+		return container.NewStack(bg, view.NewInset(grid, 8, 8, 3, 3))
+	}
+
+	head := []fyne.CanvasObject{benchText("", design.ColorTextLight, 13, true)}
+	for _, m := range metrics {
+		head = append(head, benchText(service.BenchBackendLabel(m.Backend), service.BenchBackendColor(m.Backend), 13, true))
+	}
+	rows := []fyne.CanvasObject{row(head, nil)}
+	stripe := 0
+	for _, r := range benchmarkRows() {
+		if r.section != "" {
+			rows = append(rows, view.NewInset(benchText(r.section, design.ColorAccent, 13, true), 8, 8, 12, 2), widget.NewSeparator())
+			stripe = 0
+		}
+		cells := []fyne.CanvasObject{benchText(r.label, design.ColorTextMuted, 13, false)}
+		vals := make([]float64, len(metrics))
+		oks := make([]bool, len(metrics))
+		for i, m := range metrics {
+			vals[i], oks[i] = r.value(m)
 			if m.Error != "" {
 				oks[i] = false
 			}
 		}
-		bestIdx := benchmarkBest(vals, oks, row.lower)
+		bestIdx := benchmarkBest(vals, oks, r.lower)
 		for i, m := range metrics {
 			s := "n/a"
 			switch {
 			case m.Error != "":
 				s = "failed"
 			case !oks[i]:
-			case row.label == "Codec":
+			case r.label == "Codec":
 				s = strings.ToUpper(m.Codec)
-			case row.label == "Frame time p50 / p95":
+			case r.label == "Frame time p50 / p95":
 				s = fmt.Sprintf("%.1f / %.1f ms", m.IntervalP50, m.IntervalP95)
-			case row.label == "Recovered by IDR / RFI":
+			case r.label == "Recovered by IDR / RFI":
 				s = fmt.Sprintf("%d / %d", m.RecoveredByIDR, m.RecoveredByRFI)
 			default:
-				s = fmt.Sprintf(row.format, vals[i])
+				s = fmt.Sprintf(r.format, vals[i])
 			}
 			c := color.Color(design.ColorTextLight)
 			if i == bestIdx {
-				c = best
+				c = benchBestColor
 			}
-			cells = append(cells, text(s, c, i == bestIdx))
+			cells = append(cells, benchText(s, c, 13, i == bestIdx))
 		}
-	}
-	table := container.NewGridWithColumns(cols, cells...)
-
-	var errs []string
-	for _, m := range metrics {
-		if m.Error != "" {
-			errs = append(errs, fmt.Sprintf("%s: %s", service.BenchBackendLabel(m.Backend), m.Error))
+		var fill color.Color
+		if stripe%2 == 1 {
+			fill = design.ColorAlphaWhite07
 		}
+		stripe++
+		rows = append(rows, row(cells, fill))
 	}
+	return container.NewVBox(rows...)
+}
 
-	img := service.RenderBenchChart(res.Runs, metrics)
-	chart := canvas.NewImageFromImage(img)
-	chart.FillMode = canvas.ImageFillContain
-	w := float32(900)
-	chart.SetMinSize(fyne.NewSize(w, w*float32(img.Bounds().Dy())/float32(img.Bounds().Dx())))
-
-	stalls := container.NewVBox(text(i18n.Current.BenchStalls, design.ColorTextLight, true))
+func benchStallList(metrics []service.BenchMetrics) fyne.CanvasObject {
+	list := container.NewVBox()
 	for _, m := range metrics {
-		stalls.Add(text(service.BenchBackendLabel(m.Backend), service.BenchBackendColor(m.Backend), true))
+		list.Add(benchText(service.BenchBackendLabel(m.Backend), service.BenchBackendColor(m.Backend), 13, true))
 		if len(m.Stalls) == 0 {
-			stalls.Add(text("   "+i18n.Current.BenchNoStalls, design.ColorTextMuted, false))
+			list.Add(benchText("   "+i18n.Current.BenchNoStalls, design.ColorTextMuted, 13, false))
 		}
 		for _, st := range m.Stalls {
 			line := fmt.Sprintf("   %7.2fs  %5.0f ms  %s", st.AtMs/1000, st.DurationMs, st.Cause)
@@ -379,68 +487,101 @@ func (mw *MainWindow) showBenchmarkResults(res *benchmarkResult, dir string) {
 			if st.Cause == service.BenchCauseHost {
 				line += fmt.Sprintf(" (host captured nothing for %.0f ms)", st.HostGapMs)
 			}
-			stalls.Add(text(line, service.BenchCauseColor(st.Cause), false))
+			list.Add(benchText(line, service.BenchCauseColor(st.Cause), 13, false))
 		}
 	}
-
-	header := container.NewVBox()
-	if dir != "" {
-		header.Add(widget.NewLabel(fmt.Sprintf(i18n.Current.BenchSavedTo, dir)))
-		saveBtn := widget.NewButtonWithIcon(i18n.Current.BenchSaveResults, theme.DocumentSaveIcon(), func() {
-			mw.exportBenchmarkResults(dir)
-		})
-		header.Add(saveBtn)
-	}
-	for _, e := range errs {
-		header.Add(text(e, service.BenchCauseColor(service.BenchCauseLoss), false))
-	}
-	if len(res.Runs) > 0 && res.Runs[0].Content != "" {
-		header.Add(text(fmt.Sprintf("Content: %s, %d fps configured, %.0f s per streamer", res.Runs[0].Content, res.Runs[0].ExpectedFPS, res.Duration), design.ColorTextMuted, false))
-	}
-
-	scroll := container.NewVScroll(container.NewVBox(header, table, widget.NewSeparator(), chart, widget.NewSeparator(), stalls))
-	showBenchStyledDialog(mw.window, i18n.Current.BenchResultsTitle, scroll, benchResultsSizeFn, nil)
+	return list
 }
 
-// exportBenchmarkResults lets the operator copy the already-saved results.json
-// + chart.png (see saveBenchmarkResult; srcDir is that call's own return
-// value) to a folder of their choosing -- the auto-save location is a
+func (mw *MainWindow) showBenchmarkResults(res *benchmarkResult, dir string) {
+	metrics := res.Metrics
+
+	sections := container.NewVBox()
+	if len(res.Runs) > 0 && res.Runs[0].Content != "" {
+		r := res.Runs[0]
+		sections.Add(benchText(fmt.Sprintf("%s · %dx%d @ %d fps · %.0f s per streamer", r.Content, r.Width, r.Height, r.ExpectedFPS, res.Duration), design.ColorTextMuted, 12, false))
+	}
+	sections.Add(benchSummaryCards(metrics))
+	sections.Add(benchCard(benchResultsTable(metrics), design.ColorBorder))
+
+	img := service.RenderBenchChart(res.Runs, metrics)
+	chart := canvas.NewImageFromImage(img)
+	chart.FillMode = canvas.ImageFillContain
+	w := float32(900)
+	chart.SetMinSize(fyne.NewSize(w, w*float32(img.Bounds().Dy())/float32(img.Bounds().Dx())))
+	sections.Add(benchCard(chart, design.ColorBorder))
+
+	stalls := widget.NewAccordion(widget.NewAccordionItem(i18n.Current.BenchStalls, benchStallList(metrics)))
+	sections.Add(stalls)
+
+	scroll := container.NewVScroll(view.NewInset(sections, 0, 10, 0, 8))
+
+	// Footer stays pinned below the scroll: where the auto-save went, and
+	// the download/close actions.
+	var popup *widget.PopUp
+	saved := widget.NewLabel("")
+	saved.Truncation = fyne.TextTruncateEllipsis
+	if dir != "" {
+		saved.SetText(fmt.Sprintf(i18n.Current.BenchSavedTo, dir))
+	}
+	download := widget.NewButtonWithIcon(i18n.Current.BenchSaveResults, theme.DownloadIcon(), func() {
+		mw.downloadBenchmarkResults(res)
+	})
+	download.Importance = widget.HighImportance
+	closeBtn := widget.NewButton(i18n.Current.Close, func() {
+		if popup != nil {
+			popup.Hide()
+		}
+	})
+	footer := container.NewVBox(widget.NewSeparator(), container.NewBorder(nil, nil, nil, container.NewHBox(closeBtn, download), saved))
+
+	popup = showBenchStyledDialog(mw.window, i18n.Current.BenchResultsTitle, container.NewBorder(nil, footer, nil, nil, scroll), benchResultsSizeFn, nil)
+}
+
+// downloadBenchmarkResults saves the results as one zip (results.json +
+// chart.png) wherever the operator picks -- the auto-save location is a
 // user-config directory most people never look inside.
-func (mw *MainWindow) exportBenchmarkResults(srcDir string) {
-	fd := dialog.NewFolderOpen(func(uri fyne.ListableURI, err error) {
-		if err != nil || uri == nil {
+func (mw *MainWindow) downloadBenchmarkResults(res *benchmarkResult) {
+	fd := dialog.NewFileSave(func(wc fyne.URIWriteCloser, err error) {
+		if err != nil || wc == nil {
 			return
 		}
-		destDir := uri.Path()
-		if err := copyBenchmarkResultFiles(srcDir, destDir); err != nil {
-			dialog.ShowError(fmt.Errorf(i18n.Current.BenchSaveResultsFailed, err), mw.window)
+		werr := writeBenchmarkZip(wc, res)
+		if cerr := wc.Close(); werr == nil {
+			werr = cerr
+		}
+		if werr != nil {
+			dialog.ShowError(fmt.Errorf(i18n.Current.BenchSaveResultsFailed, werr), mw.window)
 			return
 		}
-		dialog.ShowInformation(i18n.Current.BenchResultsTitle, fmt.Sprintf(i18n.Current.BenchSaveResultsDone, destDir), mw.window)
+		dialog.ShowInformation(i18n.Current.BenchResultsTitle, fmt.Sprintf(i18n.Current.BenchSaveResultsDone, wc.URI().Name()), mw.window)
 	}, mw.window)
+	fd.SetFileName("usbridge-benchmark-" + res.CreatedAt.Format("20060102_150405") + ".zip")
 	fd.Show()
 }
 
-// copyBenchmarkResultFiles copies every regular file in srcDir (results.json,
-// chart.png) into destDir.
-func copyBenchmarkResultFiles(srcDir, destDir string) error {
-	entries, err := os.ReadDir(srcDir)
+// writeBenchmarkZip writes results.json and chart.png, the same pair
+// saveBenchmarkResult stores, into one zip archive.
+func writeBenchmarkZip(w io.Writer, res *benchmarkResult) error {
+	zw := zip.NewWriter(w)
+	data, err := json.MarshalIndent(res, "", " ")
 	if err != nil {
 		return err
 	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(srcDir, e.Name()))
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(destDir, e.Name()), data, 0o644); err != nil {
-			return err
-		}
+	f, err := zw.Create("results.json")
+	if err != nil {
+		return err
 	}
-	return nil
+	if _, err := f.Write(data); err != nil {
+		return err
+	}
+	if f, err = zw.Create("chart.png"); err != nil {
+		return err
+	}
+	if err := png.Encode(f, service.RenderBenchChart(res.Runs, res.Metrics)); err != nil {
+		return err
+	}
+	return zw.Close()
 }
 
 // benchmarkBest returns the index of the best value, or -1 when there is

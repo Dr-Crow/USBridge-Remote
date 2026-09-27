@@ -209,7 +209,28 @@ var (
 	// line -- pushed from the GUI layer (see SetActiveStreamerBackend's own
 	// doc comment for why this is a push, not a pull hook like the others).
 	netGraphStreamerBackend atomic.Pointer[string]
+
+	// netGraphBanner is an extra status line drawn at the top of the HUD
+	// (see SetNetGraphBanner); nil or "" draws nothing.
+	netGraphBanner atomic.Pointer[string]
 )
+
+// SetNetGraphBanner shows text as the HUD's first line, "" to clear it. The
+// benchmark reports its progress here while a stream is up: any Fyne
+// overlay on top of the video (a progress popup) hides the native video on
+// Windows (VideoWidget.syncCanvasOverlayHidden), so the stream being
+// measured would show as black.
+func SetNetGraphBanner(text string) {
+	netGraphBanner.Store(&text)
+}
+
+// NetGraphBanner is the text SetNetGraphBanner last set.
+func NetGraphBanner() string {
+	if p := netGraphBanner.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
 
 // SetActiveStreamerBackend records which agent-side streamer ("sunshine" or
 // "rustshine") is currently active, shown on the HUD's streamer/codec/
@@ -621,6 +642,11 @@ func buildNetGraphHUD(samples []NetGraphSample) *image.RGBA {
 		line += "  " + netGraphFmtMbps(kbps)
 	}
 	netGraphDrawText(img, marginX, row, line, netGraphText)
+
+	if banner := NetGraphBanner(); banner != "" {
+		row += netGraphLineH
+		netGraphDrawText(img, marginX, row, banner, netGraphWarn)
+	}
 
 	graphTop := row + 12
 	graphH := (netGraphCanvasH - graphTop - marginX - 2*8) / 3

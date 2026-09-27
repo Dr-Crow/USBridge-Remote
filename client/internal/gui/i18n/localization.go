@@ -726,7 +726,7 @@ func EN() *LocalizedStrings {
 		BenchFailed:                       "Benchmark failed",
 		BenchResultsTitle:                 "Benchmark results",
 		BenchSavedTo:                      "Saved to %s",
-		BenchSaveResults:                  "Save results…",
+		BenchSaveResults:                  "Download results…",
 		BenchSaveResultsDone:              "Results saved to %s",
 		BenchSaveResultsFailed:            "Couldn't save results: %v",
 		BenchStalls:                       "Every stall",
@@ -1577,7 +1577,7 @@ func ES() *LocalizedStrings {
 	locale.BenchFailed = "El benchmark falló"
 	locale.BenchResultsTitle = "Resultados del benchmark"
 	locale.BenchSavedTo = "Guardado en %s"
-	locale.BenchSaveResults = "Guardar resultados…"
+	locale.BenchSaveResults = "Descargar resultados…"
 	locale.BenchSaveResultsDone = "Resultados guardados en %s"
 	locale.BenchSaveResultsFailed = "No se pudieron guardar los resultados: %v"
 	locale.BenchStalls = "Todas las congelaciones"
@@ -1949,7 +1949,7 @@ func UKProper() *LocalizedStrings {
 	locale.BenchFailed = "Бенчмарк не вдався"
 	locale.BenchResultsTitle = "Результати бенчмарку"
 	locale.BenchSavedTo = "Збережено в %s"
-	locale.BenchSaveResults = "Зберегти результати…"
+	locale.BenchSaveResults = "Завантажити результати…"
 	locale.BenchSaveResultsDone = "Результати збережено в %s"
 	locale.BenchSaveResultsFailed = "Не вдалося зберегти результати: %v"
 	locale.BenchStalls = "Усі фризи"

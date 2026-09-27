@@ -11,13 +11,23 @@ import (
 
 // BenchmarkStartStream starts a fresh stream and blocks until its first
 // frame is decoded, returning the time from the request to that frame.
+// benchmarkStartStreamFn starts the stream from the saved settings; a
+// variable only so tests can observe it without a real stream.
+var benchmarkStartStreamFn = (*VideoWidget).StartConfiguredVideoAsync
+
 func (vw *VideoWidget) BenchmarkStartStream(timeout time.Duration) (time.Duration, error) {
 	// The backend may have just changed; absolute mouse mapping and the
 	// session setup follow the agent's protocol.
 	vw.refreshAgentProtocol()
 	prevTrace := vw.videoTraceID.Load()
 	start := time.Now()
-	vw.handleStartVideo()
+	// Not handleStartVideo: that's the Start button's handler and opens the
+	// video settings dialog, which popped up mid-benchmark, covered (and on
+	// Windows hid) the stream being measured, never started it if closed,
+	// and counted the operator's click as startup time. Start straight
+	// from the saved settings instead, like autostart does.
+	vw.userStoppedVideo.Store(false)
+	benchmarkStartStreamFn(vw)
 
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
