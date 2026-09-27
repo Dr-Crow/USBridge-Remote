@@ -69,6 +69,17 @@ type WebRTCClient struct {
 	videoEl js.Value // hidden <video>, srcObject set from the video ontrack event
 	audioEl js.Value // <audio>, srcObject set from the audio ontrack event -- see Close()'s doc comment on why this must be torn down alongside videoEl
 
+	// pcConnStateFunc/pcTrackFunc/dcOpenFunc/dcMessageFunc are the
+	// js.Func wrappers behind Connect's pc/dc addEventListener calls --
+	// stored here (rather than left as anonymous inline js.FuncOf values,
+	// as they used to be) so Close can remove them and release the Go
+	// side. Every reconnect (see this file's own "chasing the capture-kms
+	// bug and ICE flapping" comment on Close's audioEl handling for how
+	// often that's been in practice) constructs a brand new WebRTCClient,
+	// so never releasing these leaked four Go-side function slots per
+	// reconnect for the life of the page.
+	pcConnStateFunc, pcTrackFunc, dcOpenFunc, dcMessageFunc js.Func
+
 	mu           sync.Mutex
 	onOpen       func()
 	onMessage    func(data []byte)
@@ -185,7 +196,7 @@ func (c *WebRTCClient) Connect(sessionID string) error {
 	})
 	c.pc = &pc
 
-	pc.Call("addEventListener", "connectionstatechange", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	c.pcConnStateFunc = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		state := pc.Get("connectionState").String()
 		c.mu.Lock()
 		cb := c.onStateChg
@@ -194,7 +205,8 @@ func (c *WebRTCClient) Connect(sessionID string) error {
 			cb(state)
 		}
 		return nil
-	}))
+	})
+	pc.Call("addEventListener", "connectionstatechange", c.pcConnStateFunc)
 
 	// recvonly video+audio transceivers: this client only ever receives
 	// media from the agent (Sunshine's own capture), never sends any --
@@ -242,7 +254,7 @@ func (c *WebRTCClient) Connect(sessionID string) error {
 	doc.Get("body").Call("appendChild", audioEl)
 	c.audioEl = audioEl
 
-	pc.Call("addEventListener", "track", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	c.pcTrackFunc = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		event := args[0]
 		track := event.Get("track")
 		streams := event.Get("streams")
@@ -272,11 +284,12 @@ func (c *WebRTCClient) Connect(sessionID string) error {
 			}
 		}
 		return nil
-	}))
+	})
+	pc.Call("addEventListener", "track", c.pcTrackFunc)
 
 	dc := pc.Call("createDataChannel", "input")
 	c.dc = &dc
-	dc.Call("addEventListener", "open", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	c.dcOpenFunc = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		c.mu.Lock()
 		cb := c.onOpen
 		c.mu.Unlock()
@@ -284,8 +297,9 @@ func (c *WebRTCClient) Connect(sessionID string) error {
 			cb()
 		}
 		return nil
-	}))
-	dc.Call("addEventListener", "message", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	})
+	dc.Call("addEventListener", "open", c.dcOpenFunc)
+	c.dcMessageFunc = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		event := args[0]
 		data := event.Get("data")
 		c.mu.Lock()
@@ -305,7 +319,8 @@ func (c *WebRTCClient) Connect(sessionID string) error {
 			cb(jsArrayBufferToBytes(data))
 		}
 		return nil
-	}))
+	})
+	dc.Call("addEventListener", "message", c.dcMessageFunc)
 
 	offerPromise := pc.Call("createOffer")
 	offerVal, err := awaitPromise(offerPromise)
@@ -960,11 +975,32 @@ func (c *WebRTCClient) Close() {
 	}
 	c.closeCalled = true
 	c.mu.Unlock()
+	// Detach listeners before close(): both pc.close() and dc.close() can
+	// still fire their own state-change events (connectionstatechange ->
+	// "closed", etc.) asynchronously afterward, same as dcConn's identical
+	// close/release-ordering bug (see webrtcweb/dcconn_wasm.go's release
+	// doc comment) -- removing the listener first means that later event
+	// finds nothing to call. Release only after both are actually closed
+	// and detached, so nothing can still be pending against these funcs.
+	// c.pc/c.dc are only ever non-nil after Connect has set them, which (see
+	// Connect's own flow) always also means c.pcConnStateFunc/pcTrackFunc/
+	// dcOpenFunc/dcMessageFunc were already assigned real js.Func values by
+	// that point -- guarding the Release() calls on the same c.pc/c.dc nil
+	// checks avoids releasing an unset zero-value js.Func on a WebRTCClient
+	// whose Connect never got this far (or was never called at all).
 	if c.dc != nil {
+		c.dc.Call("removeEventListener", "open", c.dcOpenFunc)
+		c.dc.Call("removeEventListener", "message", c.dcMessageFunc)
 		c.dc.Call("close")
+		c.dcOpenFunc.Release()
+		c.dcMessageFunc.Release()
 	}
 	if c.pc != nil {
+		c.pc.Call("removeEventListener", "connectionstatechange", c.pcConnStateFunc)
+		c.pc.Call("removeEventListener", "track", c.pcTrackFunc)
 		c.pc.Call("close")
+		c.pcConnStateFunc.Release()
+		c.pcTrackFunc.Release()
 	}
 	if !c.videoEl.IsUndefined() && !c.videoEl.IsNull() {
 		c.videoEl.Set("srcObject", js.Null())

@@ -42,6 +42,19 @@ type wsConn struct {
 	readBuf []byte
 
 	onOpen, onMsg, onErr, onClose js.Func
+
+	// releaseOnce guards release() itself: js.Func.Release() panics if
+	// called a second time on the same Func, and release() is reachable
+	// from more than one path over a wsConn's lifetime (Close(), and both
+	// failure branches inside DialWebSocket). See dcConn's identical field
+	// in webrtcweb/dcconn_wasm.go -- this type was structurally copied from
+	// there (or vice versa; see this file's own top doc comment) and had
+	// the exact same release-ordering bug, confirmed live via that file's
+	// fix: "call to released function" crashing wasm_exec.js whenever the
+	// browser's own "close"/"error" event arrived after Close() had already
+	// released the funcs (WebSocket fires them asynchronously, never
+	// synchronously within .close()).
+	releaseOnce sync.Once
 }
 
 // wsDialTimeout bounds how long DialWebSocket waits for the WebSocket's
@@ -112,6 +125,7 @@ func DialWebSocket(url string) (net.Conn, error) {
 	case <-openCh:
 		select {
 		case <-c.done:
+			c.ws.Call("close")
 			c.release()
 			return nil, c.doneErr
 		default:
@@ -119,6 +133,10 @@ func DialWebSocket(url string) (net.Conn, error) {
 		}
 	case <-time.After(wsDialTimeout):
 		c.fail(errors.New("websocket: connect timeout"))
+		// Explicitly close -- otherwise this abandoned socket is never
+		// actually torn down (just never read from again), same leak
+		// dcConn's identical timeout path used to have.
+		c.ws.Call("close")
 		c.release()
 		return nil, errors.New("websocket: connect timeout to " + url)
 	}
@@ -131,11 +149,26 @@ func (c *wsConn) fail(err error) {
 	})
 }
 
+// release detaches every handler (WebSocket's on*/EventHandler properties,
+// not addEventListener -- setting back to null is the equivalent of
+// removeEventListener for these) before releasing the Go-side js.Func
+// wrappers. Order matters: ws.Call("close") fires "close" asynchronously,
+// never synchronously within the call, so a handler still assigned when
+// release() runs can be invoked after its js.Func is already gone -- see
+// this type's own doc comment and dcConn's identical fix for the crash
+// that caused live.
 func (c *wsConn) release() {
-	c.onOpen.Release()
-	c.onMsg.Release()
-	c.onErr.Release()
-	c.onClose.Release()
+	c.releaseOnce.Do(func() {
+		null := js.Null()
+		c.ws.Set("onopen", null)
+		c.ws.Set("onmessage", null)
+		c.ws.Set("onerror", null)
+		c.ws.Set("onclose", null)
+		c.onOpen.Release()
+		c.onMsg.Release()
+		c.onErr.Release()
+		c.onClose.Release()
+	})
 }
 
 func (c *wsConn) Read(p []byte) (int, error) {
