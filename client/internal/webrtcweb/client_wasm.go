@@ -60,6 +60,11 @@ type WebRTCClient struct {
 	// otherwise (see signaling.rs's resolve_use_h265). "" sends nothing,
 	// which rustshine treats as H.264.
 	videoCodec string
+	// displayCursor: the client's Show Mouse setting, sent as
+	// OfferRequest.display_cursor (the WebRTC counterpart of /launch's
+	// usbridgeDisplayCursor). nil sends nothing and rustshine keeps its
+	// current value.
+	displayCursor *bool
 	// negotiatedCodec: what rustshine's answer actually put on the video
 	// m-line ("h264"/"h265"), "" until an answer arrives.
 	negotiatedCodec string
@@ -133,6 +138,14 @@ func (c *WebRTCClient) SetBitrateKbps(kbps int) { c.mu.Lock(); c.bitrateKbps = k
 // SetVideoCodec stores the codec to request in the next Connect's offer --
 // see the videoCodec field.
 func (c *WebRTCClient) SetVideoCodec(codec string) { c.mu.Lock(); c.videoCodec = codec; c.mu.Unlock() }
+
+// SetDisplayCursor stores the Show Mouse setting to send in the next
+// Connect's offer -- see the displayCursor field.
+func (c *WebRTCClient) SetDisplayCursor(show bool) {
+	c.mu.Lock()
+	c.displayCursor = &show
+	c.mu.Unlock()
+}
 
 // NegotiatedVideoCodec reports the codec rustshine's answer selected, and
 // whether an answer has arrived yet.
@@ -438,6 +451,7 @@ func (c *WebRTCClient) postOffer(sessionID, offerSDP string) (string, error) {
 	c.mu.Lock()
 	bitrateKbps := c.bitrateKbps
 	videoCodec := c.videoCodec
+	displayCursor := c.displayCursor
 	hwID := c.hwID
 	c.mu.Unlock()
 	// bitrate_kbps omitted entirely (not sent as 0) when unset -- matches
@@ -451,6 +465,9 @@ func (c *WebRTCClient) postOffer(sessionID, offerSDP string) (string, error) {
 	}
 	if videoCodec != "" {
 		reqFields["codec"] = videoCodec
+	}
+	if displayCursor != nil {
+		reqFields["display_cursor"] = *displayCursor
 	}
 	reqBody, err := json.Marshal(reqFields)
 	if err != nil {

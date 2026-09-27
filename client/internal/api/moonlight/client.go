@@ -208,6 +208,18 @@ func SetDisplayCursor(show bool) {
 	}
 }
 
+// DisplayCursor reports the recorded Show Mouse setting; ok is false while
+// it was never set. Read by the WebRTC path, which sends it in its offer.
+func DisplayCursor() (show, ok bool) {
+	switch displayCursor.Load() {
+	case 1:
+		return false, true
+	case 2:
+		return true, true
+	}
+	return false, false
+}
+
 type launchRoot struct {
 	SessionUrl string `xml:"sessionUrl0"`
 	Resume     int    `xml:"resume"`

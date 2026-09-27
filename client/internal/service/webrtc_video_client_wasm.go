@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"usbridge-client/internal/api"
+	"usbridge-client/internal/api/moonlight"
 	"usbridge-client/internal/models"
 	"usbridge-client/internal/webrtcweb"
 
@@ -222,6 +223,9 @@ func (c *WebRTCVideoClient) ConnectToMoonlight() error {
 	client := webrtcweb.NewWebRTCClient(baseURL, secret, hwID)
 	client.SetBitrateKbps(bitrateKbps)
 	client.SetVideoCodec(videoMode)
+	if show, ok := moonlight.DisplayCursor(); ok {
+		client.SetDisplayCursor(show)
+	}
 	sessionID := uuid.NewString()
 
 	client.OnStateChange(func(state string) {
