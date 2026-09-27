@@ -397,6 +397,15 @@ func (mw *MainWindow) attachUSBClient(client *api.USBClient) *api.USBClient {
 		}
 	})
 
+	// Same wiring as startClipboardSync's mw.clipboardSync.SetOpenDataChannel
+	// below -- rides the WebRTC PeerConnection's "api-tunnel" DataChannel
+	// when one's available (see USBClient.SetOpenDataChannel's doc comment),
+	// falling back to a direct fetch()/dial otherwise. attachUSBClient is the
+	// common chokepoint every connection path (direct, tailscale, ...) routes
+	// through, so every mw.usbClient ends up with this wired, not just
+	// whichever one happened to exist when a WebRTC session came up.
+	client.SetOpenDataChannel(mw.videoClient.OpenDataChannel)
+
 	if len(mw.activeAPISecret) > 0 {
 		client.SetAPISecretV2(mw.activeAPISecret)
 		// Keep Moonlight's PIN relay in sync so it uses the same HMAC key.
