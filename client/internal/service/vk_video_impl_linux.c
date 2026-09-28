@@ -139,6 +139,17 @@ typedef struct {
 static DmabufFrame      g_dmabuf_pending;
 static volatile int     g_dmabuf_ready = 0;
 
+// NV12 upload frame slot (see vk_video_try_submit_nv12) -- triple-buffered
+// so neither side copies under g_mu: the decoder fills g_nv12_back, then
+// swaps it with g_nv12_pending under the lock; the render thread swaps
+// g_nv12_pending with g_nv12_front under the lock and uploads from front.
+// Each buffer is tightly packed Y (w*h) followed by interleaved UV
+// (cw*2 * ch) at nv12_uv_offset(). Capacity 1, drop-on-full like the others.
+typedef struct { uint8_t *p; size_t cap; int w, h; } Nv12Buf;
+static Nv12Buf          g_nv12_bufs[3];
+static int              g_nv12_back = 0, g_nv12_pending = 1, g_nv12_front = 2;
+static volatile int     g_nv12_ready = 0;
+
 static pthread_mutex_t  g_mu     = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t        g_thread = 0;
 static int              g_pipe_r = -1, g_pipe_w = -1;
@@ -259,6 +270,8 @@ static const char *kZeroCopyExts[] = {
 };
 #define N_ZEROCOPY_EXTS (int)(sizeof(kZeroCopyExts)/sizeof(kZeroCopyExts[0]))
 static int g_zerocopy_supported = 0;
+static int g_ycbcr_supported = 0;    // samplerYcbcrConversion + dynamicRendering enabled on g_dev
+static int g_nv12_supported = 0;     // NV12 upload path usable (see vk_render_frame_nv12)
 
 static int vk_create_device(void) {
     uint32_t navail = 0;
@@ -283,6 +296,44 @@ static int vk_create_device(void) {
     free(avail);
     g_zerocopy_supported = have_all_zc;
 
+    // VkSamplerYcbcrConversion and dynamic rendering are core 1.3 but are
+    // still *features* that must be explicitly enabled at device creation
+    // (previously they weren't -- the dma-buf path relied on ANV tolerating
+    // that). Both the dma-buf zero-copy path and the NV12 upload path need
+    // them; without them both stay off and frames take the RGBA blit path.
+    VkPhysicalDeviceVulkan13Features f13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
+    VkPhysicalDeviceVulkan11Features f11 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, &f13 };
+    VkPhysicalDeviceFeatures2 feats = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f11 };
+    int ycbcr_ok = 0;
+    if (g_have_vk13) {
+        VkPhysicalDeviceProperties pr;
+        vkGetPhysicalDeviceProperties(g_pdev, &pr);
+        if (pr.apiVersion >= VK_API_VERSION_1_3) {
+            vkGetPhysicalDeviceFeatures2(g_pdev, &feats);
+            ycbcr_ok = f11.samplerYcbcrConversion && f13.dynamicRendering;
+        }
+    }
+    if (ycbcr_ok) {
+        // Enable only what we use.
+        VkPhysicalDeviceFeatures2 keep = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f11 };
+        memset(&f11, 0, sizeof(f11)); f11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES; f11.pNext = &f13;
+        memset(&f13, 0, sizeof(f13)); f13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+        f11.samplerYcbcrConversion = VK_TRUE;
+        f13.dynamicRendering = VK_TRUE;
+        feats = keep;
+    }
+    g_ycbcr_supported = ycbcr_ok;
+    if (!ycbcr_ok) g_zerocopy_supported = 0;
+    if (ycbcr_ok) {
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(g_pdev, VK_FORMAT_G8_B8R8_2PLANE_420_UNORM, &fp);
+        VkFormatFeatureFlags need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
+                                    VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT |
+                                    VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT;
+        g_nv12_supported = (fp.optimalTilingFeatures & need) == need;
+    }
+    if (getenv("USBRIDGE_VK_NO_NV12")) g_nv12_supported = 0;
+
     float pri = 1.0f;
     VkDeviceQueueCreateInfo qci = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
     qci.queueFamilyIndex = g_qfam;
@@ -293,12 +344,16 @@ static int vk_create_device(void) {
     dci.pQueueCreateInfos       = &qci;
     dci.enabledExtensionCount   = next;
     dci.ppEnabledExtensionNames = dev_exts;
+    if (ycbcr_ok) dci.pNext = &feats;
     if (vkCreateDevice(g_pdev, &dci, NULL, &g_dev) != VK_SUCCESS) return 0;
     vkGetDeviceQueue(g_dev, g_qfam, 0, &g_queue);
 
     char msg[96];
     snprintf(msg, sizeof(msg), "zero-copy dma-buf render path: %s",
              g_zerocopy_supported ? "available" : "unavailable (falling back to RGBA blit)");
+    goVKLog(msg, 0);
+    snprintf(msg, sizeof(msg), "NV12 upload render path (GPU YCbCr): %s",
+             g_nv12_supported ? "available" : "unavailable");
     goVKLog(msg, 0);
     return 1;
 }
@@ -550,6 +605,7 @@ static VkPipelineLayout         g_yplayout     = VK_NULL_HANDLE;
 static VkPipeline               g_ypipeline    = VK_NULL_HANDLE;
 static VkDescriptorPool         g_ydpool       = VK_NULL_HANDLE;
 static VkDescriptorSet          g_ydset        = VK_NULL_HANDLE;
+static VkImageView              g_ydset_bound_view = VK_NULL_HANDLE; // NV12 path's view g_ydset currently points at (NULL = something else)
 static int                      g_ypipeline_ok = 0; // 0=not tried, 1=ready, -1=failed (don't retry)
 
 // Previous zero-copy frame's per-frame resources (fresh VkImage/VkDeviceMemory
@@ -884,6 +940,7 @@ static int vk_render_frame_dmabuf(DmabufFrame *f) {
     write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     write.pImageInfo = &imgInfo;
     vkUpdateDescriptorSets(g_dev, 1, &write, 0, NULL);
+    g_ydset_bound_view = VK_NULL_HANDLE; // NV12 path must re-point g_ydset
 
     // ---- record + submit + present ----
     vkResetCommandBuffer(g_cmdbuf, 0);
@@ -1027,7 +1084,8 @@ int vk_video_try_submit_dmabuf(int fd, uint64_t modifier, int surf_w, int surf_h
         close(g_dmabuf_pending.fd);
         if (g_dmabuf_pending.release_fn) g_dmabuf_pending.release_fn(g_dmabuf_pending.release_ctx);
     }
-    g_ready = 0; // only one of {RGBA, dma-buf} frame modes is live at a time
+    g_ready = 0; // only one of {RGBA, dma-buf, NV12} frame modes is live at a time
+    g_nv12_ready = 0;
 
     g_dmabuf_pending.fd          = fd;
     g_dmabuf_pending.modifier    = modifier;
@@ -1054,6 +1112,310 @@ int vk_video_try_submit_dmabuf(int fd, uint64_t modifier, int surf_w, int surf_h
 // instance actually support the zero-copy path (see vk_create_device) --
 // avoids wasted vaExportSurfaceHandle calls when it doesn't.
 int vk_video_zerocopy_supported(void) { return g_zerocopy_supported; }
+
+// ─── NV12 upload render path ─────────────────────────────────────────────────
+// For frames that aren't dma-buf exportable (NVDEC/CUDA on NVIDIA, software
+// decode): the decoder hands over system-memory NV12, we copy it into the
+// staging buffer, vkCmdCopyBufferToImage into a persistent multi-planar
+// NV12 image, and sample that through the same VkSamplerYcbcrConversion
+// pipeline as the dma-buf path -- YCbCr->RGB, scaling and letterboxing all
+// on the GPU. Compared with the RGBA path this skips sws_scale NV12->RGBA on
+// the CPU (~13ms/frame at 2560x1600), the per-pixel R/B swizzle loop, and
+// moves 2.7x less data per frame (12 vs 32 bits/pixel).
+
+static VkImage        g_nv12_img  = VK_NULL_HANDLE;
+static VkDeviceMemory g_nv12_mem  = VK_NULL_HANDLE;
+static VkImageView    g_nv12_view = VK_NULL_HANDLE;
+static int            g_nv12_img_w = 0, g_nv12_img_h = 0;
+
+static size_t nv12_uv_offset(int w, int h) {
+    return ((size_t)w * (size_t)h + 15) & ~(size_t)15;
+}
+static size_t nv12_total_size(int w, int h) {
+    size_t cw = (size_t)(w + 1) / 2, ch = (size_t)(h + 1) / 2;
+    return nv12_uv_offset(w, h) + cw * 2 * ch;
+}
+
+static void vk_nv12_destroy_image(void) {
+    if (g_nv12_view) { vkDestroyImageView(g_dev, g_nv12_view, NULL); g_nv12_view = VK_NULL_HANDLE; }
+    if (g_nv12_img)  { vkDestroyImage(g_dev, g_nv12_img, NULL);     g_nv12_img  = VK_NULL_HANDLE; }
+    if (g_nv12_mem)  { vkFreeMemory(g_dev, g_nv12_mem, NULL);       g_nv12_mem  = VK_NULL_HANDLE; }
+    g_nv12_img_w = g_nv12_img_h = 0;
+    g_ydset_bound_view = VK_NULL_HANDLE;
+}
+
+// Caller must have waited g_fence (no in-flight work references the old image).
+static int vk_nv12_ensure_image(int w, int h) {
+    if (g_nv12_img && g_nv12_img_w == w && g_nv12_img_h == h) return 1;
+    vk_nv12_destroy_image();
+
+    VkImageCreateInfo ici = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
+    // 4:2:0 multi-planar images need even extents; the padding row/col is
+    // cropped off by the draw's UV scale.
+    ici.extent = (VkExtent3D){ (uint32_t)((w + 1) & ~1), (uint32_t)((h + 1) & ~1), 1 };
+    ici.mipLevels = 1; ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (vkCreateImage(g_dev, &ici, NULL, &g_nv12_img) != VK_SUCCESS) {
+        goVKLog("vk_nv12_ensure_image: vkCreateImage failed", 2);
+        g_nv12_img = VK_NULL_HANDLE; return 0;
+    }
+    VkMemoryRequirements mr;
+    vkGetImageMemoryRequirements(g_dev, g_nv12_img, &mr);
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_pdev, &mp);
+    uint32_t mi = vk_find_mem(&mp, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (mi == UINT32_MAX) { vk_nv12_destroy_image(); return 0; }
+    VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    mai.allocationSize = mr.size; mai.memoryTypeIndex = mi;
+    if (vkAllocateMemory(g_dev, &mai, NULL, &g_nv12_mem) != VK_SUCCESS) {
+        g_nv12_mem = VK_NULL_HANDLE; vk_nv12_destroy_image(); return 0;
+    }
+    if (vkBindImageMemory(g_dev, g_nv12_img, g_nv12_mem, 0) != VK_SUCCESS) { vk_nv12_destroy_image(); return 0; }
+
+    VkSamplerYcbcrConversionInfo convInfo = { VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO };
+    convInfo.conversion = g_yconv;
+    VkImageViewCreateInfo viewCI = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, &convInfo };
+    viewCI.image = g_nv12_img;
+    viewCI.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewCI.format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
+    viewCI.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewCI.subresourceRange.levelCount = 1;
+    viewCI.subresourceRange.layerCount = 1;
+    if (vkCreateImageView(g_dev, &viewCI, NULL, &g_nv12_view) != VK_SUCCESS) {
+        g_nv12_view = VK_NULL_HANDLE; vk_nv12_destroy_image(); return 0;
+    }
+    g_nv12_img_w = w; g_nv12_img_h = h;
+    char msg[96];
+    snprintf(msg, sizeof(msg), "vk: NV12 upload image ready %dx%d", w, h);
+    goVKLog(msg, 0);
+    return 1;
+}
+
+static int vk_render_frame_nv12(const Nv12Buf *fb) {
+    if (!g_dev || !g_swap) return 0;
+    if (!vk_ycbcr_ensure_pipeline()) { g_nv12_supported = 0; return 0; }
+    char dbg[128];
+    int fw = fb->w, fh = fb->h;
+    size_t total = nv12_total_size(fw, fh);
+
+    // Wait for the previous submission FIRST: it may still be reading the
+    // staging buffer / NV12 image / descriptor set we're about to touch.
+    g_render_stage = 4;
+    if (vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, 2000000000ULL) == VK_TIMEOUT) {
+        goVKLog("WaitForFences TIMEOUT 2s (nv12 path) — GPU hang?", 2);
+        g_render_stage = 1; return 0;
+    }
+    // Any dma-buf frame deferred from a previous mode switch is retired now.
+    vk_dmabuf_release_prev();
+
+    g_render_stage = 2;
+    if (!vk_ensure_staging(total))     { g_render_stage = 1; return 0; }
+    if (!vk_nv12_ensure_image(fw, fh)) { g_render_stage = 1; return 0; }
+    memcpy(g_stage_ptr, fb->p, total);
+
+    // The dma-buf path repoints g_ydset every frame; re-point it here
+    // whenever it isn't already at our persistent view.
+    if (g_ydset_bound_view != g_nv12_view) {
+        VkDescriptorImageInfo imgInfo = { VK_NULL_HANDLE, g_nv12_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        write.dstSet = g_ydset; write.dstBinding = 0; write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &imgInfo;
+        vkUpdateDescriptorSets(g_dev, 1, &write, 0, NULL);
+        g_ydset_bound_view = g_nv12_view;
+    }
+
+    uint32_t img_idx = 0;
+    g_render_stage = 3;
+    double t0 = mono_sec();
+    VkResult res = vkAcquireNextImageKHR(g_dev, g_swap, 3000000000ULL, g_img_sem, VK_NULL_HANDLE, &img_idx);
+    double dt = mono_sec() - t0;
+    if (dt > 0.1) {
+        snprintf(dbg, sizeof(dbg), "SLOW AcquireNextImage (nv12) %.0f ms res=%d", dt * 1000.0, (int)res);
+        goVKLog(dbg, 1);
+    }
+    if (res == VK_ERROR_OUT_OF_DATE_KHR) {
+        g_render_stage = 7; vk_recreate_swapchain(); g_render_stage = 1; return 0;
+    }
+    if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
+        snprintf(dbg, sizeof(dbg), "AcquireNextImage (nv12) failed res=%d", (int)res);
+        goVKLog(dbg, 2);
+        g_render_stage = 1; return 0;
+    }
+    // Reset only once we're certain to submit (an early return above must
+    // leave the fence signaled, or the next wait would hang for 2s).
+    vkResetFences(g_dev, 1, &g_fence);
+
+    vkResetCommandBuffer(g_cmdbuf, 0);
+    VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(g_cmdbuf, &bi);
+
+    // Whole image is overwritten -- UNDEFINED discards the old contents.
+    vk_image_barrier(g_cmdbuf, g_nv12_img,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        0, VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkBufferImageCopy bic[2];
+    memset(bic, 0, sizeof(bic));
+    bic[0].bufferOffset = 0;
+    bic[0].bufferRowLength = (uint32_t)fw;
+    bic[0].bufferImageHeight = (uint32_t)fh;
+    bic[0].imageSubresource.aspectMask = VK_IMAGE_ASPECT_PLANE_0_BIT;
+    bic[0].imageSubresource.layerCount = 1;
+    bic[0].imageExtent = (VkExtent3D){ (uint32_t)fw, (uint32_t)fh, 1 };
+    uint32_t cw = (uint32_t)(fw + 1) / 2, ch = (uint32_t)(fh + 1) / 2;
+    bic[1].bufferOffset = nv12_uv_offset(fw, fh);
+    bic[1].bufferRowLength = cw;   // in R8G8 texels
+    bic[1].bufferImageHeight = ch;
+    bic[1].imageSubresource.aspectMask = VK_IMAGE_ASPECT_PLANE_1_BIT;
+    bic[1].imageSubresource.layerCount = 1;
+    bic[1].imageExtent = (VkExtent3D){ cw, ch, 1 };
+    vkCmdCopyBufferToImage(g_cmdbuf, g_stage_buf, g_nv12_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 2, bic);
+    vk_image_barrier(g_cmdbuf, g_nv12_img,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+    // Overlay textures (Net Graph HUD, AI Vision) upload outside the pass.
+    int draw_hud = vk_hud_maybe_upload_cmds(g_cmdbuf);
+    vk_aivision_maybe_upload_cmds(g_cmdbuf);
+
+    vk_image_barrier(g_cmdbuf, g_swap_imgs[img_idx],
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+
+    int sw = (int)g_swap_ext.width, sh = (int)g_swap_ext.height;
+    float fa = (float)fw / (float)(fh ? fh : 1);
+    float wa = (float)sw / (float)(sh ? sh : 1);
+    int dx = 0, dy = 0, dw = sw, dh = sh;
+    if (fa > wa) { dh = (int)(sw / fa + 0.5f); dy = (sh - dh) / 2; }
+    else         { dw = (int)(sh * fa + 0.5f); dx = (sw - dw) / 2; }
+    vk_store_video_dest(dx, dy, dw, dh, sw, sh);
+
+    VkRenderingAttachmentInfo colorAtt = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+    colorAtt.imageView = g_swap_views[img_idx];
+    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAtt.clearValue.color = (VkClearColorValue){{0,0,0,1}};
+    VkRenderingInfo renderInfo = { VK_STRUCTURE_TYPE_RENDERING_INFO };
+    renderInfo.renderArea = (VkRect2D){ {0,0}, g_swap_ext };
+    renderInfo.layerCount = 1;
+    renderInfo.colorAttachmentCount = 1;
+    renderInfo.pColorAttachments = &colorAtt;
+    vkCmdBeginRendering(g_cmdbuf, &renderInfo);
+
+    VkViewport vp = { (float)dx, (float)dy, (float)dw, (float)dh, 0.0f, 1.0f };
+    VkRect2D scissor = { {dx, dy}, {(uint32_t)dw, (uint32_t)dh} };
+    vkCmdSetViewport(g_cmdbuf, 0, 1, &vp);
+    vkCmdSetScissor(g_cmdbuf, 0, 1, &scissor);
+    vkCmdBindPipeline(g_cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, g_ypipeline);
+    vkCmdBindDescriptorSets(g_cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, g_yplayout, 0, 1, &g_ydset, 0, NULL);
+    float uvScale[2] = {
+        (float)fw / (float)((fw + 1) & ~1),
+        (float)fh / (float)((fh + 1) & ~1),
+    };
+    vkCmdPushConstants(g_cmdbuf, g_yplayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(uvScale), uvScale);
+    vkCmdDraw(g_cmdbuf, 3, 1, 0, 0);
+    vk_aivision_record_draw(g_cmdbuf, fw, fh);
+    if (draw_hud) vk_hud_record_draw(g_cmdbuf, fw, fh);
+    vkCmdEndRendering(g_cmdbuf);
+
+    vk_image_barrier(g_cmdbuf, g_swap_imgs[img_idx],
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    vkEndCommandBuffer(g_cmdbuf);
+
+    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    si.waitSemaphoreCount = 1; si.pWaitSemaphores = &g_img_sem; si.pWaitDstStageMask = &wait_stage;
+    si.commandBufferCount = 1; si.pCommandBuffers = &g_cmdbuf;
+    si.signalSemaphoreCount = 1; si.pSignalSemaphores = &g_rnd_sem;
+    g_render_stage = 5;
+    vkQueueSubmit(g_queue, 1, &si, g_fence);
+
+    VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+    pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &g_rnd_sem;
+    pi.swapchainCount = 1; pi.pSwapchains = &g_swap; pi.pImageIndices = &img_idx;
+    g_render_stage = 6;
+    t0 = mono_sec();
+    res = vkQueuePresentKHR(g_queue, &pi);
+    dt = mono_sec() - t0;
+    if (dt > 0.1) {
+        snprintf(dbg, sizeof(dbg), "SLOW QueuePresent (nv12) %.0f ms res=%d", dt * 1000.0, (int)res);
+        goVKLog(dbg, 1);
+    }
+    g_render_stage = 1;
+    if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
+        g_render_stage = 7; vk_recreate_swapchain(); g_render_stage = 1;
+        return 1;
+    }
+    if (res != VK_SUCCESS) {
+        snprintf(dbg, sizeof(dbg), "QueuePresent (nv12) failed res=%d", (int)res);
+        goVKLog(dbg, 2);
+    }
+    return (res == VK_SUCCESS) ? 1 : 0;
+}
+
+int vk_video_nv12_supported(void) { return g_nv12_supported; }
+
+// vk_video_try_submit_nv12 queues one NV12 frame (arbitrary strides) for the
+// render thread. The copy into the back buffer happens outside g_mu.
+// Must only be called from the (single) decoder thread.
+int vk_video_try_submit_nv12(const uint8_t *y, int y_stride,
+                             const uint8_t *uv, int uv_stride,
+                             int width, int height) {
+    if (!atomic_load(&g_active) || !g_nv12_supported || width <= 0 || height <= 0) return 0;
+    Nv12Buf *b = &g_nv12_bufs[g_nv12_back];
+    size_t total = nv12_total_size(width, height);
+    if (b->cap < total) {
+        free(b->p);
+        b->p = malloc(total);
+        b->cap = b->p ? total : 0;
+        if (!b->p) return 0;
+    }
+    if (y_stride == width) {
+        memcpy(b->p, y, (size_t)width * (size_t)height);
+    } else {
+        for (int r = 0; r < height; r++)
+            memcpy(b->p + (size_t)r * width, y + (size_t)r * y_stride, (size_t)width);
+    }
+    size_t uvrow = (size_t)((width + 1) / 2) * 2;
+    int ch = (height + 1) / 2;
+    uint8_t *uvdst = b->p + nv12_uv_offset(width, height);
+    if ((size_t)uv_stride == uvrow) {
+        memcpy(uvdst, uv, uvrow * (size_t)ch);
+    } else {
+        for (int r = 0; r < ch; r++)
+            memcpy(uvdst + (size_t)r * uvrow, uv + (size_t)r * uv_stride, uvrow);
+    }
+    b->w = width; b->h = height;
+
+    pthread_mutex_lock(&g_mu);
+    if (!atomic_load(&g_active)) { pthread_mutex_unlock(&g_mu); return 0; }
+    // Only one frame mode is live at a time -- drop stale frames of the others.
+    if (g_dmabuf_ready) {
+        close(g_dmabuf_pending.fd);
+        if (g_dmabuf_pending.release_fn) g_dmabuf_pending.release_fn(g_dmabuf_pending.release_ctx);
+        g_dmabuf_ready = 0;
+    }
+    g_ready = 0;
+    int t = g_nv12_pending; g_nv12_pending = g_nv12_back; g_nv12_back = t;
+    g_nv12_ready = 1;
+    g_submitted++;
+    pthread_mutex_unlock(&g_mu);
+    if (g_pipe_w >= 0) pipe_wake(g_pipe_w, 1);
+    return 1;
+}
 
 // ─── render one frame ─────────────────────────────────────────────────────────
 
@@ -1270,8 +1632,13 @@ static void *vk_render_thread(void *unused) {
         int fw = 0, fh = 0, fs = 0;
         int have_dmabuf = 0;
         DmabufFrame dmaf;
+        int have_nv12 = 0;
         pthread_mutex_lock(&g_mu);
-        if (g_dmabuf_ready) {
+        if (g_nv12_ready) {
+            int t = g_nv12_front; g_nv12_front = g_nv12_pending; g_nv12_pending = t;
+            g_nv12_ready = 0;
+            have_nv12 = 1;
+        } else if (g_dmabuf_ready) {
             dmaf = g_dmabuf_pending;
             g_dmabuf_ready = 0;
             have_dmabuf = 1;
@@ -1283,11 +1650,17 @@ static void *vk_render_thread(void *unused) {
             g_ready = 0;
         }
         pthread_mutex_unlock(&g_mu);
-        if (!tmp && !have_dmabuf) continue;
+        if (!tmp && !have_dmabuf && !have_nv12) continue;
 
         g_render_stage = 1;
-        int rf = have_dmabuf ? vk_render_frame_dmabuf(&dmaf) : vk_render_frame(tmp, fw, fh, fs);
-        if (have_dmabuf) { fw = dmaf.vis_w; fh = dmaf.vis_h; }
+        int rf;
+        if (have_nv12) {
+            rf = vk_render_frame_nv12(&g_nv12_bufs[g_nv12_front]);
+            fw = g_nv12_bufs[g_nv12_front].w; fh = g_nv12_bufs[g_nv12_front].h;
+        } else {
+            rf = have_dmabuf ? vk_render_frame_dmabuf(&dmaf) : vk_render_frame(tmp, fw, fh, fs);
+            if (have_dmabuf) { fw = dmaf.vis_w; fh = dmaf.vis_h; }
+        }
         free(tmp);
         if (!rf) {
             consec_fail++;
@@ -1346,6 +1719,7 @@ int vk_video_try_submit(uint8_t *rgba, int width, int height, int stride) {
         if (g_dmabuf_pending.release_fn) g_dmabuf_pending.release_fn(g_dmabuf_pending.release_ctx);
         g_dmabuf_ready = 0;
     }
+    g_nv12_ready = 0;
     if (!g_buf || g_buf_sz < sz) {
         free(g_buf);
         g_buf    = malloc(sz);
@@ -1422,6 +1796,7 @@ static void vk_full_cleanup(void) {
         // frame was in flight (prev, mid-render-defer) or still queued
         // (pending, never picked up) and tear down the fixed NV12 pipeline.
         vk_dmabuf_release_prev();
+        vk_nv12_destroy_image();
         vk_hud_destroy();
         if (g_dmabuf_ready) {
             close(g_dmabuf_pending.fd);
@@ -1437,6 +1812,8 @@ static void vk_full_cleanup(void) {
         if (g_yconv)     { vkDestroySamplerYcbcrConversion(g_dev, g_yconv, NULL); g_yconv = VK_NULL_HANDLE; }
         g_ypipeline_ok = 0;
         g_zerocopy_supported = 0;
+        g_nv12_supported = 0;
+        g_ycbcr_supported = 0;
         if (g_img_sem) { vkDestroySemaphore(g_dev, g_img_sem, NULL); g_img_sem = VK_NULL_HANDLE; }
         if (g_rnd_sem) { vkDestroySemaphore(g_dev, g_rnd_sem, NULL); g_rnd_sem = VK_NULL_HANDLE; }
         if (g_fence)   { vkDestroyFence(g_dev, g_fence, NULL);       g_fence   = VK_NULL_HANDLE; }
@@ -1458,6 +1835,8 @@ static void vk_full_cleanup(void) {
     pthread_mutex_lock(&g_mu);
     if (g_buf) { free(g_buf); g_buf = NULL; g_buf_sz = 0; }
     g_ready = 0;
+    g_nv12_ready = 0;
+    for (int i = 0; i < 3; i++) { free(g_nv12_bufs[i].p); g_nv12_bufs[i].p = NULL; g_nv12_bufs[i].cap = 0; }
     pthread_mutex_unlock(&g_mu);
     g_ready = 0;
     g_rendered = 0; g_submitted = 0;

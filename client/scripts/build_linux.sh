@@ -29,6 +29,8 @@
 #     libmfx-gen1.2 (Intel oneVPL GPU runtime) for QSV -- without the
 #     latter, h264_qsv/hevc_qsv/av1_qsv decoders exist in ffmpeg but MFX
 #     session creation fails and decode falls back to software.
+#   - NVIDIA: the proprietary driver (libcuda + libnvcuvid) -- NVDEC decode,
+#     frames go to Vulkan via the NV12 upload path (no dma-buf zero-copy).
 
 set -euo pipefail
 

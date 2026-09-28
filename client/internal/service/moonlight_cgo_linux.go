@@ -49,6 +49,13 @@ extern int vk_video_try_submit(uint8_t *rgba, int width, int height, int stride)
 // see deliver_frame's map_to_vaapi_frame/dma-buf-export block below for the
 // full chain this feeds into.
 extern int vk_video_zerocopy_supported(void);
+// NV12 upload path (vk_video_impl_linux.c): Y + interleaved UV planes from
+// system memory, converted to RGB on the GPU by the same YCbCr sampler the
+// dma-buf path uses. Used for NVDEC (CUDA) and software decode.
+extern int vk_video_nv12_supported(void);
+extern int vk_video_try_submit_nv12(const uint8_t *y, int y_stride,
+                                     const uint8_t *uv, int uv_stride,
+                                     int width, int height);
 extern int vk_video_try_submit_dmabuf(int fd, uint64_t modifier, int surf_w, int surf_h,
                                        int vis_w, int vis_h, uint32_t plane_count,
                                        uint32_t offset0, uint32_t pitch0,
@@ -145,6 +152,9 @@ void platform_ar_decode(const opus_int16 *pcm_data, int byte_count, int samples)
 
 static AVCodecContext    *g_avctx        = NULL;
 static struct SwsContext *g_sws          = NULL;
+static struct SwsContext *g_sws_nv12     = NULL; // sw-decode yuv -> NV12 for the Vulkan NV12 upload path
+static int                g_sws_nv12_w = 0, g_sws_nv12_h = 0, g_sws_nv12_fmt = -1;
+static AVFrame           *g_nv12_scratch = NULL;
 static AVBufferRef       *g_hw_dev_ctx   = NULL;
 static enum AVPixelFormat g_hw_pix_fmt   = AV_PIX_FMT_NONE;
 static int                g_av_w         = 0;
@@ -152,6 +162,7 @@ static int                g_av_h         = 0;
 static pthread_mutex_t    g_av_mu        = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t           g_av_frame_cnt = 0;
 static uint64_t           g_av_zc_frame_cnt = 0;
+static uint64_t           g_av_nv12_frame_cnt = 0;
 
 // Native VAAPI device, created once and kept as the parent for deriving the
 // QSV device (see try_hw_decoder) -- this is what makes the zero-copy path
@@ -195,13 +206,9 @@ static int ensure_vaapi_device(void) {
     return av_hwdevice_ctx_create(&g_vaapi_dev_ctx, AV_HWDEVICE_TYPE_VAAPI, NULL, NULL, 0) >= 0;
 }
 
-// Try to create a hardware decoder; returns codec on success, NULL on failure.
-static const AVCodec *try_hw_decoder(const char *name,
-                                      enum AVHWDeviceType hw_type,
-                                      enum AVPixelFormat  hw_fmt) {
-    const AVCodec *codec = avcodec_find_decoder_by_name(name);
-    if (!codec) return NULL;
-
+// open_hw_device creates (or refs) the device ctx a given hw type needs.
+// VAAPI/QSV share g_vaapi_dev_ctx -- see its doc comment above.
+static AVBufferRef *open_hw_device(enum AVHWDeviceType hw_type) {
     AVBufferRef *hw_ctx = NULL;
     if (hw_type == AV_HWDEVICE_TYPE_QSV) {
         // Derive from the shared VAAPI device (not a standalone QSV device)
@@ -216,66 +223,117 @@ static const AVCodec *try_hw_decoder(const char *name,
     } else if (av_hwdevice_ctx_create(&hw_ctx, hw_type, NULL, NULL, 0) < 0) {
         return NULL;
     }
+    return hw_ctx;
+}
 
-    // Quick open-and-close test.
+// try_hw_decoder opens `codec` against a hw device of hw_type and returns 1
+// if a test open succeeded (g_hw_dev_ctx/g_hw_pix_fmt are then set for the
+// real open in linux_av_init). The test open alone doesn't prove the GPU can
+// actually decode this codec/profile -- linux_av_init's first-frames check
+// (g_hw_verify_*) catches that and drops to the next candidate.
+static int try_hw_decoder(const AVCodec *codec, enum AVHWDeviceType hw_type,
+                          enum AVPixelFormat hw_fmt) {
+    if (!codec) return 0;
+    AVBufferRef *hw_ctx = open_hw_device(hw_type);
+    if (!hw_ctx) return 0;
+
     AVCodecContext *test = avcodec_alloc_context3(codec);
     test->hw_device_ctx = av_buffer_ref(hw_ctx);
     g_hw_pix_fmt = hw_fmt;
     test->get_format = av_get_hw_format_cb;
     int ok = (avcodec_open2(test, codec, NULL) == 0);
     avcodec_free_context(&test);
-    if (!ok) { av_buffer_unref(&hw_ctx); return NULL; }
+    if (!ok) { av_buffer_unref(&hw_ctx); return 0; }
 
     if (g_hw_dev_ctx) av_buffer_unref(&g_hw_dev_ctx);
     g_hw_dev_ctx = hw_ctx;
-    return codec;
+    return 1;
 }
+
+// hwaccel_supported reports whether the NATIVE decoder `codec` exposes a
+// hw_device_ctx-based hwaccel for hw_type (and which pix_fmt it outputs).
+static int hwaccel_supported(const AVCodec *codec, enum AVHWDeviceType hw_type,
+                             enum AVPixelFormat *out_fmt) {
+    if (!codec) return 0;
+    for (int i = 0;; i++) {
+        const AVCodecHWConfig *cfg = avcodec_get_hw_config(codec, i);
+        if (!cfg) return 0;
+        if (cfg->device_type == hw_type && (cfg->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)) {
+            *out_fmt = cfg->pix_fmt;
+            return 1;
+        }
+    }
+}
+
+// Decoder candidates, in preference order. VAAPI and NVDEC(CUDA) are NOT
+// separate libavcodec decoders -- they're hwaccels of the native h264/hevc/
+// av1 decoder, selected by attaching a hw_device_ctx and answering
+// get_format with the hw pix_fmt. (This file used to look them up as
+// decoders named "h264_vaapi"/"h264_nvdec", which don't exist in any
+// FFmpeg build -- so on every non-Intel GPU, e.g. NVIDIA, decode silently
+// fell back to single-threaded software: ~20-30ms per 2560x1600 HEVC frame
+// on the receive thread, i.e. <=30fps plus socket-drain stalls. That was
+// the "choppy vs stock Moonlight" bug.) QSV, by contrast, IS a separate
+// named decoder (h264_qsv...).
+enum { HWC_VAAPI = 0, HWC_CUDA, HWC_QSV, HWC_COUNT };
+static int g_hw_skip[HWC_COUNT];   // candidate proved broken this process (see g_hw_verify_*)
+static int g_hw_active = -1;       // candidate g_avctx was opened with, -1 = software
+static int g_hw_verify_pkts = 0;   // packets sent since open with zero frames out
+static int g_hw_verify_ok = 0;
 
 static void linux_av_init(void) {
     if (g_avctx) return;
 
     // Pick the decoder family to match what was actually negotiated for
     // this session (g_video_format, set by platform_set_video_format).
-    const char *hw_vaapi_name, *hw_nvdec_name, *hw_qsv_name;
+    const char *hw_qsv_name;
     enum AVCodecID sw_id;
     const char *codec_label;
     if (g_video_format & 0x0F00) { // VIDEO_FORMAT_MASK_H265
-        hw_vaapi_name = "hevc_vaapi"; hw_nvdec_name = "hevc_nvdec"; hw_qsv_name = "hevc_qsv"; sw_id = AV_CODEC_ID_HEVC; codec_label = "hevc";
+        hw_qsv_name = "hevc_qsv"; sw_id = AV_CODEC_ID_HEVC; codec_label = "hevc";
     } else if (g_video_format & 0xF000) { // VIDEO_FORMAT_MASK_AV1
-        hw_vaapi_name = "av1_vaapi"; hw_nvdec_name = "av1_nvdec"; hw_qsv_name = "av1_qsv"; sw_id = AV_CODEC_ID_AV1; codec_label = "av1";
+        hw_qsv_name = "av1_qsv"; sw_id = AV_CODEC_ID_AV1; codec_label = "av1";
     } else {
-        hw_vaapi_name = "h264_vaapi"; hw_nvdec_name = "h264_nvdec"; hw_qsv_name = "h264_qsv"; sw_id = AV_CODEC_ID_H264; codec_label = "h264";
+        hw_qsv_name = "h264_qsv"; sw_id = AV_CODEC_ID_H264; codec_label = "h264";
     }
+    // Native decoder (not libdav1d/libaom for AV1: those have no hwaccel).
+    const AVCodec *native = NULL;
+    if (sw_id == AV_CODEC_ID_AV1) native = avcodec_find_decoder_by_name("av1");
+    if (!native) native = avcodec_find_decoder(sw_id);
 
-    // QSV tried after VAAPI/NVDEC: on distros whose libavcodec ships without
-    // VAAPI decoders (e.g. Ubuntu 24.04+/25.x, which builds ffmpeg with
-    // --enable-libvpl instead of --enable-vaapi), h264_vaapi/hevc_vaapi don't
-    // exist as decoder names at all and try_hw_decoder just returns NULL for
-    // them -- QSV is the only remaining GPU-accelerated path on those builds,
-    // going through Intel's oneVPL runtime (libmfx-gen) rather than libva
-    // directly, even though it still rides on the same VAAPI kernel driver.
-    const struct { const char *name; enum AVHWDeviceType type; enum AVPixelFormat fmt; } hw[] = {
-        { hw_vaapi_name, AV_HWDEVICE_TYPE_VAAPI, AV_PIX_FMT_VAAPI },
-        { hw_nvdec_name, AV_HWDEVICE_TYPE_CUDA,  AV_PIX_FMT_CUDA  },
-        { hw_qsv_name,   AV_HWDEVICE_TYPE_QSV,   AV_PIX_FMT_QSV   },
-    };
+    // USBRIDGE_HWDEC=sw|vaapi|cuda|qsv forces one path (diagnostics).
+    const char *force = getenv("USBRIDGE_HWDEC");
 
     const AVCodec *codec = NULL;
-    for (int i = 0; i < (int)(sizeof(hw)/sizeof(hw[0])); i++) {
-        codec = try_hw_decoder(hw[i].name, hw[i].type, hw[i].fmt);
-        if (codec) {
-            // Log which HW path was selected.
-            char msg[64];
-            snprintf(msg, sizeof(msg), "libavcodec: using %s", hw[i].name);
+    g_hw_active = -1;
+    for (int i = 0; i < HWC_COUNT && !codec; i++) {
+        if (g_hw_skip[i]) continue;
+        static const char *names[HWC_COUNT] = { "vaapi", "cuda", "qsv" };
+        if (force && strcmp(force, names[i]) != 0) continue;
+        enum AVPixelFormat fmt = AV_PIX_FMT_NONE;
+        const AVCodec *c = NULL;
+        enum AVHWDeviceType type;
+        if (i == HWC_QSV) {
+            c = avcodec_find_decoder_by_name(hw_qsv_name);
+            type = AV_HWDEVICE_TYPE_QSV; fmt = AV_PIX_FMT_QSV;
+        } else {
+            type = (i == HWC_VAAPI) ? AV_HWDEVICE_TYPE_VAAPI : AV_HWDEVICE_TYPE_CUDA;
+            if (hwaccel_supported(native, type, &fmt)) c = native;
+        }
+        if (c && try_hw_decoder(c, type, fmt)) {
+            codec = c;
+            g_hw_active = i;
+            char msg[96];
+            snprintf(msg, sizeof(msg), "libavcodec: using %s via %s", c->name, names[i]);
             goVTLog(msg);
-            break;
         }
     }
     if (!codec) {
-        codec = avcodec_find_decoder(sw_id);
+        if (g_hw_dev_ctx) av_buffer_unref(&g_hw_dev_ctx);
+        codec = native;
         g_hw_pix_fmt = AV_PIX_FMT_NONE;
-        char msg[80];
-        snprintf(msg, sizeof(msg), "libavcodec: %s software fallback (no VA-API/NVDEC found)", codec_label);
+        char msg[96];
+        snprintf(msg, sizeof(msg), "libavcodec: %s software fallback (no VA-API/NVDEC/QSV usable)", codec_label);
         goVTLog(msg);
     }
     if (!codec) {
@@ -286,10 +344,21 @@ static void linux_av_init(void) {
     }
 
     g_avctx = avcodec_alloc_context3(codec);
+    // Streaming: output every frame as soon as it's decodable, never hold
+    // one back for reordering (the stream has no B-frames).
+    g_avctx->flags  |= AV_CODEC_FLAG_LOW_DELAY;
+    g_avctx->flags2 |= AV_CODEC_FLAG2_FAST;
     if (g_hw_dev_ctx) {
         g_avctx->hw_device_ctx = av_buffer_ref(g_hw_dev_ctx);
         g_avctx->get_format    = av_get_hw_format_cb;
+    } else {
+        // Software: slice threading only -- frame threading would add
+        // (threads-1) frames of latency.
+        g_avctx->thread_type  = FF_THREAD_SLICE;
+        g_avctx->thread_count = 0; // auto
     }
+    g_hw_verify_pkts = 0;
+    g_hw_verify_ok = (g_hw_active < 0);
     if (avcodec_open2(g_avctx, codec, NULL) < 0) {
         avcodec_free_context(&g_avctx);
         goVTLog((char*)"libavcodec: avcodec_open2 FAILED");
@@ -298,6 +367,8 @@ static void linux_av_init(void) {
 
 static void linux_av_teardown(void) {
     if (g_sws)       { sws_freeContext(g_sws); g_sws = NULL; }
+    if (g_sws_nv12)  { sws_freeContext(g_sws_nv12); g_sws_nv12 = NULL; }
+    g_hw_active = -1;
     if (g_avctx)     { avcodec_free_context(&g_avctx); }
     if (g_hw_dev_ctx){ av_buffer_unref(&g_hw_dev_ctx); }
     if (g_vaapi_frames_ctx) { av_buffer_unref(&g_vaapi_frames_ctx); }
@@ -306,6 +377,9 @@ static void linux_av_teardown(void) {
     g_hw_pix_fmt  = AV_PIX_FMT_NONE;
     g_av_frame_cnt = 0;
     g_av_zc_frame_cnt = 0;
+    g_av_nv12_frame_cnt = 0;
+    av_frame_free(&g_nv12_scratch);
+    g_sws_nv12_w = g_sws_nv12_h = 0; g_sws_nv12_fmt = -1;
 }
 
 // Frame dump for the netem/packet-loss diagnostic harness: opt-in via
@@ -422,7 +496,9 @@ static int map_to_vaapi_frame(AVFrame *frame, AVFrame **out_vaframe, VADisplay *
 static void sample_frame_for_ai_vision(AVFrame *frame) {
     AVFrame *sw = av_frame_alloc();
     if (!sw) return;
-    if (av_hwframe_transfer_data(sw, frame, 0) == 0) {
+    int got = frame->hw_frames_ctx ? (av_hwframe_transfer_data(sw, frame, 0) == 0)
+                                   : (av_frame_ref(sw, frame) == 0);
+    if (got) {
         int w = frame->width, h = frame->height;
         if (!g_sws || w != g_av_w || h != g_av_h) {
             if (g_sws) sws_freeContext(g_sws);
@@ -502,8 +578,72 @@ static int try_deliver_zerocopy(AVFrame *frame) {
     return 1;
 }
 
+// try_deliver_nv12 is the fast path for everything the dma-buf zero-copy
+// path can't take -- chiefly NVDEC (AV_PIX_FMT_CUDA) on NVIDIA, plus
+// software decode: get the frame into system-memory NV12 (a ~1.5ms PCIe
+// download for CUDA, or a cheap interleave for sw yuv420p) and hand the two
+// planes to Vulkan, which does YCbCr->RGB on the GPU. Replaces the old
+// RGBA path's sws_scale NV12->RGBA on the CPU (~13ms/frame at 2560x1600)
+// plus its per-pixel R/B swizzle and several full-frame RGBA copies.
+// Returns 1 if the frame was handled.
+static int try_deliver_nv12(AVFrame *frame) {
+    if (!vk_video_is_active() || !vk_video_nv12_supported()) return 0;
+
+    AVFrame *src = frame;
+    AVFrame *dl = NULL;
+    if (frame->hw_frames_ctx) {
+        dl = av_frame_alloc();
+        if (!dl) return 0;
+        dl->format = AV_PIX_FMT_NV12;
+        if (av_hwframe_transfer_data(dl, frame, 0) < 0 || dl->format != AV_PIX_FMT_NV12) {
+            av_frame_free(&dl); // e.g. P010 (10-bit) -- not wired up, RGBA path handles it
+            return 0;
+        }
+        dl->width = frame->width; dl->height = frame->height;
+        src = dl;
+    } else if (frame->format != AV_PIX_FMT_NV12) {
+        if (frame->format != AV_PIX_FMT_YUV420P && frame->format != AV_PIX_FMT_YUVJ420P) return 0;
+        int w = frame->width, h = frame->height;
+        if (!g_sws_nv12 || g_sws_nv12_w != w || g_sws_nv12_h != h || g_sws_nv12_fmt != frame->format) {
+            if (g_sws_nv12) sws_freeContext(g_sws_nv12);
+            g_sws_nv12 = sws_getContext(w, h, (enum AVPixelFormat)frame->format,
+                                        w, h, AV_PIX_FMT_NV12, SWS_POINT, NULL, NULL, NULL);
+            g_sws_nv12_w = w; g_sws_nv12_h = h; g_sws_nv12_fmt = frame->format;
+            av_frame_free(&g_nv12_scratch);
+        }
+        if (!g_sws_nv12) return 0;
+        if (!g_nv12_scratch) {
+            g_nv12_scratch = av_frame_alloc();
+            if (!g_nv12_scratch) return 0;
+            g_nv12_scratch->format = AV_PIX_FMT_NV12;
+            g_nv12_scratch->width = w; g_nv12_scratch->height = h;
+            if (av_frame_get_buffer(g_nv12_scratch, 0) < 0) { av_frame_free(&g_nv12_scratch); return 0; }
+        }
+        sws_scale(g_sws_nv12, (const uint8_t *const *)frame->data, frame->linesize, 0, h,
+                  g_nv12_scratch->data, g_nv12_scratch->linesize);
+        src = g_nv12_scratch;
+    }
+
+    if (goAIVisionShouldSample()) sample_frame_for_ai_vision(src);
+
+    int ok = vk_video_try_submit_nv12(src->data[0], src->linesize[0],
+                                      src->data[1], src->linesize[1],
+                                      frame->width, frame->height);
+    if (dl) av_frame_free(&dl);
+    if (!ok) return 0;
+    if (++g_av_nv12_frame_cnt == 1) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "libavcodec: first NV12 frame -> Vulkan GPU YCbCr (%s, %dx%d)",
+                 frame->hw_frames_ctx ? "hw download" : "sw decode", frame->width, frame->height);
+        goVTLog(msg);
+    }
+    goVTFrame(NULL, frame->width, frame->height, 0);
+    return 1;
+}
+
 static void deliver_frame(AVFrame *frame) {
     if (try_deliver_zerocopy(frame)) return;
+    if (try_deliver_nv12(frame)) return;
 
     AVFrame *sw = NULL;
     if (frame->format == AV_PIX_FMT_VAAPI || frame->format == AV_PIX_FMT_CUDA ||
@@ -651,14 +791,41 @@ int platform_dr_submit(PDECODE_UNIT du) {
     int ret = avcodec_send_packet(ctx, pkt);
     av_packet_free(&pkt);
     av_free(data);
-    if (ret < 0 && ret != AVERROR(EAGAIN)) return DR_NEED_IDR;
 
-    AVFrame *frame = av_frame_alloc();
-    while (avcodec_receive_frame(ctx, frame) == 0) {
-        deliver_frame(frame);
-        av_frame_unref(frame);
+    int got = 0;
+    if (ret >= 0 || ret == AVERROR(EAGAIN)) {
+        AVFrame *frame = av_frame_alloc();
+        while (avcodec_receive_frame(ctx, frame) == 0) {
+            got = 1;
+            deliver_frame(frame);
+            av_frame_unref(frame);
+        }
+        av_frame_free(&frame);
     }
-    av_frame_free(&frame);
+
+    // A hw decoder that opened fine can still be unable to decode this
+    // codec/profile/resolution (e.g. an older NVDEC generation). If one
+    // hasn't produced a single frame in its first packets, blacklist it
+    // for this process and reopen with the next candidate (ultimately
+    // software) on a fresh IDR -- instead of a black screen forever.
+    if (!g_hw_verify_ok) {
+        if (got) {
+            g_hw_verify_ok = 1;
+        } else if (++g_hw_verify_pkts >= 20 || (ret < 0 && ret != AVERROR(EAGAIN))) {
+            pthread_mutex_lock(&g_av_mu);
+            if (g_avctx == ctx && g_hw_active >= 0) {
+                char msg[96];
+                snprintf(msg, sizeof(msg), "libavcodec: hw decoder produced no frames (ret=%d) -- trying next", ret);
+                goVTLog(msg);
+                g_hw_skip[g_hw_active] = 1;
+                avcodec_free_context(&g_avctx);
+                g_hw_active = -1;
+            }
+            pthread_mutex_unlock(&g_av_mu);
+            return DR_NEED_IDR;
+        }
+    }
+    if (ret < 0 && ret != AVERROR(EAGAIN)) return DR_NEED_IDR;
     return DR_OK;
 }
 */
