@@ -8,9 +8,13 @@
 #import <AppKit/AppKit.h>
 #import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/QuartzCore.h>
+#import <Metal/Metal.h>
 #include <stdatomic.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
 #include <time.h>
 
 // Forward declaration — CGO generates this export from metal_video_darwin.go.
@@ -48,6 +52,434 @@ static CALayer *g_overlay_layer = nil;
 // full-frame-sized (megabyte-class) image -- see net_graph.go's own doc
 // comment on cost.
 static CALayer *g_hud_layer = nil;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Real Metal compute upscale pipeline (FSR1 EASU+RCAS, plus a plain bilinear
+// fallback), running on a CAMetalLayer sibling of g_layer -- see
+// metal_video_create. Validated (spike, since removed) to run from the SAME
+// call site as today's direct IOSurface->CALayer.contents assignment
+// (metal_render_main_with_buf, itself called from displayLinkFired on the
+// main thread) without regressing render throughput: steady 60Hz held for a
+// 10s synthetic-frame run, only a one-time ~636ms stall on the very first
+// ever shader compile (see metal_fsr_ensure_pipeline's warm-up comment for
+// the fix). See VideoDepacketizer.c's playoutDelayForFrame doc comment and
+// this file's own g_hud_pending_* doc comment for the two documented
+// regression classes on this exact render path (decode/render moved off its
+// expected thread, or work routed through dispatch_async instead of piggy-
+// backing on displayLinkFired) -- this stays on that same thread/call site
+// on purpose, for the same reason.
+//
+// Mode selection: metal_video_set_upscale_mode (called from Go --
+// service.SetUpscaleMode, wired to video_start_dialog.go's upscale-quality
+// picker) is the real path. METAL_UPSCALE_MODE ("bilinear" default,
+// "bicubic", "lanczos", or "fsr1") env var is a secondary DEV-ONLY override,
+// read once at first use as the starting value -- convenient for the
+// standalone cmd/metalspike harness, overridden the moment Go calls the
+// setter. UPSCALE_MODE_BILINEAR is the only mode that skips this whole
+// pipeline (g_layer's original direct-assign path, untouched) -- selecting
+// any other mode is what "enables" it, there's no separate on/off flag.
+// ─────────────────────────────────────────────────────────────────────────────
+
+typedef enum {
+    UPSCALE_MODE_BILINEAR = 0,
+    UPSCALE_MODE_BICUBIC  = 1,
+    UPSCALE_MODE_LANCZOS  = 2,
+    UPSCALE_MODE_FSR1     = 3,
+} UpscaleMode;
+static UpscaleMode g_upscale_mode = UPSCALE_MODE_BILINEAR;
+static int g_upscale_mode_read = 0;
+
+static id<MTLDevice>               g_mtl_device       = nil;
+static id<MTLCommandQueue>         g_mtl_queue        = nil;
+static CVMetalTextureCacheRef      g_mtl_tex_cache    = NULL;
+static id<MTLComputePipelineState> g_mtl_bilinear_pso = nil;
+static id<MTLComputePipelineState> g_mtl_bicubic_pso  = nil;
+static id<MTLComputePipelineState> g_mtl_lanczos_pso  = nil;
+static id<MTLComputePipelineState> g_mtl_easu_pso     = nil;
+static id<MTLComputePipelineState> g_mtl_rcas_pso     = nil;
+static id<MTLComputePipelineState> g_mtl_yuv2rgb_pso  = nil;
+static CAMetalLayer               *g_metal_layer      = nil;
+
+// EASU's output (== RCAS's input) intermediate texture, sized to the current
+// drawable and recreated only when that size changes (not every frame).
+// RGBA16Float (not BGRA8Unorm) so PQ-encoded HDR values round-trip through
+// EASU/RCAS without 8-bit banding -- costs nothing extra for the SDR case,
+// same numeric content just stored wider.
+static id<MTLTexture> g_mtl_easu_out_tex = nil;
+static NSUInteger      g_mtl_easu_out_w   = 0, g_mtl_easu_out_h = 0;
+
+// HDR-only: yuv2020_to_rgb's output, at SOURCE resolution (not drawable
+// size) -- becomes every mode's `inTex` for the HDR path, exactly like the
+// SDR path's direct BGRA import, so EASU/RCAS/bilinear/bicubic/Lanczos never
+// need to know or care whether the frame started out as YCbCr or BGRA.
+static id<MTLTexture> g_mtl_yuv_rgb_tex = nil;
+static NSUInteger      g_mtl_yuv_rgb_w   = 0, g_mtl_yuv_rgb_h = 0;
+
+// Populated once at process start by metal_fsr_set_shader_source (see
+// metal_fsr_shader_darwin.go's init(), which go:embeds fsr/fsr_metal.metal)
+// -- long before any stream connects, so newLibraryWithSource's runtime
+// compile below always happens during metal_fsr_ensure_pipeline's warm-up,
+// never on a frame's own critical path.
+static NSString *g_fsr_shader_source = nil;
+
+void metal_fsr_set_shader_source(const char *src) {
+    g_fsr_shader_source = src ? [NSString stringWithUTF8String:src] : nil;
+}
+
+static UpscaleMode metal_upscale_mode(void) {
+    if (!g_upscale_mode_read) {
+        g_upscale_mode_read = 1;
+        const char *v = getenv("METAL_UPSCALE_MODE");
+        if (v && strcmp(v, "fsr1") == 0) g_upscale_mode = UPSCALE_MODE_FSR1;
+        else if (v && strcmp(v, "bicubic") == 0) g_upscale_mode = UPSCALE_MODE_BICUBIC;
+        else if (v && strcmp(v, "lanczos") == 0) g_upscale_mode = UPSCALE_MODE_LANCZOS;
+    }
+    return g_upscale_mode;
+}
+
+// Forward declaration -- metal_fsr_ensure_pipeline is defined further down,
+// used by metal_video_set_upscale_mode above that definition.
+static int metal_fsr_ensure_pipeline(void);
+
+// Forward declaration -- defined further down (near metal_video_set_hdr),
+// used by metal_spike_render above that definition.
+static void apply_dynamic_range(CALayer *layer, BOOL hdr);
+
+// metal_video_set_upscale_mode is called from Go (service.SetUpscaleMode,
+// wired to video_start_dialog.go's upscale-quality picker) as soon as the
+// user's choice is known/changed -- no codec-negotiation dependency, unlike
+// metal_video_set_hdr. mode: 0=bilinear 1=bicubic 2=lanczos 3=fsr1 (see
+// models.UpscaleMode* on the Go side, which must stay in sync by hand -- no
+// shared enum across the cgo boundary).
+void metal_video_set_upscale_mode(int mode) {
+    if (mode < UPSCALE_MODE_BILINEAR || mode > UPSCALE_MODE_FSR1) return;
+    g_upscale_mode_read = 1; // an explicit call always wins over the env var default
+    dispatch_block_t blk = ^{
+        g_upscale_mode = (UpscaleMode)mode;
+        // Warm up the shader pipeline right away rather than waiting for the
+        // next frame to discover it needs it -- see metal_fsr_ensure_pipeline's
+        // own doc comment for the ~636ms first-compile stall this avoids.
+        // Harmless (and cheap: an early-return) if already warm, or if
+        // called before any window/session exists yet.
+        if (g_upscale_mode != UPSCALE_MODE_BILINEAR) metal_fsr_ensure_pipeline();
+    };
+    if ([NSThread isMainThread]) blk(); else dispatch_async(dispatch_get_main_queue(), blk);
+}
+
+// Lazily creates the device/queue/texture-cache/pipeline-state singletons on
+// first use of ANY non-default mode -- normal sessions never touch this.
+// Deliberately called once from metal_video_create (see its own call site)
+// rather than truly lazily on the first frame: an earlier spike measured a
+// ~636ms main-thread stall on the first-ever newLibraryWithSource runtime
+// shader compile, which would otherwise land on a real frame's render call.
+// Warming it up at session-create time instead (still off the video
+// socket/decode thread's critical path -- metal_video_create runs on the
+// main thread via dispatch_sync/dispatch_block_t, before any frame exists)
+// means only the FIRST session of a process pays that cost, and it never
+// competes with a frame deadline. Returns 1 on success (or if already
+// initialized), 0 on failure -- callers must fall back to the plain g_layer
+// path on failure, never show a stale/blank drawable.
+static int metal_fsr_ensure_pipeline(void) {
+    if (g_mtl_bilinear_pso && g_mtl_bicubic_pso && g_mtl_lanczos_pso && g_mtl_easu_pso && g_mtl_rcas_pso && g_mtl_yuv2rgb_pso) return 1;
+    if (!g_fsr_shader_source) { goMetalLog("metal fsr: no shader source set (metal_fsr_set_shader_source never called?)", 2); return 0; }
+
+    if (!g_mtl_device) {
+        g_mtl_device = MTLCreateSystemDefaultDevice();
+        if (!g_mtl_device) { goMetalLog("metal fsr: MTLCreateSystemDefaultDevice failed", 2); return 0; }
+    }
+    if (!g_mtl_queue) {
+        g_mtl_queue = [g_mtl_device newCommandQueue];
+        if (!g_mtl_queue) { goMetalLog("metal fsr: newCommandQueue failed", 2); return 0; }
+    }
+    if (!g_mtl_tex_cache) {
+        CVReturn cvr = CVMetalTextureCacheCreate(kCFAllocatorDefault, NULL, g_mtl_device, NULL, &g_mtl_tex_cache);
+        if (cvr != kCVReturnSuccess || !g_mtl_tex_cache) {
+            char msg[64]; snprintf(msg, sizeof(msg), "metal fsr: CVMetalTextureCacheCreate failed (%d)", cvr);
+            goMetalLog(msg, 2);
+            return 0;
+        }
+    }
+
+    NSError *err = nil;
+    id<MTLLibrary> lib = [g_mtl_device newLibraryWithSource:g_fsr_shader_source options:nil error:&err];
+    if (!lib) {
+        NSString *m = [NSString stringWithFormat:@"metal fsr: shader compile failed: %@", err];
+        goMetalLog((char *)m.UTF8String, 2);
+        return 0;
+    }
+
+    struct { NSString *name; id<MTLComputePipelineState> __strong *slot; } kernels[] = {
+        {@"resample_bilinear", &g_mtl_bilinear_pso},
+        {@"resample_bicubic",  &g_mtl_bicubic_pso},
+        {@"resample_lanczos",  &g_mtl_lanczos_pso},
+        {@"fsr_easu",          &g_mtl_easu_pso},
+        {@"fsr_rcas",          &g_mtl_rcas_pso},
+        {@"yuv2020_to_rgb",    &g_mtl_yuv2rgb_pso},
+    };
+    for (size_t i = 0; i < sizeof(kernels)/sizeof(kernels[0]); i++) {
+        id<MTLFunction> fn = [lib newFunctionWithName:kernels[i].name];
+        if (!fn) {
+            NSString *m = [NSString stringWithFormat:@"metal fsr: newFunctionWithName(%@) failed", kernels[i].name];
+            goMetalLog((char *)m.UTF8String, 2);
+            return 0;
+        }
+        id<MTLComputePipelineState> pso = [g_mtl_device newComputePipelineStateWithFunction:fn error:&err];
+        if (!pso) {
+            NSString *m = [NSString stringWithFormat:@"metal fsr: pipeline state (%@) failed: %@", kernels[i].name, err];
+            goMetalLog((char *)m.UTF8String, 2);
+            return 0;
+        }
+        *kernels[i].slot = pso;
+    }
+
+    goMetalLog("metal fsr: pipeline ready", 0);
+    return 1;
+}
+
+// Standard "aspect fit, centered" rect -- same visual result as the plain
+// video layer's kCAGravityResizeAspect, computed by hand because a
+// CAMetalLayer's drawable has no gravity/contents-scaling equivalent: the
+// compute kernel fills the ENTIRE drawable 1:1, so the letterboxing has to
+// happen by sizing/positioning the layer itself to this rect instead.
+static CGRect metal_spike_aspect_fit_rect(CGRect container, CGFloat contentW, CGFloat contentH) {
+    if (contentW <= 0 || contentH <= 0 || container.size.width <= 0 || container.size.height <= 0) {
+        return container;
+    }
+    CGFloat containerAspect = container.size.width / container.size.height;
+    CGFloat contentAspect   = contentW / contentH;
+    CGFloat w, h;
+    if (contentAspect > containerAspect) {
+        w = container.size.width;
+        h = w / contentAspect;
+    } else {
+        h = container.size.height;
+        w = h * contentAspect;
+    }
+    CGFloat x = container.origin.x + (container.size.width  - w) * 0.5;
+    CGFloat y = container.origin.y + (container.size.height - h) * 0.5;
+    return CGRectMake(x, y, w, h);
+}
+
+// Builds FSR1's EASU constants (Const0..3), matching ffx_fsr1.h's
+// FsrEasuCon() exactly (full-viewport form -- inputViewport == inputSize,
+// this app never renders into a sub-rect of a larger resource). Each
+// float is bit-packed into the uint the GPU-side struct expects (see
+// fsr_metal.metal's fsr_easu kernel, which un-bitcasts them right back).
+typedef struct { uint32_t x, y, z, w; } FsrUint4;
+static void fsr_easu_con(FsrUint4 *con0, FsrUint4 *con1, FsrUint4 *con2, FsrUint4 *con3,
+                          float inW, float inH, float outW, float outH) {
+    union { float f; uint32_t u; } c;
+#define PACK(v) (c.f = (v), c.u)
+    con0->x = PACK(inW / outW);
+    con0->y = PACK(inH / outH);
+    con0->z = PACK(0.5f * inW / outW - 0.5f);
+    con0->w = PACK(0.5f * inH / outH - 0.5f);
+
+    con1->x = PACK(1.0f / inW);
+    con1->y = PACK(1.0f / inH);
+    con1->z = PACK( 1.0f / inW);
+    con1->w = PACK(-1.0f / inH);
+
+    con2->x = PACK(-1.0f / inW);
+    con2->y = PACK( 2.0f / inH);
+    con2->z = PACK( 1.0f / inW);
+    con2->w = PACK( 2.0f / inH);
+
+    con3->x = PACK(0.0f / inW);
+    con3->y = PACK(4.0f / inH);
+    con3->z = 0;
+    con3->w = 0;
+#undef PACK
+}
+
+// FsrRcasCon(): sharpness is given in stops (0 = max sharpness); transform
+// to a linear value CPU-side, exactly like ffx_fsr1.h does, so the GPU
+// kernel just un-bitcasts a single already-transformed float.
+static uint32_t fsr_rcas_con(float sharpnessStops) {
+    union { float f; uint32_t u; } c;
+    c.f = exp2f(-sharpnessStops);
+    return c.u;
+}
+
+// Renders one CVPixelBuffer (SDR BGRA, or HDR 10-bit 4:2:0 biplanar YCbCr)
+// through the active upscale mode onto g_metal_layer, sized/positioned to
+// aspect-fit `container`. Returns 1 on success (caller should hide g_layer
+// and show g_metal_layer), 0 on any failure (caller should fall back to the
+// normal g_layer path for this frame rather than showing a stale/blank
+// drawable). FSR1 only makes sense when actually upscaling (EASU is
+// documented for 1x-4x area scaling); when the output isn't larger than the
+// input, this silently runs the bilinear kernel instead regardless of the
+// requested mode.
+static int metal_spike_render(CVPixelBufferRef buf, CGRect container) {
+    if (!metal_fsr_ensure_pipeline() || !g_metal_layer) return 0;
+
+    size_t srcW = CVPixelBufferGetWidth(buf), srcH = CVPixelBufferGetHeight(buf);
+    if (srcW == 0 || srcH == 0) return 0;
+    BOOL isHDR = (CVPixelBufferGetPixelFormatType(buf) == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange);
+
+    CGRect fit = metal_spike_aspect_fit_rect(container, (CGFloat)srcW, (CGFloat)srcH);
+    CGFloat scale = NSScreen.mainScreen.backingScaleFactor;
+    [CATransaction begin];
+    [CATransaction setDisableActions:YES];
+    g_metal_layer.frame = fit;
+    g_metal_layer.contentsScale = scale;
+    [CATransaction commit];
+    MTLSize drawableSize = MTLSizeMake((NSUInteger)(fit.size.width * scale), (NSUInteger)(fit.size.height * scale), 1);
+    if (drawableSize.width == 0 || drawableSize.height == 0) return 0;
+    g_metal_layer.drawableSize = CGSizeMake(drawableSize.width, drawableSize.height);
+
+    // Tag the layer's colorspace to match what's being written into it this
+    // frame -- kCGColorSpaceITUR_2100_PQ tells the OS compositor these RGB
+    // values are PQ-encoded BT.2020 (see yuv2020_to_rgb's own doc comment:
+    // this kernel does NOT linearize/tone-map, that stays the OS's job,
+    // same as the pre-existing g_layer/Core-Animation path). Cheap to set
+    // every frame; only actually costs anything on the rare frame the value
+    // changes.
+    static BOOL sLastColorspaceWasHDR = NO; // not thread-shared: always called from the main thread (see displayLinkFired)
+    if (isHDR != sLastColorspaceWasHDR) {
+        if (isHDR) {
+            CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceITUR_2100_PQ);
+            g_metal_layer.colorspace = cs;
+            if (cs) CGColorSpaceRelease(cs);
+        } else {
+            g_metal_layer.colorspace = nil; // default (sRGB-ish) -- matches g_layer's own untagged behavior
+        }
+        apply_dynamic_range(g_metal_layer, isHDR);
+        sLastColorspaceWasHDR = isHDR;
+    }
+
+    BOOL isUpscale = (drawableSize.width > srcW && drawableSize.height > srcH);
+    BOOL useFsr1 = (metal_upscale_mode() == UPSCALE_MODE_FSR1) && isUpscale;
+
+    id<CAMetalDrawable> drawable = [g_metal_layer nextDrawable];
+    if (!drawable) return 0;
+
+    id<MTLTexture> inTex = nil;
+    CVMetalTextureRef cvTexA = NULL, cvTexB = NULL; // release both at the end, regardless of path
+
+    if (isHDR) {
+        size_t chromaW = (srcW + 1) / 2, chromaH = (srcH + 1) / 2;
+        CVReturn cvrY = CVMetalTextureCacheCreateTextureFromImage(
+            kCFAllocatorDefault, g_mtl_tex_cache, buf, NULL,
+            MTLPixelFormatR16Unorm, srcW, srcH, 0, &cvTexA);
+        CVReturn cvrC = CVMetalTextureCacheCreateTextureFromImage(
+            kCFAllocatorDefault, g_mtl_tex_cache, buf, NULL,
+            MTLPixelFormatRG16Unorm, chromaW, chromaH, 1, &cvTexB);
+        if (cvrY != kCVReturnSuccess || !cvTexA || cvrC != kCVReturnSuccess || !cvTexB) {
+            if (cvTexA) CFRelease(cvTexA);
+            if (cvTexB) CFRelease(cvTexB);
+            return 0;
+        }
+        id<MTLTexture> yTex = CVMetalTextureGetTexture(cvTexA);
+        id<MTLTexture> cbcrTex = CVMetalTextureGetTexture(cvTexB);
+        if (!yTex || !cbcrTex) { CFRelease(cvTexA); CFRelease(cvTexB); return 0; }
+
+        if (g_mtl_yuv_rgb_tex == nil || g_mtl_yuv_rgb_w != srcW || g_mtl_yuv_rgb_h != srcH) {
+            MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                                                                              width:srcW height:srcH mipmapped:NO];
+            desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+            desc.storageMode = MTLStorageModePrivate;
+            g_mtl_yuv_rgb_tex = [g_mtl_device newTextureWithDescriptor:desc];
+            g_mtl_yuv_rgb_w = srcW;
+            g_mtl_yuv_rgb_h = srcH;
+        }
+        if (!g_mtl_yuv_rgb_tex) { CFRelease(cvTexA); CFRelease(cvTexB); return 0; }
+
+        id<MTLCommandBuffer> yuvCmd = [g_mtl_queue commandBuffer];
+        id<MTLComputeCommandEncoder> yuvEnc = [yuvCmd computeCommandEncoder];
+        [yuvEnc setComputePipelineState:g_mtl_yuv2rgb_pso];
+        [yuvEnc setTexture:yTex atIndex:0];
+        [yuvEnc setTexture:cbcrTex atIndex:1];
+        [yuvEnc setTexture:g_mtl_yuv_rgb_tex atIndex:2];
+        MTLSize yuvTgSize = MTLSizeMake(16, 16, 1);
+        MTLSize yuvTgCount = MTLSizeMake((srcW + 15) / 16, (srcH + 15) / 16, 1);
+        [yuvEnc dispatchThreadgroups:yuvTgCount threadsPerThreadgroup:yuvTgSize];
+        [yuvEnc endEncoding];
+        [yuvCmd commit];
+
+        inTex = g_mtl_yuv_rgb_tex;
+    } else {
+        CVReturn cvr = CVMetalTextureCacheCreateTextureFromImage(
+            kCFAllocatorDefault, g_mtl_tex_cache, buf, NULL,
+            MTLPixelFormatBGRA8Unorm, srcW, srcH, 0, &cvTexA);
+        if (cvr != kCVReturnSuccess || !cvTexA) return 0;
+        inTex = CVMetalTextureGetTexture(cvTexA);
+        if (!inTex) { CFRelease(cvTexA); return 0; }
+    }
+
+    id<MTLCommandBuffer> cmd = [g_mtl_queue commandBuffer];
+
+    if (useFsr1) {
+        if (g_mtl_easu_out_tex == nil || g_mtl_easu_out_w != drawableSize.width || g_mtl_easu_out_h != drawableSize.height) {
+            MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                                                                              width:drawableSize.width
+                                                                                             height:drawableSize.height
+                                                                                          mipmapped:NO];
+            desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+            desc.storageMode = MTLStorageModePrivate;
+            g_mtl_easu_out_tex = [g_mtl_device newTextureWithDescriptor:desc];
+            g_mtl_easu_out_w = drawableSize.width;
+            g_mtl_easu_out_h = drawableSize.height;
+        }
+        if (!g_mtl_easu_out_tex) { CFRelease(cvTexA); if (cvTexB) CFRelease(cvTexB); return 0; }
+
+        FsrUint4 con0, con1, con2, con3;
+        fsr_easu_con(&con0, &con1, &con2, &con3, (float)srcW, (float)srcH, (float)drawableSize.width, (float)drawableSize.height);
+        struct { FsrUint4 c0, c1, c2, c3; } easuCB = { con0, con1, con2, con3 };
+
+        id<MTLComputeCommandEncoder> easuEnc = [cmd computeCommandEncoder];
+        [easuEnc setComputePipelineState:g_mtl_easu_pso];
+        [easuEnc setTexture:inTex atIndex:0];
+        [easuEnc setTexture:g_mtl_easu_out_tex atIndex:1];
+        [easuEnc setBytes:&easuCB length:sizeof(easuCB) atIndex:0];
+        MTLSize tgSize = MTLSizeMake(16, 16, 1);
+        MTLSize tgCount = MTLSizeMake((drawableSize.width + 15) / 16, (drawableSize.height + 15) / 16, 1);
+        [easuEnc dispatchThreadgroups:tgCount threadsPerThreadgroup:tgSize];
+        [easuEnc endEncoding];
+
+        uint32_t rcasCon0x = fsr_rcas_con(0.0f); // 0 stops = max sharpness for now; UI-tunable later
+        struct { uint32_t c0x, c0y, c0z, c0w; } rcasCB = { rcasCon0x, 0, 0, 0 };
+
+        id<MTLComputeCommandEncoder> rcasEnc = [cmd computeCommandEncoder];
+        [rcasEnc setComputePipelineState:g_mtl_rcas_pso];
+        [rcasEnc setTexture:g_mtl_easu_out_tex atIndex:0];
+        [rcasEnc setTexture:drawable.texture atIndex:1];
+        [rcasEnc setBytes:&rcasCB length:sizeof(rcasCB) atIndex:0];
+        [rcasEnc dispatchThreadgroups:tgCount threadsPerThreadgroup:tgSize];
+        [rcasEnc endEncoding];
+    } else {
+        // Non-FSR modes: plain single-pass resample kernels. FSR1 falls
+        // back here too when the drawable isn't actually larger than the
+        // source (see isUpscale/useFsr1 above) -- always via bilinear in
+        // that case, regardless of the requested mode, since a non-upscale
+        // resize is rare (usually exact-fit) and not worth a second
+        // pipeline-state branch.
+        UpscaleMode mode = (metal_upscale_mode() == UPSCALE_MODE_FSR1) ? UPSCALE_MODE_BILINEAR : metal_upscale_mode();
+        id<MTLComputePipelineState> pso = g_mtl_bilinear_pso;
+        if (mode == UPSCALE_MODE_BICUBIC) pso = g_mtl_bicubic_pso;
+        else if (mode == UPSCALE_MODE_LANCZOS) pso = g_mtl_lanczos_pso;
+
+        id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+        [enc setComputePipelineState:pso];
+        [enc setTexture:inTex atIndex:0];
+        [enc setTexture:drawable.texture atIndex:1];
+        MTLSize tgSize = MTLSizeMake(16, 16, 1);
+        MTLSize tgCount = MTLSizeMake((drawableSize.width + 15) / 16, (drawableSize.height + 15) / 16, 1);
+        [enc dispatchThreadgroups:tgCount threadsPerThreadgroup:tgSize];
+        [enc endEncoding];
+    }
+
+    [cmd presentDrawable:drawable];
+    [cmd commit];
+
+    // Safe to release now that the encoder(s) have recorded their reference
+    // to inTex -- Metal internally retains resources used by a command
+    // buffer until that buffer completes, same idiom as AVFoundation's own
+    // CVMetalTextureCache sample code.
+    CFRelease(cvTexA);
+    if (cvTexB) CFRelease(cvTexB);
+    return 1;
+}
 
 // g_hud_pending_* hold the most recently pushed-but-not-yet-applied HUD
 // image; g_hud_dirty marks that g_hud_pending_* has something newer than
@@ -146,10 +578,6 @@ static CVPixelBufferRef g_lastRenderedBuf = NULL;
 // metal_video_set_hdr applies it directly whenever g_layer already exists.
 static atomic_int g_hdr_enabled = 0;
 
-// Forward declaration -- defined further down (near metal_video_set_hdr),
-// used by metal_video_create above that definition.
-static void apply_dynamic_range(CALayer *layer, BOOL hdr);
-
 // Forward declaration -- defined further down (Net Graph HUD section),
 // used by MetalDisplayLinkTarget's displayLinkFired above that definition.
 static void metal_video_apply_pending_hud_overlay(void);
@@ -174,11 +602,36 @@ static void metal_render_main_with_buf(CVPixelBufferRef buf, double latencyMs) {
 
     // IOSurface path: CALayer compositor reads GPU memory directly — zero CPU copy.
     IOSurfaceRef surf = CVPixelBufferGetIOSurface(buf);
-    if (surf) {
-        [CATransaction begin];
-        [CATransaction setDisableActions:YES];
-        g_layer.contents = (__bridge id)surf;
-        [CATransaction commit];
+
+    // Only engages when a non-bilinear UpscaleMode is selected AND the frame
+    // is one of the two formats metal_spike_render actually handles (SDR
+    // BGRA, or HDR 10-bit 4:2:0 biplanar -- see moonlight_cgo_apple.go's
+    // platform_set_video_format, the only two formats VideoToolbox ever
+    // decodes to here). Any failure at any step (pipeline init, texture
+    // import, no drawable) falls straight through to the untouched g_layer
+    // path below, exactly as if the mode were still bilinear -- a failure
+    // here must never blank the screen.
+    OSType fmt = surf ? CVPixelBufferGetPixelFormatType(buf) : 0;
+    int spikeRendered = 0;
+    if (metal_upscale_mode() != UPSCALE_MODE_BILINEAR && surf &&
+        (fmt == kCVPixelFormatType_32BGRA || fmt == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange) &&
+        g_view) {
+        CGRect container = g_view.bounds;
+        spikeRendered = metal_spike_render(buf, container);
+    }
+
+    if (spikeRendered) {
+        if (g_metal_layer.hidden) g_metal_layer.hidden = NO;
+        if (!g_layer.hidden) g_layer.hidden = YES;
+    } else {
+        if (g_metal_layer && !g_metal_layer.hidden) g_metal_layer.hidden = YES;
+        if (g_layer.hidden) g_layer.hidden = NO;
+        if (surf) {
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            g_layer.contents = (__bridge id)surf;
+            [CATransaction commit];
+        }
     }
 
     // Save a retained copy for the pause snapshot (cheap retain; releases old).
@@ -639,6 +1092,7 @@ int metal_video_create(uintptr_t nsWinPtr, float x, float y, float w, float h) {
             g_layer = nil;
             g_overlay_layer = nil;
             g_hud_layer = nil;
+            g_metal_layer = nil;
         }
 
         g_fullWindow = (w <= 0 || h <= 0);
@@ -664,6 +1118,23 @@ int metal_video_create(uintptr_t nsWinPtr, float x, float y, float w, float h) {
         apply_dynamic_range(vl, atomic_load(&g_hdr_enabled) != 0);
         [ov.layer addSublayer:vl];
 
+        // Upscale-pipeline video layer (g_metal_layer) -- sibling of vl,
+        // hidden by default, shown instead of vl only when a non-bilinear
+        // UpscaleMode is active (see metal_render_main_with_buf). Added at
+        // the same sublayer depth as vl (both inserted before ol/hl below)
+        // so whichever one is visible, the AI Vision/Net Graph overlays stay
+        // on top of it. RGBA16Float (not BGRA8Unorm) so it can carry
+        // PQ-encoded HDR values without 8-bit banding; colorspace/EDR mode
+        // is set per-frame in metal_spike_render based on the source
+        // format, not fixed here.
+        CAMetalLayer *ml = [CAMetalLayer layer];
+        ml.hidden = YES;
+        ml.device = MTLCreateSystemDefaultDevice();
+        ml.pixelFormat = MTLPixelFormatRGBA16Float;
+        ml.framebufferOnly = NO; // compute kernel writes the drawable's texture directly
+        ml.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+        [ov.layer addSublayer:ml];
+
         CALayer *ol = [CALayer layer];
         ol.frame = ov.bounds;
         ol.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
@@ -685,6 +1156,7 @@ int metal_video_create(uintptr_t nsWinPtr, float x, float y, float w, float h) {
         g_layer = vl;
         g_overlay_layer = ol;
         g_hud_layer = hl;
+        g_metal_layer = ml;
 
         g_submitCount = 0; g_renderCount = 0;
         g_fpsFrames = 0;   g_fpsStart = 0;   g_lastKnownFps = 0.0;
@@ -702,6 +1174,15 @@ int metal_video_create(uintptr_t nsWinPtr, float x, float y, float w, float h) {
         g_pendingBuf = NULL;
         pthread_mutex_unlock(&g_mu);
         if (old) CVPixelBufferRelease(old);
+
+        // Warm up the Metal upscale pipeline's shader compile HERE (main
+        // thread, before any frame exists) rather than lazily on the first
+        // frame that needs it -- see metal_fsr_ensure_pipeline's own doc
+        // comment for the measured ~636ms stall this avoids. Also done from
+        // metal_video_set_upscale_mode itself (covers the case where that's
+        // called AFTER this one, e.g. the mode changes mid-session). No-op
+        // (and cheap to call) when the mode is still the bilinear default.
+        if (metal_upscale_mode() != UPSCALE_MODE_BILINEAR) metal_fsr_ensure_pipeline();
 
         atomic_store(&g_active, 1);
 
@@ -881,6 +1362,7 @@ void metal_video_destroy(void) {
             g_layer = nil;
             g_overlay_layer = nil;
             g_hud_layer = nil;
+            g_metal_layer = nil;
         }
         atomic_store(&g_hud_dirty, 0);
         pthread_mutex_lock(&g_hud_pending_mu);

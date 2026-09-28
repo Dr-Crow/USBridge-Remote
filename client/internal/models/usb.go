@@ -152,6 +152,18 @@ const (
 	VideoModeRawYUYV = "raw_yuyv"
 )
 
+// UpscaleMode selects how the decoded video frame is resized to fit the
+// window/display when it isn't already an exact pixel match -- see
+// service.MetalVideoSetUpscaleMode. Currently only meaningful on macOS
+// (Metal render path); other platforms ignore it and always behave like
+// UpscaleModeBilinear.
+const (
+	UpscaleModeBilinear = "bilinear" // default -- matches pre-upscale-picker behavior exactly, no GPU compute pass
+	UpscaleModeBicubic  = "bicubic"
+	UpscaleModeLanczos  = "lanczos"
+	UpscaleModeFSR1     = "fsr1" // AMD FidelityFX Super Resolution 1.0 (EASU+RCAS)
+)
+
 type VideoTransportMode struct {
 	ID                string `json:"id"`
 	Name              string `json:"name"`
@@ -382,6 +394,12 @@ type VideoStartRequest struct {
 	// of Color444 (see rust-shine's docs/COLOR_MODES.md: chroma and dynamic
 	// range are separate axes).
 	Hdr bool `json:"-"`
+	// UpscaleMode selects the video-to-window resize quality (see the
+	// UpscaleMode* constants above) -- a purely local rendering hint like
+	// Color444/Hdr, never sent to the agent. Applied directly via
+	// service.MetalVideoSetUpscaleMode as soon as it's known/changed (no
+	// codec-negotiation dependency, unlike Color444/Hdr).
+	UpscaleMode string `json:"-"`
 	// ClientPort - client port to receive UDP stream (server will take IP from HTTP)
 	ClientHost string `json:"client_host,omitempty"`
 	ClientPort int    `json:"client_port,omitempty"`
@@ -430,8 +448,11 @@ type VideoDeviceConfig struct {
 	Color444 bool `json:"color_444,omitempty"`
 	// Hdr persists the user's RustShine HDR checkbox choice for this
 	// capture device -- see VideoStartRequest.Hdr's doc comment.
-	Hdr           bool  `json:"hdr,omitempty"`
-	LastAppliedAt int64 `json:"last_applied_at,omitempty"`
+	Hdr bool `json:"hdr,omitempty"`
+	// UpscaleMode persists the user's upscale-quality picker choice for this
+	// capture device -- see VideoStartRequest.UpscaleMode's doc comment.
+	UpscaleMode   string `json:"upscale_mode,omitempty"`
+	LastAppliedAt int64  `json:"last_applied_at,omitempty"`
 }
 
 func (c VideoDeviceConfig) ToVideoStartRequest() *VideoStartRequest {
@@ -448,6 +469,7 @@ func (c VideoDeviceConfig) ToVideoStartRequest() *VideoStartRequest {
 		EnableVSync:        c.EnableVSync,
 		Color444:           c.Color444,
 		Hdr:                c.Hdr,
+		UpscaleMode:        c.UpscaleMode,
 	}
 }
 

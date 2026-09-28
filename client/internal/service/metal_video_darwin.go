@@ -4,7 +4,7 @@ package service
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
-#cgo LDFLAGS: -framework AppKit -framework CoreVideo -framework QuartzCore -framework CoreFoundation
+#cgo LDFLAGS: -framework AppKit -framework CoreVideo -framework QuartzCore -framework CoreFoundation -framework Metal
 
 #include <stdint.h>
 #include <CoreVideo/CoreVideo.h>
@@ -19,6 +19,7 @@ extern double metal_video_last_fps(void);
 extern void metal_video_set_hidden(int hidden);
 extern int  metal_video_get_last_frame_rgba(int *outW, int *outH, uint8_t **out);
 extern void metal_video_set_hdr(int enabled);
+extern void metal_video_set_upscale_mode(int mode);
 
 extern void metal_video_set_overlay(const uint8_t *rgba, int w, int h, int stride);
 extern void metal_video_clear_overlay(void);
@@ -41,6 +42,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"usbridge-client/internal/localui"
+	"usbridge-client/internal/models"
 )
 
 // init wires the AI Vision overlay (ai_vision.go) to this platform's
@@ -67,6 +69,10 @@ func init() {
 	}
 	netGraphRenderFPS = MetalVideoLastFPS
 	netGraphDecodeMs = MetalVideoLastDecodeMs
+
+	// UpscaleMode (upscale_mode.go's cross-platform SetUpscaleMode) -- see
+	// that file's own doc comment for why this hook indirection exists.
+	upscaleModeMetalSet = MetalVideoSetUpscaleMode
 }
 
 // pushNetGraphOverlayToMetal hands a just-built HUD canvas (see
@@ -245,4 +251,25 @@ func MetalVideoSetHdr(enabled bool) {
 		e = 1
 	}
 	C.metal_video_set_hdr(e)
+}
+
+// MetalVideoSetUpscaleMode selects how the decoded video frame is resized
+// to fit the window when it isn't already an exact pixel match -- see
+// models.UpscaleMode* for the string values and metal_video_impl_darwin.m's
+// metal_video_set_upscale_mode for what each one actually does. Unlike
+// MetalVideoSetHdr, this has no codec-negotiation dependency: called
+// directly, as soon as the value is known/changed (see upscale_mode.go's
+// SetUpscaleMode, called from startVideoWithParamsInternal alongside
+// SetColor444/SetHdr).
+func MetalVideoSetUpscaleMode(mode string) {
+	m := C.int(0) // bilinear -- matches models.UpscaleModeBilinear and UPSCALE_MODE_BILINEAR
+	switch mode {
+	case models.UpscaleModeBicubic:
+		m = 1
+	case models.UpscaleModeLanczos:
+		m = 2
+	case models.UpscaleModeFSR1:
+		m = 3
+	}
+	C.metal_video_set_upscale_mode(m)
 }

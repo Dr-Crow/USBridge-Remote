@@ -146,6 +146,9 @@ func (vw *VideoWidget) handleStartVideo() {
 		fyne.Do(func() {
 			vw.ensureStartDialog()
 			vw.startDialog.Configure(videoInfo, defaultWidth, defaultHeight, defaultFPS, defaultBitrate)
+			if preferredErr == nil {
+				vw.startDialog.SetUpscaleMode(preferredConfig.UpscaleMode)
+			}
 			vw.startDialog.SetDeviceLabel("")
 			vw.startDialog.SetPrimaryAction(i18n.Current.StartVideo)
 			vw.startDialog.SetExtraAction("", nil)
@@ -297,6 +300,7 @@ func (vw *VideoWidget) startVideoWithParamsInternal(request *models.VideoStartRe
 		}
 		vw.videoClient.SetColor444(request.Color444)
 		vw.videoClient.SetHdr(request.Hdr)
+		service.SetUpscaleMode(request.UpscaleMode)
 		if request.VideoFPS > 0 {
 			vw.videoClient.SetFPS(request.VideoFPS)
 		}

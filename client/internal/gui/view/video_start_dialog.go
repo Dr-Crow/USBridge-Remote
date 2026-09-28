@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"math"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -51,7 +52,8 @@ type VideoStartDialog struct {
 	deviceLabel      *widget.Label
 	vsyncCheck       *videoDialogCheckbox
 	vsyncHint        *videoDialogWrapText
-	fsrCheck         *videoDialogCheckbox
+	upscaleSelect    *HeaderDropdown
+	upscaleLabels    map[string]string // display label -> models.UpscaleMode* value
 	fsrHint          *videoDialogWrapText
 	aiVisionCheck    *videoDialogCheckbox
 	aiVisionHint     *videoDialogWrapText
@@ -1570,12 +1572,29 @@ func (vsd *VideoStartDialog) createInterface() {
 		vsd.vsyncHint,
 	)
 
-	vsd.fsrCheck = newVideoDialogCheckbox(false, nil)
+	// Upscale quality: real Metal compute pipeline (EASU+RCAS for FSR1,
+	// single-pass kernels for bicubic/Lanczos) on macOS only for now -- see
+	// metal_video_impl_darwin.m's UpscaleMode enum. "Bilinear" is the
+	// default and is a complete no-op vs. the pre-existing direct-IOSurface
+	// render path (see that file's own doc comment), so every other
+	// platform (no upscaleSelect at all, VideoStartRequest.UpscaleMode left
+	// at its zero value "") behaves exactly as before this setting existed.
+	vsd.upscaleLabels = map[string]string{
+		i18n.Current.UpscaleBilinear: models.UpscaleModeBilinear,
+		i18n.Current.UpscaleBicubic:  models.UpscaleModeBicubic,
+		i18n.Current.UpscaleLanczos:  models.UpscaleModeLanczos,
+		i18n.Current.UpscaleFSR1:     models.UpscaleModeFSR1,
+	}
+	vsd.upscaleSelect = newVideoDialogPicker(nil)
+	vsd.upscaleSelect.SetOptions([]string{i18n.Current.UpscaleBilinear, i18n.Current.UpscaleBicubic, i18n.Current.UpscaleLanczos, i18n.Current.UpscaleFSR1})
+	vsd.upscaleSelect.SetSelected(i18n.Current.UpscaleBilinear)
 	vsd.fsrHint = newVideoDialogDescription(i18n.Current.AMDFSRHint, videoDialogToggleDescWidthFor(hintPanelW))
-	fsrRow := newVideoDialogToggleRow(
-		vsd.fsrCheck,
-		newVideoDialogRowTitle(i18n.Current.AMDFSR),
-		newVideoDialogBadge(i18n.Current.AMDFSRBadge, design.ColorConnectionBadgeText),
+	fsrRow := container.NewVBox(
+		container.NewHBox(
+			newVideoDialogRowTitle(i18n.Current.AMDFSR),
+			newVideoDialogBadge(i18n.Current.AMDFSRBadge, design.ColorConnectionBadgeText),
+		),
+		vsd.upscaleSelect,
 		vsd.fsrHint,
 	)
 
@@ -1798,7 +1817,18 @@ func (vsd *VideoStartDialog) createInterface() {
 		videoDialogVSpace(8),
 		newVideoDialogLabeledDivider(i18n.Current.OtherSettings),
 	}
-	otherRows := []fyne.CanvasObject{vsyncRow, fsrRow, aiVisionRow, color444Row, hdrRow}
+	otherRows := []fyne.CanvasObject{vsyncRow, aiVisionRow, color444Row, hdrRow}
+	// Upscale quality picker: only actually does anything on macOS (Metal
+	// render path, see metal_video_impl_darwin.m) -- vsd.upscaleSelect is
+	// still constructed unconditionally above so handleStart()'s read of it
+	// stays nil-safe everywhere, but the row itself is hidden on every other
+	// platform rather than shown as a control that silently does nothing
+	// (exactly the bug this feature replaced: a checkbox nobody ever wired
+	// up). Its Selected value stays "Bilinear" there, which is already a
+	// complete no-op on every platform.
+	if runtime.GOOS == "darwin" {
+		otherRows = append(otherRows, fsrRow)
+	}
 	if netGraphRow != nil {
 		otherRows = append(otherRows, netGraphRow)
 	}
@@ -2072,6 +2102,22 @@ func (vsd *VideoStartDialog) Show(onApply func(request *models.VideoStartRequest
 		overlayShow()
 	}
 	vsd.dialog.Show()
+}
+
+// SetUpscaleMode restores the upscale-quality picker to a persisted
+// models.UpscaleMode* value (e.g. from VideoDeviceConfig.UpscaleMode) --
+// call this after Configure() when opening the dialog for a device with a
+// saved preference. Unrecognized/empty values (including a config saved
+// before this setting existed) fall back to Bilinear, matching
+// VideoStartRequest.UpscaleMode's own zero-value behavior.
+func (vsd *VideoStartDialog) SetUpscaleMode(mode string) {
+	for label, m := range vsd.upscaleLabels {
+		if m == mode {
+			vsd.upscaleSelect.SetSelected(label)
+			return
+		}
+	}
+	vsd.upscaleSelect.SetSelected(i18n.Current.UpscaleBilinear)
 }
 
 func (vsd *VideoStartDialog) SetDeviceLabel(text string) {
@@ -2446,6 +2492,7 @@ func (vsd *VideoStartDialog) handleStart() {
 		EnableVSync:        vsd.vsyncCheck.Checked,
 		Color444:           vsd.selectedModeID() == models.VideoModeH265 && vsd.color444Check.Checked,
 		Hdr:                vsd.selectedModeID() == models.VideoModeH265 && vsd.hdrCheck.Checked,
+		UpscaleMode:        vsd.upscaleLabels[vsd.upscaleSelect.Selected], // "" (unknown label) falls back to UpscaleModeBilinear's zero-value behavior
 	}
 
 	logrus.Infof("🎥 Starting video: mode=%s %dx%d @ %d fps, bitrate %s",

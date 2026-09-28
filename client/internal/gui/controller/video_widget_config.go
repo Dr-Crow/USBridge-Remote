@@ -559,6 +559,7 @@ func videoDeviceConfigFromRequest(devicePath, deviceName string, request *models
 		EnableVSync:        request.EnableVSync,
 		Color444:           request.Color444,
 		Hdr:                request.Hdr,
+		UpscaleMode:        request.UpscaleMode,
 	}
 }
 
@@ -903,6 +904,7 @@ func (vw *VideoWidget) ShowVideoDeviceSettings(devicePath string, restartOnApply
 			logrus.Infof("📦 showing video start dialog for %s", device.Path)
 			vw.ensureStartDialog()
 			vw.startDialog.Configure(info, cfg.VideoWidth, cfg.VideoHeight, cfg.VideoFPS, cfg.VideoBitrate)
+			vw.startDialog.SetUpscaleMode(cfg.UpscaleMode)
 			vw.startDialog.SetDeviceLabel(device.Path)
 			vw.startDialog.SetPrimaryAction(i18n.Current.Apply)
 			_ = showFullscreen

@@ -549,9 +549,13 @@ type LocalizedStrings struct {
 	EnableVSync                          string // "VSync (Vertical Sync)" checkbox title, video parameters dialog
 	EnableVSyncHint                      string // description shown under the VSync checkbox
 	EnableVSyncBadge                     string // small badge next to the VSync title, e.g. "RECOMMENDED"
-	AMDFSR                               string // "AMD FSR 1.0 Upscaler" checkbox title, video parameters dialog
-	AMDFSRHint                           string // description shown under the AMD FSR checkbox
-	AMDFSRBadge                          string // small badge next to the AMD FSR title, e.g. "NEW"
+	AMDFSR                               string // "Upscale Quality" picker title, video parameters dialog (macOS: bilinear/bicubic/lanczos/AMD FSR 1.0)
+	AMDFSRHint                           string // description shown under the upscale quality picker
+	AMDFSRBadge                          string // small badge next to the upscale quality title, e.g. "NEW"
+	UpscaleBilinear                      string // upscale quality picker option: fast default, no extra GPU cost
+	UpscaleBicubic                       string // upscale quality picker option: smoother than bilinear
+	UpscaleLanczos                       string // upscale quality picker option: sharper than bicubic
+	UpscaleFSR1                          string // upscale quality picker option: AMD FSR 1.0 (EASU+RCAS), sharpest, macOS only for now
 	AIVision                             string // "AI Vision Detection Overlay" checkbox title, video parameters dialog
 	AIVisionHint                         string // hint shown under the AI Vision checkbox
 	AIVisionBadge                        string // small badge next to the AI Vision title, e.g. "EXPERIMENTAL"
@@ -1177,9 +1181,13 @@ func EN() *LocalizedStrings {
 		EnableVSync:                          "VSync (Vertical Sync)",
 		EnableVSyncHint:                      "Synchronizes frame delivery with the host display's refresh rate to eliminate tearing during fast motion.",
 		EnableVSyncBadge:                     "Recommended",
-		AMDFSR:                               "AMD FSR 1.0 Upscaler",
-		AMDFSRHint:                           "Improves picture sharpness when the stream is at a lower resolution.",
+		AMDFSR:                               "Upscale Quality",
+		AMDFSRHint:                           "Improves picture sharpness when the stream is at a lower resolution than the window.",
 		AMDFSRBadge:                          "New",
+		UpscaleBilinear:                      "Bilinear",
+		UpscaleBicubic:                       "Bicubic",
+		UpscaleLanczos:                       "Lanczos",
+		UpscaleFSR1:                          "AMD FSR 1.0",
 		AIVision:                             "AI Vision Detection Overlay",
 		AIVisionHint:                         "Overlays live object detection (Set-of-Mark bounding boxes + hex IDs) on the video feed, mirroring an agent's ui.parse() telemetry call.",
 		AIVisionBadge:                        "Experimental",
