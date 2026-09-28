@@ -23,10 +23,6 @@
 
 _sunshine_repo="itsme228/Sunshine"
 
-# Принудительно устанавливаем нужную версию и заставляем скрипт обновлять бинарники
-export USBRIDGE_SUNSHINE_VERSION="${USBRIDGE_SUNSHINE_VERSION:-v2026.927.1.usbridge}"
-export USBRIDGE_SUNSHINE_FORCE="${USBRIDGE_SUNSHINE_FORCE:-1}"
-
 _sunshine_require() {
     if ! command -v "$1" >/dev/null 2>&1; then
         echo -e "${RED}Missing dependency: $1 (needed to fetch Sunshine)${NC}"
