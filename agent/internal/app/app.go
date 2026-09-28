@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -70,6 +71,14 @@ type App struct {
 	// changed it, restored when the pin is cleared. Guarded by streamMu.
 	benchMonitor    string
 	benchOrigOutput map[string]string
+	// benchRestartPending: a deferred SetBenchMonitor changed the running
+	// streamer's monitor without restarting it; the next SetStreamBackend
+	// restarts it (same kind) or replaces it (other kind). Guarded by
+	// streamMu.
+	benchRestartPending bool
+	// lastSwitch is how the last SetStreamBackend spent its time, for the
+	// benchmark's statistics. Guarded by streamMu.
+	lastSwitch api.BackendSwitchTiming
 
 	state     *deviceState
 	input     *input.Controller
@@ -147,6 +156,14 @@ type App struct {
 	// a.stream/a.streamKind must only ever be read/written while held.
 	streamMu   sync.Mutex
 	streamKind string // "sunshine" | "rustshine" -- bookkeeping only, mirrors which concrete type a.stream currently is
+	// streamKindView mirrors streamKind for readers that must not wait on
+	// streamMu: SetStreamBackend holds it through the new backend's whole
+	// startup (~25-40 s for Sunshine), and currentStreamKind used to take
+	// it -- so the GUI's status poll and the protocol picker's hover/click
+	// handlers (EntitlementStatus) froze for that long after every switch,
+	// the benchmark's included, and a click in the picker did nothing
+	// visible. Written together with streamKind via setStreamKind.
+	streamKindView atomic.Value // string
 
 	// entMu guards the fields below, all touched from both the GUI/adminapi
 	// goroutine (user clicks) and entitlementWatchdog's background goroutine.
@@ -562,7 +579,7 @@ func New() (*App, error) {
 	// display connection (see Run).
 	instance.exeDir = resolveExeDir()
 	instance.logPath = filepath.Join(cfg.StateDir, "logs", "sunshine-stdout.log")
-	instance.streamKind = "sunshine"
+	instance.setStreamKind("sunshine")
 
 	// If this install was already switched to RustShine last run, pick it
 	// back up from a cold start too — but only via checks that need no
@@ -576,7 +593,7 @@ func New() (*App, error) {
 		if hwID, err := hwid.Get(); err == nil {
 			if _, err := entitlement.VerifyForHardware(cfg.EntitlementToken, hwID); err == nil {
 				if _, err := os.Stat(entitlement.StagePath(cfg.StateDir)); err == nil {
-					instance.streamKind = "rustshine"
+					instance.setStreamKind("rustshine")
 				}
 			}
 		}
@@ -1381,8 +1398,17 @@ func (a *App) RestartSunshine() error {
 	if a.stream == nil {
 		return nil
 	}
-	_ = a.stream.Stop()
-	time.Sleep(time.Second)
+	a.stopStreamAndWait(a.stream)
+	return a.RestartSunshineStartOnly()
+}
+
+// RestartSunshineStartOnly is RestartSunshine's second half, for a caller
+// that already stopped the stream (and timed that separately): starts it
+// and waits until it's reachable.
+func (a *App) RestartSunshineStartOnly() error {
+	if a.stream == nil {
+		return nil
+	}
 	err := a.stream.Start(a.cfg.SunshinePort)
 	if err == nil {
 		a.applyGPUClockLock()
@@ -1423,7 +1449,20 @@ func (a *App) SetStreamBackend(kind string) error {
 	a.streamMu.Lock()
 	defer a.streamMu.Unlock()
 
+	a.lastSwitch = api.BackendSwitchTiming{}
 	if kind == a.streamKind {
+		if a.benchRestartPending && a.stream != nil {
+			// A deferred benchmark monitor change is due now.
+			a.benchRestartPending = false
+			a.lastSwitch.Stopped = kind
+			stopStart := time.Now()
+			a.stopStreamAndWait(a.stream)
+			a.lastSwitch.StopMs = time.Since(stopStart).Milliseconds()
+			startStart := time.Now()
+			err := a.RestartSunshineStartOnly()
+			a.lastSwitch.StartMs = time.Since(startStart).Milliseconds()
+			return err
+		}
 		return nil
 	}
 	if kind == "rustshine" {
@@ -1432,13 +1471,17 @@ func (a *App) SetStreamBackend(kind string) error {
 		}
 	}
 
+	stopStart := time.Now()
 	if a.stream != nil {
-		_ = a.stream.Stop()
-		// Mirrors RestartSunshine's own wait for the same reason: Start()'s
-		// "already running" fast path only reflects reality once the
-		// exited process's Wait() goroutine has cleared its cmd.
-		time.Sleep(time.Second)
+		a.lastSwitch.Stopped = a.streamKind
+		a.stopStreamAndWait(a.stream)
 	}
+	a.lastSwitch.StopMs = time.Since(stopStart).Milliseconds()
+	// The stopped streamer's pending restart went with it; the new one
+	// starts on the current configuration anyway.
+	a.benchRestartPending = false
+	startStart := time.Now()
+	defer func() { a.lastSwitch.StartMs = time.Since(startStart).Milliseconds() }()
 
 	var next streamhost.Backend
 	if kind == "rustshine" {
@@ -1450,7 +1493,7 @@ func (a *App) SetStreamBackend(kind string) error {
 		next = streamhost.NewSunshine(a.exeDir, a.cfg.StateDir, a.logPath)
 	}
 	a.stream = next
-	a.streamKind = kind
+	a.setStreamKind(kind)
 	if a.screen != nil {
 		a.screen.SetDevices(next)
 	}
@@ -1504,10 +1547,51 @@ func (a *App) SetStreamBackend(kind string) error {
 // reconnected into closed ports and gave up on the stream.
 const streamReadyTimeout = 45 * time.Second
 
+// currentStreamKind is the active backend kind, readable without waiting
+// for a backend switch in progress (see streamKindView). During a switch it
+// already names the backend being started.
+// LastBackendSwitch is the timing of the most recent SetStreamBackend.
+func (a *App) LastBackendSwitch() api.BackendSwitchTiming {
+	a.streamMu.Lock()
+	defer a.streamMu.Unlock()
+	return a.lastSwitch
+}
+
+// stopStreamAndWait stops b and waits until its ports are free, so the next
+// Start (of it or of the other backend) never overlaps the old process.
+// Replaces a fixed 1 s sleep. The short settle after the ports free up is
+// for Start()'s "already running" fast path, which only reflects reality
+// once the exited process's Wait() goroutine has cleared its handle.
+func (a *App) stopStreamAndWait(b streamhost.Backend) {
+	_ = b.Stop()
+	tcp, udp := b.Ports(a.cfg.SunshinePort - 1)
+	start := time.Now()
+	if !streamhost.WaitPortsFree(tcp, udp, streamPortsFreeTimeout) {
+		log.Printf("[app] %s's ports %v/%v still held %s after stop -- starting anyway", b.DisplayName(), tcp, udp, streamPortsFreeTimeout)
+	} else if waited := time.Since(start); waited > time.Second {
+		log.Printf("[app] %s released its ports after %s", b.DisplayName(), waited.Round(time.Millisecond))
+	}
+	time.Sleep(100 * time.Millisecond)
+}
+
+// streamPortsFreeTimeout bounds stopStreamAndWait's wait for a stopped
+// backend's ports.
+const streamPortsFreeTimeout = 15 * time.Second
+
 func (a *App) currentStreamKind() string {
+	if kind, _ := a.streamKindView.Load().(string); kind != "" {
+		return kind
+	}
 	a.streamMu.Lock()
 	defer a.streamMu.Unlock()
 	return a.streamKind
+}
+
+// setStreamKind records the active backend kind. Caller holds streamMu, or
+// is still constructing the App.
+func (a *App) setStreamKind(kind string) {
+	a.streamKind = kind
+	a.streamKindView.Store(kind)
 }
 
 func (a *App) rustshineStaged() bool {

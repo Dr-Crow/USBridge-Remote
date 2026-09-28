@@ -69,12 +69,17 @@ func (t *trackedSunshineProc) Wait() error {
 	return err
 }
 
-// terminate asks the process to exit cleanly (SIGTERM) when the underlying
-// process supports it. Errors are ignored: callers escalate to Kill().
-func (t *trackedSunshineProc) terminate() {
+// terminate asks the process to exit cleanly (SIGTERM) and reports whether
+// the request was delivered. Windows has no SIGTERM for another process
+// (Signal fails), so there it returns false and callers kill right away
+// instead of waiting out sunshineStopGrace for nothing -- that wait added
+// 3 s to every stop, every benchmark switch included. Sunshine restores
+// its NVIDIA profile changes from its undo file on the next start.
+func (t *trackedSunshineProc) terminate() bool {
 	if p, ok := t.sunshineProcess.(sunshineExecCmdProcess); ok {
-		_ = p.cmd.Process.Signal(syscall.SIGTERM)
+		return p.cmd.Process.Signal(syscall.SIGTERM) == nil
 	}
+	return false
 }
 
 func (t *trackedSunshineProc) exited(d time.Duration) bool {
@@ -142,14 +147,21 @@ func (b *sunshineBackend) recoverHungLocked(adminPort int) (bool, error) {
 // falling back to SIGKILL, so Sunshine gets to tear down its virtual
 // uinput devices itself instead of being killed mid-teardown.
 func stopProcLocked(proc sunshineProcess) error {
-	if tp, ok := proc.(*trackedSunshineProc); ok {
-		tp.terminate()
+	tp, tracked := proc.(*trackedSunshineProc)
+	if tracked && tp.terminate() {
 		if tp.exited(sunshineStopGrace) {
 			return nil
 		}
 		log.Printf("[sunshine] pid=%d ignored SIGTERM for %s, sending SIGKILL", tp.Pid(), sunshineStopGrace)
 	}
-	return proc.Kill()
+	if err := proc.Kill(); err != nil {
+		return err
+	}
+	// Return once it is really gone, not just signalled.
+	if tracked && !tp.exited(sunshineStopGrace) {
+		log.Printf("[sunshine] pid=%d still running %s after SIGKILL", tp.Pid(), sunshineStopGrace)
+	}
+	return nil
 }
 
 // useSunshineSessionBroker reports whether Start should launch Sunshine via

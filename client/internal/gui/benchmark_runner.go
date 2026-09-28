@@ -70,29 +70,15 @@ func (mw *MainWindow) runBenchmark(ctx context.Context, backends []string, monit
 		if !netGraphWas {
 			service.SetNetGraphEnabled(false)
 		}
-		// Put the host back the way the user had it: each streamer's own
-		// monitor first, so the restored streamer starts on it.
 		vw.BenchmarkStopStream()
-		if monitor != "" {
-			if err := client.BenchSetMonitor(""); err != nil {
-				logrus.Warnf("📈 [Benchmark] restoring the streamers' monitors: %v", err)
-			}
-		}
-		if original != "" {
-			if st, err := client.BenchStatus(); err == nil && st.ActiveBackend != original {
-				progress(i18n.Current.BenchStepRestore, 1)
-				if _, err := client.BenchSetBackend(original); err != nil {
-					logrus.Warnf("📈 [Benchmark] restoring backend %s: %v", original, err)
-				}
-			}
-		}
-		if wasStreaming {
-			if _, err := vw.BenchmarkStartStream(60 * time.Second); err != nil {
-				logrus.Warnf("📈 [Benchmark] restarting the stream: %v", err)
-			}
-		}
+		// Putting the host back takes a streamer restart (~25 s for
+		// Sunshine) and the stream's own start; the results don't depend
+		// on it, so they show right away and this finishes behind them.
+		go restoreBenchmarkHost(client, vw, monitor, original, wasStreaming)
 	}()
 
+	// The pin's streamer restart is left to the first run's backend switch
+	// (see BenchSetMonitor).
 	if monitor != "" {
 		if err := client.BenchSetMonitor(monitor); err != nil {
 			return nil, fmt.Errorf("monitor %s: %w", monitor, err)
@@ -137,6 +123,39 @@ func (mw *MainWindow) runBenchmark(ctx context.Context, backends []string, monit
 	return result, nil
 }
 
+// benchmarkStreamer is the part of the video widget restoreBenchmarkHost
+// needs.
+type benchmarkStreamer interface {
+	BenchmarkStartStream(timeout time.Duration) (time.Duration, error)
+}
+
+// restoreBenchmarkHost puts the host back the way the user had it after a
+// benchmark: each streamer's own monitor, the original streamer, and the
+// stream if one was running. The monitor release leaves the restart to the
+// backend call right after it, which runs even when the original streamer
+// is already active, so the host restarts at most once.
+func restoreBenchmarkHost(client *api.USBClient, vw benchmarkStreamer, monitor, original string, wasStreaming bool) {
+	start := time.Now()
+	if monitor != "" {
+		if err := client.BenchSetMonitor(""); err != nil {
+			logrus.Warnf("📈 [Benchmark] restoring the streamers' monitors: %v", err)
+		}
+	}
+	if original != "" {
+		if sw, err := client.BenchSetBackend(original); err != nil {
+			logrus.Warnf("📈 [Benchmark] restoring backend %s: %v", original, err)
+		} else {
+			logrus.Infof("📈 [Benchmark] host restored to %s: stop %s %.0fms, start %.0fms", original, sw.Stopped, sw.StopMs, sw.StartMs)
+		}
+	}
+	if wasStreaming {
+		if _, err := vw.BenchmarkStartStream(60 * time.Second); err != nil {
+			logrus.Warnf("📈 [Benchmark] restarting the stream: %v", err)
+		}
+	}
+	logrus.Infof("📈 [Benchmark] host restored in %s", time.Since(start).Round(time.Millisecond))
+}
+
 func (mw *MainWindow) benchmarkOne(ctx context.Context, run *service.BenchRun, recorder *service.BenchRecorder, window time.Duration,
 	step func(text string, fraction float64), countdown func(text string, left int, fraction float64)) error {
 	client, vw := mw.usbClient, mw.videoWidget
@@ -145,11 +164,12 @@ func (mw *MainWindow) benchmarkOne(ctx context.Context, run *service.BenchRun, r
 	_ = client.BenchVideoStop()
 
 	step(i18n.Current.BenchStepSwitch, 0.02)
-	switchMs, err := client.BenchSetBackend(run.Backend)
+	sw, err := client.BenchSetBackend(run.Backend)
 	if err != nil {
 		return fmt.Errorf("switch: %w", err)
 	}
-	run.SwitchMs = switchMs
+	run.SwitchMs = sw.SwitchMs
+	run.StopMs, run.StartMs, run.StoppedBackend = sw.StopMs, sw.StartMs, sw.Stopped
 
 	step(i18n.Current.BenchStepStart, 0.06)
 	startup, err := vw.BenchmarkStartStream(90 * time.Second)
@@ -160,7 +180,8 @@ func (mw *MainWindow) benchmarkOne(ctx context.Context, run *service.BenchRun, r
 	if codec, ok := vw.NegotiatedVideoCodecName(); ok {
 		run.Codec = codec
 	}
-	logrus.Infof("📈 [Benchmark] %s: switch %.0fms, first frame %.0fms, codec %s", run.Backend, run.SwitchMs, run.StartupMs, run.Codec)
+	logrus.Infof("📈 [Benchmark] %s: switch %.0fms (stop %s %.0fms, start %.0fms), first frame %.0fms, codec %s",
+		run.Backend, run.SwitchMs, run.StoppedBackend, run.StopMs, run.StartMs, run.StartupMs, run.Codec)
 
 	if err := sleepCtx(ctx, benchmarkSettleTime); err != nil {
 		return err

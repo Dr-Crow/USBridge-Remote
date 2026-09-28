@@ -22,7 +22,18 @@ type benchApplication interface {
 	SetStreamBackend(kind string) error
 	BenchMonitors() ([]monitors.Monitor, error)
 	BenchMonitor() string
-	SetBenchMonitor(id string) error
+	SetBenchMonitor(id string, deferRestart bool) error
+	LastBackendSwitch() BackendSwitchTiming
+}
+
+// BackendSwitchTiming splits a bench/backend switch for the benchmark's
+// statistics: stopping the previous streamer until its ports were free,
+// and starting this one until its listener answered. Stopped is the kind
+// that was stopped ("" when nothing ran, or the call was a no-op).
+type BackendSwitchTiming struct {
+	Stopped string `json:"stopped,omitempty"`
+	StopMs  int64  `json:"stop_ms"`
+	StartMs int64  `json:"start_ms"`
 }
 
 // BenchStatus is GET /api/bench/status.
@@ -73,12 +84,16 @@ func (s *Server) benchMonitor(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		Monitor string `json:"monitor"`
+		// DeferRestart: don't restart the running streamer now, the
+		// client's next bench/backend call does (see
+		// App.SetBenchMonitor).
+		DeferRestart bool `json:"defer_restart"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.fail(w, http.StatusBadRequest, "invalid_json", err)
 		return
 	}
-	if err := b.SetBenchMonitor(req.Monitor); err != nil {
+	if err := b.SetBenchMonitor(req.Monitor, req.DeferRestart); err != nil {
 		log.Printf("[api] bench monitor %q: %v", req.Monitor, err)
 		s.fail(w, http.StatusBadRequest, "bench_monitor_failed", err)
 		return
@@ -113,8 +128,15 @@ func (s *Server) benchBackend(w http.ResponseWriter, r *http.Request) {
 	}
 	switchMs := time.Since(start).Milliseconds()
 	active, _ := b.BenchStreamBackends()
-	log.Printf("[api] bench backend switched to %s in %dms", active, switchMs)
-	s.ok(w, "bench_backend", map[string]any{"active_backend": active, "switch_ms": switchMs})
+	timing := b.LastBackendSwitch()
+	log.Printf("[api] bench backend switched to %s in %dms (stop %s %dms, start %dms)", active, switchMs, timing.Stopped, timing.StopMs, timing.StartMs)
+	s.ok(w, "bench_backend", map[string]any{
+		"active_backend": active,
+		"switch_ms":      switchMs,
+		"stopped":        timing.Stopped,
+		"stop_ms":        timing.StopMs,
+		"start_ms":       timing.StartMs,
+	})
 }
 
 // benchPrepare downloads the benchmark content ahead of the timed runs.

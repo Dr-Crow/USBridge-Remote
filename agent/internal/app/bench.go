@@ -63,7 +63,14 @@ func (a *App) BenchMonitor() string {
 // The active streamer restarts when its monitor changes; the other one
 // picks the change up on its next start (SetStreamBackend). Nothing is
 // persisted to the agent config: this is only for the benchmark's run.
-func (a *App) SetBenchMonitor(id string) error {
+//
+// deferRestart leaves a running streamer alone and has the next
+// SetStreamBackend restart it instead (see benchRestartPending): the
+// benchmark switches backends right after pinning and right after
+// releasing, so restarting here too meant a second full streamer start
+// (~25 s for Sunshine) on each side of the benchmark, spent on a streamer
+// that was about to be restarted or replaced anyway.
+func (a *App) SetBenchMonitor(id string, deferRestart bool) error {
 	if id != "" {
 		list, err := monitors.List()
 		if err != nil {
@@ -81,7 +88,7 @@ func (a *App) SetBenchMonitor(id string) error {
 	}
 	a.benchMonitor = id
 	if id == "" {
-		return a.restoreBenchOutputs()
+		return a.restoreBenchOutputs(deferRestart)
 	}
 	log.Printf("[bench] pinning the streamers to monitor %s", id)
 	if a.stream == nil {
@@ -94,6 +101,10 @@ func (a *App) SetBenchMonitor(id string) error {
 		return nil
 	}
 	if changed && a.stream.Running() {
+		if deferRestart {
+			a.benchRestartPending = true
+			return nil
+		}
 		return a.RestartSunshine()
 	}
 	return nil
@@ -135,8 +146,10 @@ func (a *App) applyBenchMonitor(b streamhost.Backend, kind string) (changed, ok 
 }
 
 // restoreBenchOutputs puts back every streamer's own monitor pick that the
-// benchmark changed. Caller holds streamMu.
-func (a *App) restoreBenchOutputs() error {
+// benchmark changed. Caller holds streamMu. With deferRestart the active
+// streamer's restart is left to the next SetStreamBackend (see
+// SetBenchMonitor).
+func (a *App) restoreBenchOutputs(deferRestart bool) error {
 	restartActive := false
 	for kind, orig := range a.benchOrigOutput {
 		b := a.stream
@@ -161,6 +174,10 @@ func (a *App) restoreBenchOutputs() error {
 	}
 	a.benchOrigOutput = nil
 	if restartActive {
+		if deferRestart {
+			a.benchRestartPending = true
+			return nil
+		}
 		return a.RestartSunshine()
 	}
 	return nil

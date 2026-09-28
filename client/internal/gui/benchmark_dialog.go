@@ -328,6 +328,8 @@ func benchmarkRows() []benchmarkRow {
 		{"", "Codec", func(m service.BenchMetrics) (float64, bool) { return 0, m.Codec != "" }, "", true},
 
 		{"Startup (measured separately)", "Host streamer switch", always(func(m service.BenchMetrics) float64 { return m.SwitchMs / 1000 }), "%.2f s", true},
+		{"", "  stop previous streamer", func(m service.BenchMetrics) (float64, bool) { return m.StopMs / 1000, m.StopMs+m.StartMs > 0 }, "%.2f s", true},
+		{"", "  start this streamer", func(m service.BenchMetrics) (float64, bool) { return m.StartMs / 1000, m.StopMs+m.StartMs > 0 }, "%.2f s", true},
 		{"", "Stream start → first frame", always(func(m service.BenchMetrics) float64 { return m.StartupMs / 1000 }), "%.2f s", true},
 		{"", "Total", always(func(m service.BenchMetrics) float64 { return (m.SwitchMs + m.StartupMs) / 1000 }), "%.2f s", true},
 

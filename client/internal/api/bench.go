@@ -96,18 +96,29 @@ func (c *USBClient) BenchStatus() (*BenchStatus, error) {
 	return &st, nil
 }
 
-// BenchSetBackend switches the agent to kind and returns how long the agent
-// took (stop old + start new + listener up).
-func (c *USBClient) BenchSetBackend(kind string) (switchMs float64, err error) {
+// BenchSwitch is how long the agent took to switch streamers: SwitchMs in
+// all, split into stopping the previous one (StopMs, until its ports were
+// free; Stopped names it) and starting this one (StartMs, until its
+// listener answered). An agent that predates the split reports SwitchMs
+// only.
+type BenchSwitch struct {
+	SwitchMs float64 `json:"switch_ms"`
+	Stopped  string  `json:"stopped,omitempty"`
+	StopMs   float64 `json:"stop_ms"`
+	StartMs  float64 `json:"start_ms"`
+}
+
+// BenchSetBackend switches the agent to kind (or, with the same kind,
+// carries out a restart BenchSetMonitor left pending) and reports the
+// timing.
+func (c *USBClient) BenchSetBackend(kind string) (BenchSwitch, error) {
 	payload, _ := json.Marshal(map[string]string{"kind": kind})
 	body, err := c.PostRawWithTimeout("/api/bench/backend", payload, 2*time.Minute)
-	var out struct {
-		SwitchMs float64 `json:"switch_ms"`
-	}
+	var out BenchSwitch
 	if err := decodeAgentResponse(body, err, &out); err != nil {
-		return 0, err
+		return BenchSwitch{}, err
 	}
-	return out.SwitchMs, nil
+	return out, nil
 }
 
 // BenchSetMonitor pins both streamers' capture and the test video to one
@@ -115,7 +126,11 @@ func (c *USBClient) BenchSetBackend(kind string) (switchMs float64, err error) {
 // streamer's own monitor back. Changing the active streamer's monitor
 // restarts it, hence the long timeout.
 func (c *USBClient) BenchSetMonitor(id string) error {
-	payload, _ := json.Marshal(map[string]string{"monitor": id})
+	// defer_restart: the agent doesn't restart the running streamer for
+	// this; the BenchSetBackend that always follows does, once, instead
+	// of a restart here and another one right after it. An older agent
+	// ignores the field and restarts here as before.
+	payload, _ := json.Marshal(map[string]any{"monitor": id, "defer_restart": true})
 	body, err := c.PostRawWithTimeout("/api/bench/monitor", payload, 2*time.Minute)
 	return decodeAgentResponse(body, err, nil)
 }

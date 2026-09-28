@@ -14,11 +14,12 @@ type fakeCaptureBackend struct {
 	devices []streamhost.CaptureDevice
 	output  string
 	sets    int
+	running bool
 }
 
 func (f *fakeCaptureBackend) ListCaptureDevices() []streamhost.CaptureDevice { return f.devices }
 func (f *fakeCaptureBackend) OutputName() string                             { return f.output }
-func (f *fakeCaptureBackend) Running() bool                                  { return false }
+func (f *fakeCaptureBackend) Running() bool                                  { return f.running }
 func (f *fakeCaptureBackend) SetOutputName(name string) error {
 	f.output = name
 	f.sets++
@@ -110,7 +111,7 @@ func TestBenchMonitorReleaseRestoresBothStreamers(t *testing.T) {
 	a.applyBenchMonitor(rust, "rustshine")
 
 	a.benchMonitor = ""
-	if err := a.restoreBenchOutputs(); err != nil {
+	if err := a.restoreBenchOutputs(false); err != nil {
 		t.Fatal(err)
 	}
 	if rust.output != "0" {
@@ -121,5 +122,28 @@ func TestBenchMonitorReleaseRestoresBothStreamers(t *testing.T) {
 	}
 	if a.benchOrigOutput != nil {
 		t.Errorf("originals kept after release: %v", a.benchOrigOutput)
+	}
+}
+
+// Releasing with deferRestart leaves the running streamer alone and marks
+// its restart for the benchmark's next backend call; the monitor pick is
+// still put back in place right away.
+func TestBenchMonitorReleaseCanDeferTheActiveRestart(t *testing.T) {
+	a := &App{cfg: config.Config{StateDir: t.TempDir()}, exeDir: t.TempDir(), benchMonitor: monitorAbove}
+	// Running, and with no real Stop/Start behind it: an immediate restart
+	// would panic on the embedded nil Backend.
+	rust := &fakeCaptureBackend{devices: rustshineDevices(), output: "0", running: true}
+	a.stream, a.streamKind = rust, "rustshine"
+	a.applyBenchMonitor(rust, "rustshine")
+
+	a.benchMonitor = ""
+	if err := a.restoreBenchOutputs(true); err != nil {
+		t.Fatal(err)
+	}
+	if rust.output != "0" {
+		t.Errorf("output %q after release, want its own 0", rust.output)
+	}
+	if !a.benchRestartPending {
+		t.Error("restart of the running streamer not marked as pending")
 	}
 }

@@ -152,15 +152,20 @@ func TestBenchVideoPlacementError(t *testing.T) {
 // out as {"monitor": id}, and the player's actual monitor comes back.
 func TestBenchMonitorAgentCalls(t *testing.T) {
 	var pinned []string
+	deferred := true
 	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/bench/monitor":
 			var body struct {
-				Monitor string `json:"monitor"`
+				Monitor      string `json:"monitor"`
+				DeferRestart bool   `json:"defer_restart"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			pinned = append(pinned, body.Monitor)
+			deferred = deferred && body.DeferRestart
 			_, _ = rw.Write([]byte(`{"success":true,"data":{}}`))
+		case "/api/bench/backend":
+			_, _ = rw.Write([]byte(`{"success":true,"data":{"active_backend":"rustshine","switch_ms":26500,"stopped":"sunshine","stop_ms":900,"start_ms":25600}}`))
 		case "/api/bench/video/start":
 			_, _ = rw.Write([]byte(`{"success":true,"data":{"player":"ffplay","content":"bbb.mp4","requested_monitor":"\\\\.\\DISPLAY6","monitor":"\\\\.\\DISPLAY6"}}`))
 		default:
@@ -178,6 +183,16 @@ func TestBenchMonitorAgentCalls(t *testing.T) {
 	}
 	if len(pinned) != 2 || pinned[0] != `\\.\DISPLAY6` || pinned[1] != "" {
 		t.Fatalf("pins sent %q, want [DISPLAY6, release]", pinned)
+	}
+	if !deferred {
+		t.Fatal("pin/release sent without defer_restart: the agent would restart the streamer twice")
+	}
+	sw, err := client.BenchSetBackend("rustshine")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sw != (api.BenchSwitch{SwitchMs: 26500, Stopped: "sunshine", StopMs: 900, StartMs: 25600}) {
+		t.Fatalf("switch timing = %+v", sw)
 	}
 	v, err := client.BenchVideoStart()
 	if err != nil {

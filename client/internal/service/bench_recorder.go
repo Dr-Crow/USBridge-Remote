@@ -61,6 +61,12 @@ type BenchRun struct {
 	// Measured before recording starts and kept out of every other metric.
 	SwitchMs  float64 `json:"switch_ms"`
 	StartupMs float64 `json:"startup_ms"`
+	// SwitchMs split: stopping the previous streamer (StoppedBackend)
+	// until its ports were free, and starting this one until it answered.
+	// Zero from an agent that doesn't report them.
+	StopMs         float64 `json:"stop_ms,omitempty"`
+	StartMs        float64 `json:"start_ms,omitempty"`
+	StoppedBackend string  `json:"stopped_backend,omitempty"`
 	// StartUs/EndUs bound the measurement window on the client clock.
 	StartUs     uint64       `json:"start_us"`
 	EndUs       uint64       `json:"end_us"`

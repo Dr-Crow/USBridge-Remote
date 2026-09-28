@@ -70,9 +70,11 @@ func TestBenchMonitorPinEndToEnd(t *testing.T) {
 	}()
 
 	for _, kind := range []string{"rustshine", "sunshine"} {
-		if _, err := c.BenchSetBackend(kind); err != nil {
+		sw, err := c.BenchSetBackend(kind)
+		if err != nil {
 			t.Fatalf("switch to %s: %v", kind, err)
 		}
+		t.Logf("%s: switch %.0fms (stop %s %.0fms, start %.0fms)", kind, sw.SwitchMs, sw.Stopped, sw.StopMs, sw.StartMs)
 		switch kind {
 		case "rustshine":
 			if got := readConf(t, rustConf, "monitor_index"); got != os.Getenv("USBRIDGE_E2E_RUST_INDEX") {
@@ -104,8 +106,10 @@ func TestBenchMonitorPinEndToEnd(t *testing.T) {
 	if err := c.BenchSetMonitor(""); err != nil {
 		t.Fatalf("release: %v", err)
 	}
-	if _, err := c.BenchSetBackend(original); err != nil {
+	if sw, err := c.BenchSetBackend(original); err != nil {
 		t.Fatalf("restore %s: %v", original, err)
+	} else {
+		t.Logf("restore %s: switch %.0fms (stop %s %.0fms, start %.0fms)", original, sw.SwitchMs, sw.Stopped, sw.StopMs, sw.StartMs)
 	}
 	released = true
 	if got := readConf(t, rustConf, "monitor_index"); got != origRust {

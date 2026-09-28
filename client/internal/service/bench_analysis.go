@@ -38,6 +38,8 @@ type BenchMetrics struct {
 	Codec       string  `json:"codec,omitempty"`
 	DurationSec float64 `json:"duration_sec"`
 	SwitchMs    float64 `json:"switch_ms"`
+	StopMs      float64 `json:"stop_ms,omitempty"`
+	StartMs     float64 `json:"start_ms,omitempty"`
 	StartupMs   float64 `json:"startup_ms"`
 
 	// Smoothness (frames handed to the decoder).
@@ -140,6 +142,8 @@ func AnalyzeBenchRun(run *BenchRun) BenchMetrics {
 	m.Backend = run.Backend
 	m.Codec = run.Codec
 	m.SwitchMs = run.SwitchMs
+	m.StopMs = run.StopMs
+	m.StartMs = run.StartMs
 	m.StartupMs = run.StartupMs
 	m.Error = run.Error
 	if run.EndUs > run.StartUs {
