@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -23,6 +24,10 @@ import (
 const (
 	DefaultURBPort     = 8090
 	DefaultControlAddr = "127.0.0.1:18090"
+	// urbPortFallbacks is how many ports above the configured one Start()
+	// tries when the configured port is already taken by an unrelated
+	// process (see pickURBPort).
+	urbPortFallbacks = 20
 )
 
 type Status struct {
@@ -34,7 +39,11 @@ type Status struct {
 	ListenPort  int      `json:"listen_port"`
 	Sessions    []string `json:"sessions"`
 	BrokerError string   `json:"broker_error,omitempty"`
-	DriverHint  string   `json:"driver_hint,omitempty"`
+	// BrokerLastExit is the broker's own last error line (from broker.log)
+	// when it has crashed -- BrokerError alone is just "control dial
+	// refused", which says nothing about why.
+	BrokerLastExit string `json:"broker_last_exit,omitempty"`
+	DriverHint     string `json:"driver_hint,omitempty"`
 	// AttachGranted is false on Linux until the one-time polkit grant (see
 	// access_linux.go) is in place; without it every attach/detach prompts.
 	AttachGranted bool `json:"attach_granted"`
@@ -64,10 +73,16 @@ type Service struct {
 	stateDir    string
 	exeDir      string
 	secret      string
-	urbPort     int
+	basePort    int // configured URB port (usb_passthrough_port)
+	urbPort     int // port the broker is actually told to listen on
 	controlAddr string
 	tsnetBridge string
+	// lastExit is the broker's own reason for its last crash (last
+	// broker.log line), shown in the agent UI; cleared once it answers.
+	lastExit string
 }
+
+var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 // tsnetBridge is the Go agent's UsbTunnelBridge loopback address (see
 // agent/internal/tailscale/usb_bridge.go) — empty disables it, which just
@@ -81,13 +96,51 @@ func New(exeDir, stateDir, secret string, urbPort int, tsnetBridge string) *Serv
 		exeDir:      exeDir,
 		stateDir:    stateDir,
 		secret:      secret,
+		basePort:    urbPort,
 		urbPort:     urbPort,
 		controlAddr: DefaultControlAddr,
 		tsnetBridge: tsnetBridge,
 	}
 }
 
-func (s *Service) ListenPort() int { return s.urbPort }
+// ListenPort is the port the broker is actually listening on -- normally the
+// configured one, but a fallback when that was taken (see pickURBPort).
+// Clients must use this (it's in Status and the session reply), not their
+// own copy of the configured port.
+func (s *Service) ListenPort() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.urbPort
+}
+
+// pickURBPort returns the configured URB port if it can be bound right now,
+// otherwise the first free one of the next urbPortFallbacks ports. Confirmed
+// live: Wondershare NativePush (WsToastNotification.exe, installed with
+// Filmora) listens on 0.0.0.0:8090 from login onward, so the broker died on
+// bind every watchdog tick, forever. Falls back to the configured port if
+// nothing in range is free, so the broker's own bind error still surfaces.
+func (s *Service) pickURBPort() int {
+	for p := s.basePort; p <= s.basePort+urbPortFallbacks; p++ {
+		// "tcp4", not "tcp": for a wildcard address Go opens a dual-stack
+		// [::] socket, which Windows happily binds next to someone else's
+		// IPv4 0.0.0.0:p -- the probe then says "free" while the broker's
+		// own IPv4 bind still fails (confirmed live against Wondershare).
+		ln, err := net.Listen("tcp4", fmt.Sprintf("0.0.0.0:%d", p))
+		if err != nil {
+			continue
+		}
+		ln.Close()
+		if p != s.basePort {
+			who := whatHoldsPort(s.basePort)
+			if who == "" {
+				who = "another process"
+			}
+			log.Printf("[usbpass] URB port %d is held by %s -- broker will listen on %d instead", s.basePort, who, p)
+		}
+		return p
+	}
+	return s.basePort
+}
 
 func brokerName() string {
 	if runtime.GOOS == "windows" {
@@ -126,9 +179,11 @@ func (s *Service) Start() error {
 	if exe == "" {
 		return fmt.Errorf("usbridge-usb-broker not staged (closed rust-shine binary)")
 	}
+	port := s.pickURBPort()
+	s.urbPort = port
 	args := []string{
 		"--role", "agent",
-		"--listen", fmt.Sprintf("0.0.0.0:%d", s.urbPort),
+		"--listen", fmt.Sprintf("0.0.0.0:%d", port),
 		"--control", s.controlAddr,
 		"--secret", s.secret,
 	}
@@ -202,6 +257,13 @@ func (s *Service) Start() error {
 		s.mu.Unlock()
 		if err != nil {
 			log.Printf("[usbpass] broker exited: %v", err)
+			reason := err.Error()
+			if tail := tailFile(logPath, 1); len(tail) == 1 {
+				reason = tail[0]
+			}
+			s.mu.Lock()
+			s.lastExit = reason
+			s.mu.Unlock()
 			// A crash within a couple seconds of launch is the signature of
 			// a startup-time failure (most commonly: another process already
 			// holds the URB port -- confirmed live on a Windows test machine
@@ -219,8 +281,8 @@ func (s *Service) Start() error {
 				for _, line := range tailFile(logPath, 6) {
 					log.Printf("[usbpass] broker.log: %s", line)
 				}
-				if who := whatHoldsPort(s.urbPort); who != "" {
-					log.Printf("[usbpass] port %d is held by %s -- that's almost certainly why the broker failed to bind it", s.urbPort, who)
+				if who := whatHoldsPort(port); who != "" {
+					log.Printf("[usbpass] port %d is held by %s -- that's almost certainly why the broker failed to bind it", port, who)
 				}
 			}
 		}
@@ -235,7 +297,9 @@ func tailFile(path string, n int) []string {
 	if err != nil {
 		return nil
 	}
-	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	// rust-shine's tracing output is ANSI-colored even into a file.
+	text := ansiEscape.ReplaceAllString(string(data), "")
+	lines := strings.Split(strings.TrimRight(strings.ReplaceAll(text, "\r", ""), "\n"), "\n")
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
@@ -279,7 +343,7 @@ func (s *Service) Status() Status {
 	st := Status{
 		Available:  runtime.GOOS == "windows" || runtime.GOOS == "linux",
 		Platform:   runtime.GOOS,
-		ListenPort: s.urbPort,
+		ListenPort: s.ListenPort(),
 	}
 	st.AttachGranted = AttachAccessGranted()
 	if !st.Available {
@@ -304,9 +368,15 @@ func (s *Service) Status() Status {
 	resp, err := s.control("status", nil)
 	if err != nil {
 		st.BrokerError = err.Error()
+		s.mu.Lock()
+		st.BrokerLastExit = s.lastExit
+		s.mu.Unlock()
 		return st
 	}
 	st.BrokerAlive = true
+	s.mu.Lock()
+	s.lastExit = ""
+	s.mu.Unlock()
 	if v, ok := resp["stub_driver"].(bool); ok {
 		st.StubDriver = v
 	}

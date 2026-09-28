@@ -1471,7 +1471,8 @@ func (dw *DiskWidget) mountUSBPassthrough(items []DriveItem) {
 			dw.showUSBPassthroughErrorAsync(fmt.Errorf("USB/IP export: %w", err))
 			return
 		}
-		if _, err := dw.usbClient.OpenUSBPassthroughSession(); err != nil {
+		sessResp, err := dw.usbClient.OpenUSBPassthroughSession()
+		if err != nil {
 			usbpass.StopSession()
 			dw.showErrorAsync(fmt.Errorf("%s: %w", i18n.Current.USBPassthroughProHint, err))
 			return
@@ -1487,8 +1488,6 @@ func (dw *DiskWidget) mountUSBPassthrough(items []DriveItem) {
 		if dw.config != nil && dw.config.USBPassthroughPort > 0 {
 			port = dw.config.USBPassthroughPort
 		}
-		addr := net.JoinHostPort(u.Hostname(), strconv.Itoa(port))
-		secret := string(dw.usbClient.APISecret())
 		// usbpass.Attach's AES control-plane connection is a plain TCP dial
 		// by default, which can't route to a 100.x tailnet address any more
 		// than moonlight-common-c's own kernel sockets can (see
@@ -1497,7 +1496,16 @@ func (dw *DiskWidget) mountUSBPassthrough(items []DriveItem) {
 		var dialer func(ctx context.Context, network, addr string) (net.Conn, error)
 		if dw.tailscaleSvc != nil && service.IsLikelyTailnetHost(u.Hostname()) {
 			dialer = dw.tailscaleSvc.Dial
+		} else if lp := sessionListenPort(sessResp); lp > 0 {
+			// Direct/LAN: the agent's broker may have fallen back off the
+			// configured port because an unrelated local process holds it
+			// (usbpass.Service.pickURBPort on the agent). The tailnet path
+			// keeps the configured port -- the agent's tsnet relay listens
+			// there and forwards to wherever the broker actually is.
+			port = lp
 		}
+		addr := net.JoinHostPort(u.Hostname(), strconv.Itoa(port))
+		secret := string(dw.usbClient.APISecret())
 		for _, d := range devices {
 			inst := d.InstanceID
 			if inst == "" {
@@ -1523,4 +1531,23 @@ func (dw *DiskWidget) mountUSBPassthrough(items []DriveItem) {
 			}
 		}
 	}()
+}
+
+// sessionListenPort extracts the agent broker's actual URB port from the
+// /api/usb/passthrough/session reply ({"listen_port": N, ...}), or 0 if the
+// agent is too old to send it. The agent falls back off its configured port
+// when an unrelated local process already holds it, so the client's own
+// config value is only a default.
+func sessionListenPort(resp *models.APIResponse) int {
+	if resp == nil {
+		return 0
+	}
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		return 0
+	}
+	if v, ok := data["listen_port"].(float64); ok && v > 0 && v < 65536 {
+		return int(v)
+	}
+	return 0
 }

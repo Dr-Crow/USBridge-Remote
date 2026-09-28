@@ -1,6 +1,10 @@
 package ui
 
 import (
+	"fmt"
+
+	"usbridge_agent/internal/usbpass"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/widget"
@@ -26,6 +30,26 @@ func showUSBBrokerDialog(parent fyne.Window, onResult func(bool)) {
 	}
 
 	showConfirmDialog(title, bodyText, onResult, parent)
+}
+
+// showUSBBrokerStatusDialog is what a tap on the USB Broker row shows once
+// consent is given: running + port, or not running + the broker's own last
+// error line (usbpass.Status.BrokerLastExit).
+func showUSBBrokerStatusDialog(parent fyne.Window, st usbpass.Status) {
+	var body string
+	if st.BrokerAlive {
+		body = fmt.Sprintf(loc().USBBrokerRunningOnPort, st.ListenPort) + "\n\n" + loc().USBBrokerFreeTierNote
+	} else {
+		body = loc().USBBrokerNotRunning
+		reason := st.BrokerLastExit
+		if reason == "" {
+			reason = st.BrokerError
+		}
+		if reason != "" {
+			body += "\n\n" + loc().USBBrokerLastError + "\n" + reason
+		}
+	}
+	showInfoDialog(loc().USBBroker, body, parent)
 }
 
 // tappableBox is a simple container wrapper that intercepts taps and displays a pointer cursor.

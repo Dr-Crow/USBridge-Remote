@@ -1087,7 +1087,11 @@ func (a *App) restartStreamProxy() {
 	if usbPort <= 0 {
 		usbPort = usbpass.DefaultURBPort
 	}
-	a.tsProxy = a.ts.StartStreamProxy(basePort, a.usbBridge, usbPort)
+	var usbLocalPort func() int
+	if a.usbBroker != nil {
+		usbLocalPort = a.usbBroker.ListenPort
+	}
+	a.tsProxy = a.ts.StartStreamProxy(basePort, a.usbBridge, usbLocalPort, usbPort)
 }
 
 func (a *App) initTailscale(ctx context.Context) {

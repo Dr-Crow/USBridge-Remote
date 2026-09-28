@@ -44,8 +44,15 @@ import (
 // 47989); HTTPS/control/RTSP ports are derived from it using Sunshine's fixed
 // offsets. Returns immediately; listeners come up in the background once
 // tsnet has a valid tailnet IP.
-func (s *Service) StartStreamProxy(basePort int, usbBridge *UsbTunnelBridge, extraTCP ...int) *StreamProxy {
-	p := &StreamProxy{svc: s, basePort: basePort, usbBridge: usbBridge, extraTCP: extraTCP, seenUDP: make(map[int]bool)}
+//
+// usbLocalPort, if non-nil, returns the loopback port the USB broker is
+// actually listening on right now; each extraTCP (USB) connection is
+// forwarded there instead of to the same port number, since the broker may
+// have fallen back to another port when the configured one was taken
+// locally (usbpass.Service.pickURBPort). The tailnet-side listener stays on
+// the configured port -- nothing else competes for ports inside tsnet.
+func (s *Service) StartStreamProxy(basePort int, usbBridge *UsbTunnelBridge, usbLocalPort func() int, extraTCP ...int) *StreamProxy {
+	p := &StreamProxy{svc: s, basePort: basePort, usbBridge: usbBridge, usbLocalPort: usbLocalPort, extraTCP: extraTCP, seenUDP: make(map[int]bool)}
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 	go p.run()
 	return p
@@ -56,6 +63,8 @@ type StreamProxy struct {
 	basePort  int
 	usbBridge *UsbTunnelBridge
 	extraTCP  []int
+
+	usbLocalPort func() int
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -205,9 +214,15 @@ func (p *StreamProxy) handleTCP(remote net.Conn, port int, snoopRTSP bool, recor
 		p.usbBridge.RememberPeer(remote.RemoteAddr())
 	}
 
-	local, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 5*time.Second)
+	localPort := port
+	if recordPeer && p.usbLocalPort != nil {
+		if lp := p.usbLocalPort(); lp > 0 {
+			localPort = lp
+		}
+	}
+	local, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", localPort), 5*time.Second)
 	if err != nil {
-		logrus.Warnf("🛰️ [StreamProxy] dial local :%d: %v", port, err)
+		logrus.Warnf("🛰️ [StreamProxy] dial local :%d: %v", localPort, err)
 		return
 	}
 	defer local.Close()

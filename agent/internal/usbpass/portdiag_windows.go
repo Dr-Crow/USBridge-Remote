@@ -17,7 +17,13 @@ import (
 // or on any parse/exec failure -- this is a best-effort diagnostic, never
 // worth failing the caller over.
 func whatHoldsPort(port int) string {
-	out, err := exec.Command("netstat", "-ano").Output()
+	// Both netstat and tasklist are console-subsystem binaries; without
+	// CREATE_NO_WINDOW each call flashes a console window from this GUI
+	// agent -- and this runs on every failed broker restart (every
+	// usbBrokerWatchdogInterval while the port stays taken).
+	ns := exec.Command("netstat", "-ano")
+	hideBrokerWindow(ns)
+	out, err := ns.Output()
 	if err != nil {
 		return ""
 	}
@@ -42,7 +48,9 @@ func whatHoldsPort(port int) string {
 	if pid == "" {
 		return ""
 	}
-	tl, err := exec.Command("tasklist", "/FI", "PID eq "+pid, "/NH", "/FO", "CSV").Output()
+	tlCmd := exec.Command("tasklist", "/FI", "PID eq "+pid, "/NH", "/FO", "CSV")
+	hideBrokerWindow(tlCmd)
+	tl, err := tlCmd.Output()
 	if err != nil {
 		return "pid " + pid
 	}

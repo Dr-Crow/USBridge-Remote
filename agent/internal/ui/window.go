@@ -246,6 +246,9 @@ type Window struct {
 	usbBrokerStatusDot   *canvas.Circle
 	usbBrokerStatusLabel *canvas.Text
 	usbBrokerConsentBtn  *iconActionButton
+	// usbLastStatus is the latest status refreshUSBPassthroughUI saw, so a
+	// tap on the row (after consent) can show why the broker isn't running.
+	usbLastStatus usbpass.Status
 
 	// sunWebSunshineRow/sunWebRustshineRow are mutually exclusive: the
 	// Status panel's "web UI" row shows Sunshine's local admin UI address
@@ -792,6 +795,7 @@ func (w *Window) refreshUSBPassthroughUI(st entitlement.Status, usb usbpass.Stat
 	if w.usbBrokerRow == nil {
 		return
 	}
+	w.usbLastStatus = usb
 	if !usb.Available {
 		w.usbBrokerRow.Hide()
 		return
@@ -1328,7 +1332,11 @@ func (w *Window) ShowAndRun(onClose func()) {
 				w.usbBrokerConsentBtn.OnTapped()
 			}
 		} else {
-			w.showUSBBrokerDialog(win, nil)
+			// Consent already given: re-showing the consent text here (its
+			// "other devices require Pro or Enterprise" line) read as "the
+			// broker needs a license" while the real problem was a crash.
+			// Show what's actually going on instead.
+			showUSBBrokerStatusDialog(win, w.usbLastStatus)
 		}
 	})
 	w.usbBrokerRow = newStatusRow(
