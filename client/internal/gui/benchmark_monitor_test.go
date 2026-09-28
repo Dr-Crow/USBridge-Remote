@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/widget"
 
 	"usbridge-client/internal/api"
 	"usbridge-client/internal/gui/i18n"
+	"usbridge-client/internal/gui/view"
 )
 
 // Two monitors as the agent reports them for a laptop with a monitor above
@@ -30,17 +30,17 @@ func withBenchStatus(t *testing.T, status string) {
 	t.Cleanup(func() { benchTestStatus = prev })
 }
 
-// monitorSelect finds the setup dialog's monitor list (the only select
+// monitorSelect finds the setup dialog's monitor list (the only dropdown
 // whose options mention a resolution).
-func monitorSelect(w fyne.Window) *widget.Select {
+func monitorSelect(w fyne.Window) *view.HeaderDropdown {
 	o := findInOverlays(w, func(o fyne.CanvasObject) bool {
-		s, ok := o.(*widget.Select)
+		s, ok := o.(*view.HeaderDropdown)
 		return ok && len(s.Options) > 0 && strings.Contains(s.Options[0], "2560x1600")
 	})
 	if o == nil {
 		return nil
 	}
-	return o.(*widget.Select)
+	return o.(*view.HeaderDropdown)
 }
 
 func quickRun(ran chan<- struct{}) benchRunStub {
@@ -105,7 +105,7 @@ func TestBenchmarkSetupRunsOnThePickedMonitor(t *testing.T) {
 	if sel == nil {
 		t.Fatal("the setup dialog has no monitor list")
 	}
-	fyne.DoAndWait(func() { sel.SetSelectedIndex(1) }) // ARZOPA
+	fyne.DoAndWait(func() { sel.SetSelected(sel.Options[1]) }) // ARZOPA
 	tap(findButton(w, i18n.Current.BenchStart))
 	<-ran
 	if got := benchTestMonitor.Load(); got != `\\.\DISPLAY6` {

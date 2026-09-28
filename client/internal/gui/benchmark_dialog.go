@@ -60,7 +60,7 @@ func (mw *MainWindow) showBenchmarkDialog() {
 		fyne.Do(func() {
 			if err != nil {
 				benchmarkBusy.Store(false)
-				dialog.ShowError(fmt.Errorf("%s: %v", i18n.Current.BenchFailed, err), mw.window)
+				view.ShowErrorDialog(fmt.Errorf("%s: %v", i18n.Current.BenchFailed, err), mw.window)
 				return
 			}
 			mw.showBenchmarkSetup(status.AvailableBackends, status.Monitors)
@@ -119,33 +119,31 @@ func (mw *MainWindow) showBenchmarkSetup(available []string, mons []api.BenchMon
 	for _, w := range benchmarkWindows {
 		labels = append(labels, w.label)
 	}
-	durSel := widget.NewSelect(labels, nil)
-	durSel.SetSelected(benchmarkWindows[1].label)
+	durSel := view.NewHeaderDropdown(labels, benchmarkWindows[1].label, nil)
 
 	// Both streamers capture, and the test video plays on, the one monitor
 	// picked here -- otherwise each streamer used its own saved monitor and
 	// the video landed wherever the player opened. Hidden when the host
 	// can't list its monitors (then nothing is pinned).
 	choices, defChoice := benchMonitorChoices(mons)
-	var monSel *widget.Select
-	settings := []fyne.CanvasObject{container.NewVBox(boxes...)}
+	var monSel *view.HeaderDropdown
+	settings := []fyne.CanvasObject{container.NewVBox(boxes...), widget.NewSeparator()}
 	if len(choices) > 0 {
 		var monLabels []string
 		for _, c := range choices {
 			monLabels = append(monLabels, c.label)
 		}
-		monSel = widget.NewSelect(monLabels, nil)
-		monSel.SetSelected(choices[defChoice].label)
-		settings = append(settings, widget.NewLabel(i18n.Current.BenchMonitor), monSel)
+		monSel = view.NewHeaderDropdown(monLabels, choices[defChoice].label, nil)
+		settings = append(settings, container.NewBorder(nil, nil, benchText(i18n.Current.BenchMonitor, design.ColorTextMuted, 13, false), nil, monSel))
 	}
-	codecSel := widget.NewSelect(benchCodecLabels(), nil)
-	codecSel.SetSelected(benchCodecs[0].label())
-	settings = append(settings, container.NewHBox(widget.NewLabel(i18n.Current.BenchCodec), codecSel))
-	settings = append(settings, container.NewHBox(widget.NewLabel(i18n.Current.BenchDuration), durSel))
+	codecSel := view.NewHeaderDropdown(benchCodecLabels(), benchCodecs[0].label(), nil)
+	settings = append(settings, container.NewBorder(nil, nil, benchText(i18n.Current.BenchCodec, design.ColorTextMuted, 13, false), nil, codecSel))
+	settings = append(settings, container.NewBorder(nil, nil, benchText(i18n.Current.BenchDuration, design.ColorTextMuted, 13, false), nil, durSel))
 
 	hint := widget.NewLabel(i18n.Current.BenchHint)
 	hint.Wrapping = fyne.TextWrapWord
-	content := container.NewVBox(append([]fyne.CanvasObject{container.New(&benchMinWidthLayout{width: 420}, hint)}, settings...)...)
+	hint.Importance = widget.LowImportance
+	content := container.New(&benchMinWidthLayout{width: 420}, benchCard(container.NewVBox(append([]fyne.CanvasObject{hint}, settings...)...), design.ColorBorder))
 	view.ShowCustomConfirmDialog(i18n.Current.BenchTitle, i18n.Current.BenchStart, i18n.Current.Cancel, content, func(ok bool) {
 		if !ok {
 			benchmarkBusy.Store(false)
@@ -159,7 +157,7 @@ func (mw *MainWindow) showBenchmarkSetup(available []string, mons []api.BenchMon
 		}
 		if len(picked) == 0 {
 			benchmarkBusy.Store(false)
-			dialog.ShowInformation(i18n.Current.BenchTitle, i18n.Current.BenchNeedOne, mw.window)
+			view.ShowInfoDialog(i18n.Current.BenchTitle, i18n.Current.BenchNeedOne, mw.window)
 			return
 		}
 		window := benchmarkWindows[1].d
@@ -328,7 +326,7 @@ func (mw *MainWindow) startBenchmark(backends []string, monitor, codec string, w
 			return
 		}
 		if err != nil {
-			fyne.Do(func() { dialog.ShowError(fmt.Errorf("%s: %v", i18n.Current.BenchFailed, err), mw.window) })
+			fyne.Do(func() { view.ShowErrorDialog(fmt.Errorf("%s: %v", i18n.Current.BenchFailed, err), mw.window) })
 			return
 		}
 		dir, err := saveBenchmarkResultFn(res)
@@ -650,10 +648,10 @@ func (mw *MainWindow) downloadBenchmarkResults(res *benchmarkResult) {
 			werr = cerr
 		}
 		if werr != nil {
-			dialog.ShowError(fmt.Errorf(i18n.Current.BenchSaveResultsFailed, werr), mw.window)
+			view.ShowErrorDialog(fmt.Errorf(i18n.Current.BenchSaveResultsFailed, werr), mw.window)
 			return
 		}
-		dialog.ShowInformation(i18n.Current.BenchResultsTitle, fmt.Sprintf(i18n.Current.BenchSaveResultsDone, wc.URI().Name()), mw.window)
+		view.ShowInfoDialog(i18n.Current.BenchResultsTitle, fmt.Sprintf(i18n.Current.BenchSaveResultsDone, wc.URI().Name()), mw.window)
 	}, mw.window)
 	fd.SetFileName("usbridge-benchmark-" + res.CreatedAt.Format("20060102_150405") + ".zip")
 	fd.Show()

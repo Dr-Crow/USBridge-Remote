@@ -391,6 +391,42 @@ func (vw *VideoWidget) GetAvailableVideoDevices() ([]models.SystemDevice, error)
 	return getAvailableVideoDevices(vw.usbClient)
 }
 
+// findDeviceByPathOrName looks up selectedPath in devices, falling back to a
+// match on savedName (the device name the client last saved a config under
+// for that path) when the path itself isn't present. Returns byName=true
+// only for that fallback match, so the caller can tell "found, but the path
+// changed shape" apart from "found by path" and "not found at all" (zero
+// models.SystemDevice, byName=false).
+//
+// The device path can change shape across a reconnect without the
+// underlying monitor actually changing -- confirmed live
+// (mergeVideoConfigWithInfo's doc comment, 2026-09-19): a codec switch
+// restarts the stream, and the device list that comes back can report
+// "winid:{GUID}" where "winid:0" used to be. Falling straight through to
+// devices[0] in that case doesn't just capture the wrong monitor, it also
+// silently swaps in devices[0]'s own saved settings (or the lack of any)
+// instead of the ones the user actually set for their monitor -- looking
+// exactly like "codec switch reset me to the first/default monitor". The
+// device's name is far more stable than its path/id across this kind of
+// reshaping, so callers try this correlation before giving up on the saved
+// device entirely.
+func findDeviceByPathOrName(devices []models.SystemDevice, selectedPath, savedName string) (device models.SystemDevice, byName bool) {
+	for _, d := range devices {
+		if d.Path == selectedPath {
+			return d, false
+		}
+	}
+	if savedName == "" {
+		return models.SystemDevice{}, false
+	}
+	for _, d := range devices {
+		if d.Name == savedName {
+			return d, true
+		}
+	}
+	return models.SystemDevice{}, false
+}
+
 func (vw *VideoWidget) resolvePreferredVideoConfig() (models.VideoDeviceConfig, error) {
 	devices, err := vw.GetAvailableVideoDevices()
 	if err != nil {
@@ -421,11 +457,24 @@ func (vw *VideoWidget) resolvePreferredVideoConfig() (models.VideoDeviceConfig, 
 		selectedPath = devices[0].Path
 	}
 
+	// Loaded from here unless a by-name migration below points it at the
+	// old path's saved settings instead.
+	configSourcePath := selectedPath
+
 	device, ok := deviceByPath[selectedPath]
 	if !ok {
-		logrus.Warnf("🎯 [CODEC-TRACE] resolvePreferredVideoConfig: saved SelectedDevice=%q NOT FOUND in current device list %v -- falling back to devices[0]=%q, its saved config (if any) will be used instead, NOT the one just configured",
-			rawSelectedPath, devicePaths, devices[0].Path)
-		device = devices[0]
+		savedName := strings.TrimSpace(loadVideoPreferences().Devices[rawSelectedPath].DeviceName)
+		matched, byName := findDeviceByPathOrName(devices, selectedPath, savedName)
+		if byName {
+			logrus.Infof("🎯 [CODEC-TRACE] resolvePreferredVideoConfig: saved SelectedDevice=%q not found by path, but matched by name %q -> %q -- re-pinning instead of falling back to devices[0]",
+				rawSelectedPath, savedName, matched.Path)
+			device, ok, configSourcePath = matched, true, rawSelectedPath
+		} else {
+			logrus.Warnf("🎯 [CODEC-TRACE] resolvePreferredVideoConfig: saved SelectedDevice=%q NOT FOUND in current device list %v (by path or name) -- falling back to devices[0]=%q, its saved config (if any) will be used instead, NOT the one just configured",
+				rawSelectedPath, devicePaths, devices[0].Path)
+			device = devices[0]
+			configSourcePath = device.Path
+		}
 		selectedPath = device.Path
 		// Self-heal: without this, prefs.SelectedDevice stays permanently
 		// pointed at the phantom device forever (see
@@ -437,7 +486,15 @@ func (vw *VideoWidget) resolvePreferredVideoConfig() (models.VideoDeviceConfig, 
 		correctSelectedVideoDevicePath(selectedPath)
 	}
 
-	cfg := loadSavedVideoDeviceConfig(selectedPath, device.Name)
+	cfg := loadSavedVideoDeviceConfig(configSourcePath, device.Name)
+	if configSourcePath != selectedPath {
+		// Migrate the old path's saved settings onto the new one now,
+		// rather than re-running this same by-name correlation on every
+		// future reconcile.
+		cfg.DevicePath = selectedPath
+		cfg.DeviceName = device.Name
+		saveVideoDeviceConfig(cfg)
+	}
 	logrus.Infof("🎯 [CODEC-TRACE] resolvePreferredVideoConfig: loaded from saved prefs VideoMode=%q device=%s (rawSelectedPath=%q, in list=%v)", cfg.VideoMode, selectedPath, rawSelectedPath, ok)
 	cfg.DeviceName = device.Name
 	cfg.DevicePath = selectedPath

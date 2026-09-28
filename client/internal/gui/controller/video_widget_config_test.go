@@ -182,3 +182,60 @@ func TestMergeVideoConfigWithInfo_NeverAutoAdoptsAV1(t *testing.T) {
 		t.Errorf("resolution = %dx%d, want 2560x1600 (from info)", merged.VideoWidth, merged.VideoHeight)
 	}
 }
+
+// TestFindDeviceByPathOrName is a regression test for the "codec switch
+// resets the pinned monitor" report: resolvePreferredVideoConfig used to
+// fall straight back to devices[0] the instant the saved device path wasn't
+// present in a freshly fetched device list, which a codec-switch-triggered
+// reconnect can trigger on its own by handing back a device path that
+// changed shape (see findDeviceByPathOrName's own doc comment, and
+// mergeVideoConfigWithInfo's "EXCEPT av1" comment for the confirmed-live
+// "winid:0" -> "winid:{GUID}" case this is the other half of). Falling back
+// to a name match instead of devices[0] is what keeps the user's actual
+// monitor (and its saved settings) pinned across that kind of reshaping.
+func TestFindDeviceByPathOrName(t *testing.T) {
+	devices := []models.SystemDevice{
+		{Path: "winid:{AAAA}", Name: "Dell U2720Q"},
+		{Path: "winid:{BBBB}", Name: "LG 27GN950"},
+	}
+
+	t.Run("found by path", func(t *testing.T) {
+		device, byName := findDeviceByPathOrName(devices, "winid:{BBBB}", "")
+		if byName {
+			t.Errorf("byName = true for a path that was actually found")
+		}
+		if device.Path != "winid:{BBBB}" {
+			t.Errorf("Path = %q, want winid:{BBBB}", device.Path)
+		}
+	})
+
+	t.Run("path gone but name matches -- the reshaping case", func(t *testing.T) {
+		device, byName := findDeviceByPathOrName(devices, "winid:0", "LG 27GN950")
+		if !byName {
+			t.Fatalf("byName = false, want true (should have matched by name)")
+		}
+		if device.Path != "winid:{BBBB}" {
+			t.Errorf("Path = %q, want winid:{BBBB} (the device previously saved as %q, now reshaped)", device.Path, "LG 27GN950")
+		}
+	})
+
+	t.Run("neither path nor name matches -- genuinely gone", func(t *testing.T) {
+		device, byName := findDeviceByPathOrName(devices, "winid:0", "Samsung Odyssey")
+		if byName {
+			t.Errorf("byName = true, want false (no device has that name)")
+		}
+		if device != (models.SystemDevice{}) {
+			t.Errorf("device = %+v, want zero value", device)
+		}
+	})
+
+	t.Run("no saved name to fall back on", func(t *testing.T) {
+		device, byName := findDeviceByPathOrName(devices, "winid:0", "")
+		if byName {
+			t.Errorf("byName = true, want false (empty savedName must never match)")
+		}
+		if device != (models.SystemDevice{}) {
+			t.Errorf("device = %+v, want zero value", device)
+		}
+	})
+}
