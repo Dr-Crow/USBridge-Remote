@@ -202,8 +202,13 @@ ARCH=x86_64 "$LINUXDEPLOY" \
 # libusb-1.0 is on linuxdeploy's blacklist (treated as "system"), so the
 # deploy step above skips it even though we link it for usbpass_gousb.
 # Bundle it explicitly so AppImage hosts without a distro libusb still claim.
-if ldd "$APPDIR/usr/bin/$EXE_NAME" 2>/dev/null | grep -q 'libusb-1.0.so'; then
-    USB_SO="$(ldd "$APPDIR/usr/bin/$EXE_NAME" | awk '/libusb-1.0.so/{print $3; exit}')"
+# ldd's output is captured first rather than piped into awk/grep -q: both
+# exit on the first match, SIGPIPE-ing ldd, and under pipefail that 141
+# aborts the whole script via set -e with no message (same race as the
+# version check below) -- confirmed live, the build silently stopped here.
+EXE_LDD="$(ldd "$APPDIR/usr/bin/$EXE_NAME" 2>/dev/null || true)"
+if grep -q 'libusb-1.0.so' <<<"$EXE_LDD"; then
+    USB_SO="$(awk '/libusb-1.0.so/{print $3; exit}' <<<"$EXE_LDD")"
     if [[ -n "$USB_SO" && -f "$USB_SO" ]]; then
         cp -L "$USB_SO" "$APPDIR/usr/lib/libusb-1.0.so.0"
         chmod 755 "$APPDIR/usr/lib/libusb-1.0.so.0"
