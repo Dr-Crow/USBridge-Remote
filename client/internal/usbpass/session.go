@@ -228,6 +228,7 @@ func StartSession(listenAddr string, devices []models.USBPassthroughDevice) (*Se
 			return nil, err
 		}
 		logrus.Infof("usbpass: live libusb claim for %s (busnum=%d devnum=%d)", used.BusID, used.Busnum, used.Devnum)
+		probeHIDUsage(used)
 	}
 
 	srv, err := StartExport(usbipLoopbackExportAddr, exported)

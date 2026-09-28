@@ -77,9 +77,10 @@ type USBPassthroughDevice struct {
 	// field or anything else this open-source client reports.
 	Interfaces [][3]uint8 `json:"interfaces,omitempty"`
 	// HIDUsagePage/HIDUsage are this device's top-level HID usage (e.g.
-	// 0x01/0x05 = Generic Desktop/GamePad) when known -- currently only
-	// list_hid_darwin.go populates these, off IOHIDManager's own device
-	// properties. Same display-only caveat as Interfaces: this is what lets
+	// 0x01/0x05 = Generic Desktop/GamePad) when known -- list_hid_darwin.go
+	// fills these off IOHIDManager's device properties, listSysfs off the
+	// kernel's report_descriptor; usbpass.probeHIDUsage fills them for every
+	// other backend at export time. Same display-only caveat as Interfaces: this is what lets
 	// RequiresProLicense (and rust-shine's real classify()) tell a generic
 	// HID gamepad (free) apart from, say, a Wacom tablet (Pro) when both
 	// report the same 03/00/00 interface class -- zero means unknown, which

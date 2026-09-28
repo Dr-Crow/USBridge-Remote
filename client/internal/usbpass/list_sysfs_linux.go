@@ -48,6 +48,7 @@ func listSysfs() ([]models.USBPassthroughDevice, error) {
 			desc = vidHex + ":" + pidHex
 		}
 		interfaces := readInterfaceClasses(dir)
+		usagePage, usage := readSysfsHIDUsage(dir)
 		devices = append(devices, models.USBPassthroughDevice{
 			BusID:       name,
 			InstanceID:  name,
@@ -56,6 +57,9 @@ func listSysfs() ([]models.USBPassthroughDevice, error) {
 			Description: desc,
 			Protected:   isProtectedInterfaces(interfaces),
 			Interfaces:  interfaces,
+
+			HIDUsagePage: usagePage,
+			HIDUsage:     usage,
 		})
 	}
 	return devices, nil
@@ -87,6 +91,22 @@ func readInterfaceClasses(dir string) [][3]uint8 {
 		}
 	}
 	return out
+}
+
+// readSysfsHIDUsage reads the top-level HID usage of the device at dir from
+// the report descriptor the kernel's HID core exposes for each bound HID
+// interface (<dev>:<cfg>.<if>/<bus>:<vid>:<pid>.<n>/report_descriptor).
+// 0/0 when no HID driver is bound (e.g. already detached for export) --
+// probeHIDUsage then fills it from the claimed backend at export time.
+func readSysfsHIDUsage(dir string) (uint16, uint16) {
+	matches, _ := filepath.Glob(filepath.Join(dir+":*", "*:*:*.*", "report_descriptor"))
+	var usages [][2]uint16
+	for _, m := range matches {
+		if desc, err := os.ReadFile(m); err == nil {
+			usages = append(usages, parseHIDTopLevelUsages(desc)...)
+		}
+	}
+	return pickHIDUsage(usages)
 }
 
 // isProtectedInterfaces: boot HID keyboards/mice stay local so the user

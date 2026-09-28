@@ -54,9 +54,9 @@ type ExportedDevice struct {
 	NumConfigs uint8
 	Interfaces [][3]uint8 // class, subclass, protocol
 	// HIDUsagePage/HIDUsage are the device's top-level HID usage (e.g.
-	// 0x01/0x05 = Generic Desktop/GamePad) when known -- currently only
-	// list_hid_darwin.go populates these, straight off IOHIDManager's own
-	// device properties, no report-descriptor parsing needed there. Zero
+	// 0x01/0x05 = Generic Desktop/GamePad) when known -- copied from the
+	// lister (list_hid_darwin.go, listSysfs), else read off the claimed
+	// backend's report descriptor by probeHIDUsage (hid_usage.go). Zero
 	// means unknown, same "resolves to Pro" default as an empty Interfaces.
 	// Sent as packRepDevlist's own trailing extension (see there) -- never
 	// part of appendDeviceBody's shared, real-USB/IP-spec-compatible fixed
