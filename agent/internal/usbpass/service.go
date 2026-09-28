@@ -37,6 +37,9 @@ type Status struct {
 	StubDriver  bool     `json:"stub_driver"`
 	VhciDriver  bool     `json:"vhci_driver"`
 	ListenPort  int      `json:"listen_port"`
+	// ConfiguredPort is usb_passthrough_port; differs from ListenPort when
+	// pickURBPort had to fall back because something else held it.
+	ConfiguredPort int `json:"configured_port,omitempty"`
 	Sessions    []string `json:"sessions"`
 	BrokerError string   `json:"broker_error,omitempty"`
 	// BrokerLastExit is the broker's own last error line (from broker.log)
@@ -343,7 +346,8 @@ func (s *Service) Status() Status {
 	st := Status{
 		Available:  runtime.GOOS == "windows" || runtime.GOOS == "linux",
 		Platform:   runtime.GOOS,
-		ListenPort: s.ListenPort(),
+		ListenPort:     s.ListenPort(),
+		ConfiguredPort: s.basePort,
 	}
 	st.AttachGranted = AttachAccessGranted()
 	if !st.Available {

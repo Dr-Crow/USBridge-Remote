@@ -249,6 +249,12 @@ type Window struct {
 	// usbLastStatus is the latest status refreshUSBPassthroughUI saw, so a
 	// tap on the row (after consent) can show why the broker isn't running.
 	usbLastStatus usbpass.Status
+	// usbPortRow lists the address the USB broker actually listens on,
+	// next to the HTTP/Sunshine rows; shown only while the broker answers.
+	// usbPortNote flags a fallback off the configured port.
+	usbPortRow  *fyne.Container
+	usbPortVal  *canvas.Text
+	usbPortNote *canvas.Text
 
 	// sunWebSunshineRow/sunWebRustshineRow are mutually exclusive: the
 	// Status panel's "web UI" row shows Sunshine's local admin UI address
@@ -796,6 +802,7 @@ func (w *Window) refreshUSBPassthroughUI(st entitlement.Status, usb usbpass.Stat
 		return
 	}
 	w.usbLastStatus = usb
+	w.refreshUSBPortRow(usb)
 	if !usb.Available {
 		w.usbBrokerRow.Hide()
 		return
@@ -837,6 +844,33 @@ func (w *Window) refreshUSBPassthroughUI(st entitlement.Status, usb usbpass.Stat
 		w.usbBrokerStatusLabel.Text = label
 		w.usbBrokerStatusLabel.Refresh()
 	}
+}
+
+// refreshUSBPortRow shows the broker's real listen address in the Status
+// panel (like the HTTP/Sunshine rows) while it's actually answering, with a
+// note when it had to move off the configured port.
+func (w *Window) refreshUSBPortRow(usb usbpass.Status) {
+	if w.usbPortRow == nil {
+		return
+	}
+	if !usb.Available || !usb.ConsentGiven || !usb.BrokerAlive || usb.ListenPort <= 0 {
+		w.usbPortRow.Hide()
+		return
+	}
+	addr := fmt.Sprintf("0.0.0.0:%d", usb.ListenPort)
+	if w.usbPortVal.Text != addr {
+		w.usbPortVal.Text = addr
+		w.usbPortVal.Refresh()
+	}
+	note := ""
+	if usb.ConfiguredPort > 0 && usb.ConfiguredPort != usb.ListenPort {
+		note = fmt.Sprintf(loc().USBPortFallback, usb.ConfiguredPort)
+	}
+	if w.usbPortNote.Text != note {
+		w.usbPortNote.Text = note
+		w.usbPortNote.Refresh()
+	}
+	w.usbPortRow.Show()
 }
 
 func (w *Window) ShowAndRun(onClose func()) {
@@ -1431,8 +1465,16 @@ func (w *Window) ShowAndRun(onClose func()) {
 	)
 	w.sunWebRustshineRow.Hide()
 
+	w.usbPortVal = makeStatusAddress("")
+	w.usbPortNote = makeStatusValue("")
+	w.usbPortRow = newStatusRow(
+		container.New(&tightHBoxLayout{gap: 6}, makeStatusLabel(loc().USBPort), w.usbPortVal, w.usbPortNote),
+		nil,
+	)
+	w.usbPortRow.Hide()
+
 	statsBlock := newPanel(osHeaderIcon(), loc().Status, w.streamerVersionLabel, container.New(&tightVBoxLayout{gap: 4},
-		streamerLabel, w.usbBrokerRow, httpRow, w.certRow, sunStreamRow, w.sunWebSunshineRow, w.sunWebRustshineRow))
+		streamerLabel, w.usbBrokerRow, httpRow, w.certRow, sunStreamRow, w.usbPortRow, w.sunWebSunshineRow, w.sunWebRustshineRow))
 	if p, ok := statsBlock.(*themedPanel); ok {
 		w.statusPanel = p
 	}
