@@ -114,6 +114,10 @@ type rustshineBackend struct {
 	watchdog    *exec.Cmd        // macOS only, see rustshine_process_other.go
 	onExit      func()           // see SetOnExit
 
+	// launchedCapExec is the launcher the running process was actually
+	// started through ("" = plain exec); see LaunchedWithoutCapExec.
+	launchedCapExec string
+
 	// launchedWithVirtualDisplay records whether the running instance was
 	// started with a `virtual_display` config key, captured at Start() --
 	// not re-read at Stop(), since switching back to a physical output
@@ -354,6 +358,24 @@ func (b *rustshineBackend) SetCapExecPath(path string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.capExecPath = path
+}
+
+// LauncherActive reports whether Start launches through the verified
+// usbridge-streamer-launch (see SetCapExecPath) -- false while the launcher
+// is missing or refuses the staged bundle, e.g. right after an update.
+func (b *rustshineBackend) LauncherActive() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.capExecPath != ""
+}
+
+// LaunchedWithoutCapExec reports a running streamer that was started by
+// plain exec (so without CAP_SYS_ADMIN) although the launcher is set now --
+// a start that raced SetCapExecPath. The agent's watchdog restarts it.
+func (b *rustshineBackend) LaunchedWithoutCapExec() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.proc != nil && b.capExecPath != "" && b.launchedCapExec == "" && devStreamerOverride() == ""
 }
 
 func (b *rustshineBackend) Running() bool {
@@ -671,6 +693,7 @@ func (b *rustshineBackend) Start(adminPort int) error {
 	}
 
 	var proc rustshineProcess
+	launchedCapExec := ""
 	if useSessionBroker() {
 		sp, err := b.startViaSessionBroker(launchPath, args, launchDir, logDest)
 		if err != nil {
@@ -700,6 +723,7 @@ func (b *rustshineBackend) Start(adminPort int) error {
 		if b.capExecPath != "" && devStreamerOverride() == "" {
 			bundle := streamerlaunch.BundleDir(filepath.Dir(launchPath))
 			cmd = exec.Command(b.capExecPath, append([]string{"--run", bundle, "--"}, args...)...)
+			launchedCapExec = b.capExecPath
 		} else {
 			cmd = exec.Command(launchPath, args...)
 		}
@@ -721,6 +745,7 @@ func (b *rustshineBackend) Start(adminPort int) error {
 
 	b.launchPath = launchPath
 	b.proc = proc
+	b.launchedCapExec = launchedCapExec
 	b.launchedWithVirtualDisplay = b.ConfigKey("virtual_display") != ""
 	b.lastLaunchAt = time.Now()
 	go b.watchProcessExit(proc)

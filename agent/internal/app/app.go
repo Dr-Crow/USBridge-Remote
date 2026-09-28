@@ -941,6 +941,30 @@ func (a *App) startSunshine() {
 	a.startSunshineNow()
 }
 
+// healCapExecLaunch restarts a RustShine streamer that ended up running by
+// plain exec -- no CAP_SYS_ADMIN, so KMS capture fails with "framebuffer has
+// no exportable plane-0 handle" -- although the verified launcher is set,
+// i.e. some start raced SetCapExecPath (see syncCapExecTo). Belt and braces
+// for any launch path, including the restarts done by the update flow.
+func (a *App) healCapExecLaunch() {
+	a.entMu.Lock()
+	updateInProgress := a.entStatus.RustShineUpdateInProgress
+	a.entMu.Unlock()
+	if updateInProgress {
+		return
+	}
+	a.streamMu.Lock()
+	defer a.streamMu.Unlock()
+	b, ok := a.stream.(interface{ LaunchedWithoutCapExec() bool })
+	if !ok || !b.LaunchedWithoutCapExec() {
+		return
+	}
+	log.Printf("[app] rustshine: streamer runs without usbridge-streamer-launch (no CAP_SYS_ADMIN) although the launcher is ready -- restarting it through the launcher")
+	if err := a.RestartSunshine(); err != nil {
+		log.Printf("[app] rustshine: restart through the launcher failed: %v", err)
+	}
+}
+
 // startSunshineNow is startSunshine's actual body, callable directly by the
 // RustShine update flow (see startSunshine's doc comment for why those
 // callers need to bypass the RustShineUpdateInProgress guard rather than
@@ -1016,6 +1040,7 @@ func (a *App) sunshineWatchdog(ctx context.Context) {
 			return
 		case <-ticker.C:
 			a.startSunshine()
+			a.healCapExecLaunch()
 		}
 	}
 }
@@ -1271,20 +1296,26 @@ func (a *App) SunshineCapExecPath() string {
 // doesn't already have its own value set, so switching streamers still
 // propagates a preference instead of overwriting it every start.
 func (a *App) syncSunshineCaptureMode() {
-	if a.stream == nil {
+	a.syncCaptureModeTo(a.stream)
+}
+
+// syncCaptureModeTo is syncSunshineCaptureMode for an explicit backend, so
+// SetStreamBackend can configure the next backend before publishing it.
+func (a *App) syncCaptureModeTo(b streamhost.Backend) {
+	if b == nil {
 		return
 	}
 	if mode := capture.AutoCaptureMode(); mode != "" {
-		if err := a.stream.SetCaptureMode(mode); err != nil {
+		if err := b.SetCaptureMode(mode); err != nil {
 			log.Printf("[app] failed to sync capture mode %q to backend: %v", mode, err)
 		}
 		return
 	}
-	if a.stream.CaptureMode() != "" || a.cfg.SunshineCaptureMode == "" {
+	if b.CaptureMode() != "" || a.cfg.SunshineCaptureMode == "" {
 		return
 	}
 	mode := a.cfg.SunshineCaptureMode
-	if err := a.stream.SetCaptureMode(mode); err != nil {
+	if err := b.SetCaptureMode(mode); err != nil {
 		log.Printf("[app] failed to sync capture mode %q to backend: %v", mode, err)
 	}
 }
@@ -1309,7 +1340,18 @@ func (a *App) syncSunshineCapExec() {
 // handler and the background update watchdog, then piles up waiting on
 // streamMu too -- this is the "Changing protocol"/"Check update" hang).
 func (a *App) syncSunshineCapExecFor(kind string) {
-	if a.stream == nil {
+	a.syncCapExecTo(a.stream, kind)
+}
+
+// syncCapExecTo is syncSunshineCapExecFor for an explicit backend. SetStreamBackend
+// calls it on the next backend *before* publishing it as a.stream: the
+// sunshineWatchdog calls startSunshine() without streamMu, and a tick that
+// landed between `a.stream = next` and this call started the streamer by
+// plain exec, i.e. without CAP_SYS_ADMIN -- KMS capture then fails with
+// "framebuffer has no exportable plane-0 handle" (confirmed live after a
+// benchmark Sunshine -> RustShine switch).
+func (a *App) syncCapExecTo(b streamhost.Backend, kind string) {
+	if b == nil {
 		return
 	}
 	// RustShine goes through the root-owned usbridge-streamer-launch
@@ -1317,17 +1359,17 @@ func (a *App) syncSunshineCapExecFor(kind string) {
 	// verified the staged signed bundle -- otherwise a plain exec, which
 	// still honors a legacy setcap directly on the streamer binary.
 	if kind == "rustshine" {
-		a.stream.SetCapExecPath(a.rustshineLauncherPath())
+		b.SetCapExecPath(a.rustshineLauncherPathFor(b))
 		return
 	}
 	// Sunshine: launch through the launcher whenever the root-owned tree is
 	// installed, even if it's older than the bundled Sunshine (then
 	// KMSCaptureGranted reports false so the UI offers a refresh) -- an
 	// agent update must not cost KMS capture on a remote session.
-	if a.SunshineCaptureMode() == "kms" && a.perms != nil && a.perms.SunshineLaunchReady() {
-		a.stream.SetCapExecPath(streamerlaunch.InstallPath)
+	if a.captureModeOf(b) == "kms" && a.perms != nil && a.perms.SunshineLaunchReady() {
+		b.SetCapExecPath(streamerlaunch.InstallPath)
 	} else {
-		a.stream.SetCapExecPath("")
+		b.SetCapExecPath("")
 	}
 }
 
@@ -1335,8 +1377,13 @@ func (a *App) syncSunshineCapExecFor(kind string) {
 // "portal", or "kms"), read from sunshine.conf if present, falling back to
 // the persisted agent config.
 func (a *App) SunshineCaptureMode() string {
-	if a.stream != nil {
-		if mode := a.stream.CaptureMode(); mode != "" {
+	return a.captureModeOf(a.stream)
+}
+
+// captureModeOf is SunshineCaptureMode for an explicit backend.
+func (a *App) captureModeOf(b streamhost.Backend) string {
+	if b != nil {
+		if mode := b.CaptureMode(); mode != "" {
 			return mode
 		}
 	}
@@ -1497,13 +1544,14 @@ func (a *App) SetStreamBackend(kind string) error {
 	} else {
 		next = streamhost.NewSunshine(a.exeDir, a.cfg.StateDir, a.logPath)
 	}
+	// Fully configure next before publishing it -- see syncCapExecTo.
+	a.syncCaptureModeTo(next)
+	a.syncCapExecTo(next, kind)
 	a.stream = next
 	a.setStreamKind(kind)
 	if a.screen != nil {
 		a.screen.SetDevices(next)
 	}
-	a.syncSunshineCaptureMode()
-	a.syncSunshineCapExecFor(kind)
 	if pw, ok := next.(streamhost.ProcessWatcher); ok {
 		pw.SetOnExit(a.startSunshine)
 	}
@@ -2895,6 +2943,9 @@ func (a *App) applyRustShineUpdate(ctx context.Context, entitlementToken, versio
 	stopped := a.stopRustShineForUpdate()
 	if err := a.stageRustShine(ctx, entitlementToken, nil); err != nil {
 		if stopped {
+			// The bundle on disk may have changed under the launcher
+			// decision made before the update: re-verify first.
+			a.syncSunshineCapExec()
 			a.startSunshineNow()
 		}
 		return err
@@ -3334,8 +3385,8 @@ func (a *App) rustshineStagedDir() string {
 // launcher accepts the staged bundle with its capability effective. Any
 // failure falls back to "" (plain exec) and is logged -- never a hard
 // failure that would take the stream down.
-func (a *App) rustshineLauncherPath() string {
-	if runtime.GOOS != "linux" || a.perms == nil || a.SunshineCaptureMode() != "kms" {
+func (a *App) rustshineLauncherPathFor(b streamhost.Backend) string {
+	if runtime.GOOS != "linux" || a.perms == nil || a.captureModeOf(b) != "kms" {
 		return ""
 	}
 	if !a.perms.KMSCaptureGranted(streamerlaunch.InstallPath) {
@@ -3355,6 +3406,15 @@ func (a *App) rustshineLauncherPath() string {
 func (a *App) KMSCaptureGranted() bool {
 	if a.perms == nil {
 		return false
+	}
+	// The launcher file alone is not enough: if it refuses the staged
+	// bundle (e.g. after a streamer update), RustShine silently runs by
+	// plain exec without CAP_SYS_ADMIN -- report that so the UI offers the
+	// grant/refresh instead of showing it as done.
+	if runtime.GOOS == "linux" && a.currentStreamKind() == "rustshine" && a.SunshineCaptureMode() == "kms" {
+		if b, ok := a.stream.(interface{ LauncherActive() bool }); ok && !b.LauncherActive() {
+			return false
+		}
 	}
 	return a.perms.KMSCaptureGranted(a.kmsCaptureTarget())
 }
