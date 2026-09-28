@@ -342,7 +342,22 @@ static int metal_spike_render(CVPixelBufferRef buf, CGRect container) {
             g_metal_layer.colorspace = cs;
             if (cs) CGColorSpaceRelease(cs);
         } else {
-            g_metal_layer.colorspace = nil; // default (sRGB-ish) -- matches g_layer's own untagged behavior
+            // Explicit sRGB, NOT nil. g_metal_layer.pixelFormat is
+            // MTLPixelFormatRGBA16Float (set once, unconditionally, for both
+            // SDR and HDR -- see metal_video_create). For an 8-bit backing a
+            // nil colorspace defaults to sRGB and this wouldn't matter, but
+            // for a float16 backing nil defaults to *extended linear sRGB*
+            // -- the compositor then treats these still-gamma-encoded
+            // BGRA8Unorm-sampled values (see the non-HDR branch below: the
+            // resample kernels write them straight through, no linearize/
+            // delinearize step) as linear light, which washes the picture
+            // out exactly like HDR/EDR being on with the OS-level toggle
+            // off. Tagging it sRGB explicitly tells the compositor to apply
+            // the normal gamma curve, matching g_layer's own untagged
+            // (implicitly sRGB, 8-bit) behavior.
+            CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+            g_metal_layer.colorspace = cs;
+            if (cs) CGColorSpaceRelease(cs);
         }
         apply_dynamic_range(g_metal_layer, isHDR);
         sLastColorspaceWasHDR = isHDR;

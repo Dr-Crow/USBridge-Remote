@@ -552,7 +552,7 @@ type LocalizedStrings struct {
 	AMDFSR                               string // "Upscale Quality" picker title, video parameters dialog (macOS: bilinear/bicubic/lanczos/AMD FSR 1.0)
 	AMDFSRHint                           string // description shown under the upscale quality picker
 	AMDFSRBadge                          string // small badge next to the upscale quality title, e.g. "NEW"
-	UpscaleBilinear                      string // upscale quality picker option: fast default, no extra GPU cost
+	UpscaleBilinear                      string // upscale quality picker option: "Off" -- fast default, no extra GPU cost, bypasses the Metal upscale path entirely (see UPSCALE_MODE_BILINEAR's own comment)
 	UpscaleBicubic                       string // upscale quality picker option: smoother than bilinear
 	UpscaleLanczos                       string // upscale quality picker option: sharper than bicubic
 	UpscaleFSR1                          string // upscale quality picker option: AMD FSR 1.0 (EASU+RCAS), sharpest, macOS only for now
@@ -1184,7 +1184,7 @@ func EN() *LocalizedStrings {
 		AMDFSR:                               "Upscale Quality",
 		AMDFSRHint:                           "Improves picture sharpness when the stream is at a lower resolution than the window.",
 		AMDFSRBadge:                          "New",
-		UpscaleBilinear:                      "Bilinear",
+		UpscaleBilinear:                      "Off",
 		UpscaleBicubic:                       "Bicubic",
 		UpscaleLanczos:                       "Lanczos",
 		UpscaleFSR1:                          "AMD FSR 1.0",
