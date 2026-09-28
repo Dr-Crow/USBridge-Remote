@@ -335,8 +335,16 @@ static int metal_spike_render(CVPixelBufferRef buf, CGRect container) {
     // same as the pre-existing g_layer/Core-Animation path). Cheap to set
     // every frame; only actually costs anything on the rare frame the value
     // changes.
-    static BOOL sLastColorspaceWasHDR = NO; // not thread-shared: always called from the main thread (see displayLinkFired)
-    if (isHDR != sLastColorspaceWasHDR) {
+    // -1 (not 0/NO): forces the branch below to run on this function's very
+    // first call regardless of whether that first frame is SDR or HDR. A
+    // BOOL(NO) sentinel here would silently skip tagging entirely for any
+    // session that's SDR from start to finish and never has an SDR<->HDR
+    // transition (e.g. no HDR entitlement/display) -- g_metal_layer's
+    // colorspace would then sit at its untagged default (nil) for the whole
+    // session, which is exactly the washed-out/overexposed picture this was
+    // meant to fix (see the sRGB branch's own comment below).
+    static int sLastColorspaceWasHDR = -1; // not thread-shared: always called from the main thread (see displayLinkFired)
+    if ((int)isHDR != sLastColorspaceWasHDR) {
         if (isHDR) {
             CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceITUR_2100_PQ);
             g_metal_layer.colorspace = cs;
@@ -360,7 +368,7 @@ static int metal_spike_render(CVPixelBufferRef buf, CGRect container) {
             if (cs) CGColorSpaceRelease(cs);
         }
         apply_dynamic_range(g_metal_layer, isHDR);
-        sLastColorspaceWasHDR = isHDR;
+        sLastColorspaceWasHDR = (int)isHDR;
     }
 
     BOOL isUpscale = (drawableSize.width > srcW && drawableSize.height > srcH);
