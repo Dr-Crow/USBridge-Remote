@@ -171,3 +171,24 @@ func (c *USBClient) BenchVideoStop() error {
 	body, err := c.PostRawWithTimeout("/api/bench/video/stop", []byte("{}"), 20*time.Second)
 	return decodeAgentResponse(body, err, nil)
 }
+
+// BenchLoadStart has the agent start sampling the host's CPU/GPU load.
+// An agent without the endpoint answers with an error; the benchmark then
+// runs without load data.
+func (c *USBClient) BenchLoadStart() error {
+	body, err := c.PostRawWithTimeout("/api/bench/load/start", []byte("{}"), 20*time.Second)
+	return decodeAgentResponse(body, err, nil)
+}
+
+// BenchLoadStop ends the sampling and returns the samples as JSON (a
+// list of service.BenchLoad; service imports this package, so it decodes).
+func (c *USBClient) BenchLoadStop() (json.RawMessage, error) {
+	body, err := c.PostRawWithTimeout("/api/bench/load/stop", []byte("{}"), 20*time.Second)
+	var out struct {
+		Samples json.RawMessage `json:"samples"`
+	}
+	if err := decodeAgentResponse(body, err, &out); err != nil {
+		return nil, err
+	}
+	return out.Samples, nil
+}

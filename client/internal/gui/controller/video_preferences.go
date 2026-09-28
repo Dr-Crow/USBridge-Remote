@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"sync/atomic"
 	"encoding/json"
 	"strings"
 	"time"
@@ -89,7 +90,24 @@ func saveVideoPreferences(prefs videoPreferences) {
 	app.Preferences().SetString(videoPreferencesKey, string(data))
 }
 
+// benchmarkCodec, when set, replaces the saved codec for every stream
+// started while the benchmark runs (SetBenchmarkCodec).
+var benchmarkCodec atomic.Value // string
+
+// SetBenchmarkCodec forces the streams the benchmark starts to one codec
+// (models.VideoModeH264/H265/AV1), or with "" goes back to the saved one.
+// Nothing is saved: the user's own codec pick is left as it was.
+func SetBenchmarkCodec(codec string) { benchmarkCodec.Store(codec) }
+
 func loadSavedVideoDeviceConfig(devicePath, deviceName string) models.VideoDeviceConfig {
+	cfg := loadSavedVideoDeviceConfigRaw(devicePath, deviceName)
+	if codec, _ := benchmarkCodec.Load().(string); codec != "" {
+		cfg.VideoMode = codec
+	}
+	return cfg
+}
+
+func loadSavedVideoDeviceConfigRaw(devicePath, deviceName string) models.VideoDeviceConfig {
 	prefs := loadVideoPreferences()
 	if cfg, ok := prefs.Devices[devicePath]; ok {
 		if cfg.DeviceName == "" {

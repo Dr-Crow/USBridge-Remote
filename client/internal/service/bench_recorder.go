@@ -49,6 +49,19 @@ type BenchTick struct {
 	RenderValid bool  `json:"render_valid"`
 }
 
+// BenchLoad is one reading of the host's load, as the agent samples it
+// (agent/internal/hostload): whole-machine CPU and the streamer processes'
+// share (percent of all cores), GPU utilization per engine type ("3d",
+// "encode", "decode", "copy", "codec") for the whole machine and for the
+// streamer alone.
+type BenchLoad struct {
+	AtMs        int64              `json:"at_ms"` // since the agent started sampling
+	CPU         float64            `json:"cpu"`
+	StreamerCPU float64            `json:"streamer_cpu"`
+	GPU         map[string]float64 `json:"gpu,omitempty"`
+	StreamerGPU map[string]float64 `json:"streamer_gpu,omitempty"`
+}
+
 // BenchRun is everything recorded for one streamer.
 type BenchRun struct {
 	Backend     string    `json:"backend"`
@@ -82,7 +95,11 @@ type BenchRun struct {
 	// request, same ground-truth distinction as the Net Graph HUD's own
 	// codec line. Empty when the platform doesn't wire that hook yet.
 	Codec string `json:"codec,omitempty"`
-	Error string `json:"error,omitempty"`
+	// HostLoad is the host's CPU/GPU load over the window, sampled by the
+	// agent from the moment recording started; empty from an agent (or a
+	// host OS) that doesn't sample it.
+	HostLoad []BenchLoad `json:"host_load,omitempty"`
+	Error    string      `json:"error,omitempty"`
 }
 
 var (

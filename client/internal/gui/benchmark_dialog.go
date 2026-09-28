@@ -25,6 +25,7 @@ import (
 	"usbridge-client/internal/gui/design"
 	"usbridge-client/internal/gui/i18n"
 	"usbridge-client/internal/gui/view"
+	"usbridge-client/internal/models"
 	"usbridge-client/internal/service"
 )
 
@@ -137,6 +138,9 @@ func (mw *MainWindow) showBenchmarkSetup(available []string, mons []api.BenchMon
 		monSel.SetSelected(choices[defChoice].label)
 		settings = append(settings, widget.NewLabel(i18n.Current.BenchMonitor), monSel)
 	}
+	codecSel := widget.NewSelect(benchCodecLabels(), nil)
+	codecSel.SetSelected(benchCodecs[0].label())
+	settings = append(settings, container.NewHBox(widget.NewLabel(i18n.Current.BenchCodec), codecSel))
 	settings = append(settings, container.NewHBox(widget.NewLabel(i18n.Current.BenchDuration), durSel))
 
 	hint := widget.NewLabel(i18n.Current.BenchHint)
@@ -172,8 +176,39 @@ func (mw *MainWindow) showBenchmarkSetup(available []string, mons []api.BenchMon
 				}
 			}
 		}
-		mw.startBenchmark(picked, monitor, window)
+		codec := ""
+		for _, c := range benchCodecs {
+			if c.label() == codecSel.Selected {
+				codec = c.mode
+			}
+		}
+		mw.startBenchmark(picked, monitor, codec, window)
 	}, mw.window)
+}
+
+// benchCodec is one entry of the setup dialog's codec pick: the saved
+// codec (mode ""), or one forced for every streamer so both are compared
+// on the same codec.
+type benchCodec struct {
+	mode string
+	name string
+}
+
+func (c benchCodec) label() string {
+	if c.mode == "" {
+		return i18n.Current.BenchCodecSaved
+	}
+	return c.name
+}
+
+var benchCodecs = []benchCodec{{"", ""}, {models.VideoModeH264, "H.264"}, {models.VideoModeH265, "HEVC (H.265)"}, {models.VideoModeAV1, "AV1"}}
+
+func benchCodecLabels() []string {
+	var out []string
+	for _, c := range benchCodecs {
+		out = append(out, c.label())
+	}
+	return out
 }
 
 // benchMinWidthLayout keeps the wrapped hint from collapsing to one word wide.
@@ -272,7 +307,7 @@ func benchResultsSizeFn(canvasSize fyne.Size, _ fyne.CanvasObject) fyne.Size {
 	return fyne.NewSize(canvasSize.Width*0.94, canvasSize.Height*0.94)
 }
 
-func (mw *MainWindow) startBenchmark(backends []string, monitor string, window time.Duration) {
+func (mw *MainWindow) startBenchmark(backends []string, monitor, codec string, window time.Duration) {
 	// No progress popup: the setup dialog closes on Start and nothing else
 	// opens until the results. Any Fyne overlay over the stream hides the
 	// native video (black picture on Windows, see
@@ -282,7 +317,7 @@ func (mw *MainWindow) startBenchmark(backends []string, monitor string, window t
 	ctx, cancel := context.WithCancel(context.Background())
 
 	go func() {
-		res, err := benchmarkRunFn(mw, ctx, backends, monitor, window, func(text string, f float64) {
+		res, err := benchmarkRunFn(mw, ctx, backends, monitor, codec, window, func(text string, f float64) {
 			service.SetNetGraphBanner(fmt.Sprintf("%s  %.0f%%", text, math.Min(math.Max(f, 0), 1)*100))
 		})
 		service.SetNetGraphBanner("")
@@ -324,6 +359,9 @@ func benchmarkRows() []benchmarkRow {
 	host := func(f func(service.BenchMetrics) float64) func(service.BenchMetrics) (float64, bool) {
 		return func(m service.BenchMetrics) (float64, bool) { return f(m), m.HostTimingOK }
 	}
+	load := func(f func(service.BenchMetrics) float64) func(service.BenchMetrics) (float64, bool) {
+		return func(m service.BenchMetrics) (float64, bool) { return f(m), m.HostLoadValid }
+	}
 	return []benchmarkRow{
 		{"", "Codec", func(m service.BenchMetrics) (float64, bool) { return 0, m.Codec != "" }, "", true},
 
@@ -353,6 +391,15 @@ func benchmarkRows() []benchmarkRow {
 		{"", "Stalls caused by host", always(func(m service.BenchMetrics) float64 { return float64(m.StallHost) }), "%.0f", true},
 		{"", "Bitrate", always(func(m service.BenchMetrics) float64 { return m.BitrateMbps }), "%.1f Mbps", false},
 		{"", "Keyframes (IDR)", always(func(m service.BenchMetrics) float64 { return float64(m.IDRFrames) }), "%.0f", true},
+
+		{"Host load (whole run, agent counters)", "GPU 3D, streamer", load(func(m service.BenchMetrics) float64 { return m.Streamer3DAvg }), "%.1f %%", true},
+		{"", "GPU video encode, streamer", load(func(m service.BenchMetrics) float64 { return m.StreamerEncodeAvg }), "%.1f %%", true},
+		{"", "GPU video decode, streamer", load(func(m service.BenchMetrics) float64 { return m.StreamerDecodeAvg }), "%.1f %%", true},
+		{"", "CPU, streamer (all cores)", load(func(m service.BenchMetrics) float64 { return m.StreamerCPUAvg }), "%.1f %%", true},
+		{"", "GPU 3D, whole host", load(func(m service.BenchMetrics) float64 { return m.GPU3DAvg }), "%.1f %%", true},
+		{"", "GPU video encode, whole host", load(func(m service.BenchMetrics) float64 { return m.GPUEncodeAvg }), "%.1f %%", true},
+		{"", "GPU video decode, whole host", load(func(m service.BenchMetrics) float64 { return m.GPUDecodeAvg }), "%.1f %%", true},
+		{"", "CPU, whole host", load(func(m service.BenchMetrics) float64 { return m.HostCPUAvg }), "%.1f %%", true},
 
 		{"Network", "RTT avg", always(func(m service.BenchMetrics) float64 { return m.RTTAvg }), "%.1f ms", true},
 		{"", "RTT max", always(func(m service.BenchMetrics) float64 { return m.RTTMax }), "%.1f ms", true},

@@ -54,7 +54,7 @@ func newBenchTestWindow(t *testing.T, run benchRunStub) (*MainWindow, fyne.Windo
 	t.Cleanup(srv.Close)
 
 	prevRun, prevSave := benchmarkRunFn, saveBenchmarkResultFn
-	benchmarkRunFn = func(_ *MainWindow, ctx context.Context, backends []string, monitor string, window time.Duration, progress benchmarkProgress) (*benchmarkResult, error) {
+	benchmarkRunFn = func(_ *MainWindow, ctx context.Context, backends []string, monitor, _ string, window time.Duration, progress benchmarkProgress) (*benchmarkResult, error) {
 		benchTestMonitor.Store(monitor)
 		return run(ctx, backends, window, progress)
 	}

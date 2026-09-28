@@ -52,6 +52,10 @@ type TokenProvider interface {
 	GPUClockLockSupported() bool
 	LockGPUClocksEnabled() bool
 	SetLockGPUClocksEnabled(enabled bool) error
+	NvencTwoPassEnabled() bool
+	SetNvencTwoPass(enabled bool) error
+	NvidiaMaxPerformanceEnabled() bool
+	SetNvidiaMaxPerformance(enabled bool) error
 	StreamerAutoUpdateEnabled() bool
 	SetStreamerAutoUpdate(enabled bool) error
 	SnoozeStreamerUpdate(version string) error
@@ -290,8 +294,6 @@ type Window struct {
 
 	autostartCheck *styledCheck
 
-	// Lock GPU Clocks: Windows+NVIDIA only, see app.applyGPUClockLock.
-	gpuClockCheck *styledCheck
 
 	// supportBtn opens showLicenseDialog -- a single, low-emphasis entry
 	// point for the whole license/RustShine flow, deliberately never
@@ -310,7 +312,8 @@ type Window struct {
 	statusPanel   *themedPanel
 	protocolPanel *themedPanel
 	autostartLang *autostartRow
-	gpuClockLang  *permToggleRow
+	nvidiaMaxPerfLang *permToggleRow
+	nvencTwoPassLang  *permToggleRow
 	mlClientsLang *canvas.Text
 	usbDriverLang *canvas.Text
 	clipboardLang *widget.Label
@@ -1040,41 +1043,38 @@ func (w *Window) ShowAndRun(onClose func()) {
 	w.autostartLang = autostartRow
 	w.refreshAutostartChrome()
 
-	// Lock GPU Clocks: holds an NVML max-clock lock for the life of this
-	// agent process (once enabled) so the GPU doesn't idle into a low-power
-	// state between frames and stall NVENC on the next one (see
-	// app.applyGPUClockLock). Windows+NVIDIA only -- entirely absent from the
-	// Permissions block on other platforms, where GPUClockLockSupported()
-	// returns false, rather than shown-but-disabled. No separate "Request"
-	// button: the checkbox itself triggers the one (UAC-prompting) request
-	// for this agent run -- deliberately upfront and one-time, not
-	// re-triggered on every stream-host restart, since a UAC prompt can't be
-	// dismissed from a remote session (it runs on the secure desktop) and
-	// would otherwise strand a remote client switching monitors mid-stream.
+	// NVIDIA encoder preferences, written into both streamers' configs
+	// (see app.applyNvencPrefs); changing one restarts the running
+	// streamer. Windows only, like the GPU clock lock they replace in this
+	// block: "max performance" is the driver profile that keeps the GPU at
+	// full clocks without the lock's UAC prompt, and two-pass trades GPU
+	// load for picture quality. Without an NVIDIA GPU both keys are unused.
 	gpuClockSupported := w.token != nil && w.token.GPUClockLockSupported()
-	initialGPU := gpuClockSupported && w.token.LockGPUClocksEnabled()
-	w.gpuClockCheck = newStyledCheck("", initialGPU, func(checked bool) {
-		w.gpuClockCheck.Disable()
-		go func() {
-			var err error
-			if w.token != nil {
-				err = w.token.SetLockGPUClocksEnabled(checked)
-			}
-			fyne.Do(func() {
-				if w.gpuClockCheck == nil {
-					return
-				}
-				w.gpuClockCheck.Enable()
-				if err != nil {
-					logrus.Errorf("[ui] lock GPU clocks toggle failed: %v", err)
-					w.gpuClockCheck.SetChecked(!checked)
-					showErrorDialog(err, win)
-				}
-			})
-		}()
-	})
-	gpuClockRow := newPermToggleRow(loc().LockGPUClocks, w.gpuClockCheck)
-	w.gpuClockLang = gpuClockRow
+	nvidiaToggle := func(initial bool, set func(bool) error) *styledCheck {
+		var check *styledCheck
+		check = newStyledCheck("", initial, func(checked bool) {
+			check.Disable()
+			go func() {
+				err := set(checked)
+				fyne.Do(func() {
+					check.Enable()
+					if err != nil {
+						logrus.Errorf("[ui] NVIDIA encoder preference toggle failed: %v", err)
+						check.SetChecked(!checked)
+						showErrorDialog(err, win)
+					}
+				})
+			}()
+		})
+		return check
+	}
+	var nvidiaRows []fyne.CanvasObject
+	if gpuClockSupported {
+		maxPerfRow := newPermToggleRow(loc().NvidiaMaxPerformance, nvidiaToggle(w.token.NvidiaMaxPerformanceEnabled(), w.token.SetNvidiaMaxPerformance))
+		twoPassRow := newPermToggleRow(loc().NvencTwoPass, nvidiaToggle(w.token.NvencTwoPassEnabled(), w.token.SetNvencTwoPass))
+		w.nvidiaMaxPerfLang, w.nvencTwoPassLang = maxPerfRow, twoPassRow
+		nvidiaRows = []fyne.CanvasObject{maxPerfRow, twoPassRow}
+	}
 
 	// Clipboard sync (Linux only): internal/clipboard's Linux backend shells
 	// out to xclip/wl-clipboard/xsel, none of which every distro ships by
@@ -1241,9 +1241,7 @@ func (w *Window) ShowAndRun(onClose func()) {
 		permRule,
 		autostartRow,
 	}
-	if gpuClockSupported {
-		permTop = append(permTop, gpuClockRow)
-	}
+	permTop = append(permTop, nvidiaRows...)
 	if runtime.GOOS == "linux" {
 		permTop = append(permTop, w.clipboardToolRow)
 		w.refreshClipboardToolUI()
@@ -1898,8 +1896,9 @@ func (w *Window) applyLanguage() {
 	w.refreshPermRequestLabels()
 	w.refreshAutostartChrome()
 
-	if w.gpuClockLang != nil {
-		w.gpuClockLang.SetLabel(c.LockGPUClocks)
+	if w.nvidiaMaxPerfLang != nil {
+		w.nvidiaMaxPerfLang.SetLabel(c.NvidiaMaxPerformance)
+		w.nvencTwoPassLang.SetLabel(c.NvencTwoPass)
 	}
 	if w.rustshineWebRTCRow != nil {
 		w.rustshineWebRTCRow.SetLabel(c.WebRTCToggle)

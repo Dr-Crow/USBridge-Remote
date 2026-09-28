@@ -194,6 +194,26 @@ func (c *Client) SetLockGPUClocksEnabled(enabled bool) error {
 	return c.do(http.MethodPost, "/token/gpu-clock-lock-enabled", boolBody{Value: enabled}, nil)
 }
 
+func (c *Client) NvencTwoPassEnabled() bool {
+	body := boolBody{Value: true}
+	_ = c.do(http.MethodGet, "/token/nvenc-two-pass", nil, &body)
+	return body.Value
+}
+
+func (c *Client) SetNvencTwoPass(enabled bool) error {
+	return c.do(http.MethodPost, "/token/nvenc-two-pass", boolBody{Value: enabled}, nil)
+}
+
+func (c *Client) NvidiaMaxPerformanceEnabled() bool {
+	body := boolBody{Value: true}
+	_ = c.do(http.MethodGet, "/token/nvidia-max-performance", nil, &body)
+	return body.Value
+}
+
+func (c *Client) SetNvidiaMaxPerformance(enabled bool) error {
+	return c.do(http.MethodPost, "/token/nvidia-max-performance", boolBody{Value: enabled}, nil)
+}
+
 func (c *Client) StreamerAutoUpdateEnabled() bool {
 	var body boolBody
 	_ = c.do(http.MethodGet, "/token/streamer-auto-update", nil, &body)

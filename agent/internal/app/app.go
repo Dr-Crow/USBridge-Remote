@@ -969,6 +969,7 @@ func (a *App) startSunshineNow() {
 	// fixes a stale output_name for an already-"running" process.
 	a.reconcileOutputName()
 	a.reconcileAudioSink()
+	a.applyNvencPrefs(a.stream)
 	if err := a.stream.Start(a.cfg.SunshinePort); err != nil {
 		log.Printf("[app] failed to start Sunshine: %v", err)
 	} else {
@@ -3496,8 +3497,12 @@ func (a *App) SetLockGPUClocksEnabled(enabled bool) error {
 // on every call; errors (including a declined UAC prompt) are logged only,
 // never fatal to starting the stream, and deliberately leave gpuClockArmed
 // unset so the next call retries instead of giving up silently forever.
+//
+// Superseded by NvidiaMaxPerformance (the driver profile keeps the clocks
+// up without elevation) and no longer offered in the UI: a lock turned on
+// before only still applies while that preference is off.
 func (a *App) applyGPUClockLock() {
-	if !a.cfg.LockGPUClocksEnabled || a.perms == nil || a.stream == nil {
+	if !a.cfg.LockGPUClocksEnabled || a.cfg.NvidiaMaxPerformanceOK() || a.perms == nil || a.stream == nil {
 		return
 	}
 	if !a.perms.GPUClockLockSupported() {

@@ -59,6 +59,21 @@ type Config struct {
 	// Requires a UAC consent prompt on every session start (Windows has no
 	// one-time-grant equivalent to Linux's CAP_SYS_ADMIN setcap).
 	LockGPUClocksEnabled bool `yaml:"lock_gpu_clocks_enabled"`
+	// NvencTwoPass and NvidiaMaxPerformance are NVIDIA encoder preferences
+	// written into both streamers' configs, under the keys Sunshine and
+	// RustShine share (see app.applyNvencPrefs). Nil means on, both
+	// streamers' own default.
+	//
+	// NvencTwoPass: NVENC's quarter-resolution first pass
+	// (nvenc_twopass). Better picture at low bitrates, ~20% more GPU 3D
+	// load and ~0.5 ms more encode time.
+	NvencTwoPass *bool `yaml:"nvenc_two_pass,omitempty"`
+	// NvidiaMaxPerformance: the driver profile "Prefer maximum
+	// performance" for the streamer (nvenc_latency_over_power). Keeps the
+	// GPU at full clocks while streaming; without it NVENC slows down
+	// whenever the driver lowers the clocks. No admin rights needed,
+	// unlike LockGPUClocksEnabled.
+	NvidiaMaxPerformance *bool `yaml:"nvidia_max_performance,omitempty"`
 
 	// Hardware-bound RustShine entitlement (see agent/internal/entitlement,
 	// agent/internal/hwid). Same trust level as MasterKey above: plain
@@ -178,6 +193,13 @@ func (c Config) EffectiveListenHost() string {
 // default.
 func (c Config) StreamerAutoUpdateEnabled() bool {
 	return c.StreamerAutoUpdate == nil || *c.StreamerAutoUpdate
+}
+
+// NvencTwoPassOK and NvidiaMaxPerformanceOK are true unless turned off.
+func (c Config) NvencTwoPassOK() bool { return c.NvencTwoPass == nil || *c.NvencTwoPass }
+
+func (c Config) NvidiaMaxPerformanceOK() bool {
+	return c.NvidiaMaxPerformance == nil || *c.NvidiaMaxPerformance
 }
 
 // TLSEnabledOK is true unless the user turned the "Enable HTTPS" checkbox

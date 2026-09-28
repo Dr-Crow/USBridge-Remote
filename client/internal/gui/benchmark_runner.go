@@ -13,6 +13,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"usbridge-client/internal/api"
+	"usbridge-client/internal/gui/controller"
 	"usbridge-client/internal/gui/i18n"
 	"usbridge-client/internal/service"
 )
@@ -45,7 +46,8 @@ type benchmarkProgress func(text string, fraction float64)
 // every exit path.
 // monitor (a host monitor ID, "" to leave each streamer's own) pins both
 // streamers' capture and the test video to one monitor for the whole run.
-func (mw *MainWindow) runBenchmark(ctx context.Context, backends []string, monitor string, window time.Duration, progress benchmarkProgress) (*benchmarkResult, error) {
+// codec ("" for the saved one) is the codec every run streams with.
+func (mw *MainWindow) runBenchmark(ctx context.Context, backends []string, monitor, codec string, window time.Duration, progress benchmarkProgress) (*benchmarkResult, error) {
 	client := mw.usbClient
 	vw := mw.videoWidget
 	if client == nil || vw == nil {
@@ -63,9 +65,16 @@ func (mw *MainWindow) runBenchmark(ctx context.Context, backends []string, monit
 	netGraphWas := service.NetGraphEnabled()
 	service.SetNetGraphEnabled(true)
 
+	controller.SetBenchmarkCodec(codec)
+	if codec != "" {
+		logrus.Infof("📈 [Benchmark] streaming with codec %s", codec)
+	}
+
 	var recorder service.BenchRecorder
 	defer func() {
 		recorder.Stop()
+		// Before the restore below restarts the user's own stream.
+		controller.SetBenchmarkCodec("")
 		_ = client.BenchVideoStop()
 		if !netGraphWas {
 			service.SetNetGraphEnabled(false)
@@ -198,6 +207,26 @@ func (mw *MainWindow) benchmarkOne(ctx context.Context, run *service.BenchRun, r
 	}
 
 	recorder.Start(run)
+	loadErr := client.BenchLoadStart()
+	if loadErr != nil {
+		logrus.Infof("📈 [Benchmark] host load not sampled: %v", loadErr)
+	}
+	// Stopped with the recording, so both cover the same window; the defer
+	// covers a cancelled run.
+	stopLoad := func() {
+		if loadErr != nil {
+			return
+		}
+		loadErr = errors.New("stopped")
+		raw, err := client.BenchLoadStop()
+		if err == nil {
+			err = json.Unmarshal(raw, &run.HostLoad)
+		}
+		if err != nil {
+			logrus.Warnf("📈 [Benchmark] reading the host load: %v", err)
+		}
+	}
+	defer stopLoad()
 	started := time.Now()
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
@@ -215,6 +244,7 @@ func (mw *MainWindow) benchmarkOne(ctx context.Context, run *service.BenchRun, r
 		}
 	}
 	recorder.Stop()
+	stopLoad()
 	_ = client.BenchVideoStop()
 	vw.BenchmarkStopStream()
 	logrus.Infof("📈 [Benchmark] %s: recorded %d frames", run.Backend, len(run.Frames))

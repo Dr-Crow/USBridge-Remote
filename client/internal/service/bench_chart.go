@@ -208,7 +208,13 @@ func RenderBenchChart(runs []*BenchRun, metrics []BenchMetrics) *image.RGBA {
 		}
 	}
 	const timelineH, panelH, gap = 230, 240, 14
-	h := benchChartMargin + 44 + len(runs)*(timelineH+gap) + 4*(panelH+gap) + 190
+	loadPanels := 0
+	for _, r := range runs {
+		if r != nil && len(r.HostLoad) > 0 {
+			loadPanels = 2
+		}
+	}
+	h := benchChartMargin + 44 + len(runs)*(timelineH+gap) + (4+loadPanels)*(panelH+gap) + 190
 	img := image.NewRGBA(image.Rect(0, 0, benchChartW, h))
 	draw.Draw(img, img.Bounds(), image.NewUniform(benchChartBg), image.Point{}, draw.Src)
 
@@ -299,7 +305,26 @@ func RenderBenchChart(runs []*BenchRun, metrics []BenchMetrics) *image.RGBA {
 	}
 	y += panelH + gap
 
-	// 6. Startup, measured separately from everything above.
+	// 6. Host load from the agent's counters, when it sampled them.
+	if loadPanels > 0 {
+		p = newBenchPanel(img, y, panelH, "Streamer GPU load, % (bright: 3D, dim: video encode, dark: video decode)", maxSec, 100, "%")
+		for _, r := range runs {
+			c := BenchBackendColor(r.Backend)
+			benchPlotSeries(p, benchLoadSeries(r, func(l BenchLoad) float64 { return l.StreamerGPU["3d"] }), c)
+			benchPlotSeries(p, benchLoadSeries(r, func(l BenchLoad) float64 { return BenchGPUEncode(l.StreamerGPU) }), benchDim(c, 2))
+			benchPlotSeries(p, benchLoadSeries(r, func(l BenchLoad) float64 { return BenchGPUDecode(l.StreamerGPU) }), benchDim(c, 4))
+		}
+		y += panelH + gap
+		p = newBenchPanel(img, y, panelH, "CPU load, % of all cores (bright: whole host, dim: streamer)", maxSec, 100, "%")
+		for _, r := range runs {
+			c := BenchBackendColor(r.Backend)
+			benchPlotSeries(p, benchLoadSeries(r, func(l BenchLoad) float64 { return l.CPU }), c)
+			benchPlotSeries(p, benchLoadSeries(r, func(l BenchLoad) float64 { return l.StreamerCPU }), benchDim(c, 2))
+		}
+		y += panelH + gap
+	}
+
+	// 7. Startup, measured separately from everything above.
 	outer := image.Rect(benchChartMargin, y, benchChartW-benchChartMargin, y+176)
 	benchFill(img, outer, benchChartPanel)
 	benchText(img, big, outer.Min.X+12, outer.Min.Y+24, "Startup (not part of the measurement window)", benchChartText)
@@ -432,4 +457,19 @@ func benchMaxRTT(runs []*BenchRun) float64 {
 		}
 	}
 	return benchNiceCeil(m*1.2, 5)
+}
+
+// benchLoadSeries is one host-load value over the run, in seconds since
+// the agent started sampling (right after the recording started).
+func benchLoadSeries(r *BenchRun, val func(BenchLoad) float64) [][2]float64 {
+	pts := make([][2]float64, 0, len(r.HostLoad))
+	for _, l := range r.HostLoad {
+		pts = append(pts, [2]float64{float64(l.AtMs) / 1000, val(l)})
+	}
+	return pts
+}
+
+// benchDim darkens c by div, for a series secondary to c's own.
+func benchDim(c color.RGBA, div uint8) color.RGBA {
+	return color.RGBA{c.R / div, c.G / div, c.B / div, 0xff}
 }

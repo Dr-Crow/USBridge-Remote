@@ -21,6 +21,7 @@ import (
 
 	"usbridge_agent/internal/clipboard"
 	"usbridge_agent/internal/display"
+	"usbridge_agent/internal/hostload"
 	"usbridge_agent/internal/usbpass"
 	"usbridge_agent/internal/vdisplay"
 )
@@ -88,6 +89,8 @@ type Application interface {
 type Server struct {
 	app      Application
 	upgrader websocket.Upgrader
+	// benchLoad samples host CPU/GPU load during a benchmark run.
+	benchLoad hostload.Sampler
 
 	// keyMu guards masterKey — see SetMasterKey.
 	keyMu        sync.RWMutex
@@ -219,6 +222,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/bench/prepare", sec.LimitPolling(s.benchPrepare))
 	mux.HandleFunc("POST /api/bench/video/start", sec.LimitPolling(s.benchVideoStart))
 	mux.HandleFunc("POST /api/bench/video/stop", sec.LimitPolling(s.benchVideoStop))
+	mux.HandleFunc("POST /api/bench/load/start", sec.LimitPolling(s.benchLoadStart))
+	mux.HandleFunc("POST /api/bench/load/stop", sec.LimitPolling(s.benchLoadStop))
 	mux.HandleFunc("/api/devices", sec.LimitPolling(s.devicesLegacy))
 	mux.HandleFunc("/api/pcpanel/leds", sec.LimitPolling(s.leds))
 	mux.HandleFunc("/api/pcpanel/button", sec.LimitPolling(s.button))

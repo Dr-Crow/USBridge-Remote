@@ -73,6 +73,18 @@ type BenchMetrics struct {
 	BitrateMbps    float64 `json:"bitrate_mbps"`
 	IDRFrames      int     `json:"idr_frames"`
 
+	// Host load averages over the window (percent; CPU of all cores, GPU
+	// per engine type). HostLoadValid is false without samples.
+	HostLoadValid     bool    `json:"host_load_valid"`
+	HostCPUAvg        float64 `json:"host_cpu_avg_pct"`
+	StreamerCPUAvg    float64 `json:"streamer_cpu_avg_pct"`
+	GPU3DAvg          float64 `json:"gpu_3d_avg_pct"`
+	GPUEncodeAvg      float64 `json:"gpu_encode_avg_pct"`
+	GPUDecodeAvg      float64 `json:"gpu_decode_avg_pct"`
+	Streamer3DAvg     float64 `json:"streamer_gpu_3d_avg_pct"`
+	StreamerEncodeAvg float64 `json:"streamer_gpu_encode_avg_pct"`
+	StreamerDecodeAvg float64 `json:"streamer_gpu_decode_avg_pct"`
+
 	// Network.
 	RTTAvg          float64 `json:"rtt_avg_ms"`
 	RTTMax          float64 `json:"rtt_max_ms"`
@@ -150,6 +162,7 @@ func AnalyzeBenchRun(run *BenchRun) BenchMetrics {
 		m.DurationSec = float64(run.EndUs-run.StartUs) / 1e6
 	}
 	m.Frames = len(run.Frames)
+	benchLoadAverages(run.HostLoad, &m)
 
 	ivs := BenchIntervals(run)
 	expected := 1000.0 / 60
@@ -415,4 +428,27 @@ func benchPercentile(sorted []float64, p float64) float64 {
 		i = len(sorted) - 1
 	}
 	return sorted[i]
+}
+
+// BenchGPUEncode/BenchGPUDecode read an engine-type map's encode and
+// decode load; a shared encode+decode block ("codec", AMD) counts as both.
+func BenchGPUEncode(g map[string]float64) float64 { return math.Max(g["encode"], g["codec"]) }
+func BenchGPUDecode(g map[string]float64) float64 { return math.Max(g["decode"], g["codec"]) }
+
+func benchLoadAverages(load []BenchLoad, m *BenchMetrics) {
+	if len(load) == 0 {
+		return
+	}
+	n := float64(len(load))
+	for _, l := range load {
+		m.HostCPUAvg += l.CPU / n
+		m.StreamerCPUAvg += l.StreamerCPU / n
+		m.GPU3DAvg += l.GPU["3d"] / n
+		m.GPUEncodeAvg += BenchGPUEncode(l.GPU) / n
+		m.GPUDecodeAvg += BenchGPUDecode(l.GPU) / n
+		m.Streamer3DAvg += l.StreamerGPU["3d"] / n
+		m.StreamerEncodeAvg += BenchGPUEncode(l.StreamerGPU) / n
+		m.StreamerDecodeAvg += BenchGPUDecode(l.StreamerGPU) / n
+	}
+	m.HostLoadValid = true
 }

@@ -107,3 +107,21 @@ func TestRenderBenchChart(t *testing.T) {
 		}
 	}
 }
+
+func TestAnalyzeBenchRunAveragesHostLoad(t *testing.T) {
+	run := &BenchRun{HostLoad: []BenchLoad{
+		{CPU: 20, StreamerCPU: 1, GPU: map[string]float64{"3d": 30, "encode": 20}, StreamerGPU: map[string]float64{"3d": 10, "encode": 20}},
+		{CPU: 40, StreamerCPU: 3, GPU: map[string]float64{"3d": 50, "codec": 40}, StreamerGPU: map[string]float64{"3d": 30, "codec": 40}},
+	}}
+	m := AnalyzeBenchRun(run)
+	if !m.HostLoadValid || m.HostCPUAvg != 30 || m.StreamerCPUAvg != 2 || m.GPU3DAvg != 40 || m.Streamer3DAvg != 20 {
+		t.Fatalf("cpu/3d averages: %+v", m)
+	}
+	// AMD's shared "codec" engine counts as encode and decode.
+	if m.StreamerEncodeAvg != 30 || m.StreamerDecodeAvg != 20 {
+		t.Fatalf("encode %v decode %v", m.StreamerEncodeAvg, m.StreamerDecodeAvg)
+	}
+	if AnalyzeBenchRun(&BenchRun{}).HostLoadValid {
+		t.Fatal("no samples must not be valid")
+	}
+}

@@ -38,6 +38,8 @@ type LocalizedStrings struct {
 	AutostartAtBoot      string
 	AutostartRebootHint  string
 	LockGPUClocks        string
+	NvidiaMaxPerformance string
+	NvencTwoPass         string
 	ClipboardTool        string
 	Install              string
 	ClipboardInstall     string
@@ -320,6 +322,8 @@ func EN() *LocalizedStrings {
 		AutostartAtBoot:      "Autostart at Boot",
 		AutostartRebootHint:  "(Windows restart required)",
 		LockGPUClocks:        "Lock GPU Clocks",
+		NvidiaMaxPerformance: "NVIDIA: max performance (lower latency)",
+		NvencTwoPass:         "NVENC two-pass (better picture, more GPU load)",
 		ClipboardTool:        "Clipboard Tool",
 		Install:              "Install",
 		ClipboardInstall:     "Clipboard Tool Install",
@@ -550,6 +554,8 @@ func ES() *LocalizedStrings {
 	locale.AutostartAtBoot = "Inicio automatico"
 	locale.AutostartRebootHint = "(se requiere reinicio de Windows)"
 	locale.LockGPUClocks = "Bloquear relojes GPU"
+	locale.NvidiaMaxPerformance = "NVIDIA: máximo rendimiento (menos latencia)"
+	locale.NvencTwoPass = "NVENC dos pasadas (mejor imagen, más carga de GPU)"
 	locale.ClipboardTool = "Portapapeles"
 	locale.Install = "Instalar"
 	locale.ClipboardInstall = "Instalar herramienta de portapapeles"
@@ -769,6 +775,8 @@ func UK() *LocalizedStrings {
 	locale.AutostartAtBoot = "Автозапуск"
 	locale.AutostartRebootHint = "(потрібен перезапуск Windows)"
 	locale.LockGPUClocks = "Фіксувати частоти GPU"
+	locale.NvidiaMaxPerformance = "NVIDIA: максимальна продуктивність (менша затримка)"
+	locale.NvencTwoPass = "NVENC два проходи (краща картинка, більше навантаження на GPU)"
 	locale.ClipboardTool = "Буфер обміну"
 	locale.Install = "Встановити"
 	locale.ClipboardInstall = "Встановлення буфера обміну"

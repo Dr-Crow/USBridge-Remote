@@ -35,6 +35,10 @@ type TokenBackend interface {
 	GPUClockLockSupported() bool
 	LockGPUClocksEnabled() bool
 	SetLockGPUClocksEnabled(enabled bool) error
+	NvencTwoPassEnabled() bool
+	SetNvencTwoPass(enabled bool) error
+	NvidiaMaxPerformanceEnabled() bool
+	SetNvidiaMaxPerformance(enabled bool) error
 	StreamerAutoUpdateEnabled() bool
 	SetStreamerAutoUpdate(enabled bool) error
 	SnoozeStreamerUpdate(version string) error
@@ -207,6 +211,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /token/gpu-clock-lock-supported", s.handleGPUClockLockSupported)
 	mux.HandleFunc("GET /token/gpu-clock-lock-enabled", s.handleGPUClockLockEnabled)
 	mux.HandleFunc("POST /token/gpu-clock-lock-enabled", s.handleSetGPUClockLockEnabled)
+	mux.HandleFunc("GET /token/nvenc-two-pass", s.boolGetter(func() bool { return s.token.NvencTwoPassEnabled() }))
+	mux.HandleFunc("POST /token/nvenc-two-pass", s.boolSetter(func(v bool) error { return s.token.SetNvencTwoPass(v) }))
+	mux.HandleFunc("GET /token/nvidia-max-performance", s.boolGetter(func() bool { return s.token.NvidiaMaxPerformanceEnabled() }))
+	mux.HandleFunc("POST /token/nvidia-max-performance", s.boolSetter(func(v bool) error { return s.token.SetNvidiaMaxPerformance(v) }))
 	mux.HandleFunc("GET /token/streamer-auto-update", s.handleStreamerAutoUpdate)
 	mux.HandleFunc("POST /token/streamer-auto-update", s.handleSetStreamerAutoUpdate)
 	mux.HandleFunc("POST /token/snooze-streamer-update", s.handleSnoozeStreamerUpdate)
@@ -362,6 +370,28 @@ func (s *Server) handleSetGPUClockLockEnabled(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, struct{}{})
+}
+
+// boolGetter/boolSetter serve a plain on/off setting.
+func (s *Server) boolGetter(get func() bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, boolBody{Value: get()})
+	}
+}
+
+func (s *Server) boolSetter(set func(bool) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body boolBody
+		if err := readJSON(r, &body); err != nil {
+			writeError(w, err)
+			return
+		}
+		if err := set(body.Value); err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	}
 }
 
 func (s *Server) handleStreamerAutoUpdate(w http.ResponseWriter, r *http.Request) {

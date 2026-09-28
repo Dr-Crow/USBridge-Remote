@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"usbridge_agent/internal/benchvideo"
+	"usbridge_agent/internal/hostload"
 	"usbridge_agent/internal/monitors"
 )
 
@@ -193,4 +194,21 @@ func (s *Server) benchVideoStop(w http.ResponseWriter, r *http.Request) {
 	}
 	b.BenchPlayer().Stop()
 	s.ok(w, "bench_video_stopped", nil)
+}
+
+// benchLoadStart starts sampling the host's CPU and GPU load (see
+// internal/hostload) for the run the client is about to record.
+func (s *Server) benchLoadStart(w http.ResponseWriter, r *http.Request) {
+	s.benchLoad.Start()
+	s.ok(w, "bench_load_started", map[string]any{"interval_ms": hostload.Interval.Milliseconds()})
+}
+
+// benchLoadStop ends the sampling and returns its samples (empty where the
+// host can't read its load).
+func (s *Server) benchLoadStop(w http.ResponseWriter, r *http.Request) {
+	samples := s.benchLoad.Stop()
+	if samples == nil {
+		samples = []hostload.Sample{}
+	}
+	s.ok(w, "bench_load", map[string]any{"samples": samples})
 }

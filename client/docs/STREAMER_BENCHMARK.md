@@ -29,8 +29,15 @@ For each streamer that is ticked:
    from its first frame, after the stream is up, so both streamers are
    measured on the same content.
 4. The client records every frame for the chosen window (30 s – 5 min),
-   with the Net Graph on. Then the video and the stream stop, and the next
-   streamer runs.
+   with the Net Graph on, and the agent samples the host's load over the
+   same window (`POST /api/bench/load/start` / `stop`). Then the video and
+   the stream stop, and the next streamer runs.
+
+The setup dialog picks the streamers, the host monitor, the window and the
+**codec**: "As in video settings" or H.264 / HEVC / AV1 forced for every
+run (`controller.SetBenchmarkCodec`; the saved codec is left untouched and
+back in force once the benchmark ends). Each run's Codec row still shows
+what the host actually negotiated.
 
 At the end the host is switched back to the streamer it had before, and
 the stream is restarted if it was running.
@@ -55,6 +62,15 @@ actually negotiated (`NegotiatedVideoCodecName`), and a live bitrate
 averaged over the last ~1 s from a cumulative decoded-bytes counter
 (`dr_submit`'s `DECODE_UNIT.fullLength`, see `net_graph.go`'s `BytesVideo`).
 
+Every 500 ms, on the agent (`agent/internal/hostload`, Windows performance
+counters -- the ones Task Manager shows; other host OSes send no samples):
+whole-machine CPU and the streamer processes' CPU (`sunshine`,
+`usbridge-streamer`; percent of all cores), and GPU utilization per engine
+type -- `3d`, `encode`, `decode`, `copy`, and `codec` for a shared
+encode+decode block (AMD's "Video Codec") -- for the whole machine and for
+the streamer processes alone. Per type, the busiest engine counts, each
+engine's load summed over its processes. Stored per run as `host_load`.
+
 ## How it is analysed (`internal/service/bench_analysis.go`)
 
 * **Smoothness:** intervals between frames handed to the decoder. From
@@ -71,6 +87,9 @@ averaged over the last ~1 s from a cumulative decoded-bytes counter
   * *network*: the host produced frames on time, and they arrived late.
 * **Host:** encode time avg/p95/max, capture rate, capture pacing std-dev,
   the longest capture gap, bitrate, and the number of keyframes.
+* **Host load:** averages of the samples above -- GPU 3D / video encode /
+  video decode for the streamer and for the whole host, and CPU for both
+  (`codec` counts as encode and decode).
 * **Network:** RTT, per-frame network jitter |Δarrival − Δcapture|, frame
   transfer time (first packet → reassembled), packet loss including
   FEC-repaired packets, and FEC failures.
@@ -86,7 +105,8 @@ as loss or network.
 The results dialog has a comparison table (the best value is in green,
 plus a Codec row from each run's own `NegotiatedVideoCodecName`), frame-time
 timelines per streamer with every stall marked in its cause's color,
-overlaid fps / host encode time / network jitter / RTT charts, startup
+overlaid fps / host encode time / network jitter / RTT charts, the
+streamer's GPU load (3D, encode, decode) and CPU load charts, startup
 bars, and a list of every stall. `results.json` (all raw frames and ticks)
 and `chart.png` are auto-saved to
 `<user config dir>/usbridge-client/benchmarks/<timestamp>/`; the dialog's
@@ -101,6 +121,7 @@ operator's choosing.
 | `POST /api/bench/backend` `{"kind":"sunshine"\|"rustshine"}` | switch, returns `switch_ms` |
 | `POST /api/bench/prepare` | download the test video |
 | `POST /api/bench/video/start` / `stop` | play / close the test video |
+| `POST /api/bench/load/start` / `stop` | sample host CPU/GPU load; `stop` returns `{"samples":[...]}` |
 
 The player stops on its own after 15 minutes if no client stops it. On
 Windows it is launched into the interactive session (a Session 0 window

@@ -106,13 +106,14 @@ rm -f ~/.config/autostart/usbridge-agent-tray.desktop
 **Windows specifics:**
 The `USBridgeAgent` service always runs as `LocalSystem` — deliberately, so it can capture and inject input straight through the lock/sign-in screen, not just an unlocked desktop (see [Platform Notes](docs/README.md#platform-notes-from-the-top-level-readme) for why). A `LocalSystem` service can't show UI in your desktop session on its own, so instead of a separate autostart entry, the service re-homes a small tray-only copy of itself into your active session directly (the same session-broker mechanism the streaming backend already uses to reach your desktop) whenever you log on or the service (re)starts while you're already logged in.
 
-## 🎮 Lock GPU Clocks (Windows + NVIDIA)
+## 🎮 NVIDIA encoder settings (Windows)
 
-This is a Windows-only feature, shown in the **Permissions** panel exclusively on supported machines. When checked, the agent launches an elevated helper (`gamestream-server.exe --gpu-clock-lock-daemon --watch-pid <PID>`) that holds an NVML max-clock lock for the entire duration of the streaming session. This prevents the GPU from idling into a lower power state between frames, ensuring the encoder doesn't stall on the next frame.
+Two switches in the **Permissions** panel, written into both streamers' configs under Sunshine's own keys, so they apply to Sunshine and USBridge Streamer alike. Changing one restarts the running streamer.
 
-Unlike Linux's one-time KMS launcher install, there is no persistent one-time grant for this on Windows. NVML's clock-lock call requires the *calling process itself* to be elevated, which means a fresh UAC prompt is required every time a streaming session actually (re)starts.
+* **NVIDIA: max performance (lower latency)** — `nvenc_latency_over_power`, on by default. The streamer sets an NVIDIA driver profile for its own executable ("Power management mode: Prefer maximum performance"), so the GPU stays at full clocks while streaming. Without it the driver moves a lightly loaded GPU between low clock levels, and the encoder slows down with them (measured on an RTX 3090 at 2560x1600: host latency drifting between ~4 and ~10 ms, instead of a steady ~4.5). No admin rights or UAC prompt needed.
+* **NVENC two-pass (better picture, more GPU load)** — `nvenc_twopass = quarter_res | disabled`, on by default (Sunshine's default too). The quarter-resolution first pass improves quality at low bitrates, at the cost of ~20% GPU 3D load and ~0.5 ms of encode time. Turn it off to keep the GPU free for other work.
 
-Checking the box arms the lock immediately (if a session is already running) and re-arms it automatically for all future sessions. There's no separate "Request" button because the checkbox itself triggers the UAC request. Unchecking it only stops *future* sessions from spawning the helper; it won't kill an already-running helper to avoid dropping clocks mid-session (the helper exits on its own once the streaming process it's watching exits).
+This replaces the older **Lock GPU Clocks** checkbox (an elevated NVML clock-lock helper with a UAC prompt on every agent run). A lock that was enabled before still applies only while "max performance" is turned off.
 
 ## 📚 Documentation
 
