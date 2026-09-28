@@ -116,6 +116,29 @@ func (s *Service) ListenPort() int {
 	return s.urbPort
 }
 
+// killOrphanBrokers kills brokers this Service holds no handle to -- left by
+// an agent that was force-killed (Windows doesn't take children down with
+// the parent). Only called from Start() when s.cmd is nil. Confirmed live:
+// each agent restart leaked one broker; the orphan kept 127.0.0.1:18090 and
+// the URB port, so the next broker moved to the next URB port, failed its
+// control bind, and Status() was really talking to the orphan -- four
+// brokers on 8091..8094 after three restarts. Mirrors streamhost's
+// killOrphanStreamerProcesses. Waits briefly for the control port to be
+// released so pickURBPort doesn't see the orphan's ports as still taken.
+func (s *Service) killOrphanBrokers() {
+	if !killBrokersByName(brokerName()) {
+		return
+	}
+	log.Printf("[usbpass] killed orphaned %s before starting fresh", brokerName())
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		ln, err := net.Listen("tcp4", s.controlAddr)
+		if err == nil {
+			ln.Close()
+			return
+		}
+	}
+}
+
 // pickURBPort returns the configured URB port if it can be bound right now,
 // otherwise the first free one of the next urbPortFallbacks ports. Confirmed
 // live: Wondershare NativePush (WsToastNotification.exe, installed with
@@ -182,6 +205,7 @@ func (s *Service) Start() error {
 	if exe == "" {
 		return fmt.Errorf("usbridge-usb-broker not staged (closed rust-shine binary)")
 	}
+	s.killOrphanBrokers()
 	port := s.pickURBPort()
 	s.urbPort = port
 	args := []string{
