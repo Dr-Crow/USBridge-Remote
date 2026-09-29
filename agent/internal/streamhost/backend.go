@@ -163,6 +163,11 @@ type CaptureDevice struct {
 	// physical monitor to each backend's own OutputName (Sunshine's
 	// device_id GUID, rustshine's DXGI index).
 	GDIName string
+	// Adapter and VendorID are the GPU driving the monitor ("NVIDIA GeForce
+	// RTX 3090", 0x10DE), where the backend reports them (rustshine on
+	// Windows); empty/0 elsewhere.
+	Adapter  string
+	VendorID uint32
 }
 
 // CaptureDeviceLister is the platform-specific device/monitor-correlation

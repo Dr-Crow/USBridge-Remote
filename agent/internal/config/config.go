@@ -73,7 +73,12 @@ type Config struct {
 	// GPU at full clocks while streaming; without it NVENC slows down
 	// whenever the driver lowers the clocks. No admin rights needed,
 	// unlike LockGPUClocksEnabled.
+	//
+	// Superseded by NvidiaPowerMode; read only when that is unset.
 	NvidiaMaxPerformance *bool `yaml:"nvidia_max_performance,omitempty"`
+	// NvidiaPowerMode: the NVIDIA driver profile's power management mode
+	// for the streamer, one of NvidiaPowerModes ("" = the default, "max").
+	NvidiaPowerMode string `yaml:"nvidia_power_mode,omitempty"`
 
 	// Hardware-bound RustShine entitlement (see agent/internal/entitlement,
 	// agent/internal/hwid). Same trust level as MasterKey above: plain
@@ -198,8 +203,37 @@ func (c Config) StreamerAutoUpdateEnabled() bool {
 // NvencTwoPassOK and NvidiaMaxPerformanceOK are true unless turned off.
 func (c Config) NvencTwoPassOK() bool { return c.NvencTwoPass == nil || *c.NvencTwoPass }
 
-func (c Config) NvidiaMaxPerformanceOK() bool {
-	return c.NvidiaMaxPerformance == nil || *c.NvidiaMaxPerformance
+func (c Config) NvidiaMaxPerformanceOK() bool { return c.NvidiaPowerModeValue() == "max" }
+
+// GPUInfo is one of the host's GPUs as the agent's encoder settings show
+// it: its name, vendor ("nvidia", "amd", "intel", or ""), the monitors it
+// drives (GDI names), and whether the running streamer captures one of
+// them.
+type GPUInfo struct {
+	Name      string   `json:"name"`
+	Vendor    string   `json:"vendor"`
+	Monitors  []string `json:"monitors"`
+	Streaming bool     `json:"streaming"`
+}
+
+// NvidiaPowerModes are the NVIDIA Control Panel's power management modes
+// as the streamers' nvidia_power_mode takes them: "max" (prefer maximum
+// performance), "consistent", "adaptive", "optimal" (optimal power), and
+// "driver" (no override: the driver's global setting applies).
+var NvidiaPowerModes = []string{"max", "consistent", "adaptive", "optimal", "driver"}
+
+// NvidiaPowerModeValue is NvidiaPowerMode, defaulting to "max" -- or to
+// "driver" when the older NvidiaMaxPerformance switch was turned off.
+func (c Config) NvidiaPowerModeValue() string {
+	for _, m := range NvidiaPowerModes {
+		if c.NvidiaPowerMode == m {
+			return m
+		}
+	}
+	if c.NvidiaMaxPerformance != nil && !*c.NvidiaMaxPerformance {
+		return "driver"
+	}
+	return "max"
 }
 
 // TLSEnabledOK is true unless the user turned the "Enable HTTPS" checkbox

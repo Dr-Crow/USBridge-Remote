@@ -89,10 +89,13 @@ func (b *rustshineBackend) ListCaptureDevices() []CaptureDevice {
 		}
 		width, _ := strconv.Atoi(m[5])
 		height, _ := strconv.Atoi(m[6])
+		vendor, _ := strconv.ParseUint(strings.TrimPrefix(strings.ToLower(m[4]), "0x"), 16, 32)
 		devices = append(devices, CaptureDevice{
 			OutputName:  m[1], // monitor_index expects the numeric index, stringified
 			DisplayName: strings.TrimSpace(m[2]),
 			GDIName:     rustshineGDIName(m[2]),
+			Adapter:     rustshineAdapterName(m[2], m[3]),
+			VendorID:    uint32(vendor),
 			Width:       width,
 			Height:      height,
 		})
@@ -113,4 +116,15 @@ func rustshineGDIName(field string) string {
 		return ""
 	}
 	return f[0]
+}
+
+// rustshineAdapterName rebuilds the adapter_name column from the regex's
+// device_name and adapter_name captures: all but the adapter's last word
+// land in device_name after the GDI name (see rustshineGDIName).
+func rustshineAdapterName(deviceField, lastWord string) string {
+	f := strings.Fields(deviceField)
+	if len(f) > 0 && strings.HasPrefix(f[0], `\\.\`) {
+		f = f[1:]
+	}
+	return strings.Join(append(f, lastWord), " ")
 }

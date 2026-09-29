@@ -204,14 +204,20 @@ func (c *Client) SetNvencTwoPass(enabled bool) error {
 	return c.do(http.MethodPost, "/token/nvenc-two-pass", boolBody{Value: enabled}, nil)
 }
 
-func (c *Client) NvidiaMaxPerformanceEnabled() bool {
-	body := boolBody{Value: true}
-	_ = c.do(http.MethodGet, "/token/nvidia-max-performance", nil, &body)
+func (c *Client) GPUs() []config.GPUInfo {
+	var gpus []config.GPUInfo
+	_ = c.do(http.MethodGet, "/token/gpus", nil, &gpus)
+	return gpus
+}
+
+func (c *Client) NvidiaPowerMode() string {
+	body := stringBody{Value: "max"}
+	_ = c.do(http.MethodGet, "/token/nvidia-power-mode", nil, &body)
 	return body.Value
 }
 
-func (c *Client) SetNvidiaMaxPerformance(enabled bool) error {
-	return c.do(http.MethodPost, "/token/nvidia-max-performance", boolBody{Value: enabled}, nil)
+func (c *Client) SetNvidiaPowerMode(mode string) error {
+	return c.do(http.MethodPost, "/token/nvidia-power-mode", stringBody{Value: mode}, nil)
 }
 
 func (c *Client) StreamerAutoUpdateEnabled() bool {

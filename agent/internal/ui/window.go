@@ -54,8 +54,9 @@ type TokenProvider interface {
 	SetLockGPUClocksEnabled(enabled bool) error
 	NvencTwoPassEnabled() bool
 	SetNvencTwoPass(enabled bool) error
-	NvidiaMaxPerformanceEnabled() bool
-	SetNvidiaMaxPerformance(enabled bool) error
+	NvidiaPowerMode() string
+	SetNvidiaPowerMode(mode string) error
+	GPUs() []config.GPUInfo
 	StreamerAutoUpdateEnabled() bool
 	SetStreamerAutoUpdate(enabled bool) error
 	SnoozeStreamerUpdate(version string) error
@@ -312,7 +313,8 @@ type Window struct {
 	statusPanel   *themedPanel
 	protocolPanel *themedPanel
 	autostartLang *autostartRow
-	nvidiaMaxPerfLang *permToggleRow
+	nvidiaPowerLabel  *canvas.Text
+	gpuSettingsBox    *fyne.Container
 	nvencTwoPassLang  *permToggleRow
 	mlClientsLang *canvas.Text
 	usbDriverLang *canvas.Text
@@ -1070,10 +1072,15 @@ func (w *Window) ShowAndRun(onClose func()) {
 	}
 	var nvidiaRows []fyne.CanvasObject
 	if gpuClockSupported {
-		maxPerfRow := newPermToggleRow(loc().NvidiaMaxPerformance, nvidiaToggle(w.token.NvidiaMaxPerformanceEnabled(), w.token.SetNvidiaMaxPerformance))
+		powerRow := w.newNvidiaPowerModeRow(win)
 		twoPassRow := newPermToggleRow(loc().NvencTwoPass, nvidiaToggle(w.token.NvencTwoPassEnabled(), w.token.SetNvencTwoPass))
-		w.nvidiaMaxPerfLang, w.nvencTwoPassLang = maxPerfRow, twoPassRow
-		nvidiaRows = []fyne.CanvasObject{maxPerfRow, twoPassRow}
+		w.nvencTwoPassLang = twoPassRow
+		// One block per GPU (filled in once the list arrives, see
+		// refreshGPUSettings), so it's clear which card these apply to:
+		// the NVIDIA settings only ever affect NVIDIA cards.
+		w.gpuSettingsBox = container.New(&tightVBoxLayout{gap: 6}, gpuSettingsObjects(nil, powerRow, twoPassRow)...)
+		nvidiaRows = []fyne.CanvasObject{w.gpuSettingsBox}
+		go w.refreshGPUSettings(powerRow, twoPassRow)
 	}
 
 	// Clipboard sync (Linux only): internal/clipboard's Linux backend shells
@@ -1896,8 +1903,9 @@ func (w *Window) applyLanguage() {
 	w.refreshPermRequestLabels()
 	w.refreshAutostartChrome()
 
-	if w.nvidiaMaxPerfLang != nil {
-		w.nvidiaMaxPerfLang.SetLabel(c.NvidiaMaxPerformance)
+	if w.nvidiaPowerLabel != nil {
+		w.nvidiaPowerLabel.Text = c.NvPowerMode
+		w.nvidiaPowerLabel.Refresh()
 		w.nvencTwoPassLang.SetLabel(c.NvencTwoPass)
 	}
 	if w.rustshineWebRTCRow != nil {
@@ -4956,3 +4964,126 @@ func (r *autostartRow) Tapped(*fyne.PointEvent) {
 }
 
 func (r *autostartRow) TappedSecondary(*fyne.PointEvent) {}
+
+// nvidiaPowerModeLabels names config.NvidiaPowerModes as the NVIDIA
+// Control Panel's "Power management mode" does, in the current language.
+func nvidiaPowerModeLabels() map[string]string {
+	c := loc()
+	return map[string]string{
+		"max":        c.NvPowerMax,
+		"consistent": c.NvPowerConsistent,
+		"adaptive":   c.NvPowerAdaptive,
+		"optimal":    c.NvPowerOptimal,
+		"driver":     c.NvPowerDriver,
+	}
+}
+
+// newNvidiaPowerModeRow is the Permissions panel's NVIDIA power management
+// mode pick (see app.SetNvidiaPowerMode); a change restarts the running
+// streamer, so it's applied off the UI thread and rolled back on error.
+func (w *Window) newNvidiaPowerModeRow(win fyne.Window) fyne.CanvasObject {
+	labels := nvidiaPowerModeLabels()
+	var options []string
+	for _, m := range config.NvidiaPowerModes {
+		options = append(options, labels[m])
+	}
+	modeOf := func(label string) string {
+		for m, l := range labels {
+			if l == label {
+				return m
+			}
+		}
+		return ""
+	}
+	current := w.token.NvidiaPowerMode()
+	var dd *dialogDropdown
+	dd = newDialogDropdown(options, labels[current], func(selected string) {
+		mode := modeOf(selected)
+		if mode == "" || mode == current {
+			return
+		}
+		prev := current
+		current = mode
+		go func() {
+			err := w.token.SetNvidiaPowerMode(mode)
+			fyne.Do(func() {
+				if err != nil {
+					logrus.Errorf("[ui] NVIDIA power mode change failed: %v", err)
+					current = prev
+					dd.SetSelected(labels[prev])
+					showErrorDialog(err, win)
+				}
+			})
+		}()
+	})
+	w.nvidiaPowerLabel = canvas.NewText(loc().NvPowerMode, design.ColorSectionTitle)
+	w.nvidiaPowerLabel.TextSize = 11
+	return container.New(&flushEndsLayout{}, w.nvidiaPowerLabel, dd)
+}
+
+// refreshGPUSettings fetches the host's GPUs (slow: the agent asks the
+// streamer binary) and lays the GPU settings block out per card.
+func (w *Window) refreshGPUSettings(nvidiaRows ...fyne.CanvasObject) {
+	gpus := w.token.GPUs()
+	fyne.Do(func() {
+		if w.gpuSettingsBox == nil {
+			return
+		}
+		w.gpuSettingsBox.Objects = gpuSettingsObjects(gpus, nvidiaRows...)
+		w.gpuSettingsBox.Refresh()
+	})
+}
+
+// gpuSettingsObjects is the GPU settings block: a heading per GPU (name,
+// its monitors, whether the stream captures one of them), the NVIDIA
+// settings under the NVIDIA card(s) -- they apply to every NVIDIA GPU, so
+// several NVIDIA cards share one heading -- and a note under the others.
+// Without a GPU list it's the NVIDIA settings under a plain heading.
+func gpuSettingsObjects(gpus []config.GPUInfo, nvidiaRows ...fyne.CanvasObject) []fyne.CanvasObject {
+	heading := func(s string) fyne.CanvasObject {
+		t := canvas.NewText(s, design.ColorTeal)
+		t.TextSize = 10
+		t.TextStyle.Bold = true
+		return t
+	}
+	note := func(s string) fyne.CanvasObject {
+		t := canvas.NewText(s, design.ColorEmptyHint)
+		t.TextSize = 9
+		return t
+	}
+	describe := func(g config.GPUInfo) string {
+		s := g.Name
+		if len(g.Monitors) > 0 {
+			s += " · " + strings.Join(g.Monitors, ", ")
+		}
+		if g.Streaming {
+			s += " · " + loc().GPUStreaming
+		}
+		return s
+	}
+	var nvidia []string
+	var out []fyne.CanvasObject
+	for _, g := range gpus {
+		if g.Vendor == "nvidia" {
+			nvidia = append(nvidia, describe(g))
+		}
+	}
+	if len(nvidia) == 0 && len(gpus) == 0 {
+		out = append(out, heading("NVIDIA"))
+		out = append(out, nvidiaRows...)
+		return out
+	}
+	for _, n := range nvidia {
+		out = append(out, heading(n))
+	}
+	if len(nvidia) > 0 {
+		out = append(out, nvidiaRows...)
+	}
+	for _, g := range gpus {
+		if g.Vendor == "nvidia" {
+			continue
+		}
+		out = append(out, heading(describe(g)), note(loc().GPUNoEncoderSettings))
+	}
+	return out
+}

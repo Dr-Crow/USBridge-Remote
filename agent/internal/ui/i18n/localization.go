@@ -39,6 +39,14 @@ type LocalizedStrings struct {
 	AutostartRebootHint  string
 	LockGPUClocks        string
 	NvidiaMaxPerformance string
+	NvPowerMode          string
+	NvPowerMax           string
+	NvPowerConsistent    string
+	NvPowerAdaptive      string
+	NvPowerOptimal       string
+	NvPowerDriver        string
+	GPUStreaming         string
+	GPUNoEncoderSettings string
 	NvencTwoPass         string
 	ClipboardTool        string
 	Install              string
@@ -323,6 +331,14 @@ func EN() *LocalizedStrings {
 		AutostartRebootHint:  "(Windows restart required)",
 		LockGPUClocks:        "Lock GPU Clocks",
 		NvidiaMaxPerformance: "NVIDIA: max performance (lower latency)",
+		NvPowerMode:          "NVIDIA power mode",
+		NvPowerMax:           "Max performance",
+		NvPowerConsistent:    "Consistent performance",
+		NvPowerAdaptive:      "Adaptive",
+		NvPowerOptimal:       "Optimal power",
+		NvPowerDriver:        "Driver setting",
+		GPUStreaming:         "streaming",
+		GPUNoEncoderSettings: "No encoder settings here: the NVIDIA ones above don't apply to this card",
 		NvencTwoPass:         "NVENC two-pass (better picture, more GPU load)",
 		ClipboardTool:        "Clipboard Tool",
 		Install:              "Install",
@@ -555,6 +571,14 @@ func ES() *LocalizedStrings {
 	locale.AutostartRebootHint = "(se requiere reinicio de Windows)"
 	locale.LockGPUClocks = "Bloquear relojes GPU"
 	locale.NvidiaMaxPerformance = "NVIDIA: máximo rendimiento (menos latencia)"
+	locale.NvPowerMode = "Modo de energía NVIDIA"
+	locale.NvPowerMax = "Máximo rendimiento"
+	locale.NvPowerConsistent = "Rendimiento constante"
+	locale.NvPowerAdaptive = "Adaptativo"
+	locale.NvPowerOptimal = "Energía óptima"
+	locale.NvPowerDriver = "Según el controlador"
+	locale.GPUStreaming = "en transmisión"
+	locale.GPUNoEncoderSettings = "Sin ajustes de codificador: los de NVIDIA no se aplican a esta tarjeta"
 	locale.NvencTwoPass = "NVENC dos pasadas (mejor imagen, más carga de GPU)"
 	locale.ClipboardTool = "Portapapeles"
 	locale.Install = "Instalar"
@@ -776,6 +800,14 @@ func UK() *LocalizedStrings {
 	locale.AutostartRebootHint = "(потрібен перезапуск Windows)"
 	locale.LockGPUClocks = "Фіксувати частоти GPU"
 	locale.NvidiaMaxPerformance = "NVIDIA: максимальна продуктивність (менша затримка)"
+	locale.NvPowerMode = "Режим живлення NVIDIA"
+	locale.NvPowerMax = "Максимальна продуктивність"
+	locale.NvPowerConsistent = "Стабільна продуктивність"
+	locale.NvPowerAdaptive = "Адаптивний"
+	locale.NvPowerOptimal = "Оптимальне енергоспоживання"
+	locale.NvPowerDriver = "Як у драйвері"
+	locale.GPUStreaming = "стрім"
+	locale.GPUNoEncoderSettings = "Налаштувань енкодера немає: налаштування NVIDIA на цю карту не впливають"
 	locale.NvencTwoPass = "NVENC два проходи (краща картинка, більше навантаження на GPU)"
 	locale.ClipboardTool = "Буфер обміну"
 	locale.Install = "Встановити"

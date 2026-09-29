@@ -106,14 +106,14 @@ rm -f ~/.config/autostart/usbridge-agent-tray.desktop
 **Windows specifics:**
 The `USBridgeAgent` service always runs as `LocalSystem` — deliberately, so it can capture and inject input straight through the lock/sign-in screen, not just an unlocked desktop (see [Platform Notes](docs/README.md#platform-notes-from-the-top-level-readme) for why). A `LocalSystem` service can't show UI in your desktop session on its own, so instead of a separate autostart entry, the service re-homes a small tray-only copy of itself into your active session directly (the same session-broker mechanism the streaming backend already uses to reach your desktop) whenever you log on or the service (re)starts while you're already logged in.
 
-## 🎮 NVIDIA encoder settings (Windows)
+## 🎮 GPU encoder settings (Windows)
 
-Two switches in the **Permissions** panel, written into both streamers' configs under Sunshine's own keys, so they apply to Sunshine and USBridge Streamer alike. Changing one restarts the running streamer.
+The **Permissions** panel lists the host's GPUs, each with the monitors it drives and a *streaming* mark on the one the running streamer captures, so it's clear which card a setting affects. The NVIDIA settings sit under the NVIDIA card(s) and apply to every NVIDIA GPU; an AMD or Intel card is listed with a note that they don't apply to it (AMF/QSV have their own pipeline). Both settings are written into both streamers' configs; a change restarts the running streamer.
 
-* **NVIDIA: max performance (lower latency)** — `nvenc_latency_over_power`, on by default. The streamer sets an NVIDIA driver profile for its own executable ("Power management mode: Prefer maximum performance"), so the GPU stays at full clocks while streaming. Without it the driver moves a lightly loaded GPU between low clock levels, and the encoder slows down with them (measured on an RTX 3090 at 2560x1600: host latency drifting between ~4 and ~10 ms, instead of a steady ~4.5). No admin rights or UAC prompt needed.
-* **NVENC two-pass (better picture, more GPU load)** — `nvenc_twopass = quarter_res | disabled`, on by default (Sunshine's default too). The quarter-resolution first pass improves quality at low bitrates, at the cost of ~20% GPU 3D load and ~0.5 ms of encode time. Turn it off to keep the GPU free for other work.
+* **NVIDIA power mode** — the NVIDIA Control Panel's power management modes for the streamer's own driver profile: *Max performance* (default, what Sunshine uses), *Consistent performance*, *Adaptive*, *Optimal power*, or *Driver setting* (no override). With max performance the GPU stays at full clocks while streaming; otherwise the driver moves a lightly loaded GPU between low clock levels and the encoder slows down with them (RTX 3090, 2560x1600: host latency drifting between ~4 and ~10 ms instead of a steady ~4.5). No admin rights or UAC prompt. Keys: `nvidia_power_mode` (USBridge Streamer); Sunshine only has `nvenc_latency_over_power`, set to `enabled` for max performance.
+* **NVENC two-pass (better picture, more GPU load)** — `nvenc_twopass = quarter_res | disabled`, on by default (Sunshine's default too). The quarter-resolution first pass improves quality at low bitrates, at the cost of ~20-30% GPU 3D load and ~0.5 ms of encode time; with it off the streamer's own 3D load is under 1%. What's left on the 3D engine in Task Manager is then the desktop compositor (`dwm`) and whatever is on screen.
 
-This replaces the older **Lock GPU Clocks** checkbox (an elevated NVML clock-lock helper with a UAC prompt on every agent run). A lock that was enabled before still applies only while "max performance" is turned off.
+This replaces the older **Lock GPU Clocks** checkbox (an elevated NVML clock-lock helper with a UAC prompt on every agent run). A lock that was enabled before only still applies while the power mode isn't max performance.
 
 ## 📚 Documentation
 

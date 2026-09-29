@@ -24,3 +24,19 @@ func TestRustshineDeviceRowsYieldTheGDIName(t *testing.T) {
 		t.Errorf("GDI name of a blank field = %q, want empty", got)
 	}
 }
+
+func TestRustshineDeviceRowsYieldTheAdapter(t *testing.T) {
+	rows := map[string]string{
+		`0      \\.\DISPLAY1       AMD Radeon 780M Graphics     0x1002   2560x1600`: "AMD Radeon 780M Graphics",
+		`1      \\.\DISPLAY6       NVIDIA GeForce RTX 3090      0x10DE   2560x1600`: "NVIDIA GeForce RTX 3090",
+	}
+	for row, want := range rows {
+		m := rustshineDeviceLineRe.FindStringSubmatch(row)
+		if m == nil {
+			t.Fatalf("row not matched: %q", row)
+		}
+		if got := rustshineAdapterName(m[2], m[3]); got != want {
+			t.Errorf("adapter of %q = %q, want %q", row, got, want)
+		}
+	}
+}

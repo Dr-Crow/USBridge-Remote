@@ -37,8 +37,9 @@ type TokenBackend interface {
 	SetLockGPUClocksEnabled(enabled bool) error
 	NvencTwoPassEnabled() bool
 	SetNvencTwoPass(enabled bool) error
-	NvidiaMaxPerformanceEnabled() bool
-	SetNvidiaMaxPerformance(enabled bool) error
+	NvidiaPowerMode() string
+	SetNvidiaPowerMode(mode string) error
+	GPUs() []config.GPUInfo
 	StreamerAutoUpdateEnabled() bool
 	SetStreamerAutoUpdate(enabled bool) error
 	SnoozeStreamerUpdate(version string) error
@@ -213,8 +214,24 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /token/gpu-clock-lock-enabled", s.handleSetGPUClockLockEnabled)
 	mux.HandleFunc("GET /token/nvenc-two-pass", s.boolGetter(func() bool { return s.token.NvencTwoPassEnabled() }))
 	mux.HandleFunc("POST /token/nvenc-two-pass", s.boolSetter(func(v bool) error { return s.token.SetNvencTwoPass(v) }))
-	mux.HandleFunc("GET /token/nvidia-max-performance", s.boolGetter(func() bool { return s.token.NvidiaMaxPerformanceEnabled() }))
-	mux.HandleFunc("POST /token/nvidia-max-performance", s.boolSetter(func(v bool) error { return s.token.SetNvidiaMaxPerformance(v) }))
+	mux.HandleFunc("GET /token/gpus", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, s.token.GPUs())
+	})
+	mux.HandleFunc("GET /token/nvidia-power-mode", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, stringBody{Value: s.token.NvidiaPowerMode()})
+	})
+	mux.HandleFunc("POST /token/nvidia-power-mode", func(w http.ResponseWriter, r *http.Request) {
+		var body stringBody
+		if err := readJSON(r, &body); err != nil {
+			writeError(w, err)
+			return
+		}
+		if err := s.token.SetNvidiaPowerMode(body.Value); err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	})
 	mux.HandleFunc("GET /token/streamer-auto-update", s.handleStreamerAutoUpdate)
 	mux.HandleFunc("POST /token/streamer-auto-update", s.handleSetStreamerAutoUpdate)
 	mux.HandleFunc("POST /token/snooze-streamer-update", s.handleSnoozeStreamerUpdate)
