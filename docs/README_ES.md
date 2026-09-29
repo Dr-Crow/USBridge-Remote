@@ -19,7 +19,7 @@
 
 ---
 
-**USBridge Remote** es un cliente unificado de alto rendimiento para gestionar máquinas remotas. Diseñado para combinar **acceso BIOS a nivel de hardware** (a través de dispositivos USBridge KVM) y **escritorio remoto basado en software** en una sola interfaz simplificada.
+**USBridge Remote** es un cliente unificado de alto rendimiento para gestionar máquinas remotas. Diseñado para combinar **acceso a BIOS a nivel de hardware** (a través de dispositivos USBridge KVM) y **escritorio remoto basado en software** en una única interfaz simplificada.
 
 <div align="center">
   <img src="./assets/Functions.svg" width="1400" alt="USBridge Remote">
@@ -29,7 +29,7 @@
 ## Descargar
 
 ### Cliente
-El Cliente es la interfaz de control — instalada en tu estación de trabajo o laptop (o ejecutada directamente en tu navegador). Gestiona conexiones, escritorio remoto en vivo, paso de dispositivos virtuales y registro de instantáneas.
+El Cliente es la interfaz de control — instalada en tu estación de trabajo o laptop (o ejecutada directamente en tu navegador). Gestiona conexiones, escritorio remoto en vivo, paso a través de dispositivos virtuales y registro de instantáneas.
 
 | Arquitectura | Windows | macOS | Linux | Android | iOS | Navegador Web |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -38,7 +38,7 @@ El Cliente es la interfaz de control — instalada en tu estación de trabajo o 
 
 ¿Prefieres un APK directo sin una cuenta de Play Store? También se publica una versión autactualizable en la [última versión](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
 
-🌐 **Cliente Web Sin Instalación**: No se requiere instalación. Simplemente abre [web.usbridge.io](https://web.usbridge.io) para conectarte al instante. *(Nota: El cliente web opera con algunas limitaciones de características y rendimiento debido a la seguridad del navegador y las restricciones de WebRTC. Para una experiencia completa y sin compromisos, utiliza las aplicaciones nativas).* En un Agente recién iniciado, puede tardar hasta un minuto en ser accesible la primera vez (o después de un cambio de red) mientras provisiona un certificado HTTPS de confianza para sí mismo — consulta la fila **Estado → Certificado** del Agente, o la [documentación del Agente](agent/docs/README.md#platform-notes-from-the-top-level-readme) para más detalles.
+🌐 **Cliente Web Sin Instalación**: No se requiere instalación. Simplemente abre [web.usbridge.io](https://web.usbridge.io) para conectarte al instante. *(Nota: El cliente web opera con algunas limitaciones de características y rendimiento debido a la seguridad del navegador y las restricciones de WebRTC. Para una experiencia completa sin compromisos, utiliza las aplicaciones nativas).* En un Agente recién iniciado, puede tardar hasta un minuto en ser accesible la primera vez (o después de un cambio de red) mientras provisiona un certificado HTTPS de confianza para sí mismo — consulta la fila **Estado → Certificado** del Agente, o la [documentación del Agente](agent/docs/README.md#platform-notes-from-the-top-level-readme) para más detalles.
 
 ## Agente
 
@@ -84,10 +84,9 @@ El Agente se ejecuta en la máquina objetivo — el servidor o PC al que deseas 
       <code>FUNCIONALIDAD BÁSICA</code><br><br>
       <b>SUNSHINE CÓDIGO ABIERTO</b><br>
       <i>Transmisión de Juegos Estándar</i><br><br>
-      ✓ Transmisor Sunshine de código abierto integrado<br>
+      ✓ Transmisor Sunshine de código abierto incorporado<br>
       ✓ Acceso a escritorio y juegos de baja latencia<br>
-      ✓ Portapapeles de archivos y texto bidireccional<br>
-      ✓ Soporte para gamepads<br>      
+      ✓ Portapapeles de archivos y texto bidireccional<br>    
       ✓ Cambio de pantalla de múltiples monitores<br>
       ✓ Redes P2P Tailscale integradas<br>
       ✓ Soporte nativo para Wayland (captura sin aviso)
@@ -95,11 +94,12 @@ El Agente se ejecuta en la máquina objetivo — el servidor o PC al que deseas 
     <td width="33%" valign="top">
       <code>+ CARACTERÍSTICAS BÁSICAS</code><br><br>
       <b>USBRIDGE GRATIS</b><br>
-      <i>Motor Remoto Personalizado</i><br><br>
+      <i>Motor de Transmisión basado en Rust</i><br><br>
       ✓ Protocolo remoto personalizado de conexión instantánea<br>
       ✓ Transmisión adaptativa optimizada para estabilidad Wi-Fi<br>
-      ✓ Gestión de pantallas virtuales sin cabeza<br>
-      ✓ Paso de controladores de gamepad de baja latencia<br>
+      ✓ Soporte para gamepads<br>  
+      ✓ Gestión de pantalla virtual sin cabeza<br>
+      ✓ Paso a través de controladores de gamepad de baja latencia<br>
       ✓ Acceso al cliente del navegador web (sin instalación requerida)<br>
       ✓ Acceso pre-login en Windows (entrada de credenciales segura)
     </td>
@@ -107,20 +107,20 @@ El Agente se ejecuta en la máquina objetivo — el servidor o PC al que deseas 
       <code>+ CARACTERÍSTICAS BÁSICAS</code> <code>+ CARACTERÍSTICAS GRATUITAS</code><br><br>
       <b>USBRIDGE PRO</b><br>
       <i>Flujos de Trabajo Profesionales</i><br><br>
-      ✓ Precisión de color cromático 4:4:4 sin pérdida<br>
-      ✓ Paso de dispositivos periféricos USB en crudo<br>
-      ✓ Soporte para tabletas gráficas con presión y inclinación<br><br>
+      ✓ Precisión de color croma 4:4:4 sin pérdida<br>
+      ✓ Paso a través de dispositivos periféricos USB en bruto<br>
+      ✓ Soporte para tabletas Wacom con presión y inclinación<br><br>
     </td>
   </tr>
 </table>
 
 ## Inicio Rápido
 
-1. **Instala el Agente** en la máquina a la que deseas acceder de forma remota. Inícialo — mostrará un token de conexión y una dirección Tailscale. Conecta Tailscale si necesitas acceso a través de Internet.
+1. **Instala el Agente** en la máquina a la que deseas acceder de forma remota. Inícialo — mostrará un token de conexión y una dirección Tailscale. Conéctate a Tailscale si necesitas acceso a través de Internet.
 
 2. **Instala el Cliente** en tu estación de trabajo, laptop o teléfono.
 
-3. **Agrega una conexión** — ingresa la dirección IP o Tailscale que se muestra en la ventana del Agente. Eso es todo.
+3. **Agrega una conexión** — ingresa la dirección IP o Tailscale mostrada en la ventana del Agente. Eso es todo.
 
 <div align="center">
   <img src="./assets/QuickStart.svg" width="1400" alt="USBridge Remote">
@@ -131,8 +131,8 @@ El Agente se ejecuta en la máquina objetivo — el servidor o PC al que deseas 
 <table>
   <tr>
    <td width="50%" valign="top">
-      <b>Control BIOS a Nivel de Hardware</b><br>
-      USBridge Remote se integra de forma nativa con el dispositivo USBridge-KVM 2.0 para gestión fuera de banda y a nivel de hardware antes del arranque del sistema operativo.<br><br>
+      <b>Control de BIOS a Nivel de Hardware</b><br>
+      USBridge Remote se integra de manera nativa con el dispositivo USBridge-KVM 2.0 para gestión fuera de banda, a nivel de hardware, antes del arranque del sistema operativo.<br><br>
       <a href="https://www.usbridge.io/hardware-agent#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Comprar USBridge-KVM 2.0"></a>
     </td>
     <td width="50%" valign="top">

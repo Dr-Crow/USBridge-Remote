@@ -29,16 +29,16 @@
 ## Télécharger
 
 ### Client
-Le Client est l'interface de contrôle — installé sur votre station de travail ou votre ordinateur portable (ou exécuté directement dans votre navigateur). Il gère les connexions, le bureau à distance en direct, le passage de périphériques virtuels et l'enregistrement des instantanés.
+Le Client est l'interface de contrôle — installé sur votre station de travail ou votre ordinateur portable (ou exécuté directement dans votre navigateur). Il gère les connexions, le bureau à distance en direct, le passage à travers des dispositifs virtuels et le registre des instantanés.
 
 | Architecture | Windows | macOS | Linux | Android | iOS | Navigateur Web |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **x86_64** | [Télécharger](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Windows-x86_64.zip) | — | [Télécharger](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Linux-x86_64.AppImage) | — | — | [Ouvrir l'application](https://web.usbridge.io) |
-| **ARM64** | — | [Télécharger](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-macOS-arm64.dmg) | — | [Google Play](https://play.google.com/store/apps/details?id=io.usbridge.client) | [App Store](https://apps.apple.com/us/app/usbridge-client/id6787665935) | [Ouvrir l'application](https://web.usbridge.io) |
+| **x86_64** | [Télécharger](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Windows-x86_64.zip) | — | [Télécharger](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Linux-x86_64.AppImage) | — | — | [Ouvrir l'App](https://web.usbridge.io) |
+| **ARM64** | — | [Télécharger](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-macOS-arm64.dmg) | — | [Google Play](https://play.google.com/store/apps/details?id=io.usbridge.client) | [App Store](https://apps.apple.com/us/app/usbridge-client/id6787665935) | [Ouvrir l'App](https://web.usbridge.io) |
 
-Vous préférez un APK direct sans compte Play Store ? Une version auto-mise à jour est également publiée sur la [dernière version](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
+Vous préférez un APK direct sans compte Play Store ? Une version auto-mise à jour est également publiée dans la [dernière version](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
 
-🌐 **Client Web sans installation** : Aucune installation requise. Il suffit d'ouvrir [web.usbridge.io](https://web.usbridge.io) pour se connecter instantanément. *(Remarque : Le client web fonctionne avec certaines limitations de fonctionnalités et de performances en raison des contraintes de sécurité du navigateur et de WebRTC. Pour une expérience complète sans compromis, utilisez les applications natives).* Sur un Agent fraîchement démarré, il peut falloir jusqu'à une minute pour devenir accessible la première fois (ou après un changement de réseau) pendant qu'il provisionne un certificat HTTPS de confiance pour lui-même — voir la ligne **Statut → Certificat** de l'Agent, ou la [documentation de l'Agent](agent/docs/README.md#platform-notes-from-the-top-level-readme) pour plus de détails.
+🌐 **Client Web sans installation** : Aucune installation requise. Ouvrez simplement [web.usbridge.io](https://web.usbridge.io) pour vous connecter instantanément. *(Remarque : Le client web fonctionne avec certaines limitations de fonctionnalités et de performances en raison de la sécurité du navigateur et des contraintes WebRTC. Pour une expérience complète et sans compromis, utilisez les applications natives).* Sur un Agent fraîchement démarré, il peut falloir jusqu'à une minute pour devenir accessible la première fois (ou après un changement de réseau) pendant qu'il provisionne un certificat HTTPS de confiance pour lui-même — consultez la ligne **Statut → Certificat** de l'Agent, ou la [documentation de l'Agent](agent/docs/README.md#platform-notes-from-the-top-level-readme) pour plus de détails.
 
 ## Agent
 
@@ -81,35 +81,35 @@ L'Agent s'exécute sur la machine cible — le serveur ou le PC que vous souhait
 <table>
   <tr>
     <td width="33%" valign="top">
-      <code>Fonctionnalité de base</code><br><br>
+      <code>FONCTIONNALITÉ DE BASE</code><br><br>
       <b>SUNSHINE OPEN-SOURCE</b><br>
       <i>Streaming de jeux standard</i><br><br>
       ✓ Streamer Sunshine open-source intégré<br>
-      ✓ Accès bureau et jeux à faible latence<br>
-      ✓ Presse-papiers de fichiers et de texte bidirectionnels<br>
-      ✓ Support des manettes de jeu<br>      
+      ✓ Accès bureau & jeux à faible latence<br>
+      ✓ Presse-papiers de fichiers & texte bidirectionnels<br>    
       ✓ Commutation d'affichage multi-moniteurs<br>
       ✓ Réseau P2P Tailscale intégré<br>
-      ✓ Support natif de Wayland (capture sans invite)
+      ✓ Support natif Wayland (capture sans invite)
     </td>
     <td width="33%" valign="top">
-      <code>+ Fonctionnalités de base</code><br><br>
+      <code>+ FONCTIONNALITÉS DE BASE</code><br><br>
       <b>USBRIDGE GRATUIT</b><br>
-      <i>Moteur distant personnalisé</i><br><br>
-      ✓ Protocole distant personnalisé de connexion instantanée<br>
+      <i>Moteur de streaming basé sur Rust</i><br><br>
+      ✓ Protocole distant personnalisé à connexion instantanée<br>
       ✓ Streaming adaptatif optimisé pour la stabilité Wi-Fi<br>
+      ✓ Support des manettes de jeu<br>  
       ✓ Gestion d'affichage virtuel sans tête<br>
-      ✓ Passage de contrôleur de jeu à faible latence<br>
+      ✓ Passage à travers de contrôleur de manette à faible latence<br>
       ✓ Accès client navigateur web (aucune installation requise)<br>
       ✓ Accès pré-login Windows (entrée sécurisée des identifiants)
     </td>
     <td width="33%" valign="top">
-      <code>+ Fonctionnalités de base</code> <code>+ Fonctionnalités gratuites</code><br><br>
+      <code>+ FONCTIONNALITÉS DE BASE</code> <code>+ FONCTIONNALITÉS GRATUITES</code><br><br>
       <b>USBRIDGE PRO</b><br>
       <i>Flux de travail professionnels</i><br><br>
       ✓ Précision des couleurs chroma 4:4:4 sans perte<br>
-      ✓ Passage de périphériques USB bruts<br>
-      ✓ Support des tablettes graphiques avec pression et inclinaison<br><br>
+      ✓ Passage à travers de périphériques USB bruts<br>
+      ✓ Support des tablettes Wacom avec pression & inclinaison<br><br>
     </td>
   </tr>
 </table>
@@ -132,13 +132,13 @@ L'Agent s'exécute sur la machine cible — le serveur ou le PC que vous souhait
   <tr>
    <td width="50%" valign="top">
       <b>Contrôle BIOS au niveau matériel</b><br>
-      USBridge Remote s'intègre nativement avec l'appareil USBridge-KVM 2.0 pour la gestion hors bande, bare-metal avant le démarrage de l'OS.<br><br>
-      <a href="https://www.usbridge.io/hardware-agent#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Acheter-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Acheter USBridge-KVM 2.0"></a>
+      USBridge Remote s'intègre nativement avec l'appareil USBridge-KVM 2.0 pour une gestion hors bande, bare-metal avant le démarrage de l'OS.<br><br>
+      <a href="https://www.usbridge.io/hardware-agent#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Acheter USBridge-KVM 2.0"></a>
     </td>
     <td width="50%" valign="top">
       <b>Firmware IP-KVM DIY</b><br>
       Déployez le firmware officiel sur un SBC compatible (par exemple, Radxa Zero 3W/3E, Cubie A7) avec une interface de capture USB pour provisionner un nœud KVM personnalisé.<br><br>
-      <a href="https://www.usbridge.io/hardware-agent"><img src="https://img.shields.io/badge/TÉLÉCHARGER-FIRMWARE_DIY-007ec6?style=for-the-badge" alt="Obtenir le Firmware"></a>
+      <a href="https://www.usbridge.io/hardware-agent"><img src="https://img.shields.io/badge/DOWNLOAD-DIY_FIRMWARE-007ec6?style=for-the-badge" alt="Obtenir le Firmware"></a>
     </td>
   </tr>
 </table>
@@ -162,7 +162,7 @@ L'Agent s'exécute sur la machine cible — le serveur ou le PC que vous souhait
     </td>
     <td width="33%" valign="top">
       <b>Licence (GPLv3)</b><br>
-      Ce projet est sous licence <b>GPLv3</b>. Le client multi-plateforme incorpore une base de code de <code>moonlight-common-c</code> (également GPLv3).<br><br>
+      Ce projet est sous licence <b>GPLv3</b>. Le client multiplateforme incorpore le code de <code>moonlight-common-c</code> (également GPLv3).<br><br>
       <a href="LICENSE">Voir le fichier de licence</a>
     </td>
   </tr>

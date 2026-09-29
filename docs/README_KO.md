@@ -19,7 +19,7 @@
 
 ---
 
-**USBridge Remote**는 원격 머신 관리를 위한 통합 고성능 클라이언트입니다. **하드웨어 수준의 BIOS 접근**(USBridge KVM 장치를 통해)과 **소프트웨어 기반 원격 데스크탑**을 단일화된 간소화된 인터페이스로 결합하도록 설계되었습니다.
+**USBridge Remote**는 원격 머신을 관리하기 위한 통합 고성능 클라이언트입니다. **하드웨어 수준의 BIOS 접근**(USBridge KVM 장치를 통해)과 **소프트웨어 기반 원격 데스크탑**을 단일화된 인터페이스로 결합하도록 설계되었습니다.
 
 <div align="center">
   <img src="./assets/Functions.svg" width="1400" alt="USBridge Remote">
@@ -29,16 +29,16 @@
 ## 다운로드
 
 ### 클라이언트
-클라이언트는 제어 인터페이스로, 워크스테이션이나 노트북에 설치되거나 브라우저에서 직접 실행됩니다. 연결, 실시간 원격 데스크탑, 가상 장치 패스스루 및 스냅샷 레지스트리를 관리합니다.
+클라이언트는 제어 인터페이스로, 워크스테이션이나 노트북에 설치되거나 브라우저에서 직접 실행됩니다. 연결 관리, 실시간 원격 데스크탑, 가상 장치 패스스루 및 스냅샷 레지스트리를 관리합니다.
 
 | 아키텍처 | Windows | macOS | Linux | Android | iOS | 웹 브라우저 |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **x86_64** | [다운로드](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Windows-x86_64.zip) | — | [다운로드](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Linux-x86_64.AppImage) | — | — | [앱 열기](https://web.usbridge.io) |
 | **ARM64** | — | [다운로드](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-macOS-arm64.dmg) | — | [Google Play](https://play.google.com/store/apps/details?id=io.usbridge.client) | [App Store](https://apps.apple.com/us/app/usbridge-client/id6787665935) | [앱 열기](https://web.usbridge.io) |
 
-Play 스토어 계정 없이 직접 APK를 선호하십니까? 자가 업데이트 빌드도 [최신 릴리스](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest)에서 게시됩니다.
+Play 스토어 계정 없이 직접 APK를 선호하십니까? [최신 릴리스](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest)에서 자동 업데이트 빌드도 게시됩니다.
 
-🌐 **제로 설치 웹 클라이언트**: 설치가 필요 없습니다. [web.usbridge.io](https://web.usbridge.io)를 열어 즉시 연결하세요. *(참고: 웹 클라이언트는 브라우저 보안 샌드박스 및 WebRTC 제약으로 인해 일부 기능 및 성능 제한이 있습니다. 완전한 경험을 원하시면 네이티브 앱을 사용하세요).* 새로 시작된 에이전트에서는 신뢰할 수 있는 HTTPS 인증서를 프로비저닝하는 동안 처음으로 도달하는 데 최대 1분이 걸릴 수 있습니다(또는 네트워크 변경 후) — 에이전트의 **상태 → 인증서** 행을 확인하거나 [에이전트 문서](agent/docs/README.md#platform-notes-from-the-top-level-readme)를 참조하세요.
+🌐 **제로 설치 웹 클라이언트**: 설치가 필요 없습니다. [web.usbridge.io](https://web.usbridge.io)를 열어 즉시 연결하세요. *(참고: 웹 클라이언트는 브라우저 보안 샌드박스 및 WebRTC 제약으로 인해 일부 기능 및 성능 제한이 있습니다. 완전한 경험을 원하시면 네이티브 앱을 사용하세요).* 새로 시작된 에이전트에서는 처음 연결되기까지 최대 1분이 걸릴 수 있으며 (또는 네트워크 변경 후) 신뢰할 수 있는 HTTPS 인증서를 프로비저닝합니다 — 에이전트의 **상태 → 인증서** 행을 확인하거나 [에이전트 문서](agent/docs/README.md#platform-notes-from-the-top-level-readme)를 참조하세요.
 
 ## 에이전트
 
@@ -84,24 +84,24 @@ Play 스토어 계정 없이 직접 APK를 선호하십니까? 자가 업데이�
       <code>기본 기능</code><br><br>
       <b>SUNSHINE 오픈 소스</b><br>
       <i>표준 게임 스트리밍</i><br><br>
-      ✓ 내장 오픈 소스 Sunshine 스트리머<br>
+      ✓ 내장된 오픈 소스 Sunshine 스트리머<br>
       ✓ 저지연 데스크탑 및 게임 접근<br>
-      ✓ 양방향 파일 및 텍스트 클립보드<br>
-      ✓ 게임패드 지원<br>      
+      ✓ 양방향 파일 및 텍스트 클립보드<br>    
       ✓ 다중 모니터 디스플레이 전환<br>
-      ✓ 통합 Tailscale P2P 네트워킹<br>
+      ✓ 통합된 Tailscale P2P 네트워킹<br>
       ✓ 네이티브 Wayland 지원 (프롬프트 없는 캡처)
     </td>
     <td width="33%" valign="top">
       <code>+ 기본 기능</code><br><br>
       <b>USBRIDGE 무료</b><br>
-      <i>사용자 정의 원격 엔진</i><br><br>
+      <i>Rust 기반 스트림 엔진</i><br><br>
       ✓ 즉시 연결되는 사용자 정의 원격 프로토콜<br>
       ✓ Wi-Fi 안정성을 최적화한 적응형 스트리밍<br>
+      ✓ 게임패드 지원<br>  
       ✓ 헤드리스 가상 디스플레이 관리<br>
       ✓ 저지연 게임패드 컨트롤러 패스스루<br>
       ✓ 웹 브라우저 클라이언트 접근 (설치 필요 없음)<br>
-      ✓ Windows 로그인 전 접근 (안전한 자격 증명 입력)
+      ✓ Windows 사전 로그인 접근 (안전한 자격 증명 입력)
     </td>
     <td width="33%" valign="top">
       <code>+ 기본 기능</code> <code>+ 무료 기능</code><br><br>
@@ -109,18 +109,18 @@ Play 스토어 계정 없이 직접 APK를 선호하십니까? 자가 업데이�
       <i>전문 워크플로우</i><br><br>
       ✓ 무손실 4:4:4 크로마 색상 정확도<br>
       ✓ 원시 USB 주변 장치 패스스루<br>
-      ✓ 압력 및 기울기 지원 그래픽 태블릿<br><br>
+      ✓ 압력 및 기울기 지원 Wacom 태블릿<br><br>
     </td>
   </tr>
 </table>
 
 ## 빠른 시작
 
-1. **에이전트 설치**: 원격으로 접근하고자 하는 머신에 에이전트를 설치합니다. 실행하면 연결 토큰과 Tailscale 주소가 표시됩니다. 인터넷을 통해 접근해야 하는 경우 Tailscale을 연결합니다.
+1. **에이전트를 설치**합니다. 원격으로 접근하고자 하는 머신에 설치하세요. 실행하면 연결 토큰과 Tailscale 주소가 표시됩니다. 인터넷을 통해 접근이 필요하면 Tailscale을 연결하세요.
 
-2. **클라이언트 설치**: 워크스테이션, 노트북 또는 전화에 클라이언트를 설치합니다.
+2. **클라이언트를 설치**합니다. 워크스테이션, 노트북 또는 휴대폰에 설치하세요.
 
-3. **연결 추가**: 에이전트 창에 표시된 IP 또는 Tailscale 주소를 입력합니다. 그게 전부입니다.
+3. **연결 추가** — 에이전트 창에 표시된 IP 또는 Tailscale 주소를 입력하세요. 그게 전부입니다.
 
 <div align="center">
   <img src="./assets/QuickStart.svg" width="1400" alt="USBridge Remote">
@@ -137,7 +137,7 @@ Play 스토어 계정 없이 직접 APK를 선호하십니까? 자가 업데이�
     </td>
     <td width="50%" valign="top">
       <b>DIY IP-KVM 펌웨어</b><br>
-      USB 캡처 인터페이스가 있는 호환 SBC(예: Radxa Zero 3W/3E, Cubie A7)에 공식 펌웨어를 배포하여 사용자 정의 KVM 노드를 프로비저닝합니다.<br><br>
+      USB 캡처 인터페이스가 있는 호환 가능한 SBC(예: Radxa Zero 3W/3E, Cubie A7)에 공식 펌웨어를 배포하여 사용자 정의 KVM 노드를 프로비저닝합니다.<br><br>
       <a href="https://www.usbridge.io/hardware-agent"><img src="https://img.shields.io/badge/DOWNLOAD-DIY_FIRMWARE-007ec6?style=for-the-badge" alt="Get the Firmware"></a>
     </td>
   </tr>
@@ -149,8 +149,8 @@ Play 스토어 계정 없이 직접 APK를 선호하십니까? 자가 업데이�
   <tr>
     <td width="33%" valign="top">
       <b>개발 및 로드맵</b><br>
-      모든 계획된 기능, 아키텍처 업데이트 및 릴리스 일정을 추적하기 위해 공개 대시보드를 유지합니다.<br><br>
-      <a href="https://github.com/orgs/USBridge-Technologies/projects/3">실시간 로드맵 보기</a>
+      모든 계획된 기능, 아키텍처 업데이트 및 릴리스 일정을 추적하기 위한 공개 대시보드를 유지합니다.<br><br>
+      <a href="https://github.com/orgs/USBridge-Technologies/projects/3">라이브 로드맵 보기</a>
     </td>
     <td width="33%" valign="top">
       <b>프로젝트 링크</b><br>
@@ -162,8 +162,8 @@ Play 스토어 계정 없이 직접 APK를 선호하십니까? 자가 업데이�
     </td>
     <td width="33%" valign="top">
       <b>라이센스 (GPLv3)</b><br>
-      이 프로젝트는 <b>GPLv3</b> 라이센스 하에 있습니다. 다중 플랫폼 클라이언트는 <code>moonlight-common-c</code> (또한 GPLv3)에서 코드베이스를 통합합니다.<br><br>
-      <a href="LICENSE">라이센스 파일 보기</a>
+      이 프로젝트는 <b>GPLv3</b> 라이센스 하에 있습니다. 다중 플랫폼 클라이언트는 <code>moonlight-common-c</code> (또한 GPLv3)에서 코드를 통합합니다.<br><br>
+      <a href="LICENSE">LICENSE 파일 보기</a>
     </td>
   </tr>
 </table>
