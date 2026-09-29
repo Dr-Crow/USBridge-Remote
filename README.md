@@ -86,8 +86,7 @@ The Agent runs on the target machine — the server or PC you want to access rem
       <i>Standard Game Streaming</i><br><br>
       ✓ Built-in open-source Sunshine streamer<br>
       ✓ Low-latency desktop & gaming access<br>
-      ✓ Bi-directional file & text clipboard<br>
-      ✓ Gamepads support<br>      
+      ✓ Bi-directional file & text clipboard<br>    
       ✓ Multi-monitor display switching<br>
       ✓ Integrated Tailscale P2P networking<br>
       ✓ Native Wayland support (promptless capture)
@@ -95,9 +94,10 @@ The Agent runs on the target machine — the server or PC you want to access rem
     <td width="33%" valign="top">
       <code>+ BASIC FEATURES</code><br><br>
       <b>USBRIDGE FREE</b><br>
-      <i>Custom Remote Engine</i><br><br>
+      <i>Rust based Stream Engine</i><br><br>
       ✓ Instant-connect custom remote protocol<br>
       ✓ Adaptive streaming optimized for Wi-Fi stability<br>
+      ✓ Gamepads support<br>  
       ✓ Headless virtual display management<br>
       ✓ Low-latency gamepad controller passthrough<br>
       ✓ Web browser client access (no installation required)<br>
