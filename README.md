@@ -87,6 +87,7 @@ The Agent runs on the target machine — the server or PC you want to access rem
       ✓ Built-in open-source Sunshine streamer<br>
       ✓ Low-latency desktop & gaming access<br>
       ✓ Bi-directional file & text clipboard<br>
+      ✓ Gamepads support<br>      
       ✓ Multi-monitor display switching<br>
       ✓ Integrated Tailscale P2P networking<br>
       ✓ Native Wayland support (promptless capture)
