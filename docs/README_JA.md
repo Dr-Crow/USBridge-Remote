@@ -19,7 +19,7 @@
 
 ---
 
-**USBridge Remote**は、リモートマシンを管理するための統合された高性能クライアントです。**ハードウェアレベルのBIOSアクセス**（USBridge KVMデバイス経由）と**ソフトウェアベースのリモートデスクトップ**を1つのスリムなインターフェースに統合するように設計されています。
+**USBridge Remote** は、リモートマシンを管理するための統合された高性能クライアントです。**ハードウェアレベルのBIOSアクセス**（USBridge KVMデバイス経由）と**ソフトウェアベースのリモートデスクトップ**を1つのスリムなインターフェースに統合するように設計されています。
 
 <div align="center">
   <img src="./assets/Functions.svg" width="1400" alt="USBridge Remote">
@@ -29,24 +29,24 @@
 ## ダウンロード
 
 ### クライアント
-クライアントは制御インターフェースであり、ワークステーションやラップトップにインストールされるか（またはブラウザで直接実行されます）。接続、ライブリモートデスクトップ、仮想デバイスのパススルー、スナップショットレジストリを管理します。
+クライアントは制御インターフェースであり、ワークステーションやラップトップにインストールされます（またはブラウザで直接実行できます）。接続、ライブリモートデスクトップ、仮想デバイスのパススルー、スナップショットレジストリを管理します。
 
-| アーキテクチャ | Windows | macOS | Linux | Android | iOS | ウェブブラウザ |
+| アーキテクチャ | Windows | macOS | Linux | Android | iOS | Webブラウザ |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **x86_64** | [ダウンロード](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Windows-x86_64.zip) | — | [ダウンロード](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Linux-x86_64.AppImage) | — | — | [アプリを開く](https://web.usbridge.io) |
 | **ARM64** | — | [ダウンロード](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-macOS-arm64.dmg) | — | [Google Play](https://play.google.com/store/apps/details?id=io.usbridge.client) | [App Store](https://apps.apple.com/us/app/usbridge-client/id6787665935) | [アプリを開く](https://web.usbridge.io) |
 
 Playストアアカウントなしで直接APKを希望しますか？自己更新ビルドも[最新リリース](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest)に公開されています。
 
-🌐 **ゼロインストールウェブクライアント**：インストールは不要です。接続するには[web.usbridge.io](https://web.usbridge.io)を開くだけです。*(注：ウェブクライアントは、ブラウザのセキュリティサンドボックスとWebRTCの制約により、一部の機能とパフォーマンスに制限があります。完全な体験を得るには、ネイティブアプリを使用してください。)* 新たに起動したエージェントは、最初の接続時（またはネットワーク変更後）に、信頼されたHTTPS証明書を自分自身にプロビジョニングするために最大1分かかることがあります — エージェントの**ステータス → 証明書**行、または[エージェントドキュメント](agent/docs/README.md#platform-notes-from-the-top-level-readme)で詳細を確認してください。
+🌐 **ゼロインストールWebクライアント**: インストールは不要です。すぐに接続するには[web.usbridge.io](https://web.usbridge.io)を開くだけです。*(注: Webクライアントは、ブラウザのセキュリティサンドボックスやWebRTCの制約により、一部の機能とパフォーマンスに制限があります。完全な体験を得るには、ネイティブアプリを使用してください。)* 新しく起動したエージェントでは、信頼されたHTTPS証明書を自分自身にプロビジョニングするため、最初に到達可能になるまで最大1分かかる場合があります（またはネットワーク変更後） — エージェントの**ステータス → 証明書**行を確認するか、[エージェントドキュメント](agent/docs/README.md#platform-notes-from-the-top-level-readme)で詳細を確認してください。
 
 ## エージェント
 
-エージェントはターゲットマシン上で実行されます — リモートでアクセスしたいサーバーまたはPCです。画面キャプチャ、入力注入、Tailscaleネットワーキングを処理します。
+エージェントはターゲットマシン上で実行されます — リモートでアクセスしたいサーバーまたはPCです。画面キャプチャ、入力注入、およびTailscaleネットワーキングを処理します。
 
 <table>
   <tr>
-    <!-- 左列: ダウンロードテーブル -->
+    <!-- Left Column: Downloads Table -->
     <td valign="middle">
       <table>
         <tr>
@@ -69,7 +69,7 @@ Playストアアカウントなしで直接APKを希望しますか？自己更�
         </tr>
       </table>
     </td>
-    <!-- 右列: 画像 -->
+    <!-- Right Column: Image -->
     <td valign="middle" width="450">
       <img src="./assets/agent-screenshot.svg" alt="USBridge Agent Interface" width="100%">
     </td>
@@ -82,33 +82,32 @@ Playストアアカウントなしで直接APKを希望しますか？自己更�
   <tr>
     <td width="33%" valign="top">
       <code>基本機能</code><br><br>
-      <b>SUNSHINEオープンソース</b><br>
+      <b>SUNSHINE オープンソース</b><br>
       <i>標準ゲームストリーミング</i><br><br>
       ✓ 組み込みのオープンソースSunshineストリーマー<br>
       ✓ 低遅延のデスクトップ＆ゲームアクセス<br>
       ✓ 双方向ファイル＆テキストクリップボード<br>    
-      ✓ マルチモニターディスプレイ切替<br>
+      ✓ マルチモニタ表示切替<br>
       ✓ 統合されたTailscale P2Pネットワーキング<br>
       ✓ ネイティブWaylandサポート（プロンプトなしキャプチャ）
     </td>
     <td width="33%" valign="top">
       <code>+ 基本機能</code><br><br>
-      <b>USBRIDGE FREE</b><br>
+      <b>USBRIDGE 無料</b><br>
       <i>Rustベースのストリームエンジン</i><br><br>
-      ✓ インスタント接続カスタムリモートプロトコル<br>
+      ✓ 即時接続カスタムリモートプロトコル<br>
       ✓ Wi-Fiの安定性に最適化された適応ストリーミング<br>
-      ✓ ゲームパッドサポート<br>  
       ✓ ヘッドレス仮想ディスプレイ管理<br>
-      ✓ 低遅延ゲームパッドコントローラーパススルー<br>
-      ✓ ウェブブラウザクライアントアクセス（インストール不要）<br>
-      ✓ Windowsプレログインアクセス（安全な資格情報入力）
+      ✓ 低遅延のゲームパッドコントローラパススルー<br>
+      ✓ Webブラウザクライアントアクセス（インストール不要）<br>
+      ✓ Windowsのログイン前アクセス（安全な資格情報入力）
     </td>
     <td width="33%" valign="top">
       <code>+ 基本機能</code> <code>+ 無料機能</code><br><br>
       <b>USBRIDGE PRO</b><br>
       <i>プロフェッショナルワークフロー</i><br><br>
       ✓ ロスレス4:4:4クロマカラー精度<br>
-      ✓ 生のUSB周辺機器パススルー<br>
+      ✓ 生のUSB周辺機器デバイスパススルー<br>
       ✓ 圧力と傾きに対応したWacomタブレットサポート<br><br>
     </td>
   </tr>
@@ -116,7 +115,7 @@ Playストアアカウントなしで直接APKを希望しますか？自己更�
 
 ## クイックスタート
 
-1. **エージェントをインストール**します。リモートでアクセスしたいマシンにインストールします。起動すると、接続トークンとTailscaleアドレスが表示されます。インターネット経由でアクセスする必要がある場合はTailscaleを接続してください。
+1. **エージェントをインストール**します。リモートでアクセスしたいマシンにインストールします。起動すると、接続トークンとTailscaleアドレスが表示されます。インターネット経由でアクセスする必要がある場合は、Tailscaleに接続します。
 
 2. **クライアントをインストール**します。ワークステーション、ラップトップ、または電話にインストールします。
 
@@ -149,21 +148,21 @@ Playストアアカウントなしで直接APKを希望しますか？自己更�
   <tr>
     <td width="33%" valign="top">
       <b>開発とロードマップ</b><br>
-      計画されたすべての機能、アーキテクチャの更新、リリーススケジュールを追跡するための公開ダッシュボードを維持しています。<br><br>
-      <a href="https://github.com/orgs/USBridge-Technologies/projects/3">ライブロードマップを見る</a>
+      計画されたすべての機能、アーキテクチャの更新、およびリリーススケジュールを追跡するための公開ダッシュボードを維持しています。<br><br>
+      <a href="https://github.com/orgs/USBridge-Technologies/projects/3">ライブロードマップを表示</a>
     </td>
     <td width="33%" valign="top">
       <b>プロジェクトリンク</b><br>
       <ul>
         <li><a href="https://usbridge.io">公式ウェブサイト</a></li>
-        <li><a href="https://discord.com/invite/xqQ6ybkfWS">Discord（ベータテスト＆バグ）</a></li>
+        <li><a href="https://discord.com/invite/xqQ6ybkfWS">Discord（ベータテストとバグ）</a></li>
         <li><a href="https://www.patreon.com/USBridge_Technologies">Patreonサポート</a></li>
       </ul>
     </td>
     <td width="33%" valign="top">
-      <b>ライセンス（GPLv3）</b><br>
-      このプロジェクトは<b>GPLv3</b>の下でライセンスされています。マルチプラットフォームクライアントは<code>moonlight-common-c</code>（同じくGPLv3）からのコードベースを組み込んでいます。<br><br>
-      <a href="LICENSE">LICENSEファイルを見る</a>
+      <b>ライセンス (GPLv3)</b><br>
+      このプロジェクトは<b>GPLv3</b>の下でライセンスされています。マルチプラットフォームクライアントは<code>moonlight-common-c</code>（同じくGPLv3）のコードベースを組み込んでいます。<br><br>
+      <a href="LICENSE">LICENSEファイルを表示</a>
     </td>
   </tr>
 </table>

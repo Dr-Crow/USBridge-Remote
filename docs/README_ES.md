@@ -29,20 +29,20 @@
 ## Descargar
 
 ### Cliente
-El Cliente es la interfaz de control — instalada en tu estación de trabajo o laptop (o ejecutada directamente en tu navegador). Gestiona conexiones, escritorio remoto en vivo, paso a través de dispositivos virtuales y registro de instantáneas.
+El Cliente es la interfaz de control — instalada en su estación de trabajo o laptop (o ejecutada directamente en su navegador). Gestiona conexiones, escritorio remoto en vivo, paso a través de dispositivos virtuales y registro de instantáneas.
 
 | Arquitectura | Windows | macOS | Linux | Android | iOS | Navegador Web |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **x86_64** | [Descargar](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Windows-x86_64.zip) | — | [Descargar](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Linux-x86_64.AppImage) | — | — | [Abrir App](https://web.usbridge.io) |
 | **ARM64** | — | [Descargar](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-macOS-arm64.dmg) | — | [Google Play](https://play.google.com/store/apps/details?id=io.usbridge.client) | [App Store](https://apps.apple.com/us/app/usbridge-client/id6787665935) | [Abrir App](https://web.usbridge.io) |
 
-¿Prefieres un APK directo sin una cuenta de Play Store? También se publica una versión autactualizable en la [última versión](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
+¿Prefiere un APK directo sin una cuenta de Play Store? También se publica una versión autactualizable en la [última versión](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
 
-🌐 **Cliente Web Sin Instalación**: No se requiere instalación. Simplemente abre [web.usbridge.io](https://web.usbridge.io) para conectarte al instante. *(Nota: El cliente web opera con algunas limitaciones de características y rendimiento debido a la seguridad del navegador y las restricciones de WebRTC. Para una experiencia completa sin compromisos, utiliza las aplicaciones nativas).* En un Agente recién iniciado, puede tardar hasta un minuto en ser accesible la primera vez (o después de un cambio de red) mientras provisiona un certificado HTTPS de confianza para sí mismo — consulta la fila **Estado → Certificado** del Agente, o la [documentación del Agente](agent/docs/README.md#platform-notes-from-the-top-level-readme) para más detalles.
+🌐 **Cliente Web Sin Instalación**: No se requiere instalación. Simplemente abra [web.usbridge.io](https://web.usbridge.io) para conectarse al instante. *(Nota: El cliente web opera con algunas limitaciones de características y rendimiento debido a la seguridad del navegador y las restricciones de WebRTC. Para la experiencia completa sin compromisos, use las aplicaciones nativas).* En un Agente recién iniciado, puede tardar hasta un minuto en ser accesible por primera vez (o después de un cambio de red) mientras provisiona un certificado HTTPS de confianza para sí mismo — consulte la fila **Estado → Certificado** del Agente, o la [documentación del Agente](agent/docs/README.md#platform-notes-from-the-top-level-readme) para más detalles.
 
 ## Agente
 
-El Agente se ejecuta en la máquina objetivo — el servidor o PC al que deseas acceder de forma remota. Maneja la captura de pantalla, inyección de entrada y redes Tailscale.
+El Agente se ejecuta en la máquina objetivo — el servidor o PC al que desea acceder de forma remota. Maneja la captura de pantalla, inyección de entrada y redes Tailscale.
 
 <table>
   <tr>
@@ -84,12 +84,12 @@ El Agente se ejecuta en la máquina objetivo — el servidor o PC al que deseas 
       <code>FUNCIONALIDAD BÁSICA</code><br><br>
       <b>SUNSHINE CÓDIGO ABIERTO</b><br>
       <i>Transmisión de Juegos Estándar</i><br><br>
-      ✓ Transmisor Sunshine de código abierto incorporado<br>
+      ✓ Transmisor Sunshine de código abierto integrado<br>
       ✓ Acceso a escritorio y juegos de baja latencia<br>
       ✓ Portapapeles de archivos y texto bidireccional<br>    
-      ✓ Cambio de pantalla de múltiples monitores<br>
+      ✓ Cambio de visualización de múltiples monitores<br>
       ✓ Redes P2P Tailscale integradas<br>
-      ✓ Soporte nativo para Wayland (captura sin aviso)
+      ✓ Soporte nativo de Wayland (captura sin aviso)
     </td>
     <td width="33%" valign="top">
       <code>+ CARACTERÍSTICAS BÁSICAS</code><br><br>
@@ -97,11 +97,10 @@ El Agente se ejecuta en la máquina objetivo — el servidor o PC al que deseas 
       <i>Motor de Transmisión basado en Rust</i><br><br>
       ✓ Protocolo remoto personalizado de conexión instantánea<br>
       ✓ Transmisión adaptativa optimizada para estabilidad Wi-Fi<br>
-      ✓ Soporte para gamepads<br>  
-      ✓ Gestión de pantalla virtual sin cabeza<br>
+      ✓ Gestión de visualización virtual sin cabeza<br>
       ✓ Paso a través de controladores de gamepad de baja latencia<br>
       ✓ Acceso al cliente del navegador web (sin instalación requerida)<br>
-      ✓ Acceso pre-login en Windows (entrada de credenciales segura)
+      ✓ Acceso previo al inicio de sesión en Windows (entrada de credenciales segura)
     </td>
     <td width="33%" valign="top">
       <code>+ CARACTERÍSTICAS BÁSICAS</code> <code>+ CARACTERÍSTICAS GRATUITAS</code><br><br>
@@ -116,11 +115,11 @@ El Agente se ejecuta en la máquina objetivo — el servidor o PC al que deseas 
 
 ## Inicio Rápido
 
-1. **Instala el Agente** en la máquina a la que deseas acceder de forma remota. Inícialo — mostrará un token de conexión y una dirección Tailscale. Conéctate a Tailscale si necesitas acceso a través de Internet.
+1. **Instale el Agente** en la máquina a la que desea acceder de forma remota. Inícielo — mostrará un token de conexión y una dirección Tailscale. Conéctese a Tailscale si necesita acceso a través de Internet.
 
-2. **Instala el Cliente** en tu estación de trabajo, laptop o teléfono.
+2. **Instale el Cliente** en su estación de trabajo, laptop o teléfono.
 
-3. **Agrega una conexión** — ingresa la dirección IP o Tailscale mostrada en la ventana del Agente. Eso es todo.
+3. **Agregue una conexión** — ingrese la dirección IP o Tailscale mostrada en la ventana del Agente. Eso es todo.
 
 <div align="center">
   <img src="./assets/QuickStart.svg" width="1400" alt="USBridge Remote">
@@ -132,12 +131,12 @@ El Agente se ejecuta en la máquina objetivo — el servidor o PC al que deseas 
   <tr>
    <td width="50%" valign="top">
       <b>Control de BIOS a Nivel de Hardware</b><br>
-      USBridge Remote se integra de manera nativa con el dispositivo USBridge-KVM 2.0 para gestión fuera de banda, a nivel de hardware, antes del arranque del sistema operativo.<br><br>
+      USBridge Remote se integra de forma nativa con el dispositivo USBridge-KVM 2.0 para gestión fuera de banda, a nivel de hardware, antes del arranque del sistema operativo.<br><br>
       <a href="https://www.usbridge.io/hardware-agent#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Comprar USBridge-KVM 2.0"></a>
     </td>
     <td width="50%" valign="top">
       <b>Firmware IP-KVM DIY</b><br>
-      Despliega el firmware oficial en un SBC compatible (por ejemplo, Radxa Zero 3W/3E, Cubie A7) con una interfaz de captura USB para provisionar un nodo KVM personalizado.<br><br>
+      Despliegue el firmware oficial en un SBC compatible (por ejemplo, Radxa Zero 3W/3E, Cubie A7) con una interfaz de captura USB para provisionar un nodo KVM personalizado.<br><br>
       <a href="https://www.usbridge.io/hardware-agent"><img src="https://img.shields.io/badge/DOWNLOAD-DIY_FIRMWARE-007ec6?style=for-the-badge" alt="Obtener el Firmware"></a>
     </td>
   </tr>
@@ -149,7 +148,7 @@ El Agente se ejecuta en la máquina objetivo — el servidor o PC al que deseas 
   <tr>
     <td width="33%" valign="top">
       <b>Desarrollo y Hoja de Ruta</b><br>
-      Mantengo un tablero público para rastrear todas las características planificadas, actualizaciones arquitectónicas y cronogramas de lanzamiento.<br><br>
+      Mantengo un panel público para rastrear todas las características planificadas, actualizaciones arquitectónicas y cronogramas de lanzamiento.<br><br>
       <a href="https://github.com/orgs/USBridge-Technologies/projects/3">Ver Hoja de Ruta en Vivo</a>
     </td>
     <td width="33%" valign="top">

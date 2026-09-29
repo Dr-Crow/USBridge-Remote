@@ -29,20 +29,20 @@
 ## Download
 
 ### Cliente
-O Cliente é a interface de controle — instalada em sua estação de trabalho ou laptop (ou executada diretamente em seu navegador). Ele gerencia conexões, desktop remoto ao vivo, passagem de dispositivos virtuais e registro de snapshots.
+O Cliente é a interface de controle — instalada em sua estação de trabalho ou laptop (ou executada diretamente em seu navegador). Ele gerencia conexões, desktop remoto ao vivo, passagem de dispositivos virtuais e registro de instantâneos.
 
 | Arquitetura | Windows | macOS | Linux | Android | iOS | Navegador Web |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **x86_64** | [Baixar](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Windows-x86_64.zip) | — | [Baixar](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Linux-x86_64.AppImage) | — | — | [Abrir App](https://web.usbridge.io) |
-| **ARM64** | — | [Baixar](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-macOS-arm64.dmg) | — | [Google Play](https://play.google.com/store/apps/details?id=io.usbridge.client) | [App Store](https://apps.apple.com/us/app/usbridge-client/id6787665935) | [Abrir App](https://web.usbridge.io) |
+| **x86_64** | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Windows-x86_64.zip) | — | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Linux-x86_64.AppImage) | — | — | [Abrir App](https://web.usbridge.io) |
+| **ARM64** | — | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-macOS-arm64.dmg) | — | [Google Play](https://play.google.com/store/apps/details?id=io.usbridge.client) | [App Store](https://apps.apple.com/us/app/usbridge-client/id6787665935) | [Abrir App](https://web.usbridge.io) |
 
-Prefere um APK direto sem uma conta do Play Store? Uma versão autoatualizável também é publicada na [última versão](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
+Prefere um APK direto sem uma conta do Play Store? Uma versão auto-atualizável também é publicada na [última versão](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
 
-🌐 **Cliente Web Zero-Install**: Nenhuma instalação necessária. Basta abrir [web.usbridge.io](https://web.usbridge.io) para conectar instantaneamente. *(Nota: O cliente web opera com algumas limitações de recursos e desempenho devido à segurança do navegador e restrições do WebRTC. Para a experiência completa sem compromissos, use os aplicativos nativos).* Em um Agente recém-iniciado, pode levar até um minuto para se tornar acessível pela primeira vez (ou após uma mudança de rede) enquanto ele provisiona um certificado HTTPS confiável para si mesmo — veja a linha **Status → Certificado** do Agente, ou a [documentação do Agente](agent/docs/README.md#platform-notes-from-the-top-level-readme) para detalhes.
+🌐 **Cliente Web Zero-Install**: Nenhuma instalação necessária. Basta abrir [web.usbridge.io](https://web.usbridge.io) para conectar instantaneamente. *(Nota: O cliente web opera com algumas limitações de recursos e desempenho devido à segurança do sandbox do navegador e restrições do WebRTC. Para a experiência completa e sem compromissos, use os aplicativos nativos).* Em um Agente recém-iniciado, pode levar até um minuto para se tornar acessível pela primeira vez (ou após uma mudança de rede) enquanto ele provisiona um certificado HTTPS confiável para si mesmo — veja a linha **Status → Certificado** do Agente, ou a [documentação do Agente](agent/docs/README.md#platform-notes-from-the-top-level-readme) para detalhes.
 
 ## Agente
 
-O Agente é executado na máquina alvo — o servidor ou PC que você deseja acessar remotamente. Ele gerencia captura de tela, injeção de entrada e rede Tailscale.
+O Agente é executado na máquina alvo — o servidor ou PC que você deseja acessar remotamente. Ele lida com captura de tela, injeção de entrada e rede Tailscale.
 
 <table>
   <tr>
@@ -57,14 +57,14 @@ O Agente é executado na máquina alvo — o servidor ou PC que você deseja ace
         </tr>
         <tr>
           <td><b>x86_64</b></td>
-          <td><a href="https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeAgent-Windows-x86_64.zip">Baixar</a></td>
+          <td><a href="https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeAgent-Windows-x86_64.zip">Download</a></td>
           <td>—</td>
-          <td><a href="https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeAgent-Linux-x86_64.AppImage">Baixar</a></td>
+          <td><a href="https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeAgent-Linux-x86_64.AppImage">Download</a></td>
         </tr>
         <tr>
           <td><b>ARM64</b></td>
           <td>—</td>
-          <td><a href="https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeAgent-macOS-arm64.dmg">Baixar</a></td>
+          <td><a href="https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeAgent-macOS-arm64.dmg">Download</a></td>
           <td>—</td>
         </tr>
       </table>
@@ -82,9 +82,9 @@ O Agente é executado na máquina alvo — o servidor ou PC que você deseja ace
   <tr>
     <td width="33%" valign="top">
       <code>FUNCIONALIDADE BÁSICA</code><br><br>
-      <b>SUNSHINE OPEN-SOURCE</b><br>
+      <b>SUNSHINE CÓDIGO ABERTO</b><br>
       <i>Streaming de Jogos Padrão</i><br><br>
-      ✓ Streamer Sunshine open-source embutido<br>
+      ✓ Streamer Sunshine de código aberto embutido<br>
       ✓ Acesso a desktop e jogos com baixa latência<br>
       ✓ Área de transferência de arquivos e texto bidirecional<br>    
       ✓ Troca de exibição em múltiplos monitores<br>
@@ -93,22 +93,21 @@ O Agente é executado na máquina alvo — o servidor ou PC que você deseja ace
     </td>
     <td width="33%" valign="top">
       <code>+ RECURSOS BÁSICOS</code><br><br>
-      <b>USBRIDGE FREE</b><br>
-      <i>Motor de Stream baseado em Rust</i><br><br>
+      <b>USBRIDGE GRÁTIS</b><br>
+      <i>Engine de Stream baseado em Rust</i><br><br>
       ✓ Protocolo remoto personalizado de conexão instantânea<br>
-      ✓ Streaming adaptativo otimizado para estabilidade Wi-Fi<br>
-      ✓ Suporte a gamepads<br>  
+      ✓ Streaming adaptativo otimizado para estabilidade de Wi-Fi<br>
       ✓ Gerenciamento de exibição virtual sem cabeça<br>
-      ✓ Passagem de controlador de gamepad com baixa latência<br>
+      ✓ Passagem de controle de gamepad com baixa latência<br>
       ✓ Acesso ao cliente do navegador web (sem instalação necessária)<br>
-      ✓ Acesso pré-login no Windows (entrada de credenciais segura)
+      ✓ Acesso pré-login do Windows (entrada de credenciais segura)
     </td>
     <td width="33%" valign="top">
-      <code>+ RECURSOS BÁSICOS</code> <code>+ RECURSOS GRATUITOS</code><br><br>
+      <code>+ RECURSOS BÁSICOS</code> <code>+ RECURSOS GRÁTIS</code><br><br>
       <b>USBRIDGE PRO</b><br>
       <i>Fluxos de Trabalho Profissionais</i><br><br>
       ✓ Precisão de cor de croma 4:4:4 sem perdas<br>
-      ✓ Passagem de dispositivo periférico USB bruto<br>
+      ✓ Passagem de dispositivos periféricos USB brutos<br>
       ✓ Suporte a tablet Wacom com pressão e inclinação<br><br>
     </td>
   </tr>
@@ -132,13 +131,13 @@ O Agente é executado na máquina alvo — o servidor ou PC que você deseja ace
   <tr>
    <td width="50%" valign="top">
       <b>Controle de BIOS em Nível de Hardware</b><br>
-      O USBridge Remote integra-se nativamente com o dispositivo USBridge-KVM 2.0 para gerenciamento fora da banda, bare-metal antes da inicialização do SO.<br><br>
-      <a href="https://www.usbridge.io/hardware-agent#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Comprar USBridge-KVM 2.0"></a>
+      O USBridge Remote integra-se nativamente com o dispositivo USBridge-KVM 2.0 para gerenciamento fora de banda, bare-metal antes da inicialização do SO.<br><br>
+      <a href="https://www.usbridge.io/hardware-agent#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Buy USBridge-KVM 2.0"></a>
     </td>
     <td width="50%" valign="top">
-      <b>Firmware DIY IP-KVM</b><br>
+      <b>Firmware IP-KVM DIY</b><br>
       Implemente o firmware oficial em um SBC compatível (por exemplo, Radxa Zero 3W/3E, Cubie A7) com uma interface de captura USB para provisionar um nó KVM personalizado.<br><br>
-      <a href="https://www.usbridge.io/hardware-agent"><img src="https://img.shields.io/badge/DOWNLOAD-FIRMWARE_DIY-007ec6?style=for-the-badge" alt="Obter o Firmware"></a>
+      <a href="https://www.usbridge.io/hardware-agent"><img src="https://img.shields.io/badge/DOWNLOAD-DIY_FIRMWARE-007ec6?style=for-the-badge" alt="Get the Firmware"></a>
     </td>
   </tr>
 </table>
@@ -149,7 +148,7 @@ O Agente é executado na máquina alvo — o servidor ou PC que você deseja ace
   <tr>
     <td width="33%" valign="top">
       <b>Desenvolvimento & Roteiro</b><br>
-      Mantenho um painel público para rastrear todos os recursos planejados, atualizações arquitetônicas e cronogramas de lançamento.<br><br>
+      Eu mantenho um painel público para acompanhar todos os recursos planejados, atualizações arquitetônicas e cronogramas de lançamento.<br><br>
       <a href="https://github.com/orgs/USBridge-Technologies/projects/3">Ver Roteiro Ao Vivo</a>
     </td>
     <td width="33%" valign="top">

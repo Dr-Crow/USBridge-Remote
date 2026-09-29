@@ -19,7 +19,7 @@
 
 ---
 
-**USBridge Remote** est un client unifié haute performance pour gérer des machines distantes. Conçu pour combiner l'**accès BIOS au niveau matériel** (via les appareils USBridge KVM) et le **bureau à distance basé sur logiciel** dans une interface unique et rationalisée.
+**USBridge Remote** est un client unifié haute performance pour la gestion des machines distantes. Conçu pour combiner l'**accès BIOS au niveau matériel** (via les appareils USBridge KVM) et le **bureau à distance basé sur logiciel** dans une interface unique et rationalisée.
 
 <div align="center">
   <img src="./assets/Functions.svg" width="1400" alt="USBridge Remote">
@@ -29,16 +29,16 @@
 ## Télécharger
 
 ### Client
-Le Client est l'interface de contrôle — installé sur votre station de travail ou votre ordinateur portable (ou exécuté directement dans votre navigateur). Il gère les connexions, le bureau à distance en direct, le passage à travers des dispositifs virtuels et le registre des instantanés.
+Le Client est l'interface de contrôle — installé sur votre station de travail ou votre ordinateur portable (ou exécuté directement dans votre navigateur). Il gère les connexions, le bureau à distance en direct, le passage de périphériques virtuels et le registre des instantanés.
 
 | Architecture | Windows | macOS | Linux | Android | iOS | Navigateur Web |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **x86_64** | [Télécharger](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Windows-x86_64.zip) | — | [Télécharger](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Linux-x86_64.AppImage) | — | — | [Ouvrir l'App](https://web.usbridge.io) |
-| **ARM64** | — | [Télécharger](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-macOS-arm64.dmg) | — | [Google Play](https://play.google.com/store/apps/details?id=io.usbridge.client) | [App Store](https://apps.apple.com/us/app/usbridge-client/id6787665935) | [Ouvrir l'App](https://web.usbridge.io) |
+| **x86_64** | [Télécharger](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Windows-x86_64.zip) | — | [Télécharger](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Linux-x86_64.AppImage) | — | — | [Ouvrir l'application](https://web.usbridge.io) |
+| **ARM64** | — | [Télécharger](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-macOS-arm64.dmg) | — | [Google Play](https://play.google.com/store/apps/details?id=io.usbridge.client) | [App Store](https://apps.apple.com/us/app/usbridge-client/id6787665935) | [Ouvrir l'application](https://web.usbridge.io) |
 
-Vous préférez un APK direct sans compte Play Store ? Une version auto-mise à jour est également publiée dans la [dernière version](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
+Préférez-vous un APK direct sans compte Play Store ? Une version auto-mise à jour est également publiée dans la [dernière version](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
 
-🌐 **Client Web sans installation** : Aucune installation requise. Ouvrez simplement [web.usbridge.io](https://web.usbridge.io) pour vous connecter instantanément. *(Remarque : Le client web fonctionne avec certaines limitations de fonctionnalités et de performances en raison de la sécurité du navigateur et des contraintes WebRTC. Pour une expérience complète et sans compromis, utilisez les applications natives).* Sur un Agent fraîchement démarré, il peut falloir jusqu'à une minute pour devenir accessible la première fois (ou après un changement de réseau) pendant qu'il provisionne un certificat HTTPS de confiance pour lui-même — consultez la ligne **Statut → Certificat** de l'Agent, ou la [documentation de l'Agent](agent/docs/README.md#platform-notes-from-the-top-level-readme) pour plus de détails.
+🌐 **Client Web sans installation** : Aucune installation requise. Ouvrez simplement [web.usbridge.io](https://web.usbridge.io) pour vous connecter instantanément. *(Remarque : Le client web fonctionne avec certaines limitations de fonctionnalités et de performances en raison de la sécurité du navigateur et des contraintes WebRTC. Pour une expérience complète et sans compromis, utilisez les applications natives).* Sur un Agent fraîchement démarré, cela peut prendre jusqu'à une minute pour devenir accessible la première fois (ou après un changement de réseau) pendant qu'il provisionne un certificat HTTPS de confiance pour lui-même — consultez la ligne **Statut → Certificat** de l'Agent, ou la [documentation de l'Agent](agent/docs/README.md#platform-notes-from-the-top-level-readme) pour plus de détails.
 
 ## Agent
 
@@ -89,34 +89,33 @@ L'Agent s'exécute sur la machine cible — le serveur ou le PC que vous souhait
       ✓ Presse-papiers de fichiers & texte bidirectionnels<br>    
       ✓ Commutation d'affichage multi-moniteurs<br>
       ✓ Réseau P2P Tailscale intégré<br>
-      ✓ Support natif Wayland (capture sans invite)
+      ✓ Support natif de Wayland (capture sans invite)
     </td>
     <td width="33%" valign="top">
       <code>+ FONCTIONNALITÉS DE BASE</code><br><br>
       <b>USBRIDGE GRATUIT</b><br>
       <i>Moteur de streaming basé sur Rust</i><br><br>
-      ✓ Protocole distant personnalisé à connexion instantanée<br>
+      ✓ Protocole distant personnalisé de connexion instantanée<br>
       ✓ Streaming adaptatif optimisé pour la stabilité Wi-Fi<br>
-      ✓ Support des manettes de jeu<br>  
       ✓ Gestion d'affichage virtuel sans tête<br>
-      ✓ Passage à travers de contrôleur de manette à faible latence<br>
-      ✓ Accès client navigateur web (aucune installation requise)<br>
-      ✓ Accès pré-login Windows (entrée sécurisée des identifiants)
+      ✓ Passage de contrôleur de jeu à faible latence<br>
+      ✓ Accès client via navigateur web (aucune installation requise)<br>
+      ✓ Accès pré-login Windows (saisie sécurisée des identifiants)
     </td>
     <td width="33%" valign="top">
       <code>+ FONCTIONNALITÉS DE BASE</code> <code>+ FONCTIONNALITÉS GRATUITES</code><br><br>
       <b>USBRIDGE PRO</b><br>
       <i>Flux de travail professionnels</i><br><br>
       ✓ Précision des couleurs chroma 4:4:4 sans perte<br>
-      ✓ Passage à travers de périphériques USB bruts<br>
-      ✓ Support des tablettes Wacom avec pression & inclinaison<br><br>
+      ✓ Passage de périphériques USB bruts<br>
+      ✓ Support de tablettes Wacom avec pression & inclinaison<br><br>
     </td>
   </tr>
 </table>
 
 ## Démarrage rapide
 
-1. **Installez l'Agent** sur la machine que vous souhaitez accéder à distance. Lancez-le — il affichera un jeton de connexion et une adresse Tailscale. Connectez Tailscale si vous avez besoin d'un accès via Internet.
+1. **Installez l'Agent** sur la machine que vous souhaitez accéder à distance. Lancez-le — il affichera un jeton de connexion et une adresse Tailscale. Connectez Tailscale si vous avez besoin d'accès via Internet.
 
 2. **Installez le Client** sur votre station de travail, ordinateur portable ou téléphone.
 
@@ -162,7 +161,7 @@ L'Agent s'exécute sur la machine cible — le serveur ou le PC que vous souhait
     </td>
     <td width="33%" valign="top">
       <b>Licence (GPLv3)</b><br>
-      Ce projet est sous licence <b>GPLv3</b>. Le client multiplateforme incorpore le code de <code>moonlight-common-c</code> (également GPLv3).<br><br>
+      Ce projet est sous licence <b>GPLv3</b>. Le client multi-plateforme intègre une base de code de <code>moonlight-common-c</code> (également GPLv3).<br><br>
       <a href="LICENSE">Voir le fichier de licence</a>
     </td>
   </tr>

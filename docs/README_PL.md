@@ -19,7 +19,7 @@
 
 ---
 
-**USBridge Remote** to zintegrowany klient o wysokiej wydajności do zarządzania zdalnymi maszynami. Zaprojektowany, aby połączyć **dostęp do BIOS-u na poziomie sprzętowym** (poprzez urządzenia USBridge KVM) oraz **zdalny pulpit oparty na oprogramowaniu** w jednym, uproszczonym interfejsie.
+**USBridge Remote** to zintegrowany klient o wysokiej wydajności do zarządzania zdalnymi maszynami. Zaprojektowany w celu połączenia **dostępu do BIOS-u na poziomie sprzętowym** (poprzez urządzenia USBridge KVM) oraz **zdalnego pulpitu opartego na oprogramowaniu** w jednym, uproszczonym interfejsie.
 
 <div align="center">
   <img src="./assets/Functions.svg" width="1400" alt="USBridge Remote">
@@ -29,20 +29,20 @@
 ## Pobierz
 
 ### Klient
-Klient to interfejs sterujący — zainstalowany na Twoim komputerze stacjonarnym lub laptopie (lub uruchamiany bezpośrednio w przeglądarce). Zarządza połączeniami, zdalnym pulpitem na żywo, przekazywaniem wirtualnych urządzeń oraz rejestracją zrzutów.
+Klient to interfejs sterujący — zainstalowany na Twoim stacji roboczej lub laptopie (lub uruchamiany bezpośrednio w przeglądarce). Zarządza połączeniami, zdalnym pulpitem na żywo, przejściem wirtualnych urządzeń oraz rejestrem zrzutów.
 
 | Architektura | Windows | macOS | Linux | Android | iOS | Przeglądarka internetowa |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **x86_64** | [Pobierz](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Windows-x86_64.zip) | — | [Pobierz](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Linux-x86_64.AppImage) | — | — | [Otwórz aplikację](https://web.usbridge.io) |
 | **ARM64** | — | [Pobierz](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-macOS-arm64.dmg) | — | [Google Play](https://play.google.com/store/apps/details?id=io.usbridge.client) | [App Store](https://apps.apple.com/us/app/usbridge-client/id6787665935) | [Otwórz aplikację](https://web.usbridge.io) |
 
-Preferujesz bezpośredni plik APK bez konta w Sklepie Play? Samoaktualizująca się wersja jest również publikowana w [najnowszym wydaniu](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
+Preferujesz bezpośredni plik APK bez konta w sklepie Play? Samoaktualizująca wersja jest również publikowana w [najowszym wydaniu](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
 
-🌐 **Klient internetowy bez instalacji**: Nie wymaga instalacji. Po prostu otwórz [web.usbridge.io](https://web.usbridge.io), aby natychmiast się połączyć. *(Uwaga: Klient internetowy działa z pewnymi ograniczeniami funkcji i wydajności z powodu zabezpieczeń przeglądarki oraz ograniczeń WebRTC. Aby uzyskać pełne, nieograniczone doświadczenie, użyj aplikacji natywnych).* Na świeżo uruchomionym Agencie może zająć do minuty, aby stać się osiągalnym po raz pierwszy (lub po zmianie sieci), podczas gdy przyznaje sobie zaufany certyfikat HTTPS — zobacz wiersz **Status → Certyfikat** Agenta lub [dokumentację Agenta](agent/docs/README.md#platform-notes-from-the-top-level-readme) po szczegóły.
+🌐 **Klient internetowy bez instalacji**: Nie wymaga instalacji. Po prostu otwórz [web.usbridge.io](https://web.usbridge.io), aby natychmiast połączyć się. *(Uwaga: Klient internetowy działa z pewnymi ograniczeniami funkcji i wydajności z powodu zabezpieczeń przeglądarki i ograniczeń WebRTC. Aby uzyskać pełne, nieograniczone doświadczenie, użyj aplikacji natywnych).* Na świeżo uruchomionym Agencie może zająć do minuty, aby stać się osiągalnym po raz pierwszy (lub po zmianie sieci), podczas gdy uzyskuje zaufany certyfikat HTTPS dla siebie — zobacz wiersz **Status → Certyfikat** Agenta lub [dokumentację Agenta](agent/docs/README.md#platform-notes-from-the-top-level-readme) po szczegóły.
 
 ## Agent
 
-Agent działa na docelowej maszynie — serwerze lub komputerze, do którego chcesz uzyskać zdalny dostęp. Obsługuje przechwytywanie ekranu, wstrzykiwanie wejścia oraz sieci Tailscale.
+Agent działa na docelowej maszynie — serwerze lub komputerze, do którego chcesz uzyskać zdalny dostęp. Obsługuje przechwytywanie ekranu, wstrzykiwanie danych wejściowych i sieć Tailscale.
 
 <table>
   <tr>
@@ -84,31 +84,30 @@ Agent działa na docelowej maszynie — serwerze lub komputerze, do którego chc
       <code>PODSTAWOWA FUNKCJONALNOŚĆ</code><br><br>
       <b>OTWARTY KOD SUNSHINE</b><br>
       <i>Standardowe przesyłanie gier</i><br><br>
-      ✓ Wbudowany streamer open-source Sunshine<br>
+      ✓ Wbudowany otwarty streamer Sunshine<br>
       ✓ Niskolatencyjny dostęp do pulpitu i gier<br>
-      ✓ Dwukierunkowy schowek plików i tekstów<br>    
+      ✓ Dwukierunkowy schowek plików i tekstu<br>    
       ✓ Przełączanie wyświetlaczy wielomonitorowych<br>
-      ✓ Zintegrowane sieci P2P Tailscale<br>
+      ✓ Zintegrowana sieć P2P Tailscale<br>
       ✓ Wsparcie dla Wayland (przechwytywanie bez komunikatów)
     </td>
     <td width="33%" valign="top">
       <code>+ PODSTAWOWE CECHY</code><br><br>
       <b>USBRIDGE FREE</b><br>
-      <i>Silnik strumieniowy oparty na Rust</i><br><br>
+      <i>Silnik przesyłania oparty na Rust</i><br><br>
       ✓ Natychmiastowe połączenie z niestandardowym protokołem zdalnym<br>
       ✓ Adaptacyjne przesyłanie zoptymalizowane pod kątem stabilności Wi-Fi<br>
-      ✓ Wsparcie dla kontrolerów gier<br>  
       ✓ Zarządzanie wirtualnym wyświetlaczem bez głowy<br>
-      ✓ Niskolatencyjne przekazywanie kontrolera gier<br>
-      ✓ Dostęp do klienta w przeglądarce internetowej (nie wymaga instalacji)<br>
-      ✓ Dostęp do Windows przed logowaniem (bezpieczne wprowadzanie danych uwierzytelniających)
+      ✓ Niskolatencyjne przejście kontrolera gamepada<br>
+      ✓ Dostęp do klienta przeglądarki internetowej (nie wymaga instalacji)<br>
+      ✓ Dostęp do Windows przed logowaniem (bezpieczne wprowadzanie poświadczeń)
     </td>
     <td width="33%" valign="top">
       <code>+ PODSTAWOWE CECHY</code> <code>+ BEZPŁATNE CECHY</code><br><br>
       <b>USBRIDGE PRO</b><br>
       <i>Profesjonalne przepływy pracy</i><br><br>
       ✓ Bezstratna dokładność kolorów 4:4:4 chroma<br>
-      ✓ Przekazywanie surowych urządzeń peryferyjnych USB<br>
+      ✓ Przejście surowych urządzeń peryferyjnych USB<br>
       ✓ Wsparcie dla tabletów Wacom z naciskiem i nachyleniem<br><br>
     </td>
   </tr>
@@ -118,9 +117,9 @@ Agent działa na docelowej maszynie — serwerze lub komputerze, do którego chc
 
 1. **Zainstaluj Agenta** na maszynie, do której chcesz uzyskać zdalny dostęp. Uruchom go — wyświetli token połączenia i adres Tailscale. Połącz Tailscale, jeśli potrzebujesz dostępu przez internet.
 
-2. **Zainstaluj Klienta** na swoim komputerze stacjonarnym, laptopie lub telefonie.
+2. **Zainstaluj Klienta** na swojej stacji roboczej, laptopie lub telefonie.
 
-3. **Dodaj połączenie** — wprowadź adres IP lub adres Tailscale pokazany w oknie Agenta. To wszystko.
+3. **Dodaj połączenie** — wprowadź adres IP lub adres Tailscale wyświetlony w oknie Agenta. To wszystko.
 
 <div align="center">
   <img src="./assets/QuickStart.svg" width="1400" alt="USBridge Remote">
@@ -136,9 +135,9 @@ Agent działa na docelowej maszynie — serwerze lub komputerze, do którego chc
       <a href="https://www.usbridge.io/hardware-agent#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Kup USBridge-KVM 2.0"></a>
     </td>
     <td width="50%" valign="top">
-      <b>Firmware DIY IP-KVM</b><br>
-      Wdróż oficjalny firmware na kompatybilnym SBC (np. Radxa Zero 3W/3E, Cubie A7) z interfejsem przechwytywania USB, aby przygotować niestandardowy węzeł KVM.<br><br>
-      <a href="https://www.usbridge.io/hardware-agent"><img src="https://img.shields.io/badge/DOWNLOAD-DIY_FIRMWARE-007ec6?style=for-the-badge" alt="Pobierz firmware"></a>
+      <b>Oprogramowanie IP-KVM DIY</b><br>
+      Wdróż oficjalne oprogramowanie na kompatybilnym SBC (np. Radxa Zero 3W/3E, Cubie A7) z interfejsem przechwytywania USB, aby przygotować niestandardowy węzeł KVM.<br><br>
+      <a href="https://www.usbridge.io/hardware-agent"><img src="https://img.shields.io/badge/DOWNLOAD-DIY_FIRMWARE-007ec6?style=for-the-badge" alt="Pobierz oprogramowanie"></a>
     </td>
   </tr>
 </table>
@@ -162,7 +161,7 @@ Agent działa na docelowej maszynie — serwerze lub komputerze, do którego chc
     </td>
     <td width="33%" valign="top">
       <b>Licencja (GPLv3)</b><br>
-      Ten projekt jest licencjonowany na mocy <b>GPLv3</b>. Klient wieloplatformowy zawiera kod z <code>moonlight-common-c</code> (również GPLv3).<br><br>
+      Ten projekt jest licencjonowany na podstawie <b>GPLv3</b>. Klient wieloplatformowy zawiera kod z <code>moonlight-common-c</code> (również GPLv3).<br><br>
       <a href="LICENSE">Zobacz plik LICENCJA</a>
     </td>
   </tr>
