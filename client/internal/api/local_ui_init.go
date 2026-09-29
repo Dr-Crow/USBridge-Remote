@@ -12,11 +12,18 @@ import (
 // InitLocalUIParseFromConfig builds and installs the local ui.parse backend
 // (see local_ui_intercept.go) if cfg.LocalUIParseEnabled. Callers: only
 // LazyInitLocalUIParse below, itself only called the moment a feature that
-// actually needs local inference turns on this session (AI Vision's
-// checkbox -- service.SetAIVisionEnabled -- or the Scripts&AI tab's "Local
-// models" toggle, scripts_tab_widget.go's applyLocalUIParseSetting) --
-// deliberately NOT called unconditionally at app boot just because
-// LocalUIParseEnabled was left persisted true from a previous session.
+// actually needs local inference turns on THIS session -- AI Vision's
+// checkbox (service.SetAIVisionEnabled), the Scripts&AI tab's "Local
+// models" toggle (scripts_tab_widget.go's applyLocalUIParseSetting), or a
+// device connection actually completing while that toggle was already on
+// from a previous session (scripts_tab_widget.go's SetClient ->
+// maybeLazyInitLocalUIParse) -- deliberately NOT called unconditionally at
+// app boot (main-window/tab construction) just because LocalUIParseEnabled
+// was left persisted true from a previous session. That used to be a real
+// bug, not a design choice: build() calling this directly cost ~250MB RSS
+// and a measured 1.3s+ Go-scheduler-wide stall on every single launch,
+// whether or not the session ever connected to a device or issued one
+// ui.parse call.
 // Loading the ONNX models is relatively expensive (hundreds of ms to a few
 // seconds on desktop; under wasm it's a ~100MB+ network fetch, not a disk
 // read -- see internal/localui/stub_wasm.go), so paying that cost at every

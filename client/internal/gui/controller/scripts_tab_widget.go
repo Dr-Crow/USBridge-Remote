@@ -150,6 +150,8 @@ func (w *ScriptsTabWidget) SetClient(c *api.USBClient) {
 		return
 	}
 
+	w.maybeLazyInitLocalUIParse()
+
 	w.mu.Lock()
 	seededOS := w.agentOS
 	w.mu.Unlock()
@@ -357,9 +359,19 @@ func (w *ScriptsTabWidget) build() {
 	}
 	w.outerContainer = view.NewEdgeStack(nil, footer, tabBody)
 	w.lockedMessage = "Not connected"
-	if app := fyne.CurrentApp(); app != nil {
-		w.applyLocalUIParseSetting(app.Preferences().Bool(localUIParseEnabledPrefKey))
-	}
+	// Deliberately NOT calling applyLocalUIParseSetting here even when the
+	// preference was left on from a previous session -- build() runs while
+	// constructing the main window, before any device connection exists.
+	// Loading the ONNX models eagerly here used to cost ~250MB RSS and a
+	// measured 1.3s+ stall of the entire Go scheduler on EVERY app launch,
+	// whether or not this session ever connects to a device or issues a
+	// single ui.parse call -- see SetClient's own call to
+	// maybeLazyInitLocalUIParse for where this now actually triggers
+	// (post-connect, off the connect/video-start critical path). The
+	// checkbox itself still renders checked from the persisted preference
+	// (sectionData's own localUI read, a few lines below, is unconditional
+	// and independent of whether a parser has actually been loaded) --
+	// only the actual model load is deferred.
 	w.rebuild()
 }
 
@@ -654,6 +666,27 @@ const localUIParseEnabledPrefKey = "local_ui_parse_enabled"
 func (w *ScriptsTabWidget) applyLocalUIParseSetting(enabled bool) {
 	if !enabled {
 		api.SetLocalUIParser(nil)
+		return
+	}
+	api.LazyInitLocalUIParse()
+}
+
+// maybeLazyInitLocalUIParse triggers the local ui.parse model load the
+// moment a device connection actually exists (called from SetClient), but
+// only if the user left the "Local models" checkbox on from a previous
+// session -- NOT on every app launch regardless of whether this session
+// ever connects to anything. build() deliberately skips this at startup;
+// see its own doc comment for the ~250MB RSS + 1.3s+ Go-scheduler stall
+// this used to cost on every launch, streaming or not.
+//
+// api.LazyInitLocalUIParse is itself fire-and-forget (spawns the actual
+// ONNX/CoreML session build in a goroutine and returns immediately, and
+// no-ops if a parser is already loaded/loading), so calling it inline here
+// adds no latency to the connect path or the video stream that starts
+// alongside it.
+func (w *ScriptsTabWidget) maybeLazyInitLocalUIParse() {
+	app := fyne.CurrentApp()
+	if app == nil || !app.Preferences().Bool(localUIParseEnabledPrefKey) {
 		return
 	}
 	api.LazyInitLocalUIParse()
