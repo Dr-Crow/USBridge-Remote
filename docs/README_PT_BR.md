@@ -1,105 +1,118 @@
-# USBridge Remote (Beta)
+# USBridge Remote
 
-![USBridge Remote](https://raw.githubusercontent.com/USBridge-Technologies/USBridge-Remote/main/assets/banner.png)
+<div align="center">
+  <img src="./assets/banner6.svg" width="1400" alt="USBridge Remote">
+</div>
 
 <div align="center">
 
 [English](README.md) | [Deutsch](docs/README_DE.md) | [Français](docs/README_FR.md) | [Italiano](docs/README_IT.md) | [Español](docs/README_ES.md) | [Português (Brasil)](docs/README_PT_BR.md) | [Українська](docs/README_UA.md) | [Polski](docs/README_PL.md) | [日本語](docs/README_JA.md) | [한국어](docs/README_KO.md) | [简体中文](docs/README_ZH.md)
 
-[![Beta](https://img.shields.io/badge/status-beta-orange)](https://github.com/USBridge-Technologies/USBridge-Remote/releases)
-[![Patreon](https://img.shields.io/badge/Patreon-Support_Us-F96854?logo=patreon&logoColor=white)](https://www.patreon.com/USBridge_Technologies)
 [![Windows](https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white)](#)
 [![macOS](https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white)](#)
 [![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)](#)
 [![Android](https://img.shields.io/badge/Android-3DDC84?logo=android&logoColor=white)](https://play.google.com/store/apps/details?id=io.usbridge.client)
-[![iOS](https://img.shields.io/badge/iOS-000000?logo=apple&logoColor=white)](#)
+[![iOS](https://img.shields.io/badge/iOS-000000?logo=apple&logoColor=white)](https://apps.apple.com/us/app/usbridge-remote-desktop/id6787665935)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/xqQ6ybkfWS)
-<a href="https://www.crowdsupply.com/usbridge-technologies/usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Crowd_Supply-USBridge--KVM_2.0-2da44e?logo=crowdsupply&logoColor=white" alt="Crowd Supply"></a>
 
 </div>
 
 ---
 
-**USBridge Remote** é um cliente unificado de alto desempenho para gerenciar máquinas remotas. Eu o projetei para combinar **acesso ao BIOS em nível de hardware** (via dispositivos USBridge KVM) e **desktop remoto baseado em software** em uma única interface simplificada.
+**USBridge Remote** é um cliente unificado de alto desempenho para gerenciar máquinas remotas. Projetado para combinar **acesso ao BIOS em nível de hardware** (via dispositivos USBridge KVM) e **desktop remoto baseado em software** em uma única interface simplificada.
 
- 🖥️ **Precisa de controle do BIOS em nível de hardware antes do sistema operacional iniciar?**  
- O USBridge Remote se integra nativamente com **USBridge-KVM 2.0** para gerenciamento fora de banda, em nível de metal.
+<div align="center">
+  <img src="./assets/Functions.svg" width="1400" alt="USBridge Remote">
+</div>
 
-[![Crowd Supply KVM 2.0](https://img.shields.io/badge/Crowd_Supply-USBridge--KVM_2.0-2da44e?style=for-the-badge&logo=crowdsupply&logoColor=white)](https://www.crowdsupply.com/usbridge-technologies/usbridge-kvm-2-0)
-
-> 
-🔥 **Construa seu próprio IP-KVM!**
-Eu lancei oficialmente o firmware DIY. Agora você pode transformar seu próprio SBC compatível (como Radxa Zero 3W/3E ou Cubie A7) e uma placa de captura USB em um dispositivo USBridge KVM 2.0 completo.
-
-[![Get the Firmware](https://img.shields.io/badge/DOWNLOAD-DIY_FIRMWARE-007ec6?style=for-the-badge)](https://www.usbridge.io/kvm-software)
-
-> ⚠️ **Software Beta** — Esta é uma versão inicial. Espere bugs. Por favor, relate problemas via [GitHub Issues](https://github.com/USBridge-Technologies/USBridge-Remote/issues) ou junte-se ao nosso [Discord](https://discord.com/invite/xqQ6ybkfWS) para suporte.
-
----
 
 ## Download
 
 ### Cliente
-O Cliente é a interface de controle — instalada em sua estação de trabalho ou laptop (ou executada diretamente em seu navegador). Ele gerencia conexões, desktop remoto ao vivo, passagem de dispositivos virtuais e registro de instantâneos.
+O Cliente é a interface de controle — instalada em sua estação de trabalho ou laptop (ou executada diretamente em seu navegador). Ele gerencia conexões, desktop remoto ao vivo, passagem de dispositivos virtuais e registro de instantâneas.
 
 | Arquitetura | Windows | macOS | Linux | Android | iOS | Navegador Web |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **x86_64** | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Windows-x86_64.zip) | — | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Linux-x86_64.AppImage) | — | — | [Open App](https://web.usbridge.io) |
-| **ARM64** | — | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-macOS-arm64.dmg) | — | [Google Play](https://play.google.com/store/apps/details?id=io.usbridge.client) | [App Store](https://apps.apple.com/us/app/usbridge-client/id6787665935) | [Open App](https://web.usbridge.io) |
+| **x86_64** | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Windows-x86_64.zip) | — | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Linux-x86_64.AppImage) | — | — | [Abrir App](https://web.usbridge.io) |
+| **ARM64** | — | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-macOS-arm64.dmg) | — | [Google Play](https://play.google.com/store/apps/details?id=io.usbridge.client) | [App Store](https://apps.apple.com/us/app/usbridge-client/id6787665935) | [Abrir App](https://web.usbridge.io) |
 
-Prefere um APK direto sem uma conta da Play Store? Uma versão autatualizável também é publicada na [última versão](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
+Prefere um APK direto sem uma conta da Play Store? Uma versão autoatualizável também é publicada na [última versão](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
 
-🌐 **Cliente Web Sem Instalação**: Nenhuma instalação necessária. Basta abrir [web.usbridge.io](https://web.usbridge.io) para conectar instantaneamente. *(Nota: O cliente web opera com algumas limitações de recursos e desempenho devido à segurança do navegador e às restrições do WebRTC. Para a experiência completa sem compromissos, use os aplicativos nativos).*
+🌐 **Cliente Web Sem Instalação**: Nenhuma instalação necessária. Basta abrir [web.usbridge.io](https://web.usbridge.io) para conectar instantaneamente. *(Nota: O cliente web opera com algumas limitações de recursos e desempenho devido à segurança do navegador e restrições do WebRTC. Para a experiência completa e sem compromissos, use os aplicativos nativos).* Em um Agente recém-iniciado, pode levar até um minuto para se tornar acessível pela primeira vez (ou após uma mudança de rede) enquanto ele provisiona um certificado HTTPS confiável para si mesmo — veja a linha **Status → Certificado** do Agente, ou a [documentação do Agente](agent/docs/README.md#platform-notes-from-the-top-level-readme) para detalhes.
 
 ## Agente
 
 O Agente é executado na máquina alvo — o servidor ou PC que você deseja acessar remotamente. Ele gerencia captura de tela, injeção de entrada e rede Tailscale.
 
-| Arquitetura | Windows | macOS | Linux |
-| :--- | :---: | :---: | :---: |
-| **x86_64** | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeAgent-Windows-x86_64.zip) | — | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeAgent-Linux-x86_64.AppImage) |
-| **ARM64** | — | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeAgent-macOS-arm64.dmg) | — |
-
----
-
-## Demonstração
-
-<div align="center">
-  <a href="https://youtu.be/1pV9PJeBr7M">
-    <img src="https://img.youtube.com/vi/1pV9PJeBr7M/maxresdefault.jpg" alt="USBridge Remote Demo" style="max-width: 100%; border-radius: 8px;">
-  </a>
-</div>
-
----
+<table>
+  <tr>
+    <!-- Left Column: Downloads Table -->
+    <td valign="middle">
+      <table>
+        <tr>
+          <th>Arquitetura</th>
+          <th>Windows</th>
+          <th>macOS</th>
+          <th>Linux</th>
+        </tr>
+        <tr>
+          <td><b>x86_64</b></td>
+          <td><a href="https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeAgent-Windows-x86_64.zip">Download</a></td>
+          <td>—</td>
+          <td><a href="https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeAgent-Linux-x86_64.AppImage">Download</a></td>
+        </tr>
+        <tr>
+          <td><b>ARM64</b></td>
+          <td>—</td>
+          <td><a href="https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeAgent-macOS-arm64.dmg">Download</a></td>
+          <td>—</td>
+        </tr>
+      </table>
+    </td>
+    <!-- Right Column: Image -->
+    <td valign="middle" width="450">
+      <img src="./assets/agent-screenshot.svg" alt="USBridge Agent Interface" width="100%">
+    </td>
+  </tr>
+</table>
 
 ## Recursos
 
-<img width="2000" height="1046" alt="USBridge_ap4p" src="https://github.com/user-attachments/assets/2b4bfdf8-412f-4cd7-b4c4-3794d72475cc" />
-
-**Um lugar para tudo** — Eu unifiquei o fluxo de trabalho. Gerencie o hardware USBridge KVM e os agentes de software a partir de um único painel. Adicione uma máquina, conecte-se e você está dentro.
-
-**Sem limites, sem assinaturas** — Totalmente gratuito. Sem limites de tempo de sessão, sem limites de conexão e sem conta necessária na máquina alvo.
-
-**Vídeo de baixa latência & Integração com Moonlight** — Desfrute de até 2K de resolução com 120 FPS suaves como manteiga e zero latência perceptível. Meu mecanismo de streaming adaptativo aproveita a integração nativa com o Moonlight para oferecer um desempenho de desktop remoto incomparável e de ultra-baixa latência.
-
-**Integração com Tailscale** — Tunelamento P2P criptografado embutido. Conecte-se a qualquer máquina globalmente sem se preocupar com redirecionamento de portas ou regras de firewall. Funciona na LAN e pela internet automaticamente.
-
-**Área de Transferência Compartilhada** — Copie e cole de forma contínua entre sua máquina local e os alvos remotos. Suporta totalmente texto, imagens e transferências de arquivos de forma nativa.
-
-**Suporte a Múltiplos Monitores** — Eu adicionei a capacidade de alternar entre várias telas. Se a máquina alvo tiver vários monitores, agora você pode facilmente selecionar qual deseja visualizar diretamente nas configurações de conexão. 
-
-<img width="2080" height="1170" alt="Screenshot 2026-05-03 20112н0" src="https://github.com/user-attachments/assets/06dc3de0-2be9-42f7-a897-830a0a6f2bc7" />
-
-
----
-
-## Suporte a Wayland (Sem Prompts)
-
-A maioria dos agentes de desktop remoto no Linux tem dificuldades com Wayland ou constantemente te incomodam com prompts de permissão e pop-ups de confirmação toda vez que uma sessão começa. 
-
-Eu projetei o Agente USBridge para suportar Wayland nativamente. Ele gerencia captura de tela completa e injeção de entrada de forma nativa **sem prompts de permissão irritantes** ou confirmações manuais. Funciona perfeitamente.
-
----
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <code>FUNCIONALIDADE BÁSICA</code><br><br>
+      <b>SUNSHINE CÓDIGO ABERTO</b><br>
+      <i>Streaming de Jogos Padrão</i><br><br>
+      ✓ Streamer Sunshine de código aberto embutido<br>
+      ✓ Acesso a desktop e jogos com baixa latência<br>
+      ✓ Área de transferência de arquivos e texto bidirecional<br>
+      ✓ Suporte a gamepads<br>      
+      ✓ Troca de exibição em múltiplos monitores<br>
+      ✓ Rede P2P Tailscale integrada<br>
+      ✓ Suporte nativo a Wayland (captura sem prompt)
+    </td>
+    <td width="33%" valign="top">
+      <code>+ RECURSOS BÁSICOS</code><br><br>
+      <b>USBRIDGE GRÁTIS</b><br>
+      <i>Motor Remoto Personalizado</i><br><br>
+      ✓ Protocolo remoto personalizado de conexão instantânea<br>
+      ✓ Streaming adaptativo otimizado para estabilidade de Wi-Fi<br>
+      ✓ Gerenciamento de exibição virtual sem cabeça<br>
+      ✓ Passagem de controlador de gamepad com baixa latência<br>
+      ✓ Acesso ao cliente do navegador web (nenhuma instalação necessária)<br>
+      ✓ Acesso pré-login no Windows (entrada de credenciais segura)
+    </td>
+    <td width="33%" valign="top">
+      <code>+ RECURSOS BÁSICOS</code> <code>+ RECURSOS GRÁTIS</code><br><br>
+      <b>USBRIDGE PRO</b><br>
+      <i>Fluxos de Trabalho Profissionais</i><br><br>
+      ✓ Precisão de cor de croma 4:4:4 sem perdas<br>
+      ✓ Passagem de dispositivo periférico USB bruto<br>
+      ✓ Suporte a tablet gráfico com pressão e inclinação<br><br>
+    </td>
+  </tr>
+</table>
 
 ## Início Rápido
 
@@ -109,33 +122,48 @@ Eu projetei o Agente USBridge para suportar Wayland nativamente. Ele gerencia ca
 
 3. **Adicione uma conexão** — insira o IP ou o endereço Tailscale mostrado na janela do Agente. É isso.
 
----
+<div align="center">
+  <img src="./assets/QuickStart.svg" width="1400" alt="USBridge Remote">
+</div>
 
-##  Roteiro do Projeto
+## Integração de Hardware
 
-Eu gerencio os planos de desenvolvimento de software e os recursos futuros em um painel aberto. Se você deseja ver o que está sendo desenvolvido atualmente, o que está planejado ou acompanhar o status dos recursos futuros, confira o roteiro ao vivo:
+<table>
+  <tr>
+   <td width="50%" valign="top">
+      <b>Controle de BIOS em Nível de Hardware</b><br>
+      USBridge Remote integra-se nativamente com o dispositivo USBridge-KVM 2.0 para gerenciamento fora de banda e bare-metal antes da inicialização do SO.<br><br>
+      <a href="https://www.usbridge.io/hardware-agent#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Buy USBridge-KVM 2.0"></a>
+    </td>
+    <td width="50%" valign="top">
+      <b>Firmware DIY IP-KVM</b><br>
+      Implemente o firmware oficial em um SBC compatível (por exemplo, Radxa Zero 3W/3E, Cubie A7) com uma interface de captura USB para provisionar um nó KVM personalizado.<br><br>
+      <a href="https://www.usbridge.io/hardware-agent"><img src="https://img.shields.io/badge/DOWNLOAD-DIY_FIRMWARE-007ec6?style=for-the-badge" alt="Get the Firmware"></a>
+    </td>
+  </tr>
+</table>
 
- **[Ver Roteiro do USBridge Remote](https://github.com/orgs/USBridge-Technologies/projects/3)**
+## Recursos & Licença
 
----
-
-## Comunidade & Testes Beta
-
-Junte-se ao nosso Discord para obter o papel de **Beta Tester**, relatar bugs e me ajudar a moldar o roteiro:
-
-**[discord.com/invite/xqQ6ybkfWS](https://discord.com/invite/xqQ6ybkfWS)**
-
----
-
-## Links
-
-- 🌐 [Site Oficial](https://usbridge.io)
-- ❤️ [Página do Patreon](https://www.patreon.com/USBridge_Technologies)
-- 🛒 [USBridge KVM 2.0 no Crowd Supply](https://crowdsupply.com/usbridge-technologies/usbridge-kvm-2-0)
-- 💬 [Discord](https://discord.com/invite/xqQ6ybkfWS)
-
----
-
-## 📜 Licença
-
-Este projeto está licenciado sob a **GPLv3** (veja [`LICENSE`](LICENSE)). O cliente Android/Windows/macOS/Linux incorpora código de `moonlight-common-c` (também GPLv3).
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <b>Desenvolvimento & Roteiro</b><br>
+      Eu mantenho um painel público para acompanhar todos os recursos planejados, atualizações arquitetônicas e cronogramas de lançamento.<br><br>
+      <a href="https://github.com/orgs/USBridge-Technologies/projects/3">Ver Roteiro Ao Vivo</a>
+    </td>
+    <td width="33%" valign="top">
+      <b>Links do Projeto</b><br>
+      <ul>
+        <li><a href="https://usbridge.io">Site Oficial</a></li>
+        <li><a href="https://discord.com/invite/xqQ6ybkfWS">Discord (Teste Beta & Bugs)</a></li>
+        <li><a href="https://www.patreon.com/USBridge_Technologies">Apoio no Patreon</a></li>
+      </ul>
+    </td>
+    <td width="33%" valign="top">
+      <b>Licença (GPLv3)</b><br>
+      Este projeto está licenciado sob a <b>GPLv3</b>. O cliente multiplataforma incorpora código da <code>moonlight-common-c</code> (também GPLv3).<br><br>
+      <a href="LICENSE">Ver Arquivo de LICENÇA</a>
+    </td>
+  </tr>
+</table>
