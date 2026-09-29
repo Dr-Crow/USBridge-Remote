@@ -16,7 +16,9 @@ import (
 
 // SaveConnection saves the connection directly.
 // masterKey — API master secret (from device QR code).
-func (cm *ConnectionManager) SaveConnection(name, internalHost, tailscaleHost, masterKey, protocol string, tailscaleRegister bool) string {
+// hwID — the agent's hw_id if the QR/deep link carried one (see
+// SavedConnection.HwID's doc comment); "" for a manual entry.
+func (cm *ConnectionManager) SaveConnection(name, internalHost, tailscaleHost, masterKey, protocol, hwID string, tailscaleRegister bool) string {
 	internalHost = strings.TrimSpace(internalHost)
 	tailscaleHost = strings.TrimSpace(tailscaleHost)
 	if internalHost == "" && tailscaleHost == "" {
@@ -46,11 +48,19 @@ func (cm *ConnectionManager) SaveConnection(name, internalHost, tailscaleHost, m
 		MasterKey:         strings.TrimSpace(masterKey),
 		Protocol:          normalizeConnectionProtocol(protocol),
 		TailscaleRegister: tailscaleRegister,
+		Origin:            connectionOriginLocal,
+		HwID:              strings.TrimSpace(hwID),
 	}
 	conn.Host = fallbackText(conn.InternalHost, conn.TailscaleHost)
 	cm.connections = append(cm.connections, conn)
 	cm.selectedIndex = len(cm.connections) - 1
+	if cm.canSyncConnections() && cm.AutoSyncNewConnections() {
+		cm.addBlobKey(connectionSyncKey(conn))
+	}
 	cm.saveConnections()
+	if cm.canSyncConnections() && cm.AutoSyncNewConnections() {
+		cm.flushSyncPush()
+	}
 	fyne.Do(func() {
 		cm.refreshConnectionsList()
 	})
@@ -116,31 +126,83 @@ func (cm *ConnectionManager) RememberResolvedTailscaleHost(currentHost, internal
 	// the reasons above, an auto-selected Tailscale protocol isn't safe to
 	// assume works, especially in the browser build.
 	logrus.Warnf("⚠️ [TS] No matching connection found for currentHost=%q; saving as NEW connection", currentHost)
-	name := cm.SaveConnection("", internalHost, tailscaleHost, masterKey, models.ConnectionProtocolAuto, false)
+	name := cm.SaveConnection("", internalHost, tailscaleHost, masterKey, models.ConnectionProtocolAuto, "", false)
 	logrus.Infof("Saved new connection %q with resolved tailscale host=%s", name, tailscaleHost)
 }
 
-// UpdateConnectionOS updates the RemoteOS field for a saved connection by host.
-func (cm *ConnectionManager) UpdateConnectionOS(currentHost, os string) {
-	if cm == nil || strings.TrimSpace(os) == "" {
+// UpdateConnectionOS stores the host OS and the live agent tariff
+// (opensource / free / pro / enterprise) on the matching saved connection.
+// Called on connect, whenever the agent reports a backend switch during
+// the session, and once more on disconnect so the Connections plaque is
+// current when the user returns to the list.
+func (cm *ConnectionManager) UpdateConnectionOS(currentHost, os, protocol string) {
+	if cm == nil {
 		return
 	}
-	currentHost = strings.TrimSpace(currentHost)
-	for i := range cm.connections {
-		conn := cm.connections[i]
-		savedInternal, savedTailscale := classifyConnectionHosts(conn)
-		if currentHost != "" && (strings.TrimSpace(conn.Host) == currentHost || savedInternal == currentHost || savedTailscale == currentHost) {
-			if cm.connections[i].RemoteOS == os {
-				return
-			}
-			cm.connections[i].RemoteOS = os
-			cm.saveConnections()
-			fyne.Do(func() {
-				cm.refreshConnectionsList()
-			})
-			return
-		}
+	idx, changed := applyConnectionAgentInfo(cm.connections, currentHost, os, protocol)
+	if idx < 0 || !changed {
+		return
 	}
+	if cm.app != nil {
+		cm.saveConnections()
+	}
+	fyne.Do(func() {
+		cm.refreshConnectionsList()
+	})
+}
+
+// applyConnectionAgentInfo writes OS/tariff onto the saved row that matches
+// currentHost (Host, InternalHost, or TailscaleHost). idx is -1 when none match.
+func applyConnectionAgentInfo(conns []SavedConnection, currentHost, os, protocol string) (idx int, changed bool) {
+	os = strings.TrimSpace(os)
+	protocol = strings.TrimSpace(protocol)
+	currentHost = strings.TrimSpace(currentHost)
+	if currentHost == "" || (os == "" && protocol == "") {
+		return -1, false
+	}
+	for i := range conns {
+		conn := conns[i]
+		savedInternal, savedTailscale := classifyConnectionHosts(conn)
+		if strings.TrimSpace(conn.Host) != currentHost && savedInternal != currentHost && savedTailscale != currentHost {
+			continue
+		}
+		if os != "" && conns[i].RemoteOS != os {
+			conns[i].RemoteOS = os
+			changed = true
+		}
+		if protocol != "" && conns[i].RemoteProtocol != protocol {
+			conns[i].RemoteProtocol = protocol
+			changed = true
+		}
+		return i, changed
+	}
+	return -1, false
+}
+
+func lookupConnectionAgentInfo(conns []SavedConnection, currentHost string) (osName, protocol string) {
+	currentHost = strings.TrimSpace(currentHost)
+	if currentHost == "" {
+		return "", ""
+	}
+	for i := range conns {
+		conn := conns[i]
+		savedInternal, savedTailscale := classifyConnectionHosts(conn)
+		if strings.TrimSpace(conn.Host) != currentHost && savedInternal != currentHost && savedTailscale != currentHost {
+			continue
+		}
+		return strings.TrimSpace(conns[i].RemoteOS), strings.TrimSpace(conns[i].RemoteProtocol)
+	}
+	return "", ""
+}
+
+// LookupAgentIdentity returns the last known OS/tariff for this host from
+// connections.json, used to seed Devices/mouse mapping while live
+// /api/device/info is already in hand or still filling a blank field.
+func (cm *ConnectionManager) LookupAgentIdentity(currentHost string) (osName, protocol string) {
+	if cm == nil {
+		return "", ""
+	}
+	return lookupConnectionAgentInfo(cm.connections, currentHost)
 }
 
 // getStorageURI returns the storage URI
@@ -170,7 +232,7 @@ func (cm *ConnectionManager) saveConnections() {
 // nothing new to merge: the local file is already correct, so there's
 // nothing worth pushing back up over it.
 func (cm *ConnectionManager) saveConnectionsLocalOnly() {
-	data, err := json.MarshalIndent(cm.connections, "", "  ")
+	data, err := json.MarshalIndent(localConnections(cm.connections), "", "  ")
 	if err != nil {
 		logrus.Errorf("Serialization error: %v", err)
 		return
@@ -214,6 +276,11 @@ func (cm *ConnectionManager) loadConnections() {
 	}
 
 	needsSave := false
+	if filtered := localConnections(cm.connections); len(filtered) != len(cm.connections) {
+		cm.connections = filtered
+		needsSave = true
+	}
+
 	for i := range cm.connections {
 		internalHost, tailscaleHost := classifyConnectionHosts(cm.connections[i])
 		// Migrate old-format connections that stored only the legacy `host` field without
@@ -234,6 +301,7 @@ func (cm *ConnectionManager) loadConnections() {
 		cm.connections[i].Host = fallbackText(internalHost, tailscaleHost)
 		cm.connections[i].MasterKey = strings.TrimSpace(cm.connections[i].MasterKey)
 		cm.connections[i].Protocol = normalizeConnectionProtocol(cm.connections[i].Protocol)
+		cm.connections[i].Origin = connectionOriginLocal
 		// Clear stale tailscale_register flag: once a tailscale_host is known,
 		// registration bootstrap is no longer needed.
 		if tailscaleHost != "" && cm.connections[i].TailscaleRegister {

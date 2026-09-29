@@ -71,7 +71,7 @@ AGENT_PKGS=(
     # while bundling the AppImage. See agent-release.yml / release-all.yml.
     libminiupnpc-dev libva2 libva-drm2 libvdpau1
     libpulse0 libopus0 libcap2 libdrm2 libevdev2
-    libxtst6 libxrandr2 libxfixes3 libnuma1 libcurl4
+    libxtst6 libxrandr2 libxfixes3 libnuma1 libcurl4-openssl-dev
     libayatana-appindicator3-1 libssl3
     libpipewire-0.3-0 libwayland-client0 libwayland-egl1
     # `setcap`/`getcap` (KMSCaptureGranted/RequestKMSCapture) and `pkexec`

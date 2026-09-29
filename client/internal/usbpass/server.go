@@ -13,24 +13,33 @@ import (
 )
 
 const (
-	usbipVersion   = 0x0111
-	opReqDevlist   = 0x8005
-	opRepDevlist   = 0x0005
-	opReqImport    = 0x8003
-	opRepImport    = 0x0003
-	cmdSubmit      = 0x00000001
-	cmdUnlink      = 0x00000002
-	retSubmit      = 0x00000003
-	retUnlink      = 0x00000004
-	dirOut         = 0
-	dirIn          = 1
-	errnoEPIPE     = -32
+	usbipVersion    = 0x0111
+	opReqDevlist    = 0x8005
+	opRepDevlist    = 0x0005
+	opReqImport     = 0x8003
+	opRepImport     = 0x0003
+	cmdSubmit       = 0x00000001
+	cmdUnlink       = 0x00000002
+	retSubmit       = 0x00000003
+	retUnlink       = 0x00000004
+	dirOut          = 0
+	dirIn           = 1
+	errnoEPIPE      = -32
 	errnoECONNRESET = -104
 )
 
 // ExportedDevice is one device advertised on the USB/IP wire.
 type ExportedDevice struct {
-	BusID      string
+	BusID string
+	// InstanceID carries the passthrough list's
+	// models.USBPassthroughDevice.InstanceID through to TryClaimGousb. Only
+	// darwin's hidbridge_darwin.go reads it today (see
+	// hidEntryIDFromInstanceID) -- needed to disambiguate one interface of a
+	// composite HID device that shares a VID:PID with its siblings, which
+	// BusID/Busnum/Devnum (hashed from that same InstanceID) can't do since
+	// the hash collapses distinctness rather than preserving it. Zero value
+	// is harmless everywhere else.
+	InstanceID string
 	Path       string
 	Busnum     uint32
 	Devnum     uint32
@@ -44,9 +53,21 @@ type ExportedDevice struct {
 	ConfigVal  uint8
 	NumConfigs uint8
 	Interfaces [][3]uint8 // class, subclass, protocol
-	DeviceDesc []byte
-	ConfigDesc []byte
-	Backend    DeviceBackend
+	// HIDUsagePage/HIDUsage are the device's top-level HID usage (e.g.
+	// 0x01/0x05 = Generic Desktop/GamePad) when known -- copied from the
+	// lister (list_hid_darwin.go, listSysfs), else read off the claimed
+	// backend's report descriptor by probeHIDUsage (hid_usage.go). Zero
+	// means unknown, same "resolves to Pro" default as an empty Interfaces.
+	// Sent as packRepDevlist's own trailing extension (see there) -- never
+	// part of appendDeviceBody's shared, real-USB/IP-spec-compatible fixed
+	// record, so this can't affect a real usbip-win2 VHCI OP_REQ_IMPORT.
+	HIDUsagePage uint16
+	HIDUsage     uint16
+	DeviceDesc   []byte
+	ConfigDesc   []byte
+	Backend      DeviceBackend
+
+	trace urbTrace // see urbtrace.go
 }
 
 // DeviceBackend answers URBs for an imported device. ctx is per-URB: it is
@@ -57,19 +78,72 @@ type ExportedDevice struct {
 // its own internal timeout, which is what left CMD_UNLINK unprocessable and
 // made Windows reset the port after a slow/stuck transfer (see serveURBs).
 type DeviceBackend interface {
-	HandleControl(ctx context.Context, setup [8]byte, wLength int) (status int32, data []byte)
+	// outData is the host-to-device data stage of a control-OUT URB (nil for
+	// control-IN or an OUT with no data stage); a backend must forward it, not
+	// just the setup packet. For an OUT the returned data is ignored.
+	HandleControl(ctx context.Context, setup [8]byte, wLength int, outData []byte) (status int32, data []byte)
 	HandleBulk(ctx context.Context, ep uint8, dirIn bool, length int, outData []byte) (status int32, data []byte)
 	Close() error
 }
 
 // Server is an in-process USB/IP v1.1.1 export listener.
 type Server struct {
-	mu       sync.Mutex
-	ln       net.Listener
-	devices  []*ExportedDevice
-	conns    []net.Conn
-	closing  bool
-	wg       sync.WaitGroup
+	mu      sync.Mutex
+	ln      net.Listener
+	devices []*ExportedDevice
+	conns   []net.Conn
+	closing bool
+	wg      sync.WaitGroup
+
+	// owner is the connection currently serving each device. A device is one
+	// physical thing: a second import of the same bus id must replace the first,
+	// not run beside it, or the importer ends up with two
+	// virtual copies -- two gamepads in Steam for one pad.
+	owner map[*ExportedDevice]*importOwner
+}
+
+// importOwner is one URB session on a device; done closes when its serveURBs
+// has fully returned.
+type importOwner struct {
+	conn net.Conn
+	done chan struct{}
+}
+
+// evictTimeout bounds how long a new import waits for the previous session's
+// in-flight URBs to be aborted before it takes the device over anyway.
+const evictTimeout = 3 * time.Second
+
+// takeOver makes c the only session serving dev. A previous session is
+// closed (its importer sees the socket drop and removes that virtual device --
+// also what recovers a stale connection whose peer vanished without a FIN) and
+// awaited, so two sessions never drive one backend at once. release must be
+// called when c's session ends.
+func (s *Server) takeOver(dev *ExportedDevice, c net.Conn) (release func()) {
+	mine := &importOwner{conn: c, done: make(chan struct{})}
+	s.mu.Lock()
+	if s.owner == nil {
+		s.owner = map[*ExportedDevice]*importOwner{}
+	}
+	prev := s.owner[dev]
+	s.owner[dev] = mine
+	s.mu.Unlock()
+	if prev != nil {
+		logrus.Warnf("usbpass: %s imported again; closing the previous session", dev.BusID)
+		_ = prev.conn.Close()
+		select {
+		case <-prev.done:
+		case <-time.After(evictTimeout):
+			logrus.Warnf("usbpass: previous session of %s did not stop within %s", dev.BusID, evictTimeout)
+		}
+	}
+	return func() {
+		s.mu.Lock()
+		if s.owner[dev] == mine {
+			delete(s.owner, dev)
+		}
+		s.mu.Unlock()
+		close(mine.done)
+	}
 }
 
 // StartExport binds addr (e.g. "0.0.0.0:3240") and serves devices.
@@ -102,12 +176,28 @@ func (s *Server) Stop() {
 	for _, c := range conns {
 		_ = c.Close()
 	}
+	// Wait for every connection's handleConn/serveURBs goroutine to actually
+	// return *before* closing the devices' backends, not after. Closing a
+	// conn only unblocks that goroutine's blocking c.Read() -- serveURBs
+	// still has to run its own deferred cancelConn()+wg.Wait() (aborting and
+	// draining whatever dispatchURB calls were in flight) before it returns,
+	// which happens asynchronously in that goroutine, not synchronously
+	// inside this c.Close() call. Closing the backend (e.g. gousbBackend's
+	// libusb_close) while one of those goroutines is still actually
+	// mid-transfer on the same device handle is a real use-after-close race,
+	// not just a theoretical one: confirmed live via a SIGSEGV inside
+	// libusb_close, triggered from here racing a still-in-flight HandleBulk
+	// control call on a real device. A bulk (mass-storage) transfer rarely
+	// hit this window in practice since it completes quickly; an interrupt
+	// endpoint's read can legitimately block for up to its own poll window
+	// (see handleNonBulk in backend_gousb.go), making the race far more
+	// likely to actually land.
+	s.wg.Wait()
 	for _, d := range devs {
 		if d.Backend != nil {
 			_ = d.Backend.Close()
 		}
 	}
-	s.wg.Wait()
 }
 
 // Devices returns the exported devices, so a terminal harness can talk to a
@@ -195,11 +285,14 @@ func (s *Server) handleConn(c net.Conn) error {
 			}
 		}
 		s.mu.Unlock()
+		if found == nil {
+			_, _ = c.Write(packRepImport(nil))
+			return fmt.Errorf("unknown busid %q", busID)
+		}
+		release := s.takeOver(found, c)
+		defer release()
 		if _, err := c.Write(packRepImport(found)); err != nil {
 			return err
-		}
-		if found == nil {
-			return fmt.Errorf("unknown busid %q", busID)
 		}
 		_ = c.SetDeadline(time.Time{}) // URB session can be long
 		return s.serveURBs(c, found)
@@ -262,6 +355,7 @@ func (s *Server) serveURBs(c net.Conn, dev *ExportedDevice) error {
 			buf = buf[consumed:]
 
 			if frame.cmd == cmdUnlink {
+				dev.trace.unlink(frame.seq, frame.unlinkSeq)
 				inflightMu.Lock()
 				if cancel, ok := inflight[frame.unlinkSeq]; ok {
 					cancel()
@@ -370,14 +464,21 @@ func dispatchURB(ctx context.Context, dev *ExportedDevice, f urbFrame) []byte {
 	ep := uint8(f.ep)
 	var status int32
 	var data []byte
+	start := time.Now()
 	if ep&0x7f == 0 {
 		wLen := int(binary.LittleEndian.Uint16(f.setup[6:8]))
 		if f.transferLen > 0 && int(f.transferLen) < wLen {
 			wLen = int(f.transferLen)
 		}
-		status, data = dev.Backend.HandleControl(ctx, f.setup, wLen)
+		status, data = dev.Backend.HandleControl(ctx, f.setup, wLen, f.data)
 	} else {
 		status, data = dev.Backend.HandleBulk(ctx, ep, f.direction == dirIn, int(f.transferLen), f.data)
+	}
+	dev.trace.record(f, status, data, time.Since(start))
+	if f.direction == dirOut {
+		// A RET_SUBMIT for an OUT carries no data stage; stray bytes here
+		// desync the importer's stream.
+		data = nil
 	}
 
 	actualLength := int32(len(data))
@@ -396,6 +497,15 @@ func packRepDevlist(devs []*ExportedDevice) []byte {
 	out = appendU32(out, uint32(len(devs)))
 	for _, d := range devs {
 		out = appendDeviceBody(out, d, true)
+	}
+	// Trailing extension, one (HIDUsagePage, HIDUsage) pair per device in
+	// the same order as the loop above -- devlist_probe.rs's only consumer,
+	// added after every real OP_REP_DEVLIST record so a real USB/IP DEVLIST
+	// reader (which reads exactly ndev records and stops) never even looks
+	// at these bytes. See ExportedDevice.HIDUsagePage's doc comment.
+	for _, d := range devs {
+		out = appendU16(out, d.HIDUsagePage)
+		out = appendU16(out, d.HIDUsage)
 	}
 	return out
 }

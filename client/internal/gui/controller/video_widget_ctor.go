@@ -37,6 +37,9 @@ func NewVideoWidget(parent fyne.Window, usbClient *api.USBClient, videoClient se
 				// clearVideo() destroys the overlay and shows a darkened last frame via
 				// the Fyne canvas instead, an unambiguous "stopped" visual.
 				go vw.clearVideo()
+				if vw.userStoppedVideo.Load() {
+					return
+				}
 				vw.scheduleVideoReconcile("state-" + state)
 			case "connected", "streaming":
 				// Ignore stale "connected" callbacks that arrive after the user
@@ -48,14 +51,10 @@ func NewVideoWidget(parent fyne.Window, usbClient *api.USBClient, videoClient se
 				}
 				vw.isVideoConnected = true
 				// Starts the no-frame watchdog (see beginVideoTrace/
-				// forceReconnectStuckStream): Sunshine can accept a connection
-				// (RTSP/control/audio/input all negotiate successfully) and then
-				// never actually deliver a video frame, with no error surfaced
-				// anywhere — moonlight-common-c's own 10s watchdogs don't reliably
-				// catch it. Timed from "connected" rather than from the start of
-				// the whole connect attempt, since Sunshine's own launch/negotiate
-				// can itself take several seconds and would otherwise race a timer
-				// started too early.
+				// forceReconnectStuckStream) only after moonlight-common-c
+				// reports the stream is actually up (goMoonlightConnected).
+				// Firing this on LiStartConnection-submitted used to kill a
+				// live ENet handshake at 4s (WSAEINTR) against RustShine.
 				vw.beginVideoTrace("connected")
 			}
 		})
@@ -65,6 +64,9 @@ func NewVideoWidget(parent fyne.Window, usbClient *api.USBClient, videoClient se
 		videoClient.SetOnPairingPINRequired(func(pin string) {
 			logrus.Infof("🔐 [VideoWidget] showing manual pairing PIN (host has no usbridge auto-pair endpoint)")
 			fyne.Do(func() {
+				if vw.isClosing.Load() || vw.userStoppedVideo.Load() {
+					return
+				}
 				vw.showPairingPINDialog(pin)
 			})
 		})

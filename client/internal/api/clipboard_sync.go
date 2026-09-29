@@ -5,8 +5,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -19,6 +22,19 @@ import (
 
 	"usbridge-client/internal/clipboard"
 )
+
+// clipboardWSConn is the minimal shape runOnce needs from its transport --
+// satisfied directly by *websocket.Conn (desktop-native, and the wasm build
+// whenever no WebRTC DataChannel is available) and by dcJSONConn (the wasm
+// build's WebRTC-DataChannel path, see dial/dcJSONConn below). Mirrors the
+// agent's own clipboardJSONConn (clipboard.go's runClipboardDuplex) for the
+// exact same reason: hide two very different transports' framing from the
+// shared duplex loop.
+type clipboardWSConn interface {
+	WriteJSON(v interface{}) error
+	ReadJSON(v interface{}) error
+	Close() error
+}
 
 // ClipboardEvent mirrors the agent's api.ClipboardEvent wire format exactly
 // (same JSON field names) — independently defined since the two modules
@@ -47,29 +63,160 @@ type ClipboardEvent struct {
 }
 
 // ClipboardSync dials the paired agent's /api/clipboard/ws signaling channel
-// and keeps the local system clipboard in sync with it: local changes are
-// pushed out, incoming changes are applied locally.
+// (or, on the wasm build with WebRTC available, its "clipboard-sync"
+// DataChannel counterpart -- see SetOpenDataChannel) and keeps the local
+// system clipboard in sync with it: local changes are pushed out, incoming
+// changes are applied locally.
 type ClipboardSync struct {
 	client   *USBClient
 	manager  *clipboard.Manager
 	maxBytes int64
 
+	// OpenDataChannel, when set, routes the wasm build's connection over the
+	// already-established RustShine WebRTC PeerConnection instead of a
+	// direct ws://+wss:// dial -- see dial's doc comment for why a direct
+	// dial can never work from an https-loaded page at all. Wired from
+	// gui.mainWindow the same optional-interface-probe pattern already used
+	// for browser USB/gamepad/pen passthrough (see
+	// internal/usbpass/usbaes_attach_wasm.go's identical field); nil on
+	// every non-wasm platform and whenever the active backend has no
+	// WebRTC (e.g. plain Sunshine).
+	OpenDataChannel func(label string) (net.Conn, error)
+
 	mu     sync.Mutex
-	conn   *websocket.Conn
+	conn   clipboardWSConn
 	cancel context.CancelFunc
+	// push sends local content over the live connection and send writes a
+	// raw event over it; both nil while disconnected. Set by runOnce, used
+	// by PushNow/PullNow.
+	push func(clipboard.Content) error
+	send func(ClipboardEvent) error
+
+	// autoSync applies incoming remote changes as they arrive (the local
+	// side is gated by manager.SetEnabled). Off is manual mode: remote
+	// changes are only remembered in lastRemote until PullNow.
+	autoSync atomic.Bool
+
+	pullMu     sync.Mutex
+	lastRemote *ClipboardEvent // newest non-pending remote event
+	pullWaiter chan struct{}   // non-nil while a PullNow waits for a reply
 }
+
+// clipboardRequestKind asks the agent to push its current clipboard back
+// (runClipboardDuplex answers with its Snapshot). Older agents ignore
+// unknown kinds, so PullNow falls back to lastRemote.
+const clipboardRequestKind = "request"
+
+// pullReplyTimeout bounds how long PullNow waits for the agent's reply
+// before falling back to the last remote change it already received. A var
+// so tests can shorten it.
+var pullReplyTimeout = 2 * time.Second
+
+var (
+	// ErrClipboardNotConnected is returned by PushNow/PullNow with no live
+	// connection to the agent.
+	ErrClipboardNotConnected = errors.New("clipboard-sync: not connected")
+	// ErrClipboardEmpty is returned by PushNow/PullNow when there is
+	// nothing to transfer.
+	ErrClipboardEmpty = errors.New("clipboard-sync: clipboard is empty")
+)
 
 // NewClipboardSync wraps manager with a connection to client's paired agent.
 // Call Start to begin syncing and Stop to tear it down.
 func NewClipboardSync(client *USBClient, manager *clipboard.Manager, maxBytes int64) *ClipboardSync {
-	return &ClipboardSync{client: client, manager: manager, maxBytes: maxBytes}
+	cs := &ClipboardSync{client: client, manager: manager, maxBytes: maxBytes}
+	cs.autoSync.Store(true)
+	return cs
 }
 
-// SetEnabled pauses/resumes sync without tearing down the connection.
+// SetEnabled switches automatic two-way sync on or off without tearing down
+// the connection. Off is manual mode: nothing moves in either direction
+// until PushNow or PullNow.
 func (cs *ClipboardSync) SetEnabled(enabled bool) {
+	cs.autoSync.Store(enabled)
 	if cs.manager != nil {
 		cs.manager.SetEnabled(enabled)
 	}
+}
+
+// PushNow sends whatever is on the local clipboard to the agent right away,
+// regardless of automatic sync. Blocks for the upload of an image or files.
+func (cs *ClipboardSync) PushNow() error {
+	cs.mu.Lock()
+	push := cs.push
+	cs.mu.Unlock()
+	if push == nil {
+		return ErrClipboardNotConnected
+	}
+	content, ok := cs.manager.Snapshot()
+	if !ok {
+		return ErrClipboardEmpty
+	}
+	return push(content)
+}
+
+// PullNow replaces the local clipboard with the agent's current one,
+// regardless of automatic sync. It asks the agent for a fresh copy and waits
+// up to pullReplyTimeout; if the agent does not answer (older agents ignore
+// the request), the newest change it already announced on this connection
+// is applied instead.
+func (cs *ClipboardSync) PullNow() error {
+	cs.mu.Lock()
+	send := cs.send
+	cs.mu.Unlock()
+	if send == nil {
+		return ErrClipboardNotConnected
+	}
+
+	waiter := make(chan struct{})
+	cs.pullMu.Lock()
+	cs.pullWaiter = waiter
+	cs.pullMu.Unlock()
+
+	if err := send(ClipboardEvent{Kind: clipboardRequestKind}); err != nil {
+		cs.pullMu.Lock()
+		if cs.pullWaiter == waiter {
+			cs.pullWaiter = nil
+		}
+		cs.pullMu.Unlock()
+		return err
+	}
+	select {
+	case <-waiter:
+		return nil
+	case <-time.After(pullReplyTimeout):
+	}
+
+	cs.pullMu.Lock()
+	if cs.pullWaiter != waiter {
+		// The reply raced the timeout; the read loop is applying it.
+		cs.pullMu.Unlock()
+		return nil
+	}
+	cs.pullWaiter = nil
+	last := cs.lastRemote
+	cs.pullMu.Unlock()
+	if last == nil {
+		return ErrClipboardEmpty
+	}
+	logrus.Infof("[clipboard-sync] no reply to pull request, applying last remote %s change", last.Kind)
+	return cs.applyIncomingEvent(context.Background(), *last)
+}
+
+// takeIncoming records event as the newest remote clipboard and reports
+// whether to apply it now: always in automatic mode, and in manual mode only
+// as the answer to a pending PullNow. done releases that PullNow; call it
+// once the event is applied.
+func (cs *ClipboardSync) takeIncoming(event ClipboardEvent) (apply bool, done func()) {
+	cs.pullMu.Lock()
+	defer cs.pullMu.Unlock()
+	ev := event
+	cs.lastRemote = &ev
+	if waiter := cs.pullWaiter; waiter != nil {
+		cs.pullWaiter = nil
+		return true, func() { close(waiter) }
+	}
+	return cs.autoSync.Load(), func() {}
 }
 
 // Start connects and begins the duplex sync loop in the background,
@@ -149,6 +296,80 @@ func (cs *ClipboardSync) wsURL() string {
 	return url + "/api/clipboard/ws"
 }
 
+// SetOpenDataChannel wires cs.OpenDataChannel after construction -- see that
+// field's doc comment. Safe to call before Start.
+func (cs *ClipboardSync) SetOpenDataChannel(fn func(label string) (net.Conn, error)) {
+	cs.OpenDataChannel = fn
+}
+
+// clipboardDataChannelLabel is the WebRTC DataChannel label rustshine
+// recognizes for this (see rust-shine's crates/webrtc-video/src/
+// signaling.rs's on_data_channel and usbpass_bridge::attach_clipboard_channel).
+const clipboardDataChannelLabel = "clipboard-sync"
+
+// dial opens the transport runOnce will speak clipboardWSConn over.
+// Prefers cs.OpenDataChannel when set (the wasm build with an active
+// RustShine WebRTC PeerConnection): a direct ws://+wss:// dial from an
+// https-loaded page (e.g. https://web.usbridge.io) either gets blocked
+// outright as mixed content (ws://) or, for wss://, can only ever present
+// the agent's self-signed cert for a bare-IP target (TLS SNI is never sent
+// for an IP literal, so the agent's cert manager can't select its
+// browser-trusted device-wildcard cert there) -- and a browser silently
+// rejects an untrusted cert for a background WebSocket upgrade, with no
+// click-through the way a top-level navigation warning has. The WebRTC
+// DataChannel rides the already-DTLS-encrypted PeerConnection instead and
+// is exempt from both problems entirely. Falls back to the direct dial
+// whenever OpenDataChannel itself fails -- not just when it's nil: on
+// desktop-native mw.videoClient is always *service.MoonlightService (no
+// WebRTC outside the wasm build), whose OpenDataChannel method is a real,
+// non-nil func that unconditionally errors (see moonlight_datachannel.go),
+// so a bare nil-check here would never reach this fallback at all and
+// clipboard sync would be permanently broken on every desktop client. Also
+// covers wasm with no active WebRTC PeerConnection (e.g. plain Sunshine),
+// same as before this existed.
+func (cs *ClipboardSync) dial(ctx context.Context, header http.Header) (clipboardWSConn, *http.Response, error) {
+	if cs.OpenDataChannel != nil {
+		conn, err := cs.OpenDataChannel(clipboardDataChannelLabel)
+		if err == nil {
+			return newDCJSONConn(conn), nil, nil
+		}
+		logrus.Warnf("[clipboard-sync] DataChannel unavailable (%v), falling back to direct dial", err)
+	}
+	return cs.dialer().DialContext(ctx, cs.wsURL(), header)
+}
+
+// dcJSONConn adapts a message-oriented net.Conn (webrtcweb.WebRTCClient.
+// OpenDataChannel's return value -- one Write() call is one complete
+// DataChannel message, one logical unit off Read() is likewise one
+// complete received message, see dcconn_wasm.go's doc comment) to
+// clipboardWSConn: one JSON value per message in both directions, exactly
+// matching one WS message per WriteJSON/ReadJSON call on the direct-dial
+// path this replaces.
+type dcJSONConn struct {
+	conn net.Conn
+}
+
+func newDCJSONConn(conn net.Conn) *dcJSONConn {
+	return &dcJSONConn{conn: conn}
+}
+
+func (c *dcJSONConn) WriteJSON(v interface{}) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	_, err = c.conn.Write(data)
+	return err
+}
+
+func (c *dcJSONConn) ReadJSON(v interface{}) error {
+	return json.NewDecoder(c.conn).Decode(v)
+}
+
+func (c *dcJSONConn) Close() error {
+	return c.conn.Close()
+}
+
 // signedHeader builds the X-Auth-Signature/X-Auth-Timestamp headers for a
 // request whose body is not included in the signature — used for the WS
 // upgrade (no body) and the blob PUT/GET endpoints (bodies too large to sign
@@ -167,8 +388,12 @@ func (cs *ClipboardSync) signedHeader(method, path string) http.Header {
 
 func (cs *ClipboardSync) runOnce(ctx context.Context) error {
 	header := cs.signedHeader("GET", "/api/clipboard/ws")
-	logrus.Infof("[clipboard-sync] dialing %s", cs.wsURL())
-	conn, resp, err := cs.dialer().DialContext(ctx, cs.wsURL(), header)
+	if cs.OpenDataChannel != nil {
+		logrus.Infof("[clipboard-sync] dialing DataChannel %q", clipboardDataChannelLabel)
+	} else {
+		logrus.Infof("[clipboard-sync] dialing %s", cs.wsURL())
+	}
+	conn, resp, err := cs.dial(ctx, header)
 	if err != nil {
 		status := "n/a"
 		if resp != nil {
@@ -204,22 +429,34 @@ func (cs *ClipboardSync) runOnce(ctx context.Context) error {
 	}
 
 	var closed atomic.Bool
-	pushLocal := func(content clipboard.Content) {
+	sendLocal := func(content clipboard.Content) error {
 		if closed.Load() {
-			return
+			return ErrClipboardNotConnected
 		}
 		event, err := cs.buildOutgoingEvent(ctx, content)
 		if err != nil {
 			logrus.Errorf("[clipboard-sync] failed to prepare outgoing event: %v", err)
-			return
+			return err
 		}
 		if err := safeWriteJSON(event); err != nil {
 			logrus.Errorf("[clipboard-sync] push failed: %v", err)
-			return
+			return err
 		}
 		logrus.Infof("[clipboard-sync] sent local %s change (size=%d)", event.Kind, event.Size)
+		return nil
 	}
+	pushLocal := func(content clipboard.Content) { _ = sendLocal(content) }
 	cs.manager.SetOnLocalChange(pushLocal)
+
+	cs.mu.Lock()
+	cs.push = sendLocal
+	cs.send = func(event ClipboardEvent) error {
+		if closed.Load() {
+			return ErrClipboardNotConnected
+		}
+		return safeWriteJSON(event)
+	}
+	cs.mu.Unlock()
 
 	pushPending := func(info clipboard.PendingInfo) {
 		if closed.Load() {
@@ -238,6 +475,10 @@ func (cs *ClipboardSync) runOnce(ctx context.Context) error {
 		closed.Store(true)
 		cs.manager.SetOnLocalChange(nil)
 		cs.manager.SetOnLocalChangePending(nil)
+		cs.mu.Lock()
+		cs.push = nil
+		cs.send = nil
+		cs.mu.Unlock()
 	}()
 
 	// Run's poll loop only fires on the *edge* of a detected clipboard
@@ -245,8 +486,11 @@ func (cs *ClipboardSync) runOnce(ctx context.Context) error {
 	// this connection was down would otherwise never be retried. Resync once
 	// up front on every fresh connection so the peer always converges to
 	// whatever is currently on the clipboard, not just future changes.
-	if content, ok := cs.manager.Snapshot(); ok {
-		pushLocal(content)
+	// Manual mode sends nothing on its own.
+	if cs.autoSync.Load() {
+		if content, ok := cs.manager.Snapshot(); ok {
+			pushLocal(content)
+		}
 	}
 
 	for {
@@ -262,10 +506,16 @@ func (cs *ClipboardSync) runOnce(ctx context.Context) error {
 			logrus.Infof("[clipboard-sync] remote is preparing %s change (count=%d, approx_size=%d)", event.Kind, event.FileCount, event.Size)
 			continue
 		}
+		apply, done := cs.takeIncoming(event)
+		if !apply {
+			logrus.Infof("[clipboard-sync] received remote %s change (size=%d), kept for manual pull", event.Kind, event.Size)
+			continue
+		}
 		logrus.Infof("[clipboard-sync] received remote %s change (size=%d)", event.Kind, event.Size)
 		if err := cs.applyIncomingEvent(ctx, event); err != nil {
 			logrus.Errorf("[clipboard-sync] apply failed kind=%s: %v", event.Kind, err)
 		}
+		done()
 	}
 }
 

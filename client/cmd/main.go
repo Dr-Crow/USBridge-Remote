@@ -13,12 +13,12 @@ import (
 	"strings"
 	"time"
 
-	"usbridge-client/internal/api"
 	"usbridge-client/internal/gui"
 	"usbridge-client/internal/gui/i18n"
 	"usbridge-client/internal/gui/view"
 	"usbridge-client/internal/models"
 	"usbridge-client/internal/update"
+	"usbridge-client/internal/usbpass"
 
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
@@ -106,6 +106,18 @@ func main() {
 	}()
 	startPprofIfEnabled()
 
+	// Stutter Profiler: Go scheduler jank detector
+	go func() {
+		for {
+			t0 := time.Now()
+			time.Sleep(5 * time.Millisecond)
+			dt := time.Since(t0)
+			if dt > 25*time.Millisecond {
+				logrus.Warnf("⚠️ [Profiler] Go scheduler stalled for %v (GC or blocking CGO call!)", dt)
+			}
+		}
+	}()
+
 	logrus.Infof("Starting %s version %s", appName, version)
 
 	i18n.Init("en")
@@ -118,10 +130,14 @@ func main() {
 	logrus.Infof("Configuration loaded")
 	logrus.Infof("NBD port: %d", config.NBDPort)
 
-	// Opt-in local ui.parse offload (ONNX Runtime on this machine's CPU/
-	// Intel iGPU instead of the device's NPU) -- no-op unless
-	// LocalUIParseEnabled is set, see internal/api/local_ui_init.go.
-	api.InitLocalUIParseFromConfig(config)
+	// Local ui.parse offload (ONNX Runtime on this machine's CPU/Intel iGPU
+	// instead of the device's NPU) and the AI Vision live overlay share the
+	// same ONNX models -- deliberately NOT loaded here at boot even if
+	// LocalUIParseEnabled was left persisted true from a previous session;
+	// see api.LazyInitLocalUIParse's doc comment for why. Loading is
+	// triggered on demand instead, from the AI Vision checkbox
+	// (service.SetAIVisionEnabled) or the Scripts&AI tab's "Local models"
+	// toggle (scripts_tab_widget.go's applyLocalUIParseSetting).
 
 	gui.SetAppVersion(version)
 	view.SetAppVersion(version)
@@ -165,6 +181,7 @@ func main() {
 		})
 	})
 
+	go usbpass.RestoreLocalInput() // a tablet a crashed export left with its local input off
 	logrus.Info("Starting GUI")
 	mainWindow.Show()
 }

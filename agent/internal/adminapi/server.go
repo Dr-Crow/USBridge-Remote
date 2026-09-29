@@ -17,6 +17,8 @@ import (
 	"usbridge_agent/internal/entitlement"
 	"usbridge_agent/internal/streamhost"
 	"usbridge_agent/internal/tailscale"
+	"usbridge_agent/internal/tlshost"
+	"usbridge_agent/internal/usbpass"
 )
 
 // TokenBackend mirrors the operations internal/ui.Window drives on the
@@ -28,23 +30,37 @@ type TokenBackend interface {
 	SetSunshineCaptureMode(mode string) error
 	KMSCaptureGranted() bool
 	RequestKMSCapture() bool
-	SunshineCapExecPath() string
+	KMSCaptureTargetPath() string
 	RecheckKMSCapture() bool
 	GPUClockLockSupported() bool
 	LockGPUClocksEnabled() bool
 	SetLockGPUClocksEnabled(enabled bool) error
+	NvencTwoPassEnabled() bool
+	SetNvencTwoPass(enabled bool) error
+	NvidiaPowerMode() string
+	SetNvidiaPowerMode(mode string) error
+	GPUs() []config.GPUInfo
+	StreamerAutoUpdateEnabled() bool
+	SetStreamerAutoUpdate(enabled bool) error
+	SnoozeStreamerUpdate(version string) error
+	RemoteWindowLockEnabled() bool
+	SetRemoteWindowLock(enabled bool) error
 	RestartSunshine() error
 	SendSAS() error
 	ListSunshineClients() ([]streamhost.Client, error)
 	UnpairSunshineClient(uniqueID string) error
 	SubmitMoonlightPIN(pin string) error
 	UpdateListenAddr(host string, port int) (config.Config, error)
+	UpdateTLSAddr(port int, enabled bool) (config.Config, error)
 	UpdateSunshinePort(port int) (config.Config, error)
 	UpdateSunshineStreamAddr(host string, streamPort int) (config.Config, error)
 	AdminUser() string
 	AdminPass() string
 	SunshineStreamHost() string
 	StreamerName() string
+	DeviceHostname() string
+	CertStatus() tlshost.CertStatus
+	StreamerRunning() bool
 
 	// Hardware-bound RustShine entitlement (see internal/entitlement,
 	// internal/hwid).
@@ -57,6 +73,19 @@ type TokenBackend interface {
 	CheckRustShineUpdateNow() error
 	SetStreamBackend(kind string) error
 	SetRustShineWebRTCEnabled(enabled bool) error
+
+	// RelinquishEngine gracefully steps this instance down from owning the
+	// engine (see app.App.RelinquishEngine's doc comment) -- called by
+	// another process's evictEngineLockHolder as its first, cooperative
+	// attempt at taking over engine ownership.
+	RelinquishEngine() error
+
+	// USB passthrough (see internal/usbpass) -- see
+	// internal/ui.TokenProvider's own copy of this same doc comment.
+	USBPassthroughStatus() usbpass.Status
+	EnableUSBBroker(onProgress entitlement.ProgressFunc) error
+	InstallUSBDriver() error
+	GrantUSBAttach() error
 
 	// Account login (see internal/account) -- see internal/ui.TokenProvider's
 	// own copy of this same doc comment.
@@ -183,17 +212,47 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /token/gpu-clock-lock-supported", s.handleGPUClockLockSupported)
 	mux.HandleFunc("GET /token/gpu-clock-lock-enabled", s.handleGPUClockLockEnabled)
 	mux.HandleFunc("POST /token/gpu-clock-lock-enabled", s.handleSetGPUClockLockEnabled)
+	mux.HandleFunc("GET /token/nvenc-two-pass", s.boolGetter(func() bool { return s.token.NvencTwoPassEnabled() }))
+	mux.HandleFunc("POST /token/nvenc-two-pass", s.boolSetter(func(v bool) error { return s.token.SetNvencTwoPass(v) }))
+	mux.HandleFunc("GET /token/gpus", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, s.token.GPUs())
+	})
+	mux.HandleFunc("GET /token/nvidia-power-mode", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, stringBody{Value: s.token.NvidiaPowerMode()})
+	})
+	mux.HandleFunc("POST /token/nvidia-power-mode", func(w http.ResponseWriter, r *http.Request) {
+		var body stringBody
+		if err := readJSON(r, &body); err != nil {
+			writeError(w, err)
+			return
+		}
+		if err := s.token.SetNvidiaPowerMode(body.Value); err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	})
+	mux.HandleFunc("GET /token/streamer-auto-update", s.handleStreamerAutoUpdate)
+	mux.HandleFunc("POST /token/streamer-auto-update", s.handleSetStreamerAutoUpdate)
+	mux.HandleFunc("POST /token/snooze-streamer-update", s.handleSnoozeStreamerUpdate)
+	mux.HandleFunc("GET /token/remote-window-lock", s.handleRemoteWindowLock)
+	mux.HandleFunc("POST /token/remote-window-lock", s.handleSetRemoteWindowLock)
 	mux.HandleFunc("POST /token/restart-sunshine", s.handleRestartSunshine)
 	mux.HandleFunc("POST /token/send-sas", s.handleSendSAS)
 	mux.HandleFunc("GET /token/clients", s.handleListClients)
 	mux.HandleFunc("POST /token/unpair", s.handleUnpair)
 	mux.HandleFunc("POST /token/pin", s.handlePIN)
+	mux.HandleFunc("POST /engine/relinquish", s.handleRelinquishEngine)
 	mux.HandleFunc("POST /token/listen-addr", s.handleListenAddr)
+	mux.HandleFunc("POST /token/tls-addr", s.handleTLSAddr)
 	mux.HandleFunc("POST /token/sunshine-port", s.handleSunshinePort)
 	mux.HandleFunc("POST /token/sunshine-stream-addr", s.handleSunshineStreamAddr)
 	mux.HandleFunc("GET /token/admin-credentials", s.handleAdminCredentials)
 	mux.HandleFunc("GET /token/sunshine-stream-host", s.handleSunshineStreamHost)
 	mux.HandleFunc("GET /token/streamer-name", s.handleStreamerName)
+	mux.HandleFunc("GET /token/device-hostname", s.handleDeviceHostname)
+	mux.HandleFunc("GET /token/cert-status", s.handleCertStatus)
+	mux.HandleFunc("GET /token/streamer-running", s.handleStreamerRunning)
 	mux.HandleFunc("GET /token/entitlement-status", s.handleEntitlementStatus)
 	mux.HandleFunc("POST /token/start-trial", s.handleStartTrial)
 	mux.HandleFunc("POST /token/start-purchase", s.handleStartPurchase)
@@ -203,6 +262,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /token/check-rustshine-update", s.handleCheckRustShineUpdateNow)
 	mux.HandleFunc("POST /token/set-stream-backend", s.handleSetStreamBackend)
 	mux.HandleFunc("POST /token/set-rustshine-webrtc-enabled", s.handleSetRustShineWebRTCEnabled)
+	mux.HandleFunc("GET /token/usb-driver-status", s.handleUSBPassthroughStatus)
+	mux.HandleFunc("POST /token/enable-usb-broker", s.handleEnableUSBBroker)
+	mux.HandleFunc("POST /token/install-usb-driver", s.handleInstallUSBDriver)
+	mux.HandleFunc("POST /token/grant-usb-attach", s.handleGrantUSBAttach)
 	mux.HandleFunc("GET /token/account-status", s.handleAccountStatus)
 	mux.HandleFunc("POST /token/start-account-login", s.handleStartAccountLogin)
 	mux.HandleFunc("POST /token/cancel-account-login", s.handleCancelAccountLogin)
@@ -287,12 +350,14 @@ func (s *Server) handleRequestKMS(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, boolBody{Value: s.token.RequestKMSCapture()})
 }
 
-// handleKMSCapExecPath exposes the sunshine_capexec launcher path so a GUI
+// handleKMSCapExecPath exposes the file the KMS grant targets for the
+// active backend (sunshine_capexec, or RustShine's root-owned launcher
+// install path -- see App.kmsCaptureTarget) so a GUI
 // thin client can run the pkexec setcap grant itself, in its own session,
 // instead of asking this (headless, session-less) instance to do it — see
 // RecheckKMSCapture and cmd/usbridge_agent's runThinClientGUI.
 func (s *Server) handleKMSCapExecPath(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, stringBody{Value: s.token.SunshineCapExecPath()})
+	writeJSON(w, http.StatusOK, stringBody{Value: s.token.KMSCaptureTargetPath()})
 }
 
 // handleKMSRecheck re-syncs the capexec launcher's capability from its
@@ -318,6 +383,75 @@ func (s *Server) handleSetGPUClockLockEnabled(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if err := s.token.SetLockGPUClocksEnabled(body.Value); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct{}{})
+}
+
+// boolGetter/boolSetter serve a plain on/off setting.
+func (s *Server) boolGetter(get func() bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, boolBody{Value: get()})
+	}
+}
+
+func (s *Server) boolSetter(set func(bool) error) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body boolBody
+		if err := readJSON(r, &body); err != nil {
+			writeError(w, err)
+			return
+		}
+		if err := set(body.Value); err != nil {
+			writeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, struct{}{})
+	}
+}
+
+func (s *Server) handleStreamerAutoUpdate(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, boolBody{Value: s.token.StreamerAutoUpdateEnabled()})
+}
+
+func (s *Server) handleSetStreamerAutoUpdate(w http.ResponseWriter, r *http.Request) {
+	var body boolBody
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.token.SetStreamerAutoUpdate(body.Value); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct{}{})
+}
+
+func (s *Server) handleRemoteWindowLock(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, boolBody{Value: s.token.RemoteWindowLockEnabled()})
+}
+
+func (s *Server) handleSetRemoteWindowLock(w http.ResponseWriter, r *http.Request) {
+	var body boolBody
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.token.SetRemoteWindowLock(body.Value); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct{}{})
+}
+
+func (s *Server) handleSnoozeStreamerUpdate(w http.ResponseWriter, r *http.Request) {
+	var body stringBody
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.token.SnoozeStreamerUpdate(body.Value); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -362,6 +496,19 @@ func (s *Server) handleUnpair(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, struct{}{})
 }
 
+// handleRelinquishEngine asks this instance to gracefully step down from
+// owning the engine -- see app.App.RelinquishEngine's doc comment. The
+// response is written (and this handler returns) before the token's own
+// implementation actually exits the process, so the caller reliably sees
+// this 200 rather than a connection reset racing process teardown.
+func (s *Server) handleRelinquishEngine(w http.ResponseWriter, r *http.Request) {
+	if err := s.token.RelinquishEngine(); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct{}{})
+}
+
 func (s *Server) handlePIN(w http.ResponseWriter, r *http.Request) {
 	var body pinBody
 	if err := readJSON(r, &body); err != nil {
@@ -382,6 +529,20 @@ func (s *Server) handleListenAddr(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg, err := s.token.UpdateListenAddr(body.Host, body.Port)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, cfg)
+}
+
+func (s *Server) handleTLSAddr(w http.ResponseWriter, r *http.Request) {
+	var body tlsAddrBody
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, err)
+		return
+	}
+	cfg, err := s.token.UpdateTLSAddr(body.Port, body.Enabled)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -427,6 +588,18 @@ func (s *Server) handleSunshineStreamHost(w http.ResponseWriter, r *http.Request
 
 func (s *Server) handleStreamerName(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, stringBody{Value: s.token.StreamerName()})
+}
+
+func (s *Server) handleDeviceHostname(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, stringBody{Value: s.token.DeviceHostname()})
+}
+
+func (s *Server) handleCertStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.token.CertStatus())
+}
+
+func (s *Server) handleStreamerRunning(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, boolBody{Value: s.token.StreamerRunning()})
 }
 
 func (s *Server) handleEntitlementStatus(w http.ResponseWriter, r *http.Request) {
@@ -541,6 +714,48 @@ func (s *Server) handleCheckRustShineUpdateNow(w http.ResponseWriter, r *http.Re
 			logrus.WithError(err).Warn("rustshine update check failed")
 		}
 	}()
+	writeJSON(w, http.StatusOK, struct{}{})
+}
+
+func (s *Server) handleUSBPassthroughStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.token.USBPassthroughStatus())
+}
+
+// handleEnableUSBBroker mirrors handleDownloadRustShine's own fire-and-forget
+// shape -- the GUI polls /token/usb-driver-status for ConsentGiven/
+// BrokerAlive instead of waiting on this response, since staging the
+// broker's release archive can take a while.
+func (s *Server) handleEnableUSBBroker(w http.ResponseWriter, r *http.Request) {
+	go func() {
+		if err := s.token.EnableUSBBroker(nil); err != nil {
+			logrus.WithError(err).Warn("usb broker enable failed")
+		}
+	}()
+	writeJSON(w, http.StatusOK, struct{}{})
+}
+
+// handleInstallUSBDriver mirrors handleDownloadRustShine's own
+// fire-and-forget shape and doc comment -- installing the Linux usbip
+// package (see usbpass.driver_linux.go's pkexec call) blocks on a
+// graphical polkit prompt, far longer than this HTTP request should stay
+// open. The GUI polls /token/usb-driver-status for VhciDriver instead of
+// waiting on this response.
+func (s *Server) handleInstallUSBDriver(w http.ResponseWriter, r *http.Request) {
+	go func() {
+		if err := s.token.InstallUSBDriver(); err != nil {
+			logrus.WithError(err).Warn("usb driver install failed")
+		}
+	}()
+	writeJSON(w, http.StatusOK, struct{}{})
+}
+
+// handleGrantUSBAttach is synchronous (unlike the driver install) so the GUI
+// can show the failure reason; the client's 90s timeout covers the prompt.
+func (s *Server) handleGrantUSBAttach(w http.ResponseWriter, r *http.Request) {
+	if err := s.token.GrantUSBAttach(); err != nil {
+		writeError(w, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, struct{}{})
 }
 

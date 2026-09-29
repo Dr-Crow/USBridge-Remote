@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"usbridge_agent/internal/hwid"
+	"usbridge_agent/internal/streamerlaunch"
 )
 
 // rustshineProcess abstracts the two ways gamestream-server can end up
@@ -111,7 +112,18 @@ type rustshineBackend struct {
 	logPath     string
 	proc        rustshineProcess // see the rustshineProcess doc comment above
 	watchdog    *exec.Cmd        // macOS only, see rustshine_process_other.go
-	onExit      func()    // see SetOnExit
+	onExit      func()           // see SetOnExit
+
+	// launchedCapExec is the launcher the running process was actually
+	// started through ("" = plain exec); see LaunchedWithoutCapExec.
+	launchedCapExec string
+
+	// launchedWithVirtualDisplay records whether the running instance was
+	// started with a `virtual_display` config key, captured at Start() --
+	// not re-read at Stop(), since switching back to a physical output
+	// clears the key *before* the restart's Stop() runs. See
+	// virtualDisplayTeardownNeeded.
+	launchedWithVirtualDisplay bool
 
 	activeAdminPassword string
 	adminPort           int // set by Start; CurrentVideoCodec needs it despite taking no args itself
@@ -159,6 +171,15 @@ type rustshineBackend struct {
 	// startup-only CLI flag).
 	webrtcDisabled bool
 
+	// usbPassBridgeAddr is the agent's api.Server.StartUSBPassBridge
+	// listener address, handed to gamestream-server as
+	// --usbpass-bridge-addr so it knows where to relay a browser-sourced
+	// USB/IP passthrough DataChannel's bytes (labels "usbpass-attach-*"/
+	// "usbpass-gamepad-*"/"usbpass-pen-*" -- see SetUSBPassBridgeAddr's doc
+	// comment). Empty omits the flag entirely, same "absent means disabled"
+	// convention as sharedSecret above.
+	usbPassBridgeAddr string
+
 	supportedCodecsCache struct {
 		mu        sync.Mutex
 		codecs    []string
@@ -180,7 +201,7 @@ func NewRustshine(exeDir, stateDir, logPath string) Backend {
 
 // DisplayName identifies this backend for display purposes only (GUI
 // status, /api/status, logs) — see streamhost.Identity.
-func (b *rustshineBackend) DisplayName() string { return "RustShine (Proprietary)" }
+func (b *rustshineBackend) DisplayName() string { return "USBridge Streamer (Proprietary)" }
 
 // SetSharedSecret sets the secret Start() passes to gamestream-server as
 // --webrtc-shared-secret. Called via an optional-interface probe from
@@ -200,37 +221,109 @@ func (b *rustshineBackend) SetSharedSecret(secret []byte) {
 // the same optional-interface probe pattern as SetSharedSecret (see
 // app.applyStreamWebRTCEnabled) -- a no-op for sunshineBackend, which has
 // no WebRTC endpoint to disable.
+// SetUSBPassBridgeAddr sets the address Start() passes to gamestream-server
+// as --usbpass-bridge-addr -- see app.applyStreamUSBPassBridgeAddr for the
+// same optional-interface probe pattern SetSharedSecret/SetWebRTCEnabled
+// above already use, called from app.go right after api.Server.
+// StartUSBPassBridge starts that listener (once, at boot) and again from
+// SetStreamBackend whenever a fresh rustshineBackend instance replaces the
+// running one. A no-op for sunshineBackend, which has no WebRTC DataChannel
+// to relay browser USB passthrough over at all.
+func (b *rustshineBackend) SetUSBPassBridgeAddr(addr string) {
+	b.mu.Lock()
+	b.usbPassBridgeAddr = addr
+	b.mu.Unlock()
+}
+
+// SetWebRTCEnabled sets whether Start passes --webrtc-disable. Called via
+// the same optional-interface probe pattern as SetSharedSecret (see
+// app.applyStreamWebRTCEnabled) -- a no-op for sunshineBackend, which has
+// no WebRTC endpoint to disable.
 func (b *rustshineBackend) SetWebRTCEnabled(enabled bool) {
 	b.mu.Lock()
 	b.webrtcDisabled = !enabled
 	b.mu.Unlock()
 }
 
-// binaryName is bin/gamestream-server's build output name, per its
-// Cargo.toml package name — "gamestream-server(.exe)", not "rust-shine".
+// binaryName is bin/usbridge-streamer's build output name, per its
+// Cargo.toml package name — "usbridge-streamer(.exe)".
 func binaryName() string {
+	if runtime.GOOS == "windows" {
+		return "usbridge-streamer.exe"
+	}
+	return "usbridge-streamer"
+}
+
+// resolveStagedStreamer returns the streamer binary under dir/usbridge-streamer/.
+// On Windows, StageRustShine may have left dest+".new" because dest was still
+// locked (GPU clock-lock daemon, leftover LocalSystem instance, ...). Prefer
+// that sidecar so an update can take effect without a UAC-elevated taskkill.
+func resolveStagedStreamer(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	dest := filepath.Join(dir, "usbridge-streamer", binaryName())
+	sidecar := dest + ".new"
+	if fileExists(sidecar) {
+		if err := os.Rename(sidecar, dest); err == nil {
+			return dest
+		}
+		if fileExists(sidecar) {
+			return sidecar
+		}
+	}
+	if fileExists(dest) {
+		return dest
+	}
+	return ""
+}
+
+func legacyBinaryName() string {
 	if runtime.GOOS == "windows" {
 		return "gamestream-server.exe"
 	}
 	return "gamestream-server"
 }
 
-// BinaryPath resolves the staged gamestream-server binary: stateDir/rustshine/
+// BinaryPath resolves the staged usbridge-streamer binary: stateDir/usbridge-streamer/
 // (see entitlement.StagePath's doc comment for why stateDir and not exeDir),
-// falling back to exeDir/rustshine/ for anything staged there by an older
-// build of this agent before that fix, then PATH for local dev where it's
+// falling back to legacy paths and PATH for local dev where it's
 // just been cargo-built and symlinked.
 func (b *rustshineBackend) BinaryPath() string {
+	// `-tags devstreamer` builds only; always "" in release builds.
+	if p := devStreamerOverride(); p != "" {
+		return p
+	}
 	if b.launchPath != "" {
 		return b.launchPath
 	}
+	// New standard paths. Prefer a Windows sidecar (binaryName+".new")
+	// when the live .exe is still locked by another instance — see
+	// entitlement.writeAtomic.
+	if p := resolveStagedStreamer(b.stateDir); p != "" {
+		return p
+	}
+	if p := resolveStagedStreamer(b.exeDir); p != "" {
+		return p
+	}
+	// Legacy stage dir paths
 	if p := filepath.Join(b.stateDir, "rustshine", binaryName()); fileExists(p) {
+		return p
+	}
+	if p := filepath.Join(b.stateDir, "rustshine", legacyBinaryName()); fileExists(p) {
 		return p
 	}
 	if p := filepath.Join(b.exeDir, "rustshine", binaryName()); fileExists(p) {
 		return p
 	}
+	if p := filepath.Join(b.exeDir, "rustshine", legacyBinaryName()); fileExists(p) {
+		return p
+	}
+	// LookPath on PATH
 	if path, err := exec.LookPath(binaryName()); err == nil {
+		return path
+	}
+	if path, err := exec.LookPath(legacyBinaryName()); err == nil {
 		return path
 	}
 	return ""
@@ -241,66 +334,48 @@ func fileExists(p string) bool {
 	return err == nil
 }
 
-// capExecPathFor returns the path to the bundled sunshine-capexec launcher
-// (cmd/sunshine_capexec — a generic "raise CAP_SYS_ADMIN into ambient caps,
-// then exec <target>" wrapper, not Sunshine-specific despite the name), or
-// "" if not bundled (non-Linux, or a dev build without the AppImage/staged
-// layout). gamestream-server's KMS/DRM capture (crates/capture-kms in the
-// private rust-shine repo) needs CAP_SYS_ADMIN exactly like Sunshine's does,
-// and for the identical reason a file capability can't go directly on
-// gamestream-server itself: it resolves bundled shared libs (e.g.
-// libvulkan.so.1) via RPATH=$ORIGIN/../lib, and a file capability would put
-// it into secure-execution mode, breaking that resolution. See
-// internal/permissions.RequestKMSCapture.
-func (b *rustshineBackend) capExecPathFor() string {
+// CapExecPath returns the file the KMS-capture grant lives on for
+// RustShine: the fixed, root-owned streamerlaunch.InstallPath on Linux
+// (whether or not it's installed yet -- App.kmsCaptureTarget hands it to
+// permissions, which treats it as "install the launcher"), "" elsewhere.
+//
+// It is NOT the streamer binary: a file capability belongs to one inode,
+// and usbridge-streamer is replaced on every update, which used to drop the
+// grant after each RustShine update. See internal/streamerlaunch.
+func (b *rustshineBackend) CapExecPath() string {
 	if runtime.GOOS != "linux" {
 		return ""
 	}
-	p := filepath.Join(b.exeDir, "sunshine-capexec")
-	if info, err := os.Stat(p); err == nil && !info.IsDir() {
-		return p
-	}
-	return ""
+	return streamerlaunch.InstallPath
 }
 
-// runtimeCapExecPath returns the path sunshine-capexec should actually be
-// setcap'd from. Inside an AppImage the bundled copy lives on the read-only
-// squashfs mount, so `pkexec setcap` on it always fails silently (the
-// pkexec prompt succeeds, but the capability is never actually written) —
-// stage a writable copy into stateDir first, same fix as sunshineBackend's
-// runtimeCapExecPath. Unlike Sunshine, gamestream-server itself does NOT
-// need staging: only the file setcap actually writes to (capexec) has to be
-// writable — the target binary capexec execs stays wherever it already is,
-// its own RPATH resolution is unaffected by where capexec sits.
-func (b *rustshineBackend) runtimeCapExecPath() string {
-	capexecSrc := b.capExecPathFor()
-	if runtime.GOOS != "linux" || capexecSrc == "" || b.stateDir == "" {
-		return capexecSrc
-	}
-	if os.Getenv("APPIMAGE") == "" {
-		return capexecSrc
-	}
-	staged, err := stageCapExecBinary(capexecSrc, filepath.Join(b.stateDir, "rustshine-capexec-runtime"))
-	if err != nil {
-		log.Printf("[rustshine] failed to stage writable copy for KMS setcap: %v", err)
-		return capexecSrc
-	}
-	return staged
-}
-
-// CapExecPath returns the (staged-if-needed) path to the bundled
-// sunshine-capexec launcher, or "" if not present/granted yet.
-func (b *rustshineBackend) CapExecPath() string { return b.runtimeCapExecPath() }
-
-// SetCapExecPath sets the sunshine-capexec launcher path (see
-// runtimeCapExecPath) that Start uses to launch gamestream-server with
-// CAP_SYS_ADMIN via ambient capabilities. Only ever set once the capability
-// has actually been granted on that path (internal/app), mirroring
-// sunshineBackend's SetCapExecPath.
+// SetCapExecPath sets the installed usbridge-streamer-launch path Start
+// launches through (`<launcher> --run <bundle> -- <args>`) so the streamer
+// gets CAP_SYS_ADMIN for KMS capture. internal/app only ever sets it after
+// the launcher verified the staged bundle (see App.syncSunshineCapExecFor);
+// "" means a plain exec.
 func (b *rustshineBackend) SetCapExecPath(path string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.capExecPath = path
+}
+
+// LauncherActive reports whether Start launches through the verified
+// usbridge-streamer-launch (see SetCapExecPath) -- false while the launcher
+// is missing or refuses the staged bundle, e.g. right after an update.
+func (b *rustshineBackend) LauncherActive() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.capExecPath != ""
+}
+
+// LaunchedWithoutCapExec reports a running streamer that was started by
+// plain exec (so without CAP_SYS_ADMIN) although the launcher is set now --
+// a start that raced SetCapExecPath. The agent's watchdog restarts it.
+func (b *rustshineBackend) LaunchedWithoutCapExec() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.proc != nil && b.capExecPath != "" && b.launchedCapExec == "" && devStreamerOverride() == ""
 }
 
 func (b *rustshineBackend) Running() bool {
@@ -396,15 +471,23 @@ func (b *rustshineBackend) Start(adminPort int) error {
 		return nil
 	}
 	if adminPort > 0 && portReachable(adminPort, 300*time.Millisecond) {
-		log.Printf("[rustshine] admin port %d already reachable, assuming gamestream-server is already running", adminPort)
-		if pf := b.ourPassFile(); pf != "" {
-			if data, err := os.ReadFile(pf); err == nil {
-				if pass := strings.TrimSpace(string(data)); pass != "" {
-					b.activeAdminPassword = pass
-				}
-			}
+		// See sunshineBackend.Start()'s identical guard for the full
+		// reasoning: b.proc == nil here means whatever answered on
+		// adminPort is not something this backend object is tracking, so
+		// adopting a persisted password and hoping it happens to match is
+		// exactly the bug that let a stale/foreign process (Sunshine, or a
+		// different agent process's own gamestream-server) keep answering
+		// every PIN submission with 401. Clear it by name and always launch
+		// fresh instead.
+		log.Printf("[rustshine] admin port %d is reachable but not tracked by this process -- clearing it instead of adopting unverified credentials", adminPort)
+		killOrphanStreamerProcesses()
+		deadline := time.Now().Add(3 * time.Second)
+		for portReachable(adminPort, 200*time.Millisecond) && time.Now().Before(deadline) {
+			time.Sleep(100 * time.Millisecond)
 		}
-		return nil
+		if portReachable(adminPort, 200*time.Millisecond) {
+			return fmt.Errorf("rustshine: admin port %d still occupied by an unrecognized process after attempting to clear it", adminPort)
+		}
 	}
 
 	// Backfill adapter_name if capture=kms was persisted without one (e.g.
@@ -494,6 +577,14 @@ func (b *rustshineBackend) Start(adminPort int) error {
 	// this package stays entitlement-agnostic, entitlement stays
 	// streamhost-agnostic. Always passed; harmless if unused.
 	args = append(args, "--entitlement-file", filepath.Join(b.stateDir, "rustshine", "entitlement.token"))
+	// Path convention duplicated (not imported) from
+	// entitlement.TurnCredentialsFilePath -- same reasoning as
+	// --entitlement-file above. Always passed; harmless if unused (rust-shine
+	// treats a missing/stale file exactly like this flag being absent, see
+	// its own --turn-credentials-file doc comment) -- app.go's
+	// turnCredentialsWatchdog is what actually keeps this file fresh,
+	// independent of this process's own lifecycle.
+	args = append(args, "--turn-credentials-file", filepath.Join(b.stateDir, "rustshine", "turn-credentials.json"))
 	// This machine's hardware id, exactly as the entitlement token's own
 	// `sub` claim was bound to (see entitlement.VerifyForHardware) -- a
 	// desktop-entitlement build refuses to start without a matching
@@ -519,11 +610,20 @@ func (b *rustshineBackend) Start(adminPort int) error {
 	// not "authenticate against an empty secret". Read directly (not via
 	// SetSharedSecret's own locking) -- Start already holds b.mu for its
 	// whole duration, see the top of this function.
+	const rustshineWebRTCPort = 8444
+	args = append(args, "--webrtc-port", strconv.Itoa(rustshineWebRTCPort))
+
 	if len(b.sharedSecret) > 0 {
 		args = append(args, "--webrtc-shared-secret", string(b.sharedSecret))
 	}
 	if b.webrtcDisabled {
 		args = append(args, "--webrtc-disable")
+	}
+	// See SetUSBPassBridgeAddr's doc comment. Read directly (not via its own
+	// locking) -- Start already holds b.mu for its whole duration, same as
+	// b.sharedSecret above.
+	if b.usbPassBridgeAddr != "" {
+		args = append(args, "--usbpass-bridge-addr", b.usbPassBridgeAddr)
 	}
 	// Reed-Solomon FEC redundancy for the video stream. Left unset before
 	// this, gamestream-server just used its own --fec-percentage default
@@ -593,6 +693,7 @@ func (b *rustshineBackend) Start(adminPort int) error {
 	}
 
 	var proc rustshineProcess
+	launchedCapExec := ""
 	if useSessionBroker() {
 		sp, err := b.startViaSessionBroker(launchPath, args, launchDir, logDest)
 		if err != nil {
@@ -611,15 +712,18 @@ func (b *rustshineBackend) Start(adminPort int) error {
 		}
 		proc = sp
 	} else {
-		// If a capability-granted sunshine-capexec launcher is set (Linux
-		// KMS capture only — see SetCapExecPath), launch gamestream-server
-		// through it so it inherits CAP_SYS_ADMIN via ambient capabilities
-		// instead of carrying a file capability itself, which would break
-		// its RPATH-based library resolution. Mirrors
-		// sunshineBackend.Start()'s identical branch.
+		// With the verified launcher set (Linux KMS capture only — see
+		// SetCapExecPath), run the signed release bytes from the bundle
+		// next to launchPath instead of launchPath itself; the launcher
+		// raises CAP_SYS_ADMIN into the ambient set before exec.
+		// A devstreamer override is a local, unsigned build: exec it
+		// directly -- the launcher would (correctly) only ever run the
+		// signed bundle. See devstreamer_on.go.
 		var cmd *exec.Cmd
-		if b.capExecPath != "" {
-			cmd = exec.Command(b.capExecPath, append([]string{launchPath}, args...)...)
+		if b.capExecPath != "" && devStreamerOverride() == "" {
+			bundle := streamerlaunch.BundleDir(filepath.Dir(launchPath))
+			cmd = exec.Command(b.capExecPath, append([]string{"--run", bundle, "--"}, args...)...)
+			launchedCapExec = b.capExecPath
 		} else {
 			cmd = exec.Command(launchPath, args...)
 		}
@@ -641,6 +745,8 @@ func (b *rustshineBackend) Start(adminPort int) error {
 
 	b.launchPath = launchPath
 	b.proc = proc
+	b.launchedCapExec = launchedCapExec
+	b.launchedWithVirtualDisplay = b.ConfigKey("virtual_display") != ""
 	b.lastLaunchAt = time.Now()
 	go b.watchProcessExit(proc)
 
@@ -776,13 +882,16 @@ func (b *rustshineBackend) Stop() error {
 		log.Printf("[rustshine] stopping pid=%d", b.proc.Pid())
 		err = b.proc.Kill()
 		if err != nil && isAccessDenied(err) {
-			// Our own handle lacks PROCESS_TERMINATE -- most likely
-			// gamestream-server.exe is running with higher privilege than
-			// the agent has right now. Ask Windows to prompt for
-			// elevation (UAC) and retry through that, instead of silently
-			// leaving a process the user can see is broken running
-			// forever with no explanation. See elevate_windows.go.
-			if elevErr := elevatedKillByPID(b.proc.Pid()); elevErr != nil {
+			// A UAC prompt runs on the secure desktop and cannot be
+			// dismissed from a remote session. The streamer-update path
+			// sets updatePaused before Stop() and stages beside a locked
+			// .exe instead (see entitlement.writeAtomic); do not elevate
+			// here. For a user-initiated Stop (backend switch, ...) keep
+			// the old prompt so a leftover elevated process is not left
+			// running with no explanation.
+			if b.updatePaused {
+				log.Printf("[rustshine] kill of pid=%d denied during update — not requesting UAC", b.proc.Pid())
+			} else if elevErr := elevatedKillByPID(b.proc.Pid()); elevErr != nil {
 				log.Printf("[rustshine] elevated kill also failed: %v", elevErr)
 			} else {
 				err = nil
@@ -792,15 +901,27 @@ func (b *rustshineBackend) Stop() error {
 	} else {
 		log.Printf("[rustshine] stopping orphaned process by name")
 		if runtime.GOOS == "windows" {
-			if killErr := exec.Command("taskkill", "/F", "/IM", "gamestream-server.exe").Run(); killErr != nil {
+			_ = hiddenTaskkill("/F", "/IM", "usbridge-streamer.exe")
+			killErr := hiddenTaskkill("/F", "/IM", "gamestream-server.exe")
+			if killErr != nil && !b.updatePaused {
 				if elevErr := elevatedKillByName("gamestream-server.exe"); elevErr != nil {
 					log.Printf("[rustshine] elevated kill of orphaned gamestream-server.exe also failed: %v", elevErr)
 				}
 			}
 		} else {
 			_ = exec.Command("killall", "gamestream-server").Run()
+			_ = exec.Command("killall", "usbridge-streamer").Run()
 		}
 	}
+	if virtualDisplayTeardownNeeded(runtime.GOOS, b.launchedWithVirtualDisplay, b.launchPath) {
+		if tdErr := runVirtualDisplayTeardown(b.launchPath); tdErr != nil {
+			log.Printf("[rustshine] virtual display teardown after stop: %v", tdErr)
+		}
+	}
+	b.launchedWithVirtualDisplay = false
+	// Drop the cached path so the next Start() re-resolves BinaryPath
+	// (it may now point at a Windows sidecar written while dest was locked).
+	b.launchPath = ""
 	if b.watchdog != nil && b.watchdog.Process != nil {
 		_ = b.watchdog.Process.Kill()
 		b.watchdog = nil

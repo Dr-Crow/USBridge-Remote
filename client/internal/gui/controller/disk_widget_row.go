@@ -47,6 +47,17 @@ func (dw *DiskWidget) buildDeviceCards() []fyne.CanvasObject {
 			sectionTrailingAction = view.NewFooterIconButton(assets.QuestionIconDim, assets.QuestionIcon, fyne.NewSize(13, 13), func() {
 				dw.openQuickStartDocs()
 			})
+		} else if section.key == "video" {
+			if dw.virtualDisplaySupported.Load() {
+				sectionAction = view.NewDeviceSectionAddButton(dw.handleAddVirtualDisplay)
+				if !dw.videoCardHadVirtualDisplay {
+					delete(dw.cardsCache, "video")
+					dw.videoCardHadVirtualDisplay = true
+				}
+			} else if dw.videoCardHadVirtualDisplay {
+				delete(dw.cardsCache, "video")
+				dw.videoCardHadVirtualDisplay = false
+			}
 		}
 
 		card, ok := dw.cardsCache[section.key]
@@ -127,7 +138,14 @@ func (dw *DiskWidget) configureDriveRow(id int, obj fyne.CanvasObject) {
 
 	var iconRes fyne.Resource
 	useStorageIcon := false
-	switch drive.Source {
+	if drive.IsPenTablet || (drive.IsUSBPassthrough && isWacomTablet(drive)) {
+		if drive.IsMounted {
+			iconRes = assets.GraphicTabletIconActive
+		} else {
+			iconRes = assets.GraphicTabletIcon
+		}
+	} else {
+		switch drive.Source {
 	case "api":
 		useStorageIcon = true
 		if drive.LocalDrive != nil && drive.LocalDrive.SourceType == "mtp" {
@@ -182,6 +200,7 @@ func (dw *DiskWidget) configureDriveRow(id int, obj fyne.CanvasObject) {
 		}
 	default:
 		iconRes = assets.DiscIcon
+	}
 	}
 
 	if useStorageIcon && drive.IsMounted {
@@ -262,8 +281,8 @@ func (dw *DiskWidget) configureDriveRow(id int, obj fyne.CanvasObject) {
 			modeSelect.SetOptions(rndisModeOptions)
 			modeSelect.SetSelected(normalizeRNDISMode(drive.RNDISMode))
 		case "gamepad":
-			modeSelect.SetOptions([]string{i18n.Current.DeviceDirectInput, i18n.Current.DeviceXInput})
-			modeSelect.SetSelected(gamepadModeLabel(normalizeGamepadMode(drive.GamepadMode)))
+			modeSelect.SetOptions(dw.gamepadModeOptions())
+			modeSelect.SetSelected(gamepadModeLabel(dw.effectiveGamepadMode(drive.GamepadMode)))
 		case "usbaudio":
 			modeSelect.SetOptions([]string{i18n.Current.AudioDeviceUAC1, i18n.Current.AudioDeviceUAC2})
 			if drive.USBAudioMode == "uac2" {
@@ -293,7 +312,7 @@ func (dw *DiskWidget) configureDriveRow(id int, obj fyne.CanvasObject) {
 		if captureSelector != nil {
 			captureSelector.Show()
 			captureSelector.SetSelected(dw.isPreferredVideoDrive(drive))
-			captureSelector.SetDisabled(controlsLocked || videoUnavailable)
+			captureSelector.SetDisabled(controlsLocked || videoUnavailable || dw.availableVideoDriveCount() <= 1)
 		}
 		settingsBtn.Show()
 		if controlsLocked || videoUnavailable {
@@ -359,6 +378,8 @@ func (dw *DiskWidget) configureDriveRow(id int, obj fyne.CanvasObject) {
 			if !isBackupFlash {
 				shouldShowDelete = true
 			}
+		} else if drive.IsVideo && drive.VideoDevice != nil && drive.VideoDevice.Bus == "virtual" {
+			shouldShowDelete = true
 		}
 	}
 	if shouldShowDelete {
@@ -467,11 +488,7 @@ func (dw *DiskWidget) configureDriveRow(id int, obj fyne.CanvasObject) {
 			if dw.controlsLocked() || rowID >= len(dw.allDrives) {
 				return
 			}
-			mode := gamepadModeDirectInput
-			if s == i18n.Current.DeviceXInput {
-				mode = gamepadModeXInput
-			}
-			dw.allDrives[rowID].GamepadMode = mode
+			dw.allDrives[rowID].GamepadMode = gamepadModeFromLabel(s)
 		}
 	} else if drive.Source == "mouse" {
 		rowID := id
@@ -523,6 +540,14 @@ func (dw *DiskWidget) configureDriveRow(id int, obj fyne.CanvasObject) {
 				dw.handleUploadImage(rowID)
 			}
 		})
+	} else if drive.IsVideo && drive.VideoDevice != nil && drive.VideoDevice.Bus == "virtual" {
+		vdPath := drive.VideoDevice.Path
+		deleteBtn.SetOnTapped(func() {
+			if !dw.controlsLocked() {
+				dw.handleDeleteVirtualDisplay(vdPath)
+			}
+		})
+		uploadBtn.SetOnTapped(nil)
 	} else {
 		deleteBtn.SetOnTapped(nil)
 		uploadBtn.SetOnTapped(nil)
@@ -597,6 +622,16 @@ func (dw *DiskWidget) localizedAPIDriveName(drive *models.LocalDrive) string {
 }
 
 func (dw *DiskWidget) captureDeviceTitle(drive DriveItem) string {
+	name := dw.captureDeviceBaseTitle(drive)
+	if drive.VideoDevice != nil {
+		if busLabel := formatVideoBusLabel(drive.VideoDevice.Bus); busLabel != "" {
+			return fmt.Sprintf("%s [%s]", name, busLabel)
+		}
+	}
+	return name
+}
+
+func (dw *DiskWidget) captureDeviceBaseTitle(drive DriveItem) string {
 	if drive.VideoDevice == nil {
 		return i18n.Current.CaptureDevice
 	}
@@ -611,9 +646,6 @@ func (dw *DiskWidget) captureDeviceTitle(drive DriveItem) string {
 				break
 			}
 		}
-	}
-	if busLabel := formatVideoBusLabel(drive.VideoDevice.Bus); busLabel != "" {
-		return fmt.Sprintf("%s [%s]", name, busLabel)
 	}
 	return name
 }
@@ -630,6 +662,8 @@ func formatVideoBusLabel(bus string) string {
 		return "USB 1.1"
 	case "usb":
 		return "USB"
+	case "virtual":
+		return "VIRT"
 	default:
 		return ""
 	}

@@ -77,14 +77,25 @@ var (
 	aiVisionMetalClear func()
 )
 
-// SetAIVisionEnabled turns the live detection overlay on or off. Wired to
-// the "AI Vision" checkbox in the video settings popup (see
-// gui/view/video_start_dialog.go) -- takes effect immediately, independent
-// of the Start/Apply button, since it only affects local rendering and
-// touches nothing on the device. Disabling drops the cached result right
-// away so a stale overlay never lingers after the checkbox is unticked.
+// SetAIVisionEnabled turns the live detection overlay on or off. The video
+// settings dialog applies this from Apply/Start (see
+// gui/view/video_start_dialog.go); Cancel/close leaves the previous state.
+// Disabling drops the cached result right away so a stale overlay never
+// lingers after the setting is turned off.
 func SetAIVisionEnabled(enabled bool) {
 	wasEnabled := aiVisionEnabled.Swap(enabled)
+	// Lazily load the same ONNX models "Local ui.parse offload" uses (see
+	// api.LazyInitLocalUIParse's doc comment) the moment this checkbox is
+	// actually turned on, rather than requiring the user to separately
+	// flip the Scripts&AI tab's toggle first -- ticking this box IS the
+	// "I want local inference now" signal. No-op if a parser is already
+	// loaded/loading. Runs in InitLocalUIParseFromConfig's own background
+	// goroutine, so this returns immediately either way; maybeKickIconDetection
+	// just keeps seeing GetLocalUIParser() == nil (and logs once, see
+	// maybeKickOCR) until it's ready.
+	if enabled {
+		usbapi.LazyInitLocalUIParse()
+	}
 	if !enabled {
 		aiVisionMu.Lock()
 		aiVisionResult = nil
@@ -196,13 +207,8 @@ func maybeKickIconDetection(rgba []byte, w, h, stride int) {
 
 	go func() {
 		defer aiVisionIconBusy.Store(false)
-		var buf bytes.Buffer
-		if err := png.Encode(&buf, frame); err != nil {
-			logrus.Warnf("🔎 [AI Vision] icon frame encode failed: %v", err)
-			return
-		}
 		tIcon := time.Now()
-		icons, err := parser.ParseIconsOnly(buf.Bytes())
+		icons, err := parser.ParseIconsOnlyRGBA(frame)
 		if err != nil {
 			logrus.Warnf("🔎 [AI Vision] icon detection failed: %v", err)
 			return
@@ -247,13 +253,8 @@ func maybeKickOCR(rgba []byte, w, h, stride int) {
 
 	go func() {
 		defer aiVisionOCRBusy.Store(false)
-		var buf bytes.Buffer
-		if err := png.Encode(&buf, frame); err != nil {
-			logrus.Warnf("🔎 [AI Vision] OCR frame encode failed: %v", err)
-			return
-		}
 		b := frame.Bounds()
-		result, err := parser.ParseFastNearIconsStaged(buf.Bytes(), func(boxes []localui.Box) {
+		result, err := parser.ParseFastNearIconsStagedRGBA(frame, func(boxes []localui.Box) {
 			// Fires as soon as dbnet (+ the near-icons filter) is done --
 			// well before svtr recognizes any of these boxes' text. No ID,
 			// no recognized string yet (see ParseFastNearIconsStaged's doc
@@ -336,6 +337,32 @@ func snapshotRGBA(rgba []byte, w, h, stride int) *image.RGBA {
 	return img
 }
 
+// buildAIVisionOverlayImage draws result's boxes+tags onto a fully
+// transparent w×h RGBA canvas using the exact same drawing code as the
+// static ui.parse annotated screenshot and the CPU-buffer live overlay
+// (localui.DrawDetectionBox/Tag) -- every color those use is fully opaque
+// (alpha 255, see draw.go), so untouched pixels stay alpha 0. Shared by
+// every platform with a native compositor-layer overlay path instead of
+// drawCachedOverlay's in-place pixel writes (macOS/iOS's Metal HUD layer,
+// Windows's Vulkan HUD layer) -- each just uploads this to its own texture.
+func buildAIVisionOverlayImage(result *localui.Result, w, h int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for _, icon := range result.Icons {
+		localui.DrawDetectionBox(img, icon.Bbox, false)
+		localui.DrawDetectionTag(img, icon.ID, icon.Bbox)
+	}
+	for _, t := range result.Text {
+		localui.DrawDetectionBox(img, t.Bbox, true)
+		if t.ID != "" {
+			// Empty ID means this box was published via maybeKickOCR's
+			// onTextBoxes before svtr recognized it (see
+			// ParseFastNearIconsStaged) -- outline only, no tag yet.
+			localui.DrawDetectionTag(img, t.ID, t.Bbox)
+		}
+	}
+	return img
+}
+
 // drawCachedOverlay burns the most recently completed detection's boxes
 // and Set-of-Mark hex tags directly into the live RGBA buffer, in place,
 // by wrapping it as an *image.RGBA with zero copy (image.RGBA is just a
@@ -366,3 +393,4 @@ func drawCachedOverlay(rgba []byte, w, h, stride int) {
 		}
 	}
 }
+

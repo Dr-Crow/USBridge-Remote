@@ -1,6 +1,9 @@
 package entitlement
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Status is what the GUI (and, over adminapi, a thin-client GUI attached to
 // a separate headless engine process) needs to render the four-way
@@ -19,16 +22,16 @@ type Status struct {
 	// underneath did.
 	Linked bool `json:"linked"`
 	// Tier is "free", "pro", or "enterprise" -- see entitlement.Claims.Tier.
-	// "pro" ($8/mo) currently gates RustShine's 4:4:4 color upgrade
-	// end-to-end (see rust-shine's video-encode/vaapi.rs and
-	// gamestream_proto::server_state::GameStreamConfig::color444_supported).
-	// "enterprise" ($25/mo) is billable today but has no gated feature of
-	// its own yet -- reserved for an extended driver + USB passthrough
-	// (per-device redirection into the remote session, not just
-	// capture-card video/audio/HID) once that work starts; see
-	// usbridge-entitlement-backend's desktopLicense.ts tier doc comment
-	// for the full billing-side reasoning. No agent/rust-shine code should
-	// assume "enterprise" unlocks anything beyond "pro" until that lands.
+	// "pro" ($8/mo) gates both RustShine's 4:4:4 color upgrade end-to-end
+	// (see rust-shine's video-encode/vaapi.rs and
+	// gamestream_proto::server_state::GameStreamConfig::color444_supported)
+	// and USB passthrough (rust-shine's bin/usb-broker require_licensed()).
+	// "enterprise" ($25/mo) is a strict superset of "pro" -- billable today
+	// but has no gated feature of its own yet beyond what "pro" already
+	// unlocks; reserved for per-session logging + team/workspace access
+	// once that work starts. See usbridge-entitlement-backend's
+	// desktopLicense.ts tier doc comment for the full billing-side
+	// reasoning.
 	Tier      string    `json:"tier,omitempty"`
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
 
@@ -54,6 +57,15 @@ type Status struct {
 	// for updates…" instead of the first-download copy without the two
 	// call sites racing each other's spinner text.
 	RustShineUpdateInProgress bool `json:"rustshine_update_in_progress"`
+	// RustShineAvailableVersion is a newer USBridge-streamer tag than the
+	// one currently staged, when auto-update is off and the streamer
+	// update watchdog has already seen it. Empty while auto-update is
+	// applying (or when nothing newer exists). The Status-card version
+	// prefix reads this.
+	RustShineAvailableVersion string `json:"rustshine_available_version,omitempty"`
+	// RustShineUpdateOffer is true when AvailableVersion is set and the
+	// user has not declined that tag yet -- the GUI shows the Yes/No toast.
+	RustShineUpdateOffer bool `json:"rustshine_update_offer,omitempty"`
 	// WebRTCEnabled mirrors cfg.RustShineWebRTCDisabled (inverted) -- the
 	// GUI's RustShine web-client checkbox reflects and toggles this.
 	// Meaningful only when ActiveBackend == "rustshine"; Sunshine has no
@@ -71,4 +83,20 @@ type Status struct {
 	// failed operation (checkout failed, download failed, ...) — cleared
 	// on the next successful step. Empty string means "nothing to report."
 	LastError string `json:"last_error,omitempty"`
+}
+
+// Protocol is the active tariff the client shows on a connection plaque:
+// "opensource" (Sunshine), or RustShine "free" / "pro" / "enterprise".
+func (s Status) Protocol() string {
+	if s.ActiveBackend != "rustshine" {
+		return "opensource"
+	}
+	switch strings.ToLower(s.Tier) {
+	case "pro":
+		return "pro"
+	case "enterprise":
+		return "enterprise"
+	default:
+		return "free"
+	}
 }

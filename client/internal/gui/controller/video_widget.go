@@ -15,7 +15,6 @@ import (
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
-	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/widget"
 	"github.com/sirupsen/logrus"
 )
@@ -28,15 +27,21 @@ type VideoWidget struct {
 	statusLabel      *widget.Label
 	infoLabel        *widget.Label
 	statsLabel       *widget.Label
-	contentContainer *fyne.Container // Container for video and keyboard
+	contentContainer *fyne.Container // legacy bottom slot (unused by mobile keyboard overlay)
+	keyboardOverlay  *fyne.Container // transparent special-keys strip over video
+	collapseFAB      *fyne.Container // dismiss keyboard stack
 	ui               *view.VideoWidgetUI
 	statsTickerStop  chan struct{}
 
 	// spinnerStop/spinnerMu drive the connecting-spinner frame-cycling
 	// goroutine -- see video_widget_spinner.go. Same stop-channel-swap
-	// pattern HeaderActionButton.startSpinner already uses.
-	spinnerMu   sync.Mutex
-	spinnerStop chan struct{}
+	// pattern HeaderActionButton.startSpinner already uses. spinnerIsKVM
+	// tracks which color variant that goroutine is currently cycling
+	// through (see showConnectingSpinner's own doc comment for why this
+	// needs tracking at all, not just re-picking frames on every call).
+	spinnerMu    sync.Mutex
+	spinnerStop  chan struct{}
+	spinnerIsKVM bool
 
 	// clearVideoMu serializes clearVideo() (and therefore stopMetalVideo() /
 	// the native overlay teardown). Needed because the native Android destroy
@@ -54,7 +59,7 @@ type VideoWidget struct {
 	isStreaming      bool
 	isVideoConnected bool
 	isMouseConnected bool // Flag for whether the mouse is connected
-	enableVSync      bool // mirrors VideoStartRequest.EnableVSync for the GL overlay
+	enableVSync      bool // mirrors VideoStartRequest.EnableVSync; set in startVideoWithParamsInternal
 
 	// Services
 	usbClient             *api.USBClient
@@ -64,18 +69,29 @@ type VideoWidget struct {
 	bridgeInternalHost    string // LAN/internal IP of bridge; used to detect same-subnet direct path
 	updateStatus          func()
 	onFPSChanged          func(float64)
+	onResolutionChanged   func(width, height int)
 	videoOpMu             sync.Mutex
 	videoOpRunning        bool
 	desiredStreaming      bool
 	videoRestartPending   bool
 	moveQueueMu           sync.Mutex
 	bottomInset           float32 // Bottom inset (e.g. for the keyboard) that pushes the video upward
+	// keyboardViewportLift allows extra upward pan while the keyboard stack
+	// is open so a bottom-of-screen caret can sit above the system IME.
+	// Also unlocks matching extra downward pan so top content can clear the
+	// special-keys header (black gap above the picture, same idea as bottom).
+	keyboardViewportLift bool
+	// specialKeysHeaderReserve is the main-header band height (dp) while
+	// special keys replace it. Vulkan must not start above this Y.
+	specialKeysHeaderReserve float32
 
 	pendingMoveX          int
 	pendingMoveY          int
 	moveWorkerStarted     bool
 	videoOps              chan videoOperation
 	videoReconcilePending atomic.Bool
+	videoStartRetryMu     sync.Mutex
+	videoStartRetry       *time.Timer
 
 	// sendQueueMu/sendQueue/sendQueueWake/sendWorkerStarted back a small FIFO
 	// worker (see video_widget_input_queue.go's enqueueSend) that moves every
@@ -117,25 +133,56 @@ type VideoWidget struct {
 	// still in flight. beginVideoTrace clears it when the next connection
 	// attempt starts.
 	videoSilenceReconnectFired atomic.Bool
-	fpsWindowStart             atomic.Int64 // for Go-level frame arrival FPS logging
-	metalFPSWarned             atomic.Bool  // gates the one-shot Metal FPS mismatch warning
-	isMetalFullscreen          atomic.Bool  // true while Metal overlay covers the full fullscreen window
-	onNativeReady              func()       // one-shot: called on main thread when native overlay (Metal/GL) is first created
-	lastVideoImgW              float32      // pixel width of the last decoded video frame (for resize recalc when frame=nil)
-	lastVideoImgH              float32      // pixel height of the last decoded video frame
-	frameContentX              float32      // normalized active frame area on X without black bars
-	frameContentY              float32      // normalized active frame area on Y without black bars
-	frameContentW              float32      // normalized width of the active frame area
-	frameContentH              float32      // normalized height of the active frame area
+	fpsWindowStart             atomic.Int64    // for Go-level frame arrival FPS logging
+	metalFPSWarned             atomic.Bool     // gates the one-shot Metal FPS mismatch warning
+	isMetalFullscreen          atomic.Bool     // true while Metal overlay covers the full fullscreen window
+	onNativeReady              func()          // one-shot: called on main thread when native overlay (Metal/GL) is first created
+	lastVideoImgW              float32         // pixel width of the last decoded video frame (for resize recalc when frame=nil)
+	lastVideoImgH              float32         // pixel height of the last decoded video frame
+	hostDesktopW               float32         // native host monitor width (capture modes[0] / max)
+	hostDesktopH               float32         // native host monitor height
+	agentProtocol              string          // agent tariff: opensource (Sunshine) or rustshine free/pro/enterprise
+	hostLayout                 hostLayoutState // host keyboard layout the text path last set (video_widget_host_layout.go)
+	hotkeyActions              HotkeyActions   // Ctrl+Alt+Shift hotkeys needing the main window (video_widget_hotkeys.go)
+	hotkeysHeld                map[int16]bool  // hotkey keys whose KeyDown was consumed, so their KeyUp is too
+	hostCursorShown            bool            // whether the host is drawing its cursor this session, as far as this client told it
+	onAgentProtocolChanged     func(string)    // persist plaque when the live agent tariff changes
+	frameContentX              float32         // normalized active frame area on X without black bars
+	frameContentY              float32         // normalized active frame area on Y without black bars
+	frameContentW              float32         // normalized width of the active frame area
+	frameContentH              float32         // normalized height of the active frame area
 
 	// Dialogs
-	fullscreenDialog      *FullscreenDialog
-	startDialog           *view.VideoStartDialog
-	pairingPINDialog      dialog.Dialog // shown by SetOnPairingPINRequired, dismissed by SetOnPairingPINResolved
-	parentWindow          fyne.Window
-	virtualKeyboard       *graphics.VirtualKeyboard
+	fullscreenDialog         *FullscreenDialog
+	startDialog              *view.VideoStartDialog
+	pairingPINDialog         *view.PairingPINDialog // shown by SetOnPairingPINRequired, dismissed by SetOnPairingPINResolved
+	parentWindow             fyne.Window
+	virtualKeyboard          *graphics.VirtualKeyboard
+	onKeyboardStackChanged   func()
+	onKeyboardChromeSync     func()
+	onKeyboardViewportSettle func()
+	// viewportPanMode is armed by the mobile Control footer move button.
+	// While true, one-finger drag pans the video instead of moving the cursor.
+	// Stays armed until the button is tapped again (TouchUp/DragEnd must not
+	// clear it — Android can deliver those mid-stroke).
+	viewportPanMode          bool
+	viewportPanDragActive    bool
+	onViewportPanModeChanged func(bool)
+	systemIMESticky          atomic.Bool
+	// imeStackArmedAt is set when the sticky+special-keys stack opens; used to
+	// ignore the brief IME-height=0 window while the soft keyboard is animating up.
+	imeStackArmedAt time.Time
+	// imeConfirmedOpen is set once Android reports a real IME height (>100dp).
+	// Auto-collapse on height=navBar must not run until this is true, or a
+	// delayed/aborted GBoard show looks like "opened and immediately skipped".
+	imeConfirmedOpen      atomic.Bool
+	imeShowRetryUsed      atomic.Bool
 	keyboardModifierState atomic.Int32
+	keyboardKeysMode      atomic.Bool // KeyboardInputModeKeys; see SetKeyboardInputMode
 	suppressRuneUntilNS   atomic.Int64
+	softIMEMu             sync.Mutex
+	softIMELastRune       rune
+	softIMELastAt         time.Time
 	moonlightKeyMu        sync.Mutex
 	moonlightHeldVKs      map[int16]bool // tracks VK codes currently held in Moonlight session
 
@@ -177,15 +224,24 @@ type VideoWidget struct {
 	standaloneVKScreenDpW float32
 	standaloneVKScreenDpH float32
 	// Video rectangle within the input area (ImageFillContain): for correct coordinate translation into 0..4095
-	contentRectX     float32
-	contentRectY     float32
-	contentRectW     float32
-	contentRectH     float32
-	baseContentRectW float32
-	baseContentRectH float32
-	zoomScale        float32
-	panOffsetX       float32
-	panOffsetY       float32
+	contentRectX float32
+	contentRectY float32
+	contentRectW float32
+	contentRectH float32
+	// lastVideoCanvasOrigin is the last settled canvas position of the
+	// video container. AbsolutePositionForObject reports (0,0) for a
+	// frame when the overlay first starts, which would cover the header.
+	lastVideoCanvasOrigin fyne.Position
+	baseContentRectW      float32
+	baseContentRectH      float32
+	zoomScale             float32
+	// zoomScaleResidual multiplies sub-deadzone per-frame pinch factors so a
+	// slow continuous pinch is not discarded frame-by-frame (that felt like
+	// zoom advancing in jerks then stalling). Reset when the two-finger
+	// gesture ends.
+	zoomScaleResidual float32
+	panOffsetX        float32
+	panOffsetY        float32
 	// bottomAnchorContentVertically switches recalculateViewport's "content
 	// shorter than available area" branch from vertically centering the
 	// video to anchoring it flush against the bottom of the available
@@ -219,16 +275,21 @@ type VideoWidget struct {
 	bottomAnchorContentVertically bool
 	multiTouchActive              bool
 	lastMultiTouchAt              time.Time
-	scrollDragAxis                string
-	scrollDragLastX               float32
-	scrollDragLastY               float32
-	lastTouchX                    int // last sent touch coordinates (to avoid duplicating in MouseMoved)
-	lastTouchY                    int
-	lastAbsX                      int // last sent absolute (touch_position) coordinates, to avoid spamming
-	lastAbsY                      int
-	lastAbsSentTime               time.Time // time of the last absolute send (for debounce)
-	absSendMu                     sync.Mutex
-	absButtons                    uint8 // bitmask of buttons for absolute mode
+	// viewportManualControl is set by two-finger pan/zoom or footer pan-drag.
+	// While true, virtual-cursor auto-centering must not overwrite panOffset —
+	// otherwise zoom-after-pan snaps to center and pan-after-zoom is impossible.
+	// Cleared when the user moves the virtual cursor again.
+	viewportManualControl bool
+	scrollDragAxis        string
+	scrollDragLastX       float32
+	scrollDragLastY       float32
+	lastTouchX            int // last sent touch coordinates (to avoid duplicating in MouseMoved)
+	lastTouchY            int
+	lastAbsX              int // last sent absolute (touch_position) coordinates, to avoid spamming
+	lastAbsY              int
+	lastAbsSentTime       time.Time // time of the last absolute send (for debounce)
+	absSendMu             sync.Mutex
+	absButtons            uint8 // bitmask of buttons for absolute mode
 	// Stats for periodic log (atomics — written from capture goroutine, read from log timer).
 	statAbsMoonlight  atomic.Int64 // absolute events sent via Moonlight LiSendMousePositionEvent
 	statAbsWS         atomic.Int64 // absolute events sent via WebSocket
@@ -277,6 +338,9 @@ type VideoWidget struct {
 
 func (vw *VideoWidget) Close() {
 	vw.isClosing.Store(true)
+	vw.userStoppedVideo.Store(true)
+	vw.setDesiredStreaming(false)
+	vw.stopDelayedVideoRetry()
 }
 
 // MarkUserStopped records that the user explicitly asked to stop/disconnect,
@@ -288,6 +352,8 @@ func (vw *VideoWidget) Close() {
 // races against an already-pending bootstrap timer and can lose.
 func (vw *VideoWidget) MarkUserStopped() {
 	vw.userStoppedVideo.Store(true)
+	vw.setDesiredStreaming(false)
+	vw.stopDelayedVideoRetry()
 }
 
 func (vw *VideoWidget) setDesiredStreaming(streaming bool) {
@@ -377,11 +443,15 @@ func (vw *VideoWidget) beginVideoTrace(reason string) uint64 {
 	vw.videoTraceStartedAt.Store(startedAt.UnixNano())
 	vw.videoTraceFirstFrame.Store(0)
 	vw.videoTraceFirstPaint.Store(0)
+	// A new session starts with the host cursor exactly as /launch asked
+	// (usbridgeDisplayCursor, see SetShowMouseCursor).
+	vw.hostCursorShown = vw.showMouseCursor
 	vw.videoSilenceReconnectFired.Store(false)
-	// Reset saved video dimensions so a new stream with different resolution
-	// doesn't inherit stale values from the previous session.
-	vw.lastVideoImgW = 0
-	vw.lastVideoImgH = 0
+	// Do not zero lastVideoImgW/H here. Native GPU paths deliver frame=nil, so
+	// updateFrameContentRect never runs; wiping the size made contentRect fill
+	// the whole widget (including letterbox/pillarbox bars) and absolute mouse
+	// lagged toward the edges. Stream size is set from the start request and
+	// refreshed from NativeFrameSize / decoded frames.
 	label := fmt.Sprintf("vt-%d", traceID)
 	vw.videoTraceLabel.Store(label)
 	timeout := vw.videoTraceFirstAttemptTimeout()
@@ -408,7 +478,19 @@ func (vw *VideoWidget) beginVideoTrace(reason string) uint64 {
 			logrus.Warnf("⚠️ [VideoTrace #%d] no frames reached client after %s (streak=%d) video_stats=%v relay=%s — forcing reconnect", traceID, time.Since(start).Round(time.Millisecond), streak, vw.safeVideoStats(), vw.safeRelayDebugInfo())
 			vw.forceReconnectStuckStream(reason)
 		case firstPaintNs == 0:
+			// Native Vulkan/Metal path never goes through the Fyne canvas
+			// renderer, so firstPaint stays 0 even while the overlay is
+			// presenting. Treat an active overlay as painted, then nudge
+			// HWND z-order the same way a Control-tab switch does — that
+			// is what made the picture appear after switching tabs.
+			if vw.isNativeVideoActive() {
+				vw.noteVideoTraceFirstPaint(vw.frameCount)
+				vw.revealNativeVideoOverlay()
+				logrus.Infof("🖼️ [VideoTrace #%d] native overlay already rendering — marked paint and nudged visibility", traceID)
+				break
+			}
 			logrus.Warnf("⚠️ [VideoTrace #%d] client receives frames but UI has not painted after %s", traceID, time.Since(start).Round(time.Millisecond))
+			vw.RefreshViewportGeometry()
 		default:
 			logrus.Infof("✅ [VideoTrace #%d] startup path complete frame=%s paint=%s", traceID, time.Unix(0, firstFrameNs).Sub(start).Round(time.Millisecond), time.Unix(0, firstPaintNs).Sub(start).Round(time.Millisecond))
 		}
@@ -516,6 +598,35 @@ func (vw *VideoWidget) safeRelayDebugInfo() string {
 		return "tailscale=disabled"
 	}
 	return vw.tailscaleService.VideoRelayDebugInfo("")
+}
+
+// videoSwitchReadyTimeout is how long a monitor switch keeps Devices
+// controls locked while waiting for the first frame of the new capture.
+// Covers Sunshine picking up the new output plus one Moonlight handshake
+// (and one stuck-no-frame retry) without leaving the UI stuck forever.
+const videoSwitchReadyTimeout = 20 * time.Second
+
+// waitForNextFirstFrame blocks until a video trace newer than prevTrace
+// has delivered a frame, the widget is closing, or timeout elapses.
+func (vw *VideoWidget) waitForNextFirstFrame(prevTrace uint64, timeout time.Duration) {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline:
+			logrus.Warnf("⚠️ [VIDEO-SELECT] timed out waiting for first frame after monitor switch")
+			return
+		case <-ticker.C:
+			if vw.isClosing.Load() {
+				return
+			}
+			id := vw.videoTraceID.Load()
+			if id > prevTrace && vw.videoTraceFirstFrame.Load() != 0 {
+				return
+			}
+		}
+	}
 }
 
 func (vw *VideoWidget) noteVideoTraceFirstFrame(frameNum int64) {

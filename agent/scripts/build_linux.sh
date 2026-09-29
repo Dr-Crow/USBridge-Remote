@@ -37,6 +37,25 @@ fi
 # entirely (see fetch_rustshine.sh's own removal) so there is exactly one
 # way RustShine ever reaches an agent install: the subscription-gated
 # download, never a build artifact.
+#
+# The one exception is local debugging: DEV_STREAMER=1 builds the agent with
+# `-tags devstreamer`, which compiles in the USBRIDGE_DEV_STREAMER override
+# (internal/streamhost/devstreamer_on.go) so a locally built streamer can be
+# run on a real install. CI always builds without it -- even if DEV_STREAMER=1
+# ends up set (env or hardcoded below), it's forced off under CI/GitHub
+# Actions -- and a local dev AppImage gets a "-devstreamer" suffix so it
+# can't be mistaken for a release.
+GO_TAGS=""
+APPIMAGE_SUFFIX=""
+if [[ "${DEV_STREAMER:-}" == "1" && ( -n "${CI:-}" || -n "${GITHUB_ACTIONS:-}" ) ]]; then
+    echo -e "${YELLOW}DEV_STREAMER=1 ignored under CI: building the release agent without -tags devstreamer${NC}"
+    DEV_STREAMER=0
+fi
+if [[ "${DEV_STREAMER:-}" == "1" ]]; then
+    GO_TAGS="devstreamer"
+    APPIMAGE_SUFFIX="-devstreamer"
+    echo -e "${YELLOW}DEV_STREAMER=1: building with -tags devstreamer (USBRIDGE_DEV_STREAMER override enabled, NOT for release)${NC}"
+fi
 echo -e "${GREEN}Building usbridge_agent for Linux${NC}"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -51,21 +70,20 @@ export GOOS=linux
 export GOARCH=amd64
 
 echo -e "${YELLOW}Compiling agent...${NC}"
-go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "$OUTPUT_PATH" "$BUILD_PKG"
+go build -trimpath -tags "$GO_TAGS" -ldflags "-s -w -X main.version=$VERSION" -o "$OUTPUT_PATH" "$BUILD_PKG"
 chmod +x "$OUTPUT_PATH"
 
-# sunshine_capexec: a tiny, fully static (CGO_ENABLED=0 — zero dynamic deps)
-# launcher that carries the CAP_SYS_ADMIN file capability for KMS screen
-# capture instead of the streamer binary itself. A file capability puts the
-# dynamic linker into secure-execution mode, which ignores RPATH/RUNPATH —
-# breaking the streamer's bundled-library resolution the moment it's
-# granted. Generic (usage: sunshine_capexec <target-binary> [args...]), so
-# both streamers reuse the same launcher — see cmd/sunshine_capexec and
-# internal/permissions/service_linux.go.
-CAPEXEC_PATH="$DIST_DIR/sunshine-capexec"
-echo -e "${YELLOW}Compiling sunshine_capexec (static)...${NC}"
-CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$CAPEXEC_PATH" ./cmd/sunshine_capexec
-chmod +x "$CAPEXEC_PATH"
+# usbridge-streamer-launch: tiny, fully static (CGO_ENABLED=0) launcher
+# that gets installed ONCE, root-owned, with cap_sys_admin (see
+# internal/permissions/streamer_launcher_linux.go) and gives either
+# streamer CAP_SYS_ADMIN for KMS capture via the ambient set: RustShine only
+# as a build signed by rust-shine's release key (so updates never drop the
+# grant), Sunshine only from its root-owned installed tree. See
+# internal/streamerlaunch and cmd/usbridge_streamer_launch.
+LAUNCHER_PATH="$DIST_DIR/usbridge-streamer-launch"
+echo -e "${YELLOW}Compiling usbridge-streamer-launch (static)...${NC}"
+CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$LAUNCHER_PATH" ./cmd/usbridge_streamer_launch
+chmod +x "$LAUNCHER_PATH"
 
 # Fetch/build Sunshine (staged as dist/linux/sunshine/usr/bin/sunshine + assets).
 # RustShine is never built from source or bundled here -- see this script's
@@ -90,14 +108,10 @@ cp "$OUTPUT_PATH" "$APPDIR/usr/bin/$EXE_NAME"
 # dynamic deps and bundles whatever it finds on this build machine.
 DEPLOY_EXECUTABLES=("$APPDIR/usr/bin/$EXE_NAME")
 
-# sunshine_capexec launcher (static — not passed to linuxdeploy's
-# --executable list below, it has no shared library deps to bundle). Used by
-# Sunshine's own KMS-capture "Request" permission flow (see
-# streamhost.sunshineBackend.CapExecPath) -- also by rustshineBackend's own
-# CapExecPath at runtime for an entitled supporter's downloaded RustShine
-# (see internal/streamhost/rustshine_backend.go), even though this build
-# never stages a RustShine binary itself.
-cp "$CAPEXEC_PATH" "$APPDIR/usr/bin/sunshine-capexec"
+# usbridge-streamer-launch (static -- not passed to linuxdeploy's
+# --executable list below, it has no shared library deps to bundle). Found
+# next to the agent binary by permissions.bundledStreamerLauncher.
+cp "$LAUNCHER_PATH" "$APPDIR/usr/bin/usbridge-streamer-launch"
 
 # Sunshine binary + assets (from cmake install tree under dist/linux/sunshine/).
 # RustShine is never built from source or bundled here -- see this script's
@@ -159,7 +173,7 @@ fi
 
 # Build AppImage
 echo -e "${YELLOW}Packaging AppImage...${NC}"
-OUTPUT_APPIMAGE="$REPO_ROOT/dist/USBridgeAgent-Linux-x86_64-${VERSION}.AppImage"
+OUTPUT_APPIMAGE="$REPO_ROOT/dist/USBridgeAgent-Linux-x86_64-${VERSION}${APPIMAGE_SUFFIX}.AppImage"
 rm -f "$OUTPUT_APPIMAGE"
 
 # Some CI/container runners don't have a working FUSE mount for AppImages to

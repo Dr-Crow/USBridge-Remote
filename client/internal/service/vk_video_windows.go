@@ -11,7 +11,7 @@ package service
 // Implemented in vk_video_impl_windows.c.
 extern int  vk_video_is_active(void);
 extern int  vk_video_try_submit(uint8_t *rgba, int width, int height, int stride);
-extern int  vk_video_create(uintptr_t parent_hwnd, int x, int y, int w, int h);
+extern int  vk_video_create(uintptr_t parent_hwnd, int x, int y, int w, int h, int vsync);
 extern void vk_video_update_frame(int x, int y, int w, int h);
 extern void vk_video_destroy(void);
 extern void vk_video_get_stats(long long *rendered, long long *submitted,
@@ -21,11 +21,13 @@ extern void vk_video_get_stats(long long *rendered, long long *submitted,
 extern void vk_video_clear_pending_stats(void);
 extern void vk_video_get_diag(long long *hb, int *stage);
 extern void vk_video_set_hidden(int hidden);
+extern void vk_video_set_canvas_hidden(int hidden);
 extern void vk_video_bring_to_top(void);
 extern int  vk_video_next_event(int *type_out, int *x_out, int *y_out, int *btn_out);
-extern int  vk_video_create_standalone(void);
+extern int  vk_video_create_standalone(uintptr_t hint_hwnd, int vsync);
 extern int  vk_video_next_key_event(int *type_out, int *vk_out);
 extern void vk_video_get_dst_size(int *w, int *h);
+extern void vk_video_get_video_dest(int *dx, int *dy, int *dw, int *dh, int *sw, int *sh);
 
 extern void goVKLog(char *msg, int level);
 */
@@ -66,9 +68,16 @@ func VKVideoTrySubmit(rgba []byte, width, height, stride int) bool {
 }
 
 // VKVideoCreate initialises the Vulkan child-window renderer.
+// vsync selects the swapchain present mode: true prefers MAILBOX/FIFO_RELAXED/FIFO
+// (tear-free, still non-blocking so it can't deadlock Fyne's message pump the way
+// FIFO alone historically did), false prefers IMMEDIATE (lowest latency, may tear).
 // Returns false if Vulkan is unavailable; caller should fall back to GDI.
-func VKVideoCreate(hwnd uintptr, x, y, w, h int) bool {
-	return C.vk_video_create(C.uintptr_t(hwnd), C.int(x), C.int(y), C.int(w), C.int(h)) != 0
+func VKVideoCreate(hwnd uintptr, x, y, w, h int, vsync bool) bool {
+	v := C.int(0)
+	if vsync {
+		v = 1
+	}
+	return C.vk_video_create(C.uintptr_t(hwnd), C.int(x), C.int(y), C.int(w), C.int(h), v) != 0
 }
 
 var vkOverlayLastX, vkOverlayLastY, vkOverlayLastW, vkOverlayLastH int
@@ -149,11 +158,29 @@ func VKVideoSetHidden(hidden bool) {
 	C.vk_video_set_hidden(h)
 }
 
-// VKVideoCreateStandalone creates a standalone fullscreen Vulkan window covering the
-// primary monitor. No parent HWND needed; the window captures keyboard focus directly.
-// Use this instead of VKVideoCreate when entering fullscreen without a Fyne window.
-func VKVideoCreateStandalone() bool {
-	return C.vk_video_create_standalone() != 0
+// VKVideoSetCanvasHidden is VKVideoSetHidden's counterpart for "the Fyne canvas
+// currently has an overlay (popup/dialog/menu) open", polled by the video widget
+// every frame. It is a separate flag so it can't clear -- or be cleared by -- the
+// depth-counter driven VKVideoSetHidden request.
+func VKVideoSetCanvasHidden(hidden bool) {
+	h := C.int(0)
+	if hidden {
+		h = 1
+	}
+	C.vk_video_set_canvas_hidden(h)
+}
+
+// VKVideoCreateStandalone creates a standalone fullscreen Vulkan window covering
+// the monitor nearest to hintHWND (the client window). hintHWND may be 0, in
+// which case the primary monitor is used. The window captures keyboard focus
+// directly. Use this instead of VKVideoCreate when entering fullscreen without
+// a Fyne window. See VKVideoCreate's doc comment for what vsync selects.
+func VKVideoCreateStandalone(hintHWND uintptr, vsync bool) bool {
+	v := C.int(0)
+	if vsync {
+		v = 1
+	}
+	return C.vk_video_create_standalone(C.uintptr_t(hintHWND), v) != 0
 }
 
 // VKVideoNextKeyEvent drains one pending keyboard event from the standalone VK window.
@@ -166,11 +193,20 @@ func VKVideoNextKeyEvent() (typ, vkCode int, ok bool) {
 }
 
 // VKVideoGetDstSize returns the current VK window dimensions in physical pixels.
-// In standalone mode this equals the primary screen resolution.
+// In standalone mode this equals the chosen monitor's resolution.
 func VKVideoGetDstSize() (w, h int) {
 	var cw, ch C.int
 	C.vk_video_get_dst_size(&cw, &ch)
 	return int(cw), int(ch)
+}
+
+func nativeVideoDestRect() (NativeVideoDest, bool) {
+	var dx, dy, dw, dh, sw, sh C.int
+	C.vk_video_get_video_dest(&dx, &dy, &dw, &dh, &sw, &sh)
+	if int(dw) <= 0 || int(dh) <= 0 {
+		return NativeVideoDest{}, false
+	}
+	return NativeVideoDest{DX: int(dx), DY: int(dy), DW: int(dw), DH: int(dh), SW: int(sw), SH: int(sh)}, true
 }
 
 // VKVideoNextEvent drains one pending pointer event from the Vulkan overlay window.

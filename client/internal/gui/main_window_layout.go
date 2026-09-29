@@ -1,6 +1,7 @@
 package gui
 
 import (
+	"errors"
 	"fmt"
 	"image/color"
 	"math"
@@ -8,31 +9,37 @@ import (
 	"strings"
 	"time"
 
+	"usbridge-client/internal/api"
 	"usbridge-client/internal/gui/assets"
 	"usbridge-client/internal/gui/controller"
 	"usbridge-client/internal/gui/design"
 	"usbridge-client/internal/gui/i18n"
 	"usbridge-client/internal/gui/view"
 	"usbridge-client/internal/models"
-	"usbridge-client/internal/service"
 
 	"github.com/sirupsen/logrus"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/layout"
 	fynetheme "fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
 
 const (
 	addressBarGap        float32 = 10
-	addressBarControlH   float32 = 36
-	addressBarActionBtn  float32 = 36
 	addressBarHostHideAt float32 = 180
 	statusIconSize       float32 = 18
 )
+
+// debugForceAllStatusIndicators, when true, makes updateStatusBar report
+// every peripheral/backup/snapshot/gamepad/audio/script indicator and the SD
+// storage chip as present with plausible fake values, regardless of what's
+// actually plugged into the connected device -- so the Control header's
+// full icon set can be tuned visually without physically attaching an SD
+// card, keyboard, mouse, gamepad, etc. Flip back to false before shipping;
+// it only affects display, never any real device/API call.
+const debugForceAllStatusIndicators = false
 
 func protocolDropdownLabel(protocol string) string {
 	switch strings.TrimSpace(protocol) {
@@ -54,37 +61,6 @@ func protocolDropdownValue(label string) string {
 	default:
 		return models.ConnectionProtocolAuto
 	}
-}
-
-type tabsTheme struct {
-	base fyne.Theme
-}
-
-func (t *tabsTheme) Color(name fyne.ThemeColorName, variant fyne.ThemeVariant) color.Color {
-	switch name {
-	case fynetheme.ColorNameHover, fynetheme.ColorNamePressed, fynetheme.ColorNameFocus:
-		return color.Transparent
-	case fynetheme.ColorNameShadow, fynetheme.ColorNameSeparator:
-		return color.Transparent
-	default:
-		return t.base.Color(name, variant)
-	}
-}
-
-func (t *tabsTheme) Font(style fyne.TextStyle) fyne.Resource {
-	return t.base.Font(style)
-}
-
-func (t *tabsTheme) Icon(name fyne.ThemeIconName) fyne.Resource {
-	return t.base.Icon(name)
-}
-
-func (t *tabsTheme) Size(name fyne.ThemeSizeName) float32 {
-	switch name {
-	case fynetheme.SizeNamePadding:
-		return 2
-	}
-	return t.base.Size(name)
 }
 
 // createInterface initializes the address bar fields.
@@ -151,7 +127,7 @@ func (mw *MainWindow) createInterface() {
 
 	mw.sdStorageProgress = view.NewStorageProgressBar()
 	mw.sdStorageProgress.SetOnTapped(mw.showStorageInfoDialog)
-	mw.sdStorageProgress.Hide()
+	mw.syncStorageChipVisibility(false)
 
 	if mw.backupWidget != nil {
 		mw.backupWidget.UpdateHostEntry(mw.hostEntry)
@@ -225,7 +201,7 @@ func (mw *MainWindow) recreateContainers() {
 				return
 			}
 			if total <= 0 {
-				mw.sdStorageProgress.Hide()
+				mw.syncStorageChipVisibility(false)
 				return
 			}
 			mw.currentStorageTotal = total
@@ -248,7 +224,7 @@ func (mw *MainWindow) recreateContainers() {
 				used = 0
 			}
 			mw.sdStorageProgress.SetSizeText(models.FormatStorageSizeOnly(used, total))
-			mw.sdStorageProgress.Show()
+			mw.syncStorageChipVisibility(true)
 			mw.refreshMainHeaderLayout()
 		})
 	}
@@ -261,14 +237,23 @@ func (mw *MainWindow) recreateContainers() {
 				mw.videoWidget.RecoverAfterControlDeviceRebuildAsync()
 			})
 			mw.diskWidget.SetOnVideoConfigRequested(func(devicePath string) {
-				mw.videoWidget.ShowVideoDeviceSettings(devicePath, mw.tabs != nil && mw.tabs.SelectedIndex() == mw.controlTabIndex(), false)
+				onControlTab := mw.tabs != nil && mw.tabs.SelectedIndex() == mw.controlTabIndex()
+				logrus.Infof("🎯 [CODEC-TRACE] video settings opened from device row: devicePath=%s selectedTab=%d controlTab=%d restartOnApply=%v",
+					devicePath, tabsSelectedIndexOrNegOne(mw.tabs), mw.controlTabIndex(), onControlTab)
+				mw.videoWidget.ShowVideoDeviceSettings(devicePath, onControlTab, false)
 			})
 			mw.diskWidget.SetOnVideoConnect(func(devicePath string) {
-				mw.videoWidget.StartVideoDeviceAsync(devicePath)
+				mw.videoWidget.StartVideoDevice(devicePath)
+				mw.scheduleVideoMonitorChipRefresh()
+			})
+			mw.diskWidget.SetOnVideoDevicesChanged(func(devices []models.SystemDevice) {
+				mw.applyVideoMonitorChip(devices)
 			})
 			mw.diskWidget.SetOnVideoDisconnect(func() {
 				mw.videoWidget.StopVideoAsync()
 			})
+			mw.diskWidget.SetOnAgentProtocol(mw.videoWidget.SetAgentProtocol)
+			mw.videoWidget.SetOnAgentProtocolChanged(mw.persistAgentProtocol)
 			mw.diskWidget.SetOnAudioConnect(func(devicePath string) {
 				if mw.usbClient != nil {
 					if err := mw.usbClient.StartAudio(devicePath); err != nil {
@@ -305,10 +290,18 @@ func (mw *MainWindow) recreateContainers() {
 				mw.currentVideoFPS = fps
 				mw.updateVideoIconLabel()
 			})
+			mw.videoWidget.SetOnResolutionChanged(func(width, height int) {
+				mw.currentVideoWidth = width
+				mw.currentVideoHeight = height
+				mw.updateVideoIconLabel()
+			})
 		}
 	}
 	if mw.backupWidget != nil {
 		mw.backupWidget.SetOnStorageInfoUpdate(storageUpdate)
+		if mw.diskWidget != nil {
+			mw.backupWidget.SetOnSnapshotsLoaded(mw.diskWidget.SetDashboardSnapshotCount)
+		}
 	}
 
 	mw.createStatusBar()
@@ -316,16 +309,54 @@ func (mw *MainWindow) recreateContainers() {
 	connectionAddressBar := mw.createConnectionAddressBar()
 	mainFooter := mw.createDeviceFooterBar()
 	connectionFooter := mw.createConnectionFooterBar()
-	devicesTabTitle := "Devices"
-	controlTabTitle := "Control"
-	snapshotsTabTitle := "Snapshots"
-	scriptsTabTitle := "Scripts"
+	devicesTabTitle := i18n.Current.TabLabelDevices
+	controlTabTitle := i18n.Current.TabLabelControl
+	snapshotsTabTitle := i18n.Current.TabLabelSnapshots
+	scriptsTabTitle := i18n.Current.TabLabelScripts
+
+	devicesScriptFooter := view.NewScriptFooterStatus()
+	snapshotsScriptFooter := view.NewScriptFooterStatus()
+	controlScriptFooter := view.NewScriptFooterStatus()
+	controlConnecting := view.NewDeviceDashboardBusyHint(i18n.Current.ConnectingDevice)
+	snapshotsConnecting := view.NewDeviceDashboardBusyHint(i18n.Current.ConnectingDevice)
+	if mw.diskWidget != nil {
+		mw.diskWidget.SetDashboardScriptFooter(devicesScriptFooter)
+		if mw.scriptsWidget != nil {
+			mw.diskWidget.AttachConnectingHint(mw.scriptsWidget.ConnectingHint())
+		}
+		mw.diskWidget.AttachConnectingHint(snapshotsConnecting)
+		mw.diskWidget.AttachConnectingHint(controlConnecting)
+	}
+	if mw.backupWidget != nil {
+		mw.backupWidget.SetScriptFooter(snapshotsScriptFooter)
+		mw.backupWidget.SetConnectingHint(snapshotsConnecting)
+	}
+	if mw.scriptsWidget != nil {
+		mw.scriptsWidget.AttachFooterStatus(devicesScriptFooter)
+		mw.scriptsWidget.AttachFooterStatus(snapshotsScriptFooter)
+		mw.scriptsWidget.AttachFooterStatus(controlScriptFooter)
+	}
+	var controlBottom fyne.CanvasObject
+	if !useMobileControl() {
+		controlBottom = view.NewAppFooter("", mw.buildDesktopControlFooterActions(), controlConnecting, controlScriptFooter)
+	}
+	controlContent := view.NewEdgeStack(nil, controlBottom, mw.videoWidget.GetContainer())
+	devicesContent := mw.diskWidget.GetDashboardContainer()
+	snapshotsContent := mw.createBackupFlashTab()
+	var scriptsContent fyne.CanvasObject = mw.scriptsWidget.GetContainer()
+	if view.IsMobile() {
+		// Desktop two-column / table MinSize is wider than a phone frame.
+		// Ignore that width so opening these tabs cannot grow the window.
+		devicesContent = view.NewMobileFillWidth(devicesContent)
+		snapshotsContent = view.NewMobileFillWidth(snapshotsContent)
+		scriptsContent = view.NewMobileFillWidth(scriptsContent)
+	}
 
 	mw.tabs = container.NewAppTabs(
-		container.NewTabItem(controlTabTitle, container.NewThemeOverride(mw.videoWidget.GetContainer(), design.NewBrandTheme())),
-		container.NewTabItem(devicesTabTitle, container.NewThemeOverride(mw.diskWidget.GetContainer(), design.NewBrandTheme())),
-		container.NewTabItem(snapshotsTabTitle, container.NewThemeOverride(mw.createBackupFlashTab(), design.NewBrandTheme())),
-		container.NewTabItem(scriptsTabTitle, container.NewThemeOverride(mw.scriptsWidget.GetContainer(), design.NewBrandTheme())),
+		container.NewTabItem(controlTabTitle, container.NewThemeOverride(controlContent, design.NewBrandTheme())),
+		container.NewTabItem(devicesTabTitle, container.NewThemeOverride(devicesContent, design.NewBrandTheme())),
+		container.NewTabItem(snapshotsTabTitle, container.NewThemeOverride(snapshotsContent, design.NewBrandTheme())),
+		container.NewTabItem(scriptsTabTitle, container.NewThemeOverride(scriptsContent, design.NewBrandTheme())),
 	)
 	mw.applyTabVisualState(0)
 	mw.tabs.OnSelected = func(tab *container.TabItem) {
@@ -350,6 +381,11 @@ func (mw *MainWindow) recreateContainers() {
 				time.AfterFunc(150*time.Millisecond, mw.videoWidget.RefreshViewportGeometry)
 			}
 		}
+		if tab != nil && tab.Text == devicesTabTitle {
+			if mw.diskWidget != nil {
+				mw.diskWidget.FlushPendingCombine()
+			}
+		}
 		if tab != nil && tab.Text == snapshotsTabTitle {
 			// Snapshots otherwise only update via BackupWidget's 30s background
 			// ticker -- opening this tab right after a new snapshot lands on
@@ -365,80 +401,160 @@ func (mw *MainWindow) recreateContainers() {
 	}
 
 	deviceFooterOverlay := container.NewBorder(nil, mainFooter, nil, nil, nil)
-	tabsWithTheme := container.NewThemeOverride(mw.tabs, &tabsTheme{base: design.NewBrandTheme()})
+	// mw.tabs itself is never added to the visible tree -- its own native
+	// tab strip is what tabHeaderButtons (createMainAddressBar's own left
+	// zone) replaces. Its four Content objects (already each wrapped in
+	// their own ThemeOverride above) are what actually render, stacked and
+	// shown/hidden by applyTabVisualState instead of by AppTabs' own
+	// renderer -- see MainWindow.tabContentStack's own doc comment.
+	mw.tabContentStack = container.NewStack(
+		mw.tabs.Items[0].Content,
+		mw.tabs.Items[1].Content,
+		mw.tabs.Items[2].Content,
+		mw.tabs.Items[3].Content,
+	)
 
+	var mainBottom fyne.CanvasObject
+	if useMobileControl() && mw.mobileTabFooter != nil {
+		mw.connectedFooterBusy = controlConnecting
+		mw.connectedFooterScript = controlScriptFooter
+		mw.applyConnectedChromeLayout(true)
+		mainBottom = mw.connectedChromeHost
+	}
 	mainBg := canvas.NewRectangle(design.ColorGray950)
 	mw.mainContent = container.NewStack(
 		mainBg,
-		container.NewBorder(
+		view.NewEdgeStack(
 			mainAddressBar,
-			nil,
-			nil,
-			nil,
-			container.NewStack(tabsWithTheme, deviceFooterOverlay),
+			mainBottom,
+			container.NewStack(mw.tabContentStack, deviceFooterOverlay),
 		),
 	)
 
 	connBg := canvas.NewRectangle(design.ColorGray950)
 	mw.connectionContent = container.NewStack(
 		connBg,
-		container.NewBorder(
+		view.NewEdgeStack(
 			connectionAddressBar,
 			connectionFooter,
-			nil,
-			nil,
 			mw.connectionManager.GetContainer(),
 		),
 	)
 
-	mw.window.SetContent(mw.connectionContent)
+	mw.window.SetContent(mw.wrapWithResizeGuard(mw.connectionContent))
+	mw.onMainContent = false
 }
 
+// applyTabVisualState is what actually switches which tab is showing, now
+// that mw.tabs itself is never rendered (see MainWindow.tabContentStack's
+// own doc comment): shows activeIndex's own Content inside
+// mw.tabContentStack and hides the other three, and updates
+// mw.tabHeaderButtons' selected look to match. Every mw.tabs.OnSelected
+// caller (this file's own OnSelected handler, plus every tab-jump shortcut
+// like mouseIcon/gamepadIcon/snapshotIcon) already goes through
+// mw.tabs.Select/SelectIndex, which is what fires OnSelected -- so nothing
+// else needs to call this directly.
 func (mw *MainWindow) applyTabVisualState(activeIndex int) {
 	if mw == nil || mw.tabs == nil || len(mw.tabs.Items) < 3 {
 		return
 	}
-	_ = activeIndex
+	for i, item := range mw.tabs.Items {
+		if item == nil || item.Content == nil {
+			continue
+		}
+		if i == activeIndex {
+			item.Content.Show()
+		} else {
+			item.Content.Hide()
+		}
+	}
+	for i, btn := range mw.tabHeaderButtons {
+		if btn == nil {
+			continue
+		}
+		btn.SetSelected(i == activeIndex)
+	}
+	if useMobileControl() && mw.onMainContent {
+		view.SetFooterVersionDigitsVisible(activeIndex != mw.controlTabIndex())
+	}
+	mw.syncMobileKeyboardButton(activeIndex == mw.controlTabIndex())
+	if activeIndex == mw.controlTabIndex() && mw.videoWidget != nil {
+		mw.videoWidget.PrefetchCaptureModesAsync()
+	}
 }
 
-// createConnectionAddressBar creates the connection address bar.
+// createConnectionAddressBar creates the connection screen's header bar (see
+// connection_header.go for the component itself). This is only the
+// composition point: it owns nothing visual, just wires the header's
+// reported actions to the real controller calls.
 func (mw *MainWindow) createConnectionAddressBar() *fyne.Container {
-	var langBtn *headerStatusBadgeButton
-	langBtn = newHeaderStatusBadgeButton(assets.LanguageIconActive, func() {
-		if mw.connectionManager != nil {
-			mw.connectionManager.ShowLanguageMenu(langBtn)
-		}
-	})
-	langBtn.SetBadgeText("")
-	langBtn.SetIconSize(fyne.NewSize(16, 16))
-
-	discordBtn := newHeaderStatusBadgeButton(assets.DiscordIconActive, func() {
-		if mw.connectionManager != nil {
-			mw.connectionManager.OpenDiscordInvite()
-		}
-	})
-	discordBtn.SetBadgeText("")
-	discordBtn.SetIconSize(fyne.NewSize(18, 18))
-
-	// accountBtn opens showAccountDialog (main_window_account.go) -- login
-	// with the same Google account used at checkout (see
-	// internal/account's package doc comment) to see USBridge
-	// licenses/set up cross-device connections sync. theme.AccountIcon()
-	// is Fyne's own built-in glyph, not a custom asset -- consistent
-	// enough here without needing new SVG art alongside Discord/Language's.
-	accountBtn := newHeaderStatusBadgeButton(fynetheme.AccountIcon(), func() {
-		mw.showAccountDialog()
-	})
-	accountBtn.SetBadgeText("")
-	accountBtn.SetIconSize(fyne.NewSize(18, 18))
-
-	leftRow := container.New(&centeredInlineLayout{gap: 4, minGap: 2}, accountBtn, discordBtn, langBtn)
-	var rightAccessory fyne.CanvasObject = canvas.NewRectangle(color.Transparent)
-	if mw.connectionManager != nil && mw.connectionManager.HeaderAccessory() != nil {
-		rightAccessory = mw.connectionManager.HeaderAccessory()
+	actions := connectionHeaderActions{
+		OnShowLanguageMenu: func(anchor fyne.CanvasObject) {
+			if mw.connectionManager != nil {
+				mw.connectionManager.ShowLanguageMenu(anchor)
+			}
+		},
+		OnOpenCommunity: func(anchor fyne.CanvasObject) {
+			if mw.connectionManager != nil {
+				mw.connectionManager.ShowCommunityMenu(anchor)
+			}
+		},
+		OnOpenInfo: func(anchor fyne.CanvasObject) {
+			if mw.connectionManager != nil {
+				mw.connectionManager.ShowInfoMenu(anchor)
+			}
+		},
+		OnOpenHardwareAgent: func() {
+			if mw.connectionManager != nil {
+				mw.connectionManager.OpenHardwareAgentPage()
+			}
+		},
+		OnOpenSoftwareAgent: func() {
+			if mw.connectionManager != nil {
+				mw.connectionManager.ShowAgentCatalog()
+			}
+		},
+		OnToggleTailscale: func() {
+			if mw.connectionManager != nil {
+				mw.connectionManager.ToggleTailscale()
+			}
+		},
+		OnOpenAccount: func() {
+			mw.showAccountDialog()
+		},
+		ViewMode: func() string {
+			if mw.connectionManager != nil {
+				return mw.connectionManager.ViewMode()
+			}
+			return "grid"
+		},
+		OnViewModeChange: func(mode string) {
+			if mw.connectionManager != nil {
+				mw.connectionManager.SetViewMode(mode)
+			}
+		},
 	}
-	row := container.NewHBox(leftRow, layout.NewSpacer(), rightAccessory)
-	return view.NewHeaderBand("", row)
+	var band *fyne.Container
+	var handle *ConnectionHeaderHandle
+	if view.IsMobile() {
+		band, handle = newMobileConnectionHeader(actions)
+	} else {
+		band, handle = newConnectionHeader(actions)
+	}
+
+	// The header owns the Tailscale toggle widget now; hand the controller a
+	// way to push live status into it without either side knowing the
+	// other's types (see ConnectionHeaderHandle).
+	if mw.connectionManager != nil {
+		mw.connectionManager.SetTailscaleStatusSink(handle.SetTailscaleState)
+		mw.connectionManager.SetAccountStateSink(handle.SetAccountState)
+		mw.connectionManager.SetConnectingStateSink(mw.handleConnectingStateChange)
+		mw.connectionManager.SetOpenAccount(func() {
+			mw.showAccountDialog()
+		})
+	}
+
+	return band
 }
 
 // createMainAddressBar creates the main address bar.
@@ -449,37 +565,111 @@ func (mw *MainWindow) createMainAddressBar() *fyne.Container {
 	if mw.mainExitBtn == nil {
 		mw.mainExitBtn = view.NewHeaderActionButton(mw.handleConnectionToggle)
 		mw.mainExitBtn.ApplySpec(view.HeaderActionButtonSpec{
-			Fill:        design.ColorSurfaceLight,
-			Foreground:  design.ColorTextLight,
-			Stroke:      color.NRGBA{R: 0xd6, G: 0x6d, B: 0x6d, A: 0xff},
-			StrokeWidth: 1.2,
-			Icon:        assets.ExitIcon,
-			IconSize:    fyne.NewSize(24, 24),
+			Fill:            design.ColorExitButtonFill,
+			Foreground:      design.ColorExitButtonText,
+			Stroke:          design.ColorExitButtonBorder,
+			StrokeWidth:     1.2,
+			Icon:            assets.ExitIcon,
+			IconSize:        fyne.NewSize(12, 12),
+			Text:            connectionProtocolLabel(mw.connectedProtocol),
+			HoverFill:       design.ColorExitButtonHoverFill,
+			HoverStroke:     design.ColorExitButtonHoverBorder,
+			HoverForeground: design.ColorExitButtonHoverText,
+			HoverIcon:       assets.ExitIconHover,
 		})
 	}
-	exitPanel := container.NewGridWrap(fyne.NewSize(addressBarActionBtn, addressBarControlH), mw.mainExitBtn)
-	rightGroup := container.New(&exitStatusOverlayLayout{badgeInsetX: -7, badgeInsetY: -3}, exitPanel, mw.protocolPanel)
-	middleGroup := container.New(&centeredInlineLayout{gap: 8, minGap: 4}, mw.sdStorageProgress, mw.statusPanel)
-	// Clip, not Scroll: on a narrow/mobile window this row can genuinely
-	// run out of horizontal space for the SD-progress + status readout,
-	// but they're passive indicators, not something worth navigating to --
-	// an HScroll here used to leave a persistent thin scrollbar sitting
-	// right above the video/Control-tab content whenever that happened
-	// (Fyne's scroll-bar-area renders any time content overflows its
-	// viewport, not just on hover/drag -- see internal/widget/scroller.go's
-	// handleAreaVisibility), which read as a stray UI glitch since nobody
-	// was ever meant to actually scroll this row. Clip keeps
-	// mainHeaderBarLayout.Layout's existing width-capping math (below)
-	// working exactly the same way, it just quietly clips whatever
-	// overflows instead of exposing a scrollbar for it.
-	middleClip := container.NewClip(middleGroup)
+	// Control's own reuse of the connections screen's header accessories
+	// (see connection_header.go's newHeaderSettingsMenuButton) -- same
+	// Info/Community/Language/Account actions as createConnectionAddressBar
+	// wires into newConnectionHeader, just collapsed into one gear-icon
+	// dropdown instead of four separate buttons so they don't crowd this
+	// row's pcpanel/status-icon/protocol/exit elements.
+	settingsBtn := newHeaderSettingsMenuButton(headerSettingsMenuActions{
+		OnPowerReset: func() {
+			if mw.pcpanelWidget != nil {
+				mw.pcpanelWidget.ShowPowerMenu()
+			}
+		},
+		OnShowLanguageMenu: func(anchor fyne.CanvasObject) {
+			if mw.connectionManager != nil {
+				mw.connectionManager.ShowLanguageMenu(anchor)
+			}
+		},
+		OnOpenCommunity: func(anchor fyne.CanvasObject) {
+			if mw.connectionManager != nil {
+				mw.connectionManager.ShowCommunityMenu(anchor)
+			}
+		},
+		OnOpenInfo: func(anchor fyne.CanvasObject) {
+			if mw.connectionManager != nil {
+				mw.connectionManager.ShowInfoMenu(anchor)
+			}
+		},
+		OnOpenHardwareAgent: func() {
+			if mw.connectionManager != nil {
+				mw.connectionManager.OpenHardwareAgentPage()
+			}
+		},
+		OnOpenSoftwareAgent: func() {
+			if mw.connectionManager != nil {
+				mw.connectionManager.ShowAgentCatalog()
+			}
+		},
+		OnOpenAccount: func() {
+			mw.showAccountDialog()
+		},
+		OnRunBenchmark: mw.benchmarkMenuAction(),
+		OnShowHotkeys:  mw.showHotkeysDialog,
+	})
+	// mw.mainExitBtn no longer has a protocol badge stuck on top of it (see
+	// connectionProtocolLabel) -- it just sizes itself to its own icon+text
+	// content now (view.HeaderActionButton.MinSize), so it sits here
+	// directly instead of behind an overlay layout.
+	rightGroup := fyne.CanvasObject(container.NewHBox(
+		settingsBtn,
+		mw.mainExitBtn,
+	))
+	middleGroup := mw.buildStatusIndicatorBar()
+	// Phone: clip the status strip so a narrow frame cannot grow the window.
+	// Desktop: leave it unclipped so showing the monitor chip can widen the
+	// info block instead of chopping it off on the right.
+	middleSlot := fyne.CanvasObject(middleGroup)
+	if useMobileControl() {
+		middleSlot = container.NewClip(middleGroup)
+	}
+	// mw.pcpanelWidget's own container used to sit here (the power/reset
+	// button) -- it's the gear menu's "Power Reset" row now (see
+	// OnPowerReset above), freeing this left zone for the tab selector.
+	tabs := mw.buildTabHeaderButtons()
+	left := fyne.CanvasObject(tabs)
+	if useMobileControl() {
+		// Phone: settings left, status strip in the middle, Exit right.
+		// Tabs live in the bigger connected footer.
+		left = settingsBtn
+		// Stretch Exit to the same 28px header-button height it had when
+		// it sat in an HBox with the gear (its own MinSize is only the
+		// 12px icon + label).
+		exitHeight := canvas.NewRectangle(color.Transparent)
+		exitHeight.SetMinSize(fyne.NewSize(0, headerCompactButtonSize.Height))
+		rightGroup = container.NewMax(exitHeight, mw.mainExitBtn)
+		mw.mobileTabFooter = mw.createMobileConnectedFooter(tabs)
+	}
 	row := container.New(
 		&mainHeaderBarLayout{edgeInset: 0, sideGap: 10},
-		mw.pcpanelWidget.GetContainer(),
-		middleClip,
+		left,
+		middleSlot,
 		rightGroup,
 	)
-	return view.NewHeaderBand("", row)
+	normal := view.NewHeaderBand("", row)
+	mw.mainHeaderNormal = normal
+	if useMobileControl() {
+		// Mobile: keyboard stack replaces this band with special keys +
+		// collapse (see applyMainHeaderForKeyboardStack).
+		mw.mainHeaderHost = container.NewMax(normal)
+		return mw.mainHeaderHost
+	}
+	mw.mainHeaderHost = nil
+	return normal
 }
 
 func headerGapSpacer(width float32) fyne.CanvasObject {
@@ -488,48 +678,110 @@ func headerGapSpacer(width float32) fyne.CanvasObject {
 	return spacer
 }
 
-func newHeaderPassiveIndicator(icon fyne.Resource) fyne.CanvasObject {
+func newHeaderPassiveIndicator(icon fyne.Resource, size fyne.Size) fyne.CanvasObject {
 	image := canvas.NewImageFromResource(icon)
 	image.FillMode = canvas.ImageFillContain
-	image.SetMinSize(fyne.NewSize(18, 18))
-	return container.NewGridWrap(
-		fyne.NewSize(28, 28),
-		container.NewCenter(image),
-	)
+	image.SetMinSize(size)
+	return container.NewCenter(image)
 }
 
-func (mw *MainWindow) createConnectionFooterBar() *fyne.Container {
-	bar := container.NewWithoutLayout()
-	bar.Hide()
-	mw.connectionFooterBar = bar
-	return bar
+func (mw *MainWindow) createConnectionFooterBar() fyne.CanvasObject {
+	var extras []fyne.CanvasObject
+	var rightParts []fyne.CanvasObject
+	if mw.connectionManager != nil {
+		if !view.IsMobile() {
+			extras = append(extras, mw.connectionManager.AgentFooterChip())
+			extras = append(extras, mw.connectionManager.FirmwareFooterChip())
+		}
+		if promo := mw.connectionManager.PromoFooterChip(); promo != nil {
+			rightParts = append(rightParts, promo)
+		}
+	}
+	// Real phones are already mobile — the preview switch is for desktop.
+	if !fyne.CurrentDevice().IsMobile() {
+		var chip *view.FooterTintChip
+		chip = view.NewFooterTintChipWithIcon(view.DesignModeFooterLabel(), design.ColorTextMuted, assets.ExpandIconHover, assets.ExpandIconWhite, func() {
+			mw.showDesignModeMenu(chip)
+		})
+		mw.designModeChip = chip
+		rightParts = append(rightParts, chip)
+	}
+	var modeChip fyne.CanvasObject
+	switch len(rightParts) {
+	case 1:
+		modeChip = rightParts[0]
+	case 0:
+	default:
+		modeChip = container.New(&view.DeviceRowControlsLayout{Gap: 12}, rightParts...)
+	}
+	return view.NewConnectionsAppFooter(view.AppVersion(), modeChip, nil, extras...)
+}
+
+func (mw *MainWindow) showDesignModeMenu(anchor fyne.CanvasObject) {
+	view.ShowDesignPreviewMenu(anchor, mw.applyDesktopDesignPreview, mw.applyCompactSizeMode, mw.applyPhonePreviewScale)
+}
+
+func (mw *MainWindow) applyDesktopDesignPreview() {
+	if view.ForceMobileDesign {
+		mw.persistWindowPlacement()
+	}
+	mw.freezeWindowPlacement = true
+	view.ForceMobileDesign = false
+	if mw.app != nil {
+		mw.app.Preferences().SetBool(view.ForceMobileDesignPrefKey, false)
+	}
+	if mw.window != nil {
+		mw.window.SetFixedSize(false)
+	}
+	view.RestorePreviewUserScale()
+	view.ReloadFyneCanvasScale()
+	logrus.Info("🪟 [Size] desktop — reloading UI")
+	mw.reloadUI()
+	mw.freezeWindowPlacement = false
+	mw.applyDesktopWindowGeometry()
+}
+
+func (mw *MainWindow) applyCompactSizeMode() {
+	if !view.ForceMobileDesign {
+		mw.persistWindowPlacement()
+	}
+	mw.freezeWindowPlacement = true
+	view.ForceMobileDesign = true
+	view.ForceMobilePresetID = view.CompactWindowPreset().ID
+	if mw.app != nil {
+		mw.app.Preferences().SetBool(view.ForceMobileDesignPrefKey, true)
+		mw.app.Preferences().SetString(view.ForceMobilePresetPrefKey, view.ForceMobilePresetID)
+	}
+	view.ApplyPreviewUserScale()
+	logrus.Infof("🪟 [Size] compact scale=%s — reloading UI", view.FormatPhonePreviewScale(view.ForceMobileScale))
+	mw.reloadUI()
+	mw.freezeWindowPlacement = false
+}
+
+func (mw *MainWindow) applyPhonePreviewScale(scale float32) {
+	view.ForceMobileScale = view.ClampPhonePreviewScale(scale)
+	if mw.app != nil {
+		mw.app.Preferences().SetFloat(view.ForceMobileScalePrefKey, float64(view.ForceMobileScale))
+	}
+	if mw.designModeChip != nil {
+		mw.designModeChip.SetLabel(view.DesignModeFooterLabel())
+	}
+	if !view.ForceMobileDesign {
+		return
+	}
+	mw.applyPhonePreviewWindowSize()
+	logrus.Infof("🪟 [Size] compact scale=%s", view.FormatPhonePreviewScale(view.ForceMobileScale))
 }
 
 func (mw *MainWindow) createDeviceFooterBar() *fyne.Container {
 	bottomInset := float32(6)
-	if fyne.CurrentDevice().IsMobile() {
+	if view.IsMobile() {
 		bottomInset = 36
 	}
 	bar := view.NewInset(container.NewCenter(mw.deviceButtonsPanel), 6, 8, 2, bottomInset)
 	mw.deviceFooterBar = bar
 	mw.deviceFooterBar.Hide()
 	return bar
-}
-
-func (mw *MainWindow) updateConnectionFooterVisibility(hasConnections bool) {
-	if mw.connectionFooterBar == nil {
-		return
-	}
-
-	fyne.Do(func() {
-		_ = hasConnections
-		mw.connectionFooterBar.Hide()
-
-		if content := mw.window.Content(); content != nil {
-			content.Refresh()
-			mw.window.Canvas().Refresh(content)
-		}
-	})
 }
 
 type collapsingBoxLayout struct{}
@@ -548,10 +800,6 @@ type addressBarResponsiveLayout struct {
 type mainHeaderBarLayout struct {
 	edgeInset float32
 	sideGap   float32
-}
-type exitStatusOverlayLayout struct {
-	badgeInsetX float32
-	badgeInsetY float32
 }
 type centeredInlineLayout struct {
 	gap    float32
@@ -588,32 +836,19 @@ func newProtocolIndicator(protocol string) fyne.CanvasObject {
 	return container.NewCenter(label)
 }
 
-func newProtocolBadge(protocol string) fyne.CanvasObject {
-	text, fill, foreground := protocolButtonState(protocol)
-	if strings.TrimSpace(protocol) == "" {
-		fill = design.ColorBorder
-		foreground = design.ColorTextLight
-		text = ""
+// connectionProtocolLabel is the Exit button's own LAN/Tailscale text (see
+// createMainAddressBar/updateStatusBarUI) -- replaces the old floating
+// "online"/"tailscale" badge stuck on top of that button
+// (newProtocolBadge, since removed) with plain text baked into the button
+// itself instead.
+func connectionProtocolLabel(protocol string) string {
+	if protocol == models.ConnectionProtocolTailscale {
+		if useMobileControl() {
+			return "TS"
+		}
+		return "Tailscale"
 	}
-
-	bg := canvas.NewRectangle(fill)
-	bg.CornerRadius = 7
-	bg.StrokeColor = design.ColorBackground
-	bg.StrokeWidth = 1.2
-
-	label := canvas.NewText(strings.TrimSpace(text), foreground)
-	label.TextSize = 8
-	label.TextStyle.Bold = true
-
-	badgeWidth := fyne.MeasureText(strings.TrimSpace(text), 8, fyne.TextStyle{Bold: true}).Width + 8
-	if badgeWidth < 20 {
-		badgeWidth = 20
-	}
-
-	return container.NewGridWrap(
-		fyne.NewSize(badgeWidth, 14),
-		container.NewMax(bg, container.NewCenter(label)),
-	)
+	return "LAN"
 }
 
 func minFloat32(a, b float32) float32 {
@@ -747,7 +982,12 @@ func (l *mainHeaderBarLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
 	centerMin := headerCenterContentMinSize(objects[1])
 	rightMin := objects[2].MinSize()
 	height := maxFloat32(leftMin.Height, maxFloat32(centerMin.Height, rightMin.Height))
-	return fyne.NewSize(leftMin.Width+centerMin.Width+rightMin.Width+l.edgeInset*2+l.sideGap*2, height)
+	width := leftMin.Width + rightMin.Width + l.edgeInset*2 + l.sideGap*2
+	// Phone: the status strip is clipped and must not drive window width.
+	if !useMobileControl() {
+		width += centerMin.Width
+	}
+	return fyne.NewSize(width, height)
 }
 
 // headerCenterContentMinSize reports the natural size of the header bar's
@@ -757,40 +997,12 @@ func (l *mainHeaderBarLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
 // has no natural size of its own.
 func headerCenterContentMinSize(center fyne.CanvasObject) fyne.Size {
 	if cl, ok := center.(*container.Clip); ok && cl.Content != nil {
-		return cl.Content.MinSize()
+		center = cl.Content
 	}
-	return center.MinSize()
-}
-
-func (l *exitStatusOverlayLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
-	if len(objects) == 0 {
-		return
-	}
-
-	base := objects[0]
-	base.Resize(size)
-	base.Move(fyne.NewPos(0, 0))
-
-	if len(objects) < 2 || !hasVisibleContent(objects[1]) {
-		return
-	}
-
-	badge := objects[1]
-	badgeMin := badge.MinSize()
-	baseWidth := base.MinSize().Width
-	if baseWidth <= 0 || baseWidth > size.Width {
-		baseWidth = size.Width
-	}
-	badgeX := (baseWidth - badgeMin.Width) / 2
-	badge.Move(fyne.NewPos(badgeX, l.badgeInsetY))
-	badge.Resize(badgeMin)
-}
-
-func (l *exitStatusOverlayLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
-	if len(objects) == 0 {
+	if center == nil || !center.Visible() {
 		return fyne.NewSize(0, 0)
 	}
-	return objects[0].MinSize()
+	return center.MinSize()
 }
 
 func (l *centeredInlineLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
@@ -1046,12 +1258,44 @@ func (mw *MainWindow) createStatusBar() *fyne.Container {
 	mw.nbdIcon = widget.NewButton("💿", func() {})
 	mw.nbdIcon.Importance = widget.LowImportance
 	mw.videoIcon = newHeaderStatusBadgeButton(assets.CameraIcon, func() {
-		mw.showVideoMenu()
+		if mw.videoWidget != nil {
+			mw.videoWidget.ShowCurrentVideoSettings(false)
+		}
 	})
+	// 14x14, not headerStatusBadgeButton's own 22x22 default -- this button
+	// (like every other one in mw.statusPanel, see the GridWrap wrapping in
+	// buildHeaderStatusIndicators's own caller below) is capped to
+	// statusBarIconBoxSize (22px) regardless of its own MinSize, so the
+	// default icon size left almost no margin once actually squeezed down
+	// to that size.
+	mw.videoIcon.SetIconSize(fyne.NewSize(14, 14))
+	mw.videoIcon.SetBadgeText("")
+	mw.videoIcon.SetSecondaryBadgeText("")
 	mw.videoIcon.Hide()
+	mw.footerVideoSettingsIcon = newHeaderStatusBadgeButton(assets.CameraIcon, func() {
+		if mw.videoWidget != nil {
+			mw.videoWidget.ShowCurrentVideoSettings(false)
+		}
+	})
+	mw.footerVideoSettingsIcon.SetIconSize(fyne.NewSize(12, 12))
+	mw.footerVideoSettingsIcon.SetBadgeText("")
+	mw.footerVideoSettingsIcon.Hide()
+	mw.fullscreenIcon = newHeaderStatusBadgeButton(assets.FullscreenIconFooter, func() {
+		if mw.videoWidget != nil {
+			mw.videoWidget.ShowFullscreen()
+		}
+	})
+	mw.fullscreenIcon.SetIconSize(fyne.NewSize(12, 12))
+	// newHeaderStatusBadgeButton defaults badgeText to "0" (the video icon's
+	// own fps badge, before that moved to mw.videoFPSText next to it -- see
+	// updateVideoIconLabel) -- this button has nothing to badge, so it was
+	// showing a stray green "0" circle until explicitly cleared here.
+	mw.fullscreenIcon.SetBadgeText("")
+	mw.fullscreenIcon.Hide()
 	mw.audioIcon = newHeaderStatusBadgeButton(assets.AudioIcon, func() {
 		mw.showAudioMenu()
 	})
+	mw.audioIcon.SetIconSize(fyne.NewSize(14, 14))
 	mw.audioIcon.SetBadgeText("")
 	mw.audioIcon.Hide()
 	mw.captureIcon = widget.NewButtonWithIcon("", assets.CameraIcon, func() {
@@ -1060,48 +1304,66 @@ func (mw *MainWindow) createStatusBar() *fyne.Container {
 		}
 	})
 	mw.captureIcon.Importance = widget.LowImportance
-	mw.keyboardIcon = widget.NewButtonWithIcon("", assets.KeyboardIcon, func() {
+	// keyboardIcon/mouseIcon/rndisIcon are headerStatusBadgeButton, not a
+	// plain widget.Button, so they get the same hover-lightens-the-icon
+	// treatment as videoIcon/audioIcon/fullscreenIcon (SetHoverIcon below,
+	// in buildStatusIndicatorBar) -- a stock widget.Button has no hook for
+	// swapping its own icon resource on hover.
+	mw.keyboardIcon = newHeaderStatusBadgeButton(assets.KeyboardIcon, func() {
 		if mw.tabs != nil && len(mw.tabs.Items) > mw.controlTabIndex() {
 			mw.tabs.Select(mw.tabs.Items[mw.controlTabIndex()])
+		}
+		if useMobileControl() {
+			mw.toggleMobileKeyboardStack()
+			return
 		}
 		if mw.videoWidget != nil {
 			mw.videoWidget.HandleVirtualKeyboard()
 		}
 	})
-	mw.keyboardIcon.Importance = widget.LowImportance
+	mw.keyboardIcon.SetIconSize(fyne.NewSize(14, 14))
+	mw.keyboardIcon.SetBadgeText("")
 	mw.keyboardIcon.Hide()
-	mw.mouseIcon = widget.NewButtonWithIcon("", assets.MouseIcon, func() {
+	mw.mouseIcon = newHeaderStatusBadgeButton(assets.MouseIcon, func() {
 		mw.showMouseModeMenu()
 	})
-	mw.mouseIcon.Importance = widget.LowImportance
+	mw.mouseIcon.SetIconSize(fyne.NewSize(14, 14))
+	mw.mouseIcon.SetBadgeText("")
 	mw.mouseIcon.Hide()
-	mw.rndisIcon = widget.NewButtonWithIcon("", assets.NetworkIcon, func() {
+	mw.clipboardIcon = newHeaderStatusBadgeButton(assets.ClipboardIcon, func() {
+		mw.showClipboardMenu()
+	})
+	mw.clipboardIcon.SetIconSize(fyne.NewSize(14, 14))
+	mw.clipboardIcon.SetBadgeText("")
+	mw.clipboardIcon.Hide()
+	mw.inputModeIcon = newHeaderStatusBadgeButton(assets.KeyboardInputModeIcon, func() {
+		mw.showKeyboardInputModeMenu()
+	})
+	mw.inputModeIcon.SetIconSize(fyne.NewSize(14, 14))
+	mw.inputModeIcon.SetBadgeText("")
+	mw.inputModeIcon.Hide()
+	mw.rndisIcon = newHeaderStatusBadgeButton(assets.NetworkIcon, func() {
 		mw.showRNDISModeMenu()
 	})
-	mw.rndisIcon.Importance = widget.LowImportance
+	mw.rndisIcon.SetIconSize(fyne.NewSize(14, 14))
+	mw.rndisIcon.SetBadgeText("")
 	mw.rndisIcon.Hide()
-	mw.gamepadIcon = widget.NewButtonWithIcon("", assets.GamepadIconActive, func() {
-		if mw.tabs != nil && len(mw.tabs.Items) > mw.devicesTabIndex() {
-			mw.tabs.Select(mw.tabs.Items[mw.devicesTabIndex()])
-		}
-	})
-	mw.gamepadIcon.Importance = widget.LowImportance
+	// gamepadIcon/cdromIcon/backupIcon/snapshotIcon are plain display-only
+	// indicators (newHeaderPassiveIndicator -- a bare canvas.Image, not a
+	// widget.Button) -- they used to be tappable shortcuts into the Devices/
+	// Snapshots tab, which made them flash a hover/press background despite
+	// not being (and not looking like) real header buttons. They're grouped
+	// separately from mw.statusBarButtonsGroup below for the same reason.
+	// backupIcon/snapshotIcon are 2px/1px smaller than the other two -- not
+	// buttons that need a consistent hit target, so nothing stops them
+	// reading a touch smaller for visual balance among the four.
+	mw.gamepadIcon = newHeaderPassiveIndicator(assets.GamepadIconIndicator, fyne.NewSize(14, 14))
 	mw.gamepadIcon.Hide()
-	mw.cdromIcon = widget.NewButtonWithIcon("", assets.DiscIcon, func() {
-		if mw.tabs != nil && len(mw.tabs.Items) > mw.devicesTabIndex() {
-			mw.tabs.Select(mw.tabs.Items[mw.devicesTabIndex()])
-		}
-	})
-	mw.cdromIcon.Importance = widget.LowImportance
+	mw.cdromIcon = newHeaderPassiveIndicator(assets.DiscIconIndicator, fyne.NewSize(14, 14))
 	mw.cdromIcon.Hide()
-	mw.backupIcon = newHeaderPassiveIndicator(assets.SDCardIconActive)
+	mw.backupIcon = newHeaderPassiveIndicator(assets.SDCardIconIndicator, fyne.NewSize(12, 12))
 	mw.backupIcon.Hide()
-	mw.snapshotIcon = widget.NewButtonWithIcon("", assets.SnapshotsTabIconActive, func() {
-		if mw.tabs != nil && len(mw.tabs.Items) > mw.snapshotsTabIndex() {
-			mw.tabs.Select(mw.tabs.Items[mw.snapshotsTabIndex()])
-		}
-	})
-	mw.snapshotIcon.Importance = widget.LowImportance
+	mw.snapshotIcon = newHeaderPassiveIndicator(assets.SnapshotsIconIndicator, fyne.NewSize(13, 13))
 	mw.snapshotIcon.Hide()
 	mw.scriptIcon = widget.NewButtonWithIcon("", fynetheme.MediaPlayIcon(), func() {
 		mw.showScriptRunningMenu()
@@ -1109,21 +1371,30 @@ func (mw *MainWindow) createStatusBar() *fyne.Container {
 	mw.scriptIcon.Importance = widget.LowImportance
 	mw.scriptIcon.Hide()
 
-	mw.statusPanel = container.New(&centeredInlineLayout{gap: 4, minGap: 2})
-	mw.statusPanel.Objects = buildHeaderStatusIndicators(
-		mw.backupIcon,
-		mw.videoIcon,
-		mw.audioIcon,
-		mw.cdromIcon,
-		mw.keyboardIcon,
-		mw.mouseIcon,
-		mw.rndisIcon,
-		mw.gamepadIcon,
-		mw.snapshotIcon,
-		mw.scriptIcon,
-	)
-	mw.protocolPanel = container.NewHBox(newProtocolBadge(strings.TrimSpace(mw.connectedProtocol)))
-
+	if useMobileControl() {
+		// Mobile keeps peripherals in the header strip (22px). Desktop
+		// parents the same widgets from buildDesktopControlFooterActions.
+		mw.statusBarButtonsGroup = container.New(&centeredInlineLayout{gap: 4, minGap: 2},
+			container.NewGridWrap(statusBarIconBoxSize, mw.audioIcon),
+			container.NewGridWrap(statusBarIconBoxSize, mw.rndisIcon),
+			container.NewGridWrap(statusBarIconBoxSize, mw.scriptIcon),
+		)
+		mw.statusBarIndicatorsGroup = container.New(&centeredInlineLayout{gap: 4, minGap: 2},
+			container.NewGridWrap(statusBarIconBoxSize, mw.backupIcon),
+			container.NewGridWrap(statusBarIconBoxSize, mw.cdromIcon),
+			container.NewGridWrap(statusBarIconBoxSize, mw.gamepadIcon),
+			container.NewGridWrap(statusBarIconBoxSize, mw.snapshotIcon),
+		)
+		mw.statusBarIndicatorsDivider = newStatusBarDivider()
+		mw.statusBarIndicatorsDivider.Hide()
+		mw.statusPanel = container.New(&centeredInlineLayout{gap: statusIndicatorBarGap, minGap: 4},
+			mw.statusBarButtonsGroup,
+			mw.statusBarIndicatorsDivider,
+			mw.statusBarIndicatorsGroup,
+		)
+	} else {
+		mw.statusPanel = container.NewHBox()
+	}
 	mountBtn, unmountBtn, _ := mw.diskWidget.GetButtons()
 	mw.deviceMountBtn = mountBtn
 	mw.deviceUnmountBtn = unmountBtn
@@ -1165,21 +1436,6 @@ func (mw *MainWindow) refreshDeviceFooterButtons() {
 	}
 }
 
-func buildHeaderStatusIndicators(backupIndicator, captureButton, audioButton, cdromButton, keyboardButton, mouseButton, rndisButton, gamepadButton, snapshotButton, scriptButton fyne.CanvasObject) []fyne.CanvasObject {
-	return []fyne.CanvasObject{
-		backupIndicator,
-		captureButton,
-		audioButton,
-		cdromButton,
-		keyboardButton,
-		mouseButton,
-		rndisButton,
-		gamepadButton,
-		snapshotButton,
-		scriptButton,
-	}
-}
-
 // updateDeviceButtonsVisibility updates the visibility of device buttons.
 func (mw *MainWindow) updateDeviceButtonsVisibility() {
 	if mw.tabs == nil || mw.deviceButtonsPanel == nil || mw.deviceFooterBar == nil {
@@ -1188,13 +1444,8 @@ func (mw *MainWindow) updateDeviceButtonsVisibility() {
 
 	fyne.Do(func() {
 		mw.refreshDeviceFooterButtons()
-		if mw.tabs.SelectedIndex() == mw.devicesTabIndex() {
-			mw.deviceButtonsPanel.Show()
-			mw.deviceFooterBar.Show()
-		} else {
-			mw.deviceButtonsPanel.Hide()
-			mw.deviceFooterBar.Hide()
-		}
+		mw.deviceButtonsPanel.Hide()
+		mw.deviceFooterBar.Hide()
 		mw.deviceButtonsPanel.Refresh()
 		mw.deviceFooterBar.Refresh()
 	})
@@ -1239,18 +1490,30 @@ func (mw *MainWindow) updateStatusBar() {
 					}
 					if controller.IsStorageDeviceType(device.Type, device.Name) {
 						cdromConnected = true
+						logrus.Infof("📌 [STATUS] storage match device=%q type=%q name=%q", device.Device, device.Type, device.Name)
 					}
 					if controller.IsBackupDeviceType(device.Type, device.Name, device.ProductName) {
 						backupConnected = true
+						logrus.Infof("📌 [STATUS] backup match device=%q type=%q name=%q", device.Device, device.Type, device.Name)
 					}
 					if controller.IsSnapshotDeviceType(device.Type, device.Name, device.ProductName) {
 						snapshotConnected = true
+						logrus.Infof("📌 [STATUS] snapshot match device=%q type=%q name=%q", device.Device, device.Type, device.Name)
 					}
 				}
 			}
 		}
 
-		if mw.backupWidget != nil && !snapshotConnected {
+		if err == nil && controller.IsSoftwareAgentOS(deviceInfo.AgentOS) {
+			if cdromConnected || backupConnected || snapshotConnected {
+				logrus.Infof("📌 [STATUS] hiding disk/backup/snapshot icons on software agent (agentOS=%q)", deviceInfo.AgentOS)
+			}
+			cdromConnected = false
+			backupConnected = false
+			snapshotConnected = false
+		}
+
+		if mw.backupWidget != nil && !snapshotConnected && (err != nil || !controller.IsSoftwareAgentOS(deviceInfo.AgentOS)) {
 			snapshotsResp, err := client.GetSnapshots()
 			if err == nil {
 				for _, snapshot := range snapshotsResp.Snapshots {
@@ -1267,6 +1530,18 @@ func (mw *MainWindow) updateStatusBar() {
 		if info, err := client.GetAudioInfo(); err == nil && info != nil {
 			audioStreaming = info.Streaming
 		}
+
+		if debugForceAllStatusIndicators {
+			keyboardConnected = true
+			mouseConnected = true
+			rndisConnected = true
+			cdromConnected = true
+			backupConnected = true
+			snapshotConnected = true
+			gamepadConnected = true
+			audioStreaming = true
+		}
+
 		mw.updateStatusBarUI(keyboardConnected, mouseConnected, rndisConnected, cdromConnected, backupConnected, snapshotConnected, videoStreaming, gamepadConnected, audioStreaming)
 
 		if scriptStatuses, err := client.GetScriptStatus(); err == nil {
@@ -1278,6 +1553,10 @@ func (mw *MainWindow) updateStatusBar() {
 					break
 				}
 			}
+			if debugForceAllStatusIndicators && runningPath == "" {
+				runningPath = "debug.sh"
+				runningName = "debug.sh"
+			}
 			fyne.Do(func() {
 				mw.runningScriptPath = runningPath
 				mw.runningScriptName = runningName
@@ -1288,6 +1567,7 @@ func (mw *MainWindow) updateStatusBar() {
 						mw.scriptIcon.Hide()
 					}
 					mw.scriptIcon.Refresh()
+					mw.syncStatusBarDividers()
 				}
 			})
 		}
@@ -1305,7 +1585,10 @@ func (mw *MainWindow) updateStatusBar() {
 				// see StorageDisplayInfo's doc comment). Previously this
 				// only ever checked SDCard.Total, so the header bar simply
 				// never appeared at all while running from SD.
-				display, _ := storageStatus.StorageDisplayInfo()
+				display, ok := storageStatus.StorageDisplayInfo()
+				if debugForceAllStatusIndicators && !ok {
+					display = models.StorageInfo{Total: 32 << 30, Used: 20 << 30, Free: 12 << 30, Percent: 62.5}
+				}
 				if display.Total > 0 {
 					mw.currentStorageTotal = display.Total
 					mw.currentStorageAvailable = display.Free
@@ -1317,7 +1600,7 @@ func (mw *MainWindow) updateStatusBar() {
 						mw.sdStorageProgress.SetIcon(assets.SDCardIcon)
 						mw.sdStorageProgress.SetValue(usedPct)
 						mw.sdStorageProgress.SetSizeText(models.FormatStorageSizeOnly(used, display.Total))
-						mw.sdStorageProgress.Show()
+						mw.syncStorageChipVisibility(true)
 						mw.refreshMainHeaderLayout()
 					}
 				}
@@ -1329,28 +1612,37 @@ func (mw *MainWindow) updateStatusBar() {
 func (mw *MainWindow) updateStatusBarUI(keyboardConnected, mouseConnected, rndisConnected, cdromConnected, backupConnected, snapshotConnected, videoStreaming, gamepadConnected, audioStreaming bool) {
 	fyne.Do(func() {
 		if mw.keyboardIcon != nil {
-			if keyboardConnected {
-				mw.keyboardIcon.SetIcon(assets.KeyboardIconActive)
-				mw.keyboardIcon.Show()
+			if useMobileControl() {
+				mw.keyboardIcon.Hide()
 			} else {
 				mw.keyboardIcon.SetIcon(assets.KeyboardIcon)
-				mw.keyboardIcon.Hide()
+				mw.keyboardIcon.Show()
 			}
 			mw.keyboardIcon.Refresh()
 		}
 		if mw.mouseIcon != nil {
-			if mouseConnected {
-				mw.mouseIcon.SetIcon(assets.MouseIconActive)
-				mw.mouseIcon.Show()
+			if useMobileControl() {
+				mw.mouseIcon.Hide()
 			} else {
 				mw.mouseIcon.SetIcon(assets.MouseIcon)
-				mw.mouseIcon.Hide()
+				mw.mouseIcon.Show()
 			}
 			mw.mouseIcon.Refresh()
 		}
+		for _, icon := range []*headerStatusBadgeButton{mw.inputModeIcon, mw.clipboardIcon} {
+			if icon == nil {
+				continue
+			}
+			if useMobileControl() {
+				icon.Hide()
+			} else {
+				icon.Show()
+			}
+			icon.Refresh()
+		}
 		if mw.videoIcon != nil {
 			if videoStreaming {
-				mw.videoIcon.SetIcon(assets.CameraIconActive)
+				mw.videoIcon.SetIcon(assets.CameraIconStatusBar)
 				mw.videoIcon.Show()
 			} else {
 				mw.videoIcon.SetIcon(assets.CameraIcon)
@@ -1358,9 +1650,113 @@ func (mw *MainWindow) updateStatusBarUI(keyboardConnected, mouseConnected, rndis
 			}
 			mw.videoIcon.Refresh()
 		}
+		if mw.footerVideoSettingsIcon != nil {
+			if videoStreaming && !useMobileControl() {
+				mw.footerVideoSettingsIcon.Show()
+			} else {
+				mw.footerVideoSettingsIcon.Hide()
+			}
+			mw.footerVideoSettingsIcon.Refresh()
+		}
+		if mw.videoStatusGroup != nil {
+			if videoStreaming {
+				mw.videoStatusGroup.Show()
+			} else {
+				mw.videoStatusGroup.Hide()
+			}
+		}
+		if videoStreaming {
+			if !mw.videoMonitorChipLoaded {
+				mw.videoMonitorChipLoaded = true
+				mw.scheduleVideoMonitorChipRefresh()
+			}
+		} else {
+			mw.videoMonitorChipLoaded = false
+			if mw.videoMonitorBtn != nil {
+				mw.videoMonitorBtn.Hide()
+			}
+			if mw.videoMonitorDot != nil {
+				mw.videoMonitorDot.Hide()
+			}
+			if mw.videoMonitorText != nil {
+				mw.videoMonitorText.Hide()
+			}
+			if mw.videoMonitorLabelBtn != nil {
+				mw.videoMonitorLabelBtn.Hide()
+			}
+			if mw.mobileMonitorBtn != nil {
+				mw.mobileMonitorBtn.Hide()
+			}
+		}
+		if mw.fullscreenIcon != nil {
+			if videoStreaming && !useMobileControl() {
+				mw.fullscreenIcon.Show()
+			} else {
+				mw.fullscreenIcon.Hide()
+			}
+			mw.fullscreenIcon.Refresh()
+		}
+		if mw.mobileVideoSettingsBtn != nil {
+			if videoStreaming {
+				mw.mobileVideoSettingsBtn.Show()
+			} else {
+				mw.mobileVideoSettingsBtn.Hide()
+			}
+			mw.mobileVideoSettingsBtn.Refresh()
+		}
+		if mw.mobileClipboardBtn != nil {
+			if videoStreaming {
+				mw.mobileClipboardBtn.Show()
+			} else {
+				mw.mobileClipboardBtn.Hide()
+			}
+			mw.mobileClipboardBtn.Refresh()
+		}
+		if mw.mobileFullscreenBtn != nil {
+			if videoStreaming {
+				mw.mobileFullscreenBtn.Show()
+			} else {
+				mw.mobileFullscreenBtn.Hide()
+			}
+			mw.mobileFullscreenBtn.Refresh()
+		}
+		if mw.mobileNetGraphBtn != nil {
+			if videoStreaming {
+				mw.mobileNetGraphBtn.Show()
+			} else {
+				mw.mobileNetGraphBtn.Hide()
+			}
+			mw.mobileNetGraphBtn.Refresh()
+		}
+		if mw.mobileNetGraphSettingsBtn != nil {
+			if videoStreaming {
+				mw.mobileNetGraphSettingsBtn.Show()
+			} else {
+				mw.mobileNetGraphSettingsBtn.Hide()
+			}
+			mw.mobileNetGraphSettingsBtn.Refresh()
+		}
+		if mw.mobileFooterGraphDivider != nil {
+			if videoStreaming && mw.mobileNetGraphBtn != nil {
+				mw.mobileFooterGraphDivider.Show()
+			} else {
+				mw.mobileFooterGraphDivider.Hide()
+			}
+		}
+		if mw.controlFooterGraphDivider != nil {
+			if videoStreaming && !useMobileControl() {
+				mw.controlFooterGraphDivider.Show()
+			} else {
+				mw.controlFooterGraphDivider.Hide()
+			}
+		}
 		if mw.audioIcon != nil {
 			if audioStreaming {
-				mw.audioIcon.SetIcon(assets.AudioIconActive)
+				if useMobileControl() {
+					mw.audioIcon.SetIcon(assets.AudioIconStatusBar)
+				} else {
+					mw.audioIcon.SetIcon(assets.AudioIcon)
+				}
 				mw.audioIcon.Show()
 			} else {
 				mw.audioIcon.SetIcon(assets.AudioIcon)
@@ -1370,17 +1766,19 @@ func (mw *MainWindow) updateStatusBarUI(keyboardConnected, mouseConnected, rndis
 		}
 		if mw.cdromIcon != nil {
 			if cdromConnected {
-				mw.cdromIcon.SetIcon(assets.DiscIconActive)
 				mw.cdromIcon.Show()
 			} else {
-				mw.cdromIcon.SetIcon(assets.DiscIcon)
 				mw.cdromIcon.Hide()
 			}
 			mw.cdromIcon.Refresh()
 		}
 		if mw.rndisIcon != nil {
 			if rndisConnected {
-				mw.rndisIcon.SetIcon(assets.NetworkIconActive)
+				if useMobileControl() {
+					mw.rndisIcon.SetIcon(assets.NetworkIconStatusBar)
+				} else {
+					mw.rndisIcon.SetIcon(assets.NetworkIcon)
+				}
 				mw.rndisIcon.Show()
 			} else {
 				mw.rndisIcon.SetIcon(assets.NetworkIcon)
@@ -1413,14 +1811,15 @@ func (mw *MainWindow) updateStatusBarUI(keyboardConnected, mouseConnected, rndis
 			mw.snapshotIcon.Refresh()
 		}
 
+		mw.syncStatusBarDividers()
 		if mw.statusPanel != nil {
 			mw.statusPanel.Refresh()
 		}
-		if mw.protocolPanel != nil {
-			mw.protocolPanel.Objects = []fyne.CanvasObject{
-				newProtocolBadge(strings.TrimSpace(mw.connectedProtocol)),
-			}
-			mw.protocolPanel.Refresh()
+		if mw.controlFooterActions != nil {
+			mw.controlFooterActions.Refresh()
+		}
+		if mw.mainExitBtn != nil {
+			mw.mainExitBtn.SetText(connectionProtocolLabel(mw.connectedProtocol))
 		}
 		mw.refreshMainHeaderLayout()
 	})
@@ -1436,9 +1835,6 @@ func (mw *MainWindow) refreshMainHeaderLayout() {
 	if mw.statusPanel != nil {
 		mw.statusPanel.Refresh()
 	}
-	if mw.protocolPanel != nil {
-		mw.protocolPanel.Refresh()
-	}
 	if mw.mainContent != nil {
 		mw.mainContent.Refresh()
 	}
@@ -1447,58 +1843,59 @@ func (mw *MainWindow) refreshMainHeaderLayout() {
 	}
 }
 
-// updateVideoIconLabel refreshes both badges on the video icon: the
-// top-left video fps (unchanged) and the bottom-right detection fps --
-// service.DetectionFPS's measured rate for the local ui.parse/AI Vision
-// pipeline (see ai_vision.go's DetectionFPS doc comment), 0/hidden
-// whenever AI Vision's live overlay is off or hasn't completed a pass yet.
-// Both are driven from the same 1Hz callback (videoWidget.SetOnFPSChanged,
-// see updateStats), so the two numbers refresh in lockstep.
+// videoResolutionLabel formats the status-indicator strip's "1280 x 720"
+// text from the configured capture width/height -- no "Hz"/fps in this
+// label, that's what the group's own fps text right before it is for.
+func videoResolutionLabel(width, height int) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d x %d", width, height)
+}
+
+// updateVideoIconLabel refreshes the status-indicator strip's fps/resolution
+// text next to the video icon (see buildStatusIndicatorBar) -- no more
+// floating corner badges on the icon itself. Driven from the same 1Hz
+// callback (videoWidget.SetOnFPSChanged, see updateStats) that used to feed
+// the old badge text.
 func (mw *MainWindow) updateVideoIconLabel() {
 	if mw.videoIcon == nil {
 		return
 	}
 
-	label := ""
+	fpsLabel := "FPS"
 	if mw.currentVideoFPS > 0 {
-		label = fmt.Sprintf("%.0f", math.Round(mw.currentVideoFPS))
+		fpsLabel = fmt.Sprintf("%.0f FPS", math.Round(mw.currentVideoFPS))
 	}
 
-	detectionLabel := ""
-	if detFPS := service.DetectionFPS(); detFPS > 0 {
-		detectionLabel = fmt.Sprintf("%.1f", detFPS)
+	// currentVideoWidth/Height (from VideoWidget.SetOnResolutionChanged) win
+	// once a real resolution change has actually happened; mw.config's own
+	// VideoWidth/Height is only ever the saved/default value from startup
+	// and never updates afterward, which is what made this label stick at
+	// its initial value (usually the 1280x720 default) forever.
+	resWidth, resHeight := mw.currentVideoWidth, mw.currentVideoHeight
+	if resWidth <= 0 || resHeight <= 0 {
+		if mw.config != nil {
+			resWidth, resHeight = mw.config.VideoWidth, mw.config.VideoHeight
+		}
 	}
+	resLabel := videoResolutionLabel(resWidth, resHeight)
 
+	// fps sits in newFixedWidthFPSText ("888 FPS"), so swapping "FPS" for
+	// "60 FPS" does not relayout the header -- only the text inside the
+	// reserved box. Skip SetBadgeText and any parent Refresh: those were
+	// the 1Hz hitch on Metal/Vulkan; skipping the whole function left the
+	// label stuck at "FPS" for the entire stream.
 	fyne.Do(func() {
-		mw.videoIcon.SetBadgeText(label)
-		mw.videoIcon.SetSecondaryBadgeText(detectionLabel)
+		if mw.videoFPSText != nil && mw.videoFPSText.Text != fpsLabel {
+			mw.videoFPSText.Text = fpsLabel
+			mw.videoFPSText.Refresh()
+		}
+		if mw.videoResolutionText != nil && mw.videoResolutionText.Text != resLabel {
+			mw.videoResolutionText.Text = resLabel
+			mw.videoResolutionText.Refresh()
+		}
 	})
-}
-
-func (mw *MainWindow) showVideoMenu() {
-	if mw.videoIcon == nil || mw.videoWidget == nil {
-		return
-	}
-
-	items := []view.StyledMenuItem{
-		{
-			Label: i18n.Current.SettingsAction,
-			OnTap: func() {
-				mw.videoWidget.ShowCurrentVideoSettings(false)
-			},
-		},
-	}
-
-	if mw.videoWidget.IsStreaming() {
-		items = append(items, view.StyledMenuItem{
-			Label: i18n.Current.FullscreenAction,
-			OnTap: func() {
-				mw.videoWidget.ShowFullscreen()
-			},
-		})
-	}
-
-	view.ShowStyledMenu(mw.videoIcon, items)
 }
 
 func (mw *MainWindow) showAudioMenu() {
@@ -1522,7 +1919,7 @@ func (mw *MainWindow) showAudioMenu() {
 		},
 	}
 
-	view.ShowStyledMenu(mw.audioIcon, items)
+	view.ShowStyledMenuTealAbove(mw.audioIcon, items)
 }
 
 func (mw *MainWindow) isAudioMuted() bool {
@@ -1550,6 +1947,15 @@ func (mw *MainWindow) controlTabIndex() int {
 	return 0
 }
 
+// tabsSelectedIndexOrNegOne is a nil-safe SelectedIndex() for logging --
+// mw.tabs can be nil before the tab strip is built.
+func tabsSelectedIndexOrNegOne(tabs *container.AppTabs) int {
+	if tabs == nil {
+		return -1
+	}
+	return tabs.SelectedIndex()
+}
+
 func (mw *MainWindow) devicesTabIndex() int {
 	return 1
 }
@@ -1563,7 +1969,11 @@ func (mw *MainWindow) scriptsTabIndex() int {
 }
 
 func (mw *MainWindow) showMouseModeMenu() {
-	if mw.mouseIcon == nil || mw.diskWidget == nil {
+	mw.showMouseModeMenuAt(mw.mouseIcon)
+}
+
+func (mw *MainWindow) showMouseModeMenuAt(anchor fyne.CanvasObject) {
+	if anchor == nil || mw.diskWidget == nil {
 		return
 	}
 
@@ -1585,7 +1995,7 @@ func (mw *MainWindow) showMouseModeMenu() {
 			},
 		},
 	}
-	if fyne.CurrentDevice().IsMobile() {
+	if view.IsMobile() {
 		items = append(items, view.StyledMenuItem{
 			Label:    i18n.Current.DeviceVirtualCursor,
 			Selected: currentMode == controller.MouseModeVirtualCursor,
@@ -1604,27 +2014,119 @@ func (mw *MainWindow) showMouseModeMenu() {
 	items = append(items, view.StyledMenuItem{
 		Label:    i18n.Current.ShowMouseCursor,
 		Selected: showMouse,
-		OnTap: func() {
-			next := !mw.app.Preferences().BoolWithFallback("show_mouse_cursor", false)
-			mw.app.Preferences().SetBool("show_mouse_cursor", next)
-			if mw.videoWidget != nil {
-				mw.videoWidget.SetShowMouseCursor(next)
-			}
-		},
+		OnTap:    mw.toggleShowMouse,
 	})
-	items = append(items, view.StyledMenuItem{
-		Label:    i18n.Current.ClipboardSyncEnabled,
-		Selected: mw.app.Preferences().BoolWithFallback("clipboard_sync_enabled", true),
+	if view.IsMobile() {
+		view.ShowMobileStyledMenuAbove(anchor, items)
+		return
+	}
+	view.ShowStyledMenuTealAbove(anchor, items)
+}
+
+// clipboardAutoSyncPref is the stored automatic two-way clipboard sync
+// toggle; off is manual mode (Send/Get from the clipboard menu).
+const clipboardAutoSyncPref = "clipboard_sync_enabled"
+
+// keyboardInputModePref stores controller.KeyboardInputModeText/Keys.
+const keyboardInputModePref = "keyboard_input_mode"
+
+func (mw *MainWindow) clipboardAutoSyncMenuItem(label string) view.StyledMenuItem {
+	return view.StyledMenuItem{
+		Label:    label,
+		Selected: mw.app.Preferences().BoolWithFallback(clipboardAutoSyncPref, true),
 		OnTap: func() {
-			next := !mw.app.Preferences().BoolWithFallback("clipboard_sync_enabled", true)
-			mw.app.Preferences().SetBool("clipboard_sync_enabled", next)
+			next := !mw.app.Preferences().BoolWithFallback(clipboardAutoSyncPref, true)
+			mw.app.Preferences().SetBool(clipboardAutoSyncPref, next)
 			if mw.clipboardSync != nil {
 				mw.clipboardSync.SetEnabled(next)
 			}
 		},
-	})
+	}
+}
 
-	view.ShowStyledMenu(mw.mouseIcon, items)
+// showClipboardMenu is the Radmin-style clipboard menu: send the local
+// clipboard to the host, get the host clipboard, and the automatic two-way
+// sync toggle. Send/Get work whether or not auto sync is on.
+func (mw *MainWindow) showClipboardMenu() {
+	anchor := fyne.CanvasObject(mw.clipboardIcon)
+	if useMobileControl() && mw.mobileClipboardToggle != nil {
+		anchor = mw.mobileClipboardToggle
+	}
+	if anchor == nil {
+		return
+	}
+	run := func(op func() error) {
+		cs := mw.clipboardSync
+		if cs == nil {
+			view.ShowInfoDialog(i18n.Current.ClipboardSyncEnabled, i18n.Current.ClipboardNotConnected, mw.window)
+			return
+		}
+		go func() {
+			err := op()
+			if err == nil {
+				return
+			}
+			logrus.Warnf("[clipboard-sync] manual transfer failed: %v", err)
+			msg := err.Error()
+			switch {
+			case errors.Is(err, api.ErrClipboardNotConnected):
+				msg = i18n.Current.ClipboardNotConnected
+			case errors.Is(err, api.ErrClipboardEmpty):
+				msg = i18n.Current.ClipboardEmpty
+			}
+			fyne.Do(func() {
+				view.ShowInfoDialog(i18n.Current.ClipboardSyncEnabled, msg, mw.window)
+			})
+		}()
+	}
+	items := []view.StyledMenuItem{
+		{
+			Label: i18n.Current.ClipboardSend,
+			OnTap: func() {
+				run(func() error { return mw.clipboardSync.PushNow() })
+			},
+		},
+		{
+			Label: i18n.Current.ClipboardReceive,
+			OnTap: func() {
+				run(func() error { return mw.clipboardSync.PullNow() })
+			},
+		},
+		mw.clipboardAutoSyncMenuItem(i18n.Current.ClipboardAutoSync),
+	}
+	if useMobileControl() {
+		view.ShowMobileStyledMenuAbove(anchor, items)
+		return
+	}
+	view.ShowStyledMenuTealAbove(anchor, items)
+}
+
+// showKeyboardInputModeMenu picks how the physical keyboard reaches the
+// host: raw keys (host layout decides) or characters (local layout decides).
+func (mw *MainWindow) showKeyboardInputModeMenu() {
+	if mw.inputModeIcon == nil || mw.videoWidget == nil {
+		return
+	}
+	current := mw.videoWidget.GetKeyboardInputMode()
+	set := func(mode string) {
+		mw.app.Preferences().SetString(keyboardInputModePref, mode)
+		if mw.videoWidget != nil {
+			mw.videoWidget.SetKeyboardInputMode(mode)
+		}
+	}
+	items := []view.StyledMenuItem{
+		{
+			Label:    i18n.Current.KeyboardInputKeys,
+			Selected: current == controller.KeyboardInputModeKeys,
+			OnTap:    func() { set(controller.KeyboardInputModeKeys) },
+		},
+		{
+			Label:    i18n.Current.KeyboardInputText,
+			Selected: current == controller.KeyboardInputModeText,
+			OnTap:    func() { set(controller.KeyboardInputModeText) },
+		},
+	}
+	view.ShowStyledMenuTealAbove(mw.inputModeIcon, items)
 }
 
 func (mw *MainWindow) showRNDISModeMenu() {
@@ -1664,7 +2166,7 @@ func (mw *MainWindow) showRNDISModeMenu() {
 		},
 	}
 
-	view.ShowStyledMenu(mw.rndisIcon, items)
+	view.ShowStyledMenuTealAbove(mw.rndisIcon, items)
 }
 
 func (mw *MainWindow) showScriptRunningMenu() {
@@ -1691,12 +2193,12 @@ func (mw *MainWindow) showScriptRunningMenu() {
 		{
 			Label: "Log",
 			OnTap: func() {
-				view.ShowScriptLogDialog(mw.window, mw.usbClient, scriptPath, scriptName)
+				controller.ShowScriptLogDialog(mw.window, mw.usbClient, scriptPath, scriptName)
 			},
 		},
 	}
 
-	view.ShowStyledMenu(mw.scriptIcon, items)
+	view.ShowStyledMenuAbove(mw.scriptIcon, items)
 }
 
 func protocolButtonState(protocol string) (string, color.Color, color.Color) {

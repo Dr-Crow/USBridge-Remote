@@ -1,12 +1,12 @@
-//go:build linux || windows
+//go:build linux || windows || darwin
 
 package usbpass
 
 // Pure-Go reimplementation of `usbridge-usb-broker --role client` (rust-shine
 // crates/usb-passthrough + bin/usb-broker/src/main.rs run_client/attach_to_agent).
 // The client side of that exchange carries no licensing/entitlement logic in
-// rust-shine either — require_enterprise() is only called from run_agent().
-// The enterprise/entitlement gate stays exactly where it was: on the closed
+// rust-shine either — require_licensed() is only called from run_agent().
+// The pro/enterprise entitlement gate stays exactly where it was: on the closed
 // agent binary running on the Windows side. This file only ever talks to
 // that agent as a client over AES-GCM/TCP; it never touches usbip-win2 VHCI
 // or any licensing code.
@@ -16,6 +16,8 @@ package usbpass
 // change at all.
 
 import (
+	"context"
+	"crypto/rand"
 	"fmt"
 	"net"
 	"sync"
@@ -23,9 +25,6 @@ import (
 
 	"github.com/sirupsen/logrus"
 )
-
-// usbAesProtoVersion matches usb_passthrough::protocol::VERSION in rust-shine.
-const usbAesProtoVersion byte = 1
 
 type aesAttachSession struct {
 	conn   net.Conn
@@ -60,8 +59,14 @@ func Attach(opts AttachOptions) error {
 	StopAttach()
 
 	key := deriveSessionKey([]byte(opts.Secret))
-	dialer := net.Dialer{Timeout: 5 * time.Second}
-	conn, err := dialer.Dial("tcp", opts.AgentAddr)
+	dial := opts.Dialer
+	if dial == nil {
+		d := net.Dialer{Timeout: 5 * time.Second}
+		dial = d.DialContext
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	conn, err := dial(ctx, "tcp", opts.AgentAddr)
+	cancel()
 	if err != nil {
 		return fmt.Errorf("connect agent %s: %w", opts.AgentAddr, err)
 	}
@@ -100,6 +105,14 @@ func Attach(opts AttachOptions) error {
 	}
 	logrus.Infof("usbpass: agent hello ack: %s", detail)
 
+	tunnelNonce := make([]byte, 32)
+	if _, err := rand.Read(tunnelNonce); err != nil {
+		conn.Close()
+		return fmt.Errorf("tunnel nonce: %w", err)
+	}
+	tunnelKey := deriveTunnelKey(key, opts.USBIPBusID, tunnelNonce)
+	registerTunnelKey(opts.USBIPBusID, tunnelKey)
+
 	attachFrame := attachPayload{
 		BusID:         opts.USBIPBusID,
 		VID:           vid,
@@ -109,6 +122,7 @@ func Attach(opts AttachOptions) error {
 		ConfigDesc:    syntheticMSCConfig(),
 		ExportHost:    "", // empty → agent uses the AES peer IP (Direct/Tailscale)
 		ExportService: opts.ExportService,
+		TunnelNonce:   tunnelNonce,
 	}
 	if err := stream.sendFrame(encodeAttachFrame(attachFrame)); err != nil {
 		conn.Close()

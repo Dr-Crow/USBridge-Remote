@@ -2,8 +2,11 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -26,17 +30,21 @@ import (
 	"usbridge_agent/internal/api"
 	"usbridge_agent/internal/audio"
 	"usbridge_agent/internal/autostart"
+	"usbridge_agent/internal/benchvideo"
 	"usbridge_agent/internal/capture"
 	"usbridge_agent/internal/clipboard"
 	"usbridge_agent/internal/config"
+	"usbridge_agent/internal/devicecert"
 	"usbridge_agent/internal/entitlement"
 	"usbridge_agent/internal/hwid"
 	"usbridge_agent/internal/input"
 	"usbridge_agent/internal/netutil"
 	"usbridge_agent/internal/permissions"
 	"usbridge_agent/internal/sasinput"
+	"usbridge_agent/internal/streamerlaunch"
 	"usbridge_agent/internal/streamhost"
 	"usbridge_agent/internal/tailscale"
+	"usbridge_agent/internal/tlshost"
 	"usbridge_agent/internal/ui"
 	"usbridge_agent/internal/ui/design"
 	"usbridge_agent/internal/update"
@@ -55,21 +63,60 @@ type App struct {
 	cfgPath string
 	cfg     config.Config
 
+	benchOnce   sync.Once
+	benchPlayer *benchvideo.Player
+	// benchMonitor is the monitor the running benchmark captures and plays
+	// on (a monitors.Monitor ID, "" when none is pinned); benchOrigOutput
+	// holds each backend's own output pick from before the benchmark
+	// changed it, restored when the pin is cleared. Guarded by streamMu.
+	benchMonitor    string
+	benchOrigOutput map[string]string
+	// benchRestartPending: a deferred SetBenchMonitor changed the running
+	// streamer's monitor without restarting it; the next SetStreamBackend
+	// restarts it (same kind) or replaces it (other kind). Guarded by
+	// streamMu.
+	benchRestartPending bool
+	// lastSwitch is how the last SetStreamBackend spent its time, for the
+	// benchmark's statistics. Guarded by streamMu.
+	lastSwitch api.BackendSwitchTiming
+
 	state     *deviceState
 	input     *input.Controller
 	screen    *capture.Service
 	perms     *permissions.Service
 	ts        *tailscale.Service
+	usbBridge *tailscale.UsbTunnelBridge
 	stream    streamhost.Backend
 	tsProxy   *tailscale.StreamProxy
 	server    *http.Server
 	tsHTTP    *http.Server
-	handler   http.Handler
-	apiServer *api.Server
-	fyneApp   fyne.App
-	clipboard *clipboard.Manager
-	usbBroker *usbpass.Service
-	adminSrv  *adminapi.Server
+	tlsServer *http.Server
+	tlsMgr    *tlshost.Manager
+	// runCtx is Run's own signal.NotifyContext, stashed here (rather than
+	// only passed to the watchdogs started synchronously in Run) so
+	// restartTLS can start deviceCertWatchdog on demand if the user enables
+	// HTTPS at runtime after starting with it off -- see
+	// tlsWatchdogOnce's doc comment.
+	runCtx context.Context
+	// tlsWatchdogOnce guards deviceCertWatchdog against starting twice --
+	// once at Run() startup if HTTPS starts enabled, or once from
+	// restartTLS if the user turns it on later; whichever happens first.
+	tlsWatchdogOnce sync.Once
+	handler         http.Handler
+	apiServer       *api.Server
+	fyneApp         fyne.App
+	clipboard       *clipboard.Manager
+	usbBroker       *usbpass.Service
+	adminSrv        *adminapi.Server
+
+	// usbPassBridgeAddr is StartUSBPassBridge's localhost address (see
+	// api.Server.StartUSBPassBridge's doc comment) -- rustshine dials this
+	// to relay browser-sourced USB/IP passthrough DataChannel bytes into
+	// this agent process. Re-applied to each new streamhost.Backend by
+	// applyStreamUSBPassBridgeAddr (SetStreamBackend switches backends at
+	// runtime; the bridge listener itself is started once and outlives any
+	// individual backend).
+	usbPassBridgeAddr string
 
 	// gpuClockArmed records whether applyGPUClockLock has already launched
 	// the elevated lock daemon for this agent process, so repeated calls
@@ -92,17 +139,38 @@ type App struct {
 	// export them separately.
 	exeDir  string
 	logPath string
+	// engineLock is the open handle on this state dir's exclusive
+	// engine.lock -- see acquireEngineLock's doc comment. Never closed while
+	// the process is alive: the OS drops the lock (and lets the next
+	// launch's acquireEngineLock succeed) the instant this fd closes, for
+	// any reason including a crash or SIGKILL, which is the actual
+	// single-instance guarantee. Kept only so the *os.File isn't garbage
+	// collected out from under that guarantee -- nothing reads it again.
+	engineLock *os.File
+	// headless mirrors the flag Run was started with -- RelinquishEngine
+	// reads it to decide whether there's a GUI window worth relaunching as
+	// a thin client after stepping down (see its own doc comment).
+	headless bool
 	// streamMu serializes SetStreamBackend calls against each other (a GUI
 	// click racing the entitlement watchdog's own downgrade, say) --
 	// a.stream/a.streamKind must only ever be read/written while held.
 	streamMu   sync.Mutex
 	streamKind string // "sunshine" | "rustshine" -- bookkeeping only, mirrors which concrete type a.stream currently is
+	// streamKindView mirrors streamKind for readers that must not wait on
+	// streamMu: SetStreamBackend holds it through the new backend's whole
+	// startup (~25-40 s for Sunshine), and currentStreamKind used to take
+	// it -- so the GUI's status poll and the protocol picker's hover/click
+	// handlers (EntitlementStatus) froze for that long after every switch,
+	// the benchmark's included, and a click in the picker did nothing
+	// visible. Written together with streamKind via setStreamKind.
+	streamKindView atomic.Value // string
 
 	// entMu guards the fields below, all touched from both the GUI/adminapi
 	// goroutine (user clicks) and entitlementWatchdog's background goroutine.
-	entMu         sync.Mutex
-	entStatus     entitlement.Status
-	entPollCancel context.CancelFunc // cancels an in-flight StartPurchase's post-checkout poll loop, if any
+	entMu                 sync.Mutex
+	entStatus             entitlement.Status
+	entPollCancel         context.CancelFunc // cancels an in-flight StartPurchase's post-checkout poll loop, if any
+	pendingStreamerUpdate string             // newer USBridge-streamer tag seen while auto-update is off
 
 	// accMu guards the account-login fields below -- see StartAccountLogin's
 	// doc comment. Separate mutex/status from entMu above: this is a
@@ -114,35 +182,165 @@ type App struct {
 	accPollCancel context.CancelFunc
 }
 
-// Start is the sole entry point from main(). It decides, based on mode and
-// whether another instance's admin socket is already reachable, whether
-// this process owns the engine (HTTP server, Sunshine, tsnet) or just
-// attaches a GUI to one that's already running headless — see
-// runThinClientGUI. This is what lets the same binary/AppImage work both as
-// a `--headless` systemd/launchd/autostart service and as the normal GUI
-// app without ever running two engines (and two Sunshine/tsnet instances)
-// at once on the same machine.
-func Start(headless bool, version string) error {
+// StartOptions configures Start -- see main.go's flag definitions for the
+// user-facing meaning of each field.
+type StartOptions struct {
+	// Headless runs the engine (HTTP server, Sunshine, tsnet) with no GUI
+	// at all -- see Start's doc comment.
+	Headless bool
+	// Tray, when this launch ends up showing a GUI (either owning the
+	// engine or attaching to one already running), starts that window
+	// hidden -- minimized to the tray -- instead of shown. Used by the
+	// login-time tray helper (see internal/autostart's per-platform
+	// Enable) so it never visibly pops a window at login; a no-op if this
+	// session turns out to have no usable tray host at all (see
+	// ui.Window's startHidden field doc).
+	Tray bool
+	// Attach, if non-empty, dials this exact admin-socket path directly and
+	// attaches a thin-client GUI to it, bypassing the normal config-path
+	// discovery below entirely. Windows-only in practice: a LocalSystem
+	// service already knows its own socket path, which lives under a
+	// different profile (SYSTEM's) than whatever interactive user session
+	// this process gets launched into via sessionlaunch -- see
+	// service_windows.go's SessionChange handling, which is the only
+	// caller that ever sets this.
+	Attach string
+}
+
+// Start is the sole entry point from main(). It decides whether this
+// process owns the engine (HTTP server, Sunshine, tsnet) or just attaches a
+// GUI to one that's already running headless — see runThinClientGUI. This
+// is what lets the same binary/AppImage work both as a `--headless`
+// systemd/launchd/autostart service and as the normal GUI app without ever
+// running two engines (and two Sunshine/tsnet instances) at once on the
+// same machine.
+//
+// Ownership is decided by engine.lock (see acquireEngineLock in
+// enginelock.go), not by "is the admin socket reachable" alone. That used
+// to be the whole check, and it was racy: a dial that spuriously timed out
+// against an otherwise-healthy instance (or two launches racing the same
+// check) could make two processes each conclude "nobody's home" and each go
+// on to bind their own HTTP server, streamhost backend, and admin socket —
+// confirmed live, a headless LaunchAgent and a manually-launched GUI both
+// ended up owning a streamhost.Backend at once, fighting over the same
+// GameStream ports with the loser's stale credentials used against the
+// winner's process. flock-based mutual exclusion doesn't have that TOCTOU
+// window: at most one process can ever hold the lock, full stop.
+//
+// A --headless launch (autostart/login item, or the Windows service) always
+// ends up owning the engine — if another process already holds the lock, it
+// gets evicted (gracefully asked to step down first, then killed if
+// unresponsive; see evictEngineLockHolder) rather than this launch quietly
+// refusing to start. That is what makes "enable launch at login" actually
+// take effect immediately: it starts a --headless instance right away (see
+// autostart_darwin.go's Enable, activateNow=true), which now reliably
+// replaces whatever GUI-owned engine was running instead of dying on
+// "already running" and leaving the old one in charge.
+//
+// A normal GUI launch prefers to attach as a thin client to whoever already
+// owns the engine, and only takes ownership itself as a last resort (lock
+// genuinely free, or the existing holder turned out to be unresponsive to
+// both the graceful ask and a dial retry).
+func Start(opts StartOptions, version string) error {
+	// One GUI per state dir: a second normal/tray launch asks the running
+	// one to come forward and exits, instead of piling up windows and tray
+	// icons (see acquireGUILock).
+	if !opts.Headless {
+		if !acquireGUILockForStart() {
+			return nil
+		}
+	}
+
+	if opts.Attach != "" {
+		// The Windows service can hand us --attach a few hundred ms before
+		// the engine has actually called Listen on that socket (it used to
+		// bind only after tsnet came up). Retry instead of dying on the
+		// first refused connection — otherwise the tray helper exits and
+		// the user is left with a running engine and no window.
+		client, err := dialAdminSocket(opts.Attach, 15*time.Second)
+		if err != nil {
+			return fmt.Errorf("attach to admin socket %s: %w", opts.Attach, err)
+		}
+		return runThinClientGUI(client, opts.Tray)
+	}
+
 	cfgPath := resolveConfigPath()
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return err
 	}
-	// EnsureState only creates cfg.StateDir if missing — needed up front so
-	// the admin socket path is known, but otherwise side-effect-free (no
-	// goroutines, no network binds), so probing before committing to owning
-	// the engine is safe.
+
+	if !config.DirIsUsable(cfg.StateDir) {
+		fallback := config.Default().StateDir
+		log.Printf("[app] state dir %s is not writable by this process; using %s", cfg.StateDir, fallback)
+		cfg.StateDir = fallback
+	}
 	if err := cfg.EnsureState(); err != nil {
 		return err
 	}
 
 	socketPath := adminapi.SocketPath(cfg.StateDir)
-	if client, dialErr := adminapi.Dial(socketPath); dialErr == nil {
-		if headless {
-			client.Close()
-			return fmt.Errorf("usbridge-agent is already running (admin socket %s)", socketPath)
+
+	lockFile, holderPID, acquired, lockErr := acquireEngineLock(cfg.StateDir)
+	if lockErr != nil {
+		log.Printf("[app] warning: engine lock (%s) unusable, proceeding without single-instance protection: %v", engineLockPath(cfg.StateDir), lockErr)
+	}
+
+	if !acquired && lockErr == nil {
+		log.Printf("[app] engine lock already held by pid=%d (headless=%v)", holderPID, opts.Headless)
+		if !opts.Headless {
+			// GUI: the normal, fast, happy path is to attach to whoever
+			// already owns the engine rather than fight over it.
+			if client, dialErr := dialAdminSocket(socketPath, 3*time.Second); dialErr == nil {
+				log.Printf("[app] attaching as a thin-client GUI to the existing engine (pid=%d)", holderPID)
+				return runThinClientGUI(client, opts.Tray)
+			} else {
+				log.Printf("[app] lock is held by pid=%d but its admin socket did not respond (%v) -- treating it as stale", holderPID, dialErr)
+			}
+		} else {
+			log.Printf("[app] headless launch always takes ownership -- evicting existing holder pid=%d instead of refusing to start", holderPID)
 		}
-		return runThinClientGUI(client)
+
+		if opts.Headless && engineHolderIsHeadless(cfg.StateDir) {
+			// A second headless copy (a duplicate autostart entry, a manual
+			// launch on top of the systemd unit) must not kill a live headless
+			// engine just to replace it with itself -- even one whose admin
+			// socket isn't up yet (it only binds after tsnet comes up). The
+			// flock is only ever held by a live process, so holder-alive is
+			// enough.
+			log.Printf("[app] a headless engine is already running (pid=%d) -- exiting instead of replacing it", holderPID)
+			return nil
+		}
+
+		if evictEngineLockHolder(cfg.StateDir, socketPath, holderPID) {
+			lockFile, holderPID, acquired, lockErr = acquireEngineLock(cfg.StateDir)
+		}
+		if !acquired {
+			if lockErr != nil {
+				return fmt.Errorf("could not become the engine owner: %w", lockErr)
+			}
+			return fmt.Errorf("usbridge-agent is already running (pid=%d) and could not be replaced", holderPID)
+		}
+	}
+
+	stampEngineMode(lockFile, opts.Headless)
+	log.Printf("[app] this process (pid=%d) now owns the engine at %s", os.Getpid(), socketPath)
+
+	// update.BeforeRelaunch lets apply() (any platform) release our engine
+	// lock right before it spawns the process/helper that becomes the new
+	// owner, instead of leaving that to this process's eventual os.Exit —
+	// closes a real race where the replacement's own acquireEngineLock
+	// attempt could otherwise land before this fd actually closes. Reset to
+	// close instance.engineLock (not this local lockFile) once New()
+	// succeeds below, since a GUI launch's own later user-confirmed update
+	// (internal/ui's ShowAndRun -> DownloadAndApply) happens long after
+	// this function has returned, against the *App's* copy of the lock.
+	update.BeforeRelaunch = func() {
+		if lockFile != nil {
+			log.Printf("[app] releasing engine lock before self-update relaunch")
+			_ = lockFile.Close()
+			lockFile = nil
+		}
 	}
 
 	// Mandatory startup update check — only here, not on a thin-GUI attach
@@ -154,22 +352,35 @@ func Start(headless bool, version string) error {
 	// instead asks via a confirm dialog once the window exists — see
 	// internal/ui's ShowAndRun, which runs the same Check/DownloadAndApply
 	// pair gated on the user's answer.
-	if headless {
+	if opts.Headless {
 		update.CheckAndApply(context.Background(), version)
 	}
 
 	instance, err := New()
 	if err != nil {
+		if lockFile != nil {
+			_ = lockFile.Close()
+		}
 		return err
 	}
-	return instance.Run(headless)
+	instance.engineLock = lockFile
+	update.BeforeRelaunch = func() {
+		if instance.engineLock != nil {
+			log.Printf("[app] releasing engine lock before self-update relaunch")
+			_ = instance.engineLock.Close()
+			instance.engineLock = nil
+		}
+	}
+	return instance.Run(opts.Headless, opts.Tray)
 }
 
 // runThinClientGUI shows the GUI backed by an already-running headless
 // instance's admin socket instead of starting a second engine. Closing the
 // window here does NOT stop the headless instance — only a process actually
-// owning the engine (see App.Run/shutdownEngine) does that.
-func runThinClientGUI(client *adminapi.Client) error {
+// owning the engine (see App.Run/shutdownEngine) does that. startHidden is
+// forwarded to ui.Window.SetStartHidden -- see StartOptions.Tray's doc
+// comment.
+func runThinClientGUI(client *adminapi.Client, startHidden bool) error {
 	cfg, err := client.CurrentConfig()
 	if err != nil {
 		client.Close()
@@ -196,7 +407,9 @@ func runThinClientGUI(client *adminapi.Client) error {
 	// to notice and pick up the change.
 	localPerms := permissions.New()
 	token := &thinClientToken{Client: client, perms: localPerms}
-	ui.NewWindow(fyneApp, cfg, localPerms, client, token).ShowAndRun(func() {
+	win := ui.NewWindow(fyneApp, cfg, localPerms, client, token)
+	win.SetStartHidden(startHidden)
+	win.ShowAndRun(func() {
 		client.Close()
 	})
 	return nil
@@ -211,11 +424,11 @@ type thinClientToken struct {
 }
 
 func (t *thinClientToken) KMSCaptureGranted() bool {
-	return t.perms.KMSCaptureGranted(t.Client.SunshineCapExecPath())
+	return t.perms.KMSCaptureGranted(t.Client.KMSCaptureTargetPath())
 }
 
 func (t *thinClientToken) RequestKMSCapture() bool {
-	path := t.Client.SunshineCapExecPath()
+	path := t.Client.KMSCaptureTargetPath()
 	if path == "" {
 		return false
 	}
@@ -267,6 +480,56 @@ func NotifySessionChange() {
 	}
 }
 
+// AdminSocketPath returns the currently running instance's admin-socket
+// path, or ok=false if no instance has started yet (e.g. this races the
+// service's own startup). Windows-only caller: service_windows.go hands
+// this to LaunchTrayHelperInActiveSession as an explicit --attach target,
+// since a LocalSystem service's own config/state dir lives under a
+// different profile than whatever interactive session that helper actually
+// runs in -- see StartOptions.Attach's doc comment for the full picture.
+func AdminSocketPath() (string, bool) {
+	currentInstance.mu.Lock()
+	a := currentInstance.a
+	currentInstance.mu.Unlock()
+	if a == nil {
+		return "", false
+	}
+	return adminapi.SocketPath(a.cfg.StateDir), true
+}
+
+// AdminSocketReady is AdminSocketPath plus a live Dial — the path exists as
+// soon as Run() assigns currentInstance, but Listen only happens once the
+// admin server is up. The Windows service's tray helper must wait for the
+// latter or it dies on "connection refused" and the user gets no window.
+func AdminSocketReady() (string, bool) {
+	path, ok := AdminSocketPath()
+	if !ok {
+		return "", false
+	}
+	client, err := adminapi.Dial(path)
+	if err != nil {
+		return "", false
+	}
+	client.Close()
+	return path, true
+}
+
+func dialAdminSocket(path string, wait time.Duration) (*adminapi.Client, error) {
+	deadline := time.Now().Add(wait)
+	var last error
+	for {
+		client, err := adminapi.Dial(path)
+		if err == nil {
+			return client, nil
+		}
+		last = err
+		if wait <= 0 || time.Now().After(deadline) {
+			return nil, last
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 func New() (*App, error) {
 	cfgPath := resolveConfigPath()
 	cfg, err := config.Load(cfgPath)
@@ -274,7 +537,12 @@ func New() (*App, error) {
 		return nil, err
 	}
 	if err := cfg.EnsureState(); err != nil {
-		return nil, err
+		fallback := config.Default().StateDir
+		if fallback == cfg.StateDir || !config.DirIsUsable(fallback) {
+			return nil, err
+		}
+		log.Printf("[app] state dir %s is not writable; using %s", cfg.StateDir, fallback)
+		cfg.StateDir = fallback
 	}
 
 	// Generate master key on first run.
@@ -311,7 +579,7 @@ func New() (*App, error) {
 	// display connection (see Run).
 	instance.exeDir = resolveExeDir()
 	instance.logPath = filepath.Join(cfg.StateDir, "logs", "sunshine-stdout.log")
-	instance.streamKind = "sunshine"
+	instance.setStreamKind("sunshine")
 
 	// If this install was already switched to RustShine last run, pick it
 	// back up from a cold start too — but only via checks that need no
@@ -325,7 +593,7 @@ func New() (*App, error) {
 		if hwID, err := hwid.Get(); err == nil {
 			if _, err := entitlement.VerifyForHardware(cfg.EntitlementToken, hwID); err == nil {
 				if _, err := os.Stat(entitlement.StagePath(cfg.StateDir)); err == nil {
-					instance.streamKind = "rustshine"
+					instance.setStreamKind("rustshine")
 				}
 			}
 		}
@@ -339,10 +607,33 @@ func New() (*App, error) {
 	}
 	instance.screen = capture.New(instance.stream)
 	instance.syncSunshineCaptureMode()
+	instance.removeLegacyKMSGrants()
 	instance.syncSunshineCapExec()
 	apiServer := api.NewServerWithAuth(instance, masterKeyBytes, cfg.SunshinePort)
-	instance.usbBroker = usbpass.New(instance.exeDir, cfg.StateDir, cfg.MasterKey, cfg.UsbPassthroughPort)
+	apiServer.SetSelfHTTPPort(cfg.HTTPPort)
+	// Started unconditionally (like ts itself, which doesn't actually spin up
+	// tsnet until Server() is first called) rather than gated on
+	// cfg.TailscaleEnabled: Tailscale can be toggled on later without this
+	// agent process restarting, but the broker subprocess spawned by
+	// usbpass.New below only gets --tsnet-bridge baked in once, at its own
+	// spawn time — the bridge address needs to already be valid then
+	// regardless of what Tailscale's enablement looks like right now. Until
+	// RememberPeer is ever called (which only happens once StreamProxy
+	// actually relays a Tailscale connection), this bridge just sits idle.
+	instance.usbBridge = tailscale.NewUsbTunnelBridge(instance.ts)
+	usbBridgeAddr, err := instance.usbBridge.Start(tailscale.DefaultUsbBridgeAddr)
+	if err != nil {
+		log.Printf("[app] usb tunnel bridge: %v (USB passthrough over Tailscale will not work; Direct/LAN unaffected)", err)
+		usbBridgeAddr = ""
+	}
+	instance.usbBroker = usbpass.New(instance.exeDir, cfg.StateDir, cfg.MasterKey, cfg.UsbPassthroughPort, usbBridgeAddr)
 	apiServer.SetUSBPassthrough(instance.usbBroker)
+	if addr, err := apiServer.StartUSBPassBridge(); err != nil {
+		log.Printf("[app] usbpass webrtc bridge: %v (browser gamepad/pen passthrough over WebRTC will not work; legacy WebSocket path unaffected)", err)
+	} else {
+		instance.usbPassBridgeAddr = addr
+		applyStreamUSBPassBridgeAddr(instance.stream, addr)
+	}
 	instance.apiServer = apiServer
 	handler := apiServer.Routes()
 	instance.handler = handler
@@ -355,13 +646,19 @@ func New() (*App, error) {
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	instance.tlsMgr = tlshost.NewManager(filepath.Join(cfg.StateDir, "web-tls"))
+	instance.tlsMgr.LoadPersisted()
+	instance.tlsServer = &http.Server{
+		Addr:              fmt.Sprintf("%s:%d", cfg.EffectiveListenHost(), cfg.TLSPort),
+		Handler:           handler,
+		TLSConfig:         &tls.Config{GetCertificate: instance.tlsMgr.GetCertificate, MinVersion: tls.VersionTLS12},
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 	instance.refreshLocalEntitlementStatus()
 	if cfg.AccountToken != "" {
 		instance.accStatus.LoggedIn = true
 		instance.accStatus.Email = cfg.AccountEmail
-		// Licenses populated lazily -- the License dialog's own open
-		// triggers a refresh (see window.go), no need to hit the backend
-		// on every agent launch before anyone's even looked.
+		go instance.refreshAccountLicenses(context.Background())
 	}
 	return instance, nil
 }
@@ -375,6 +672,14 @@ func resolveExeDir() string {
 
 func resolveConfigPath() string {
 	candidates := make([]string, 0, 8)
+	// Prefer this process's own config dir first — it matches
+	// config.Default().StateDir. Putting exeDir first meant a LocalSystem
+	// Windows service would write dist/windows/config.yaml with
+	// state_dir under SYSTEM's profile; the next interactive launch then
+	// loaded that file and died in MkdirAll.
+	if base, err := os.UserConfigDir(); err == nil && strings.TrimSpace(base) != "" {
+		candidates = append(candidates, filepath.Join(base, "usbridge-agent", "config.yaml"))
+	}
 	// Under an AppImage, exeDir is the AppImage's read-only squashfs mount
 	// (a fresh, ephemeral path each launch) — never usable as a config
 	// location, so it's excluded both from the search and from the fallback
@@ -404,29 +709,86 @@ func resolveConfigPath() string {
 	}
 
 	for _, candidate := range candidates {
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
+		if _, err := os.Stat(candidate); err != nil {
+			continue
 		}
+		cfg, err := config.Load(candidate)
+		if err != nil {
+			continue
+		}
+		if !config.DirIsUsable(cfg.StateDir) {
+			log.Printf("[app] ignoring %s: state dir %s is not writable by this process", candidate, cfg.StateDir)
+			continue
+		}
+		return candidate
 	}
 	if skipExeDir && homeCandidate != "" {
 		return homeCandidate
 	}
-	return candidates[0]
+	if base, err := os.UserConfigDir(); err == nil && strings.TrimSpace(base) != "" {
+		return filepath.Join(base, "usbridge-agent", "config.yaml")
+	}
+	if len(candidates) > 0 {
+		return candidates[0]
+	}
+	return filepath.Join(".", "config.yaml")
 }
 
 // Run starts the engine (HTTP server, Sunshine, tsnet, admin socket) and
 // then either blocks headlessly on ctx.Done() (headless==true — no Fyne
 // driver ever touched, so no display connection is required) or shows the
 // GUI window backed directly by this same in-process engine (headless==false).
-func (a *App) Run(headless bool) error {
+// startHidden is forwarded to ui.Window.SetStartHidden when a window is
+// shown at all -- see StartOptions.Tray's doc comment.
+func (a *App) Run(headless, startHidden bool) error {
+	a.headless = headless
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	a.runCtx = ctx
+
+	// Diagnostic-only, additive: signal.Notify fans a delivered signal out to
+	// every channel registered for it, so this doesn't steal anything from
+	// NotifyContext's own internal channel above -- it just also logs which
+	// exact signal arrived before the graceful shutdown it triggers proceeds.
+	// Added to chase a live symptom (full agent — tsnet, HTTP, the rustshine
+	// child — self-terminating cleanly with no Windows Event Log crash
+	// record, no scheduled task, and no self-update in the log) where nothing
+	// so far has identified *what* delivered the interrupt: on Windows, Go's
+	// runtime maps CTRL_C_EVENT/CTRL_BREAK_EVENT to os.Interrupt and
+	// CTRL_CLOSE_EVENT/CTRL_LOGOFF_EVENT/CTRL_SHUTDOWN_EVENT to
+	// syscall.SIGTERM -- so which one of these two fires tells us whether
+	// this is a console control event at all, or (if this line never logs
+	// when the next occurrence happens) that shutdownEngine is instead being
+	// reached via the GUI window's own close-intercept path (see
+	// ui/window.go's SetCloseIntercept, which also logs now) with no OS
+	// signal involved at all.
+	diagSigCh := make(chan os.Signal, 2)
+	signal.Notify(diagSigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig := <-diagSigCh
+		log.Printf("[app] DIAG: OS signal received: %v (os.Interrupt=CTRL_C/CTRL_BREAK; SIGTERM=CTRL_CLOSE/CTRL_LOGOFF/CTRL_SHUTDOWN) -- this will trigger shutdownEngine via ctx cancellation", sig)
+	}()
 
 	// See NotifySessionChange's doc comment for why this needs to be
 	// reachable from outside the normal Start()->New()->Run() call chain.
 	currentInstance.mu.Lock()
 	currentInstance.a = a
 	currentInstance.mu.Unlock()
+
+	// Bind the admin socket before Sunshine/tsnet so a Windows tray helper
+	// can attach as soon as AdminSocketPath is known. This used to run
+	// after initTailscale(), which can block for tens of seconds; the
+	// helper then dialed a path that wasn't listening yet and exited.
+	if srv, err := adminapi.NewServer(adminapi.SocketPath(a.cfg.StateDir), a, a.perms, a.ts, func() config.Config { return a.cfg }); err != nil {
+		log.Printf("[app] warning: admin socket unavailable: %v", err)
+	} else {
+		a.adminSrv = srv
+		go func() {
+			if err := srv.Serve(); err != nil {
+				log.Printf("[app] admin socket server error: %v", err)
+			}
+		}()
+	}
 
 	keepDisplayAwake(ctx)
 
@@ -453,8 +815,34 @@ func (a *App) Run(headless bool) error {
 	// covered by the same ticker without needing separate "start the
 	// watchdog now" bookkeeping.
 	go a.entitlementWatchdog(ctx)
+	go a.streamerUpdateWatchdog(ctx)
+	go a.turnCredentialsWatchdog(ctx)
+	go a.webrtcSignalRelayWatchdog(ctx)
+	go a.usbBrokerWatchdog(ctx)
 	go a.recheckEntitlement(ctx) // one immediate check, don't wait a full entitlementRecheckInterval after a restart
 	go func() { _ = a.server.ListenAndServe() }()
+	// Gated by the "Enable HTTPS" checkbox (see ui's HTTP Listen Address
+	// dialog, UpdateTLSAddr) -- on by default (TLSEnabledOK's nil-means-true
+	// convention), so this runs for every existing install unless a user
+	// explicitly turned it off.
+	if a.cfg.TLSEnabledOK() {
+		// Self-signed baseline generated synchronously, before the TLS
+		// listener starts accepting -- deviceCertWatchdog's first tick
+		// (below) then upgrades to the shared device wildcard cert once the
+		// backend round trip completes, but a self-signed fallback must
+		// already exist so the very first TLS handshake (offline, or before
+		// that tick lands) doesn't hit tlshost.Manager's "no certificate
+		// available yet" error.
+		selfSignedIPs := []net.IP{net.ParseIP("127.0.0.1")}
+		if ip := net.ParseIP(netutil.PreferredIPv4()); ip != nil {
+			selfSignedIPs = append(selfSignedIPs, ip)
+		}
+		if err := a.tlsMgr.EnsureSelfSigned(selfSignedIPs, nil); err != nil {
+			log.Printf("[app] self-signed TLS cert unavailable: %v", err)
+		}
+		go func() { _ = a.tlsServer.ListenAndServeTLS("", "") }()
+		a.startDeviceCertWatchdogOnce()
+	}
 	if a.usbBroker != nil {
 		if err := a.usbBroker.Start(); err != nil {
 			log.Printf("[usbpass] broker not started: %v", err)
@@ -465,19 +853,6 @@ func (a *App) Run(headless bool) error {
 	}
 
 	a.initTailscale(ctx)
-
-	if srv, err := adminapi.NewServer(adminapi.SocketPath(a.cfg.StateDir), a, a.perms, a.ts, func() config.Config { return a.cfg }); err != nil {
-		// Non-fatal: the engine itself works fine without it, it just means
-		// no separate GUI process can attach to this instance later.
-		log.Printf("[app] warning: admin socket unavailable: %v", err)
-	} else {
-		a.adminSrv = srv
-		go func() {
-			if err := srv.Serve(); err != nil {
-				log.Printf("[app] admin socket server error: %v", err)
-			}
-		}()
-	}
 
 	if headless {
 		<-ctx.Done()
@@ -494,6 +869,7 @@ func (a *App) Run(headless bool) error {
 	go a.handleShutdown(ctx, cancel)
 	win := ui.NewWindow(a.fyneApp, a.cfg, a.perms, a.ts, a)
 	win.SetOwnsEngine(true)
+	win.SetStartHidden(startHidden)
 	win.ShowAndRun(cancel)
 	return nil
 }
@@ -565,6 +941,30 @@ func (a *App) startSunshine() {
 	a.startSunshineNow()
 }
 
+// healCapExecLaunch restarts a RustShine streamer that ended up running by
+// plain exec -- no CAP_SYS_ADMIN, so KMS capture fails with "framebuffer has
+// no exportable plane-0 handle" -- although the verified launcher is set,
+// i.e. some start raced SetCapExecPath (see syncCapExecTo). Belt and braces
+// for any launch path, including the restarts done by the update flow.
+func (a *App) healCapExecLaunch() {
+	a.entMu.Lock()
+	updateInProgress := a.entStatus.RustShineUpdateInProgress
+	a.entMu.Unlock()
+	if updateInProgress {
+		return
+	}
+	a.streamMu.Lock()
+	defer a.streamMu.Unlock()
+	b, ok := a.stream.(interface{ LaunchedWithoutCapExec() bool })
+	if !ok || !b.LaunchedWithoutCapExec() {
+		return
+	}
+	log.Printf("[app] rustshine: streamer runs without usbridge-streamer-launch (no CAP_SYS_ADMIN) although the launcher is ready -- restarting it through the launcher")
+	if err := a.RestartSunshine(); err != nil {
+		log.Printf("[app] rustshine: restart through the launcher failed: %v", err)
+	}
+}
+
 // startSunshineNow is startSunshine's actual body, callable directly by the
 // RustShine update flow (see startSunshine's doc comment for why those
 // callers need to bypass the RustShineUpdateInProgress guard rather than
@@ -586,6 +986,14 @@ func (a *App) startSunshineNow() {
 			log.Printf("[app] warning: could not set Sunshine bind address: %v", err)
 		}
 	}
+	// Runs on every call, including the no-op "already running" path inside
+	// Start() below: a stuck-in-an-encoder-retry-loop Sunshine never exits
+	// on its own (see reconcileOutputName's doc comment), so this periodic
+	// tick from sunshineWatchdog is the only thing that ever re-checks and
+	// fixes a stale output_name for an already-"running" process.
+	a.reconcileOutputName()
+	a.reconcileAudioSink()
+	a.applyNvencPrefs(a.stream, a.streamKind)
 	if err := a.stream.Start(a.cfg.SunshinePort); err != nil {
 		log.Printf("[app] failed to start Sunshine: %v", err)
 	} else {
@@ -632,6 +1040,7 @@ func (a *App) sunshineWatchdog(ctx context.Context) {
 			return
 		case <-ticker.C:
 			a.startSunshine()
+			a.healCapExecLaunch()
 		}
 	}
 }
@@ -704,7 +1113,11 @@ func (a *App) restartStreamProxy() {
 	if usbPort <= 0 {
 		usbPort = usbpass.DefaultURBPort
 	}
-	a.tsProxy = a.ts.StartStreamProxy(basePort, usbPort)
+	var usbLocalPort func() int
+	if a.usbBroker != nil {
+		usbLocalPort = a.usbBroker.ListenPort
+	}
+	a.tsProxy = a.ts.StartStreamProxy(basePort, a.usbBridge, usbLocalPort, usbPort)
 }
 
 func (a *App) initTailscale(ctx context.Context) {
@@ -850,8 +1263,8 @@ func (a *App) SunshineBinaryPath() string {
 	return path
 }
 
-// SunshineCapExecPath returns the path to the bundled sunshine_capexec
-// launcher (Linux KMS capture only), or "" if not present.
+// SunshineCapExecPath returns the active backend's KMS grant target (see
+// kmsCaptureTarget) if it exists on disk, or "".
 func (a *App) SunshineCapExecPath() string {
 	if a.stream == nil {
 		return ""
@@ -883,39 +1296,80 @@ func (a *App) SunshineCapExecPath() string {
 // doesn't already have its own value set, so switching streamers still
 // propagates a preference instead of overwriting it every start.
 func (a *App) syncSunshineCaptureMode() {
-	if a.stream == nil {
+	a.syncCaptureModeTo(a.stream)
+}
+
+// syncCaptureModeTo is syncSunshineCaptureMode for an explicit backend, so
+// SetStreamBackend can configure the next backend before publishing it.
+func (a *App) syncCaptureModeTo(b streamhost.Backend) {
+	if b == nil {
 		return
 	}
 	if mode := capture.AutoCaptureMode(); mode != "" {
-		if err := a.stream.SetCaptureMode(mode); err != nil {
+		if err := b.SetCaptureMode(mode); err != nil {
 			log.Printf("[app] failed to sync capture mode %q to backend: %v", mode, err)
 		}
 		return
 	}
-	if a.stream.CaptureMode() != "" || a.cfg.SunshineCaptureMode == "" {
+	if b.CaptureMode() != "" || a.cfg.SunshineCaptureMode == "" {
 		return
 	}
 	mode := a.cfg.SunshineCaptureMode
-	if err := a.stream.SetCaptureMode(mode); err != nil {
+	if err := b.SetCaptureMode(mode); err != nil {
 		log.Printf("[app] failed to sync capture mode %q to backend: %v", mode, err)
 	}
 }
 
-// syncSunshineCapExec sets or clears the backend's sunshine_capexec launcher
-// so Start launches Sunshine with CAP_SYS_ADMIN exactly when the capture
-// mode is "kms" AND the capability is actually granted on that launcher —
-// never based on mode alone, since sunshine_capexec exits with an error if
-// asked to raise a capability it doesn't have, which would stop Sunshine
+// syncSunshineCapExec sets or clears the backend's usbridge-streamer-launch
+// path so Start launches the streamer with CAP_SYS_ADMIN exactly when the
+// capture mode is "kms" AND the launcher can actually run it right now --
+// never based on mode alone, since the launcher exits with an error when it
+// can't (not installed, bundle not verifying), which would stop the stream
 // from starting at all instead of gracefully running without KMS.
 func (a *App) syncSunshineCapExec() {
-	if a.stream == nil {
+	a.syncSunshineCapExecFor(a.currentStreamKind())
+}
+
+// syncSunshineCapExecFor is syncSunshineCapExec's lock-free core, taking the
+// active backend kind as a parameter instead of resolving it itself via
+// currentStreamKind() -- SetStreamBackend already holds streamMu and already
+// knows kind when it calls this, and currentStreamKind() takes that same
+// (non-reentrant) lock, so calling it from inside SetStreamBackend deadlocks
+// that goroutine forever (confirmed live: every other caller of
+// currentStreamKind()/EntitlementStatus(), including the GUI's own hover
+// handler and the background update watchdog, then piles up waiting on
+// streamMu too -- this is the "Changing protocol"/"Check update" hang).
+func (a *App) syncSunshineCapExecFor(kind string) {
+	a.syncCapExecTo(a.stream, kind)
+}
+
+// syncCapExecTo is syncSunshineCapExecFor for an explicit backend. SetStreamBackend
+// calls it on the next backend *before* publishing it as a.stream: the
+// sunshineWatchdog calls startSunshine() without streamMu, and a tick that
+// landed between `a.stream = next` and this call started the streamer by
+// plain exec, i.e. without CAP_SYS_ADMIN -- KMS capture then fails with
+// "framebuffer has no exportable plane-0 handle" (confirmed live after a
+// benchmark Sunshine -> RustShine switch).
+func (a *App) syncCapExecTo(b streamhost.Backend, kind string) {
+	if b == nil {
 		return
 	}
-	capexecPath := a.SunshineCapExecPath()
-	if a.SunshineCaptureMode() == "kms" && a.perms != nil && a.perms.KMSCaptureGranted(capexecPath) {
-		a.stream.SetCapExecPath(capexecPath)
+	// RustShine goes through the root-owned usbridge-streamer-launch
+	// instead (see kmsCaptureTarget), and only once that launcher itself
+	// verified the staged signed bundle -- otherwise a plain exec, which
+	// still honors a legacy setcap directly on the streamer binary.
+	if kind == "rustshine" {
+		b.SetCapExecPath(a.rustshineLauncherPathFor(b))
+		return
+	}
+	// Sunshine: launch through the launcher whenever the root-owned tree is
+	// installed, even if it's older than the bundled Sunshine (then
+	// KMSCaptureGranted reports false so the UI offers a refresh) -- an
+	// agent update must not cost KMS capture on a remote session.
+	if a.captureModeOf(b) == "kms" && a.perms != nil && a.perms.SunshineLaunchReady() {
+		b.SetCapExecPath(streamerlaunch.InstallPath)
 	} else {
-		a.stream.SetCapExecPath("")
+		b.SetCapExecPath("")
 	}
 }
 
@@ -923,8 +1377,13 @@ func (a *App) syncSunshineCapExec() {
 // "portal", or "kms"), read from sunshine.conf if present, falling back to
 // the persisted agent config.
 func (a *App) SunshineCaptureMode() string {
-	if a.stream != nil {
-		if mode := a.stream.CaptureMode(); mode != "" {
+	return a.captureModeOf(a.stream)
+}
+
+// captureModeOf is SunshineCaptureMode for an explicit backend.
+func (a *App) captureModeOf(b streamhost.Backend) string {
+	if b != nil {
+		if mode := b.CaptureMode(); mode != "" {
 			return mode
 		}
 	}
@@ -991,8 +1450,17 @@ func (a *App) RestartSunshine() error {
 	if a.stream == nil {
 		return nil
 	}
-	_ = a.stream.Stop()
-	time.Sleep(time.Second)
+	a.stopStreamAndWait(a.stream)
+	return a.RestartSunshineStartOnly()
+}
+
+// RestartSunshineStartOnly is RestartSunshine's second half, for a caller
+// that already stopped the stream (and timed that separately): starts it
+// and waits until it's reachable.
+func (a *App) RestartSunshineStartOnly() error {
+	if a.stream == nil {
+		return nil
+	}
 	err := a.stream.Start(a.cfg.SunshinePort)
 	if err == nil {
 		a.applyGPUClockLock()
@@ -1008,7 +1476,7 @@ func (a *App) RestartSunshine() error {
 	// Waiting here for the same admin port the client's own Launch() call
 	// hits closes that window.
 	if err == nil {
-		a.stream.WaitReady(a.cfg.SunshinePort, 5*time.Second)
+		a.stream.WaitReady(a.cfg.SunshinePort, streamReadyTimeout)
 		a.waitForMonitorCorrelation()
 	}
 	a.restartStreamProxy()
@@ -1033,7 +1501,20 @@ func (a *App) SetStreamBackend(kind string) error {
 	a.streamMu.Lock()
 	defer a.streamMu.Unlock()
 
+	a.lastSwitch = api.BackendSwitchTiming{}
 	if kind == a.streamKind {
+		if a.benchRestartPending && a.stream != nil {
+			// A deferred benchmark monitor change is due now.
+			a.benchRestartPending = false
+			a.lastSwitch.Stopped = kind
+			stopStart := time.Now()
+			a.stopStreamAndWait(a.stream)
+			a.lastSwitch.StopMs = time.Since(stopStart).Milliseconds()
+			startStart := time.Now()
+			err := a.RestartSunshineStartOnly()
+			a.lastSwitch.StartMs = time.Since(startStart).Milliseconds()
+			return err
+		}
 		return nil
 	}
 	if kind == "rustshine" {
@@ -1042,32 +1523,40 @@ func (a *App) SetStreamBackend(kind string) error {
 		}
 	}
 
+	stopStart := time.Now()
 	if a.stream != nil {
-		_ = a.stream.Stop()
-		// Mirrors RestartSunshine's own wait for the same reason: Start()'s
-		// "already running" fast path only reflects reality once the
-		// exited process's Wait() goroutine has cleared its cmd.
-		time.Sleep(time.Second)
+		a.lastSwitch.Stopped = a.streamKind
+		a.stopStreamAndWait(a.stream)
 	}
+	a.lastSwitch.StopMs = time.Since(stopStart).Milliseconds()
+	// The stopped streamer's pending restart went with it; the new one
+	// starts on the current configuration anyway.
+	a.benchRestartPending = false
+	startStart := time.Now()
+	defer func() { a.lastSwitch.StartMs = time.Since(startStart).Milliseconds() }()
 
 	var next streamhost.Backend
 	if kind == "rustshine" {
 		next = streamhost.NewRustshine(a.exeDir, a.cfg.StateDir, a.logPath)
 		applyStreamSharedSecret(next, []byte(a.cfg.MasterKey))
 		applyStreamWebRTCEnabled(next, !a.cfg.RustShineWebRTCDisabled)
+		applyStreamUSBPassBridgeAddr(next, a.usbPassBridgeAddr)
 	} else {
 		next = streamhost.NewSunshine(a.exeDir, a.cfg.StateDir, a.logPath)
 	}
+	// Fully configure next before publishing it -- see syncCapExecTo.
+	a.syncCaptureModeTo(next)
+	a.syncCapExecTo(next, kind)
 	a.stream = next
-	a.streamKind = kind
+	a.setStreamKind(kind)
 	if a.screen != nil {
 		a.screen.SetDevices(next)
 	}
-	a.syncSunshineCaptureMode()
-	a.syncSunshineCapExec()
 	if pw, ok := next.(streamhost.ProcessWatcher); ok {
 		pw.SetOnExit(a.startSunshine)
 	}
+	// Before the start, so the backend comes up on the benchmark's monitor.
+	_, benchPinned := a.applyBenchMonitor(next, kind)
 
 	a.startSunshine() // generic despite the name -- starts whatever a.stream now is
 
@@ -1082,8 +1571,17 @@ func (a *App) SetStreamBackend(kind string) error {
 	// third attempt finally landed after the backend had caught up on its
 	// own. WaitReady closes that window instead of relying on the client's
 	// own retry/backoff to eventually paper over it.
-	a.stream.WaitReady(a.cfg.SunshinePort, 5*time.Second)
+	a.stream.WaitReady(a.cfg.SunshinePort, streamReadyTimeout)
 	a.waitForMonitorCorrelation()
+	if !benchPinned && a.benchMonitor != "" {
+		// Sunshine names monitors by a GUID only its own log reveals, so a
+		// Sunshine that never ran here could only be pinned once it's up.
+		if changed, ok := a.applyBenchMonitor(a.stream, kind); ok && changed {
+			if err := a.RestartSunshine(); err != nil {
+				log.Printf("[bench] restarting %s on monitor %s: %v", kind, a.benchMonitor, err)
+			}
+		}
+	}
 	a.restartStreamProxy()
 
 	saved := a.cfg
@@ -1094,10 +1592,59 @@ func (a *App) SetStreamBackend(kind string) error {
 	return nil
 }
 
+// streamReadyTimeout bounds how long a backend (re)start waits for the
+// backend to bind its listeners before telling clients it's up. WaitReady
+// returns as soon as the port answers, so this only matters for a slow
+// start: Sunshine 2026.9 takes ~25s (gamepad driver probing plus encoder
+// probing) before it binds anything, and with the old 5s the client
+// reconnected into closed ports and gave up on the stream.
+const streamReadyTimeout = 45 * time.Second
+
+// currentStreamKind is the active backend kind, readable without waiting
+// for a backend switch in progress (see streamKindView). During a switch it
+// already names the backend being started.
+// LastBackendSwitch is the timing of the most recent SetStreamBackend.
+func (a *App) LastBackendSwitch() api.BackendSwitchTiming {
+	a.streamMu.Lock()
+	defer a.streamMu.Unlock()
+	return a.lastSwitch
+}
+
+// stopStreamAndWait stops b and waits until its ports are free, so the next
+// Start (of it or of the other backend) never overlaps the old process.
+// Replaces a fixed 1 s sleep. The short settle after the ports free up is
+// for Start()'s "already running" fast path, which only reflects reality
+// once the exited process's Wait() goroutine has cleared its handle.
+func (a *App) stopStreamAndWait(b streamhost.Backend) {
+	_ = b.Stop()
+	tcp, udp := b.Ports(a.cfg.SunshinePort - 1)
+	start := time.Now()
+	if !streamhost.WaitPortsFree(tcp, udp, streamPortsFreeTimeout) {
+		log.Printf("[app] %s's ports %v/%v still held %s after stop -- starting anyway", b.DisplayName(), tcp, udp, streamPortsFreeTimeout)
+	} else if waited := time.Since(start); waited > time.Second {
+		log.Printf("[app] %s released its ports after %s", b.DisplayName(), waited.Round(time.Millisecond))
+	}
+	time.Sleep(100 * time.Millisecond)
+}
+
+// streamPortsFreeTimeout bounds stopStreamAndWait's wait for a stopped
+// backend's ports.
+const streamPortsFreeTimeout = 15 * time.Second
+
 func (a *App) currentStreamKind() string {
+	if kind, _ := a.streamKindView.Load().(string); kind != "" {
+		return kind
+	}
 	a.streamMu.Lock()
 	defer a.streamMu.Unlock()
 	return a.streamKind
+}
+
+// setStreamKind records the active backend kind. Caller holds streamMu, or
+// is still constructing the App.
+func (a *App) setStreamKind(kind string) {
+	a.streamKind = kind
+	a.streamKindView.Store(kind)
 }
 
 func (a *App) rustshineStaged() bool {
@@ -1160,11 +1707,14 @@ func (a *App) refreshLocalEntitlementStatus() {
 func (a *App) EntitlementStatus() entitlement.Status {
 	a.entMu.Lock()
 	st := a.entStatus
+	pending := a.pendingStreamerUpdate
 	a.entMu.Unlock()
 	st.ActiveBackend = a.currentStreamKind()
 	st.RustShineStaged = a.rustshineStaged()
 	st.RustShineVersion = entitlement.StagedVersion(a.cfg.StateDir)
 	st.WebRTCEnabled = !a.cfg.RustShineWebRTCDisabled
+	st.RustShineAvailableVersion = pending
+	st.RustShineUpdateOffer = pending != "" && pending != a.cfg.StreamerUpdateSnoozed
 	return st
 }
 
@@ -1417,8 +1967,14 @@ func (a *App) bootstrapFreeTier(ctx context.Context, hwID string) bool {
 // separate account login.
 func (a *App) AccountStatus() account.Status {
 	a.accMu.Lock()
-	defer a.accMu.Unlock()
-	return a.accStatus
+	st := a.accStatus
+	if n := len(st.Licenses); n > 0 {
+		st.Licenses = append([]account.License(nil), st.Licenses...)
+	}
+	a.accMu.Unlock()
+	hwID, _ := hwid.Get()
+	st.Licenses = account.MarkOnThisDevice(st.Licenses, hwID)
+	return st
 }
 
 func (a *App) setAccError(msg string) {
@@ -1580,7 +2136,11 @@ func (a *App) RebindLicenseToThisDevice(oldIdentifier string) error {
 	}
 
 	if err := account.Rebind(context.Background(), token, oldIdentifier, hwID); err != nil {
-		a.setAccError(fmt.Sprintf("could not rebind license: %v", err))
+		msg := account.UserFacingError(err.Error())
+		if msg == "" || msg == err.Error() {
+			msg = "Couldn't move this license to this device."
+		}
+		a.setAccError(msg)
 		return err
 	}
 
@@ -1674,11 +2234,55 @@ func (a *App) DownloadRustShine(onProgress entitlement.ProgressFunc) error {
 		}
 	}
 
-	if err := entitlement.StageRustShine(context.Background(), a.cfg.StateDir, token, combined); err != nil {
+	if err := a.stageRustShine(context.Background(), token, combined); err != nil {
 		a.setEntError(fmt.Sprintf("download failed: %v", err))
 		return err
 	}
+
+	// USB passthrough (usbridge-usb-broker) is a SEPARATE, closed-source
+	// component from RustShine and must never be downloaded as a side
+	// effect of picking a video backend -- it needs its own explicit,
+	// one-time user consent first (see App.EnableUSBBroker, wired to the
+	// USB status row's button in ui.Window). Staging it here, unconditional
+	// on nothing but "the user clicked Download RustShine", was exactly the
+	// silent-proprietary-download this product must not do by default.
 	return nil
+}
+
+// USBPassthroughStatus reports the USB passthrough broker/driver status for
+// this machine (see usbpass.Service.Status's own doc comment for the
+// per-platform driver detection it does). Nil-safe: usbBroker is always
+// constructed today (New's call site in New()), but this mirrors every
+// other a.usbBroker != nil guard in this file rather than assuming that
+// stays true.
+func (a *App) USBPassthroughStatus() usbpass.Status {
+	if a.usbBroker == nil {
+		return usbpass.Status{Available: false, Platform: "disabled", ConsentGiven: a.cfg.USBBrokerConsentGiven()}
+	}
+	st := a.usbBroker.Status()
+	st.ConsentGiven = a.cfg.USBBrokerConsentGiven()
+	return st
+}
+
+// InstallUSBDriver installs this platform's USB passthrough driver
+// (usbip + vhci-hcd on Linux; see usbpass.Service.InstallDrivers). Windows
+// has no equivalent call: usbip-win2 ships its own signed installer, so the
+// GUI just opens https://github.com/vadimgrn/usbip-win2/releases/latest in
+// the browser directly (ui/window.go) instead of routing through here.
+func (a *App) InstallUSBDriver() error {
+	if a.usbBroker == nil {
+		return fmt.Errorf("usb passthrough not available")
+	}
+	return a.usbBroker.InstallDrivers()
+}
+
+// GrantUSBAttach installs the one-time passwordless-usbip grant (Linux; see
+// usbpass.Service.GrantAttachAccess).
+func (a *App) GrantUSBAttach() error {
+	if a.usbBroker == nil {
+		return fmt.Errorf("usb passthrough not available")
+	}
+	return a.usbBroker.GrantAttachAccess()
 }
 
 // ClearLicense clears the saved entitlement token and switches back to
@@ -1731,15 +2335,22 @@ func (a *App) downgradeToSunshine() {
 }
 
 // entitlementRecheckInterval is how often entitlementWatchdog re-verifies
-// entitlement against the backend in the steady state (both to catch a
-// license refund/cancellation and to proactively renew a free-tier token
+// the cached license against the backend in the steady state (both to catch
+// a license refund/cancellation and to proactively renew a free-tier token
 // well before its own local expiry -- see recheckEntitlement's own doc
-// comment on why free is no longer treated as "purely local, no network
-// call needed"). Far longer than sunshineWatchdogInterval deliberately:
-// there's no reason to check more than a few times a day in the healthy
-// case, and a refund is a rare, human-initiated event, not something that
-// needs sub-hour detection latency.
+// comment). Far longer than sunshineWatchdogInterval deliberately: there's
+// no reason to check more than a few times a day in the healthy case, and
+// a refund is a rare, human-initiated event, not something that needs
+// sub-hour detection latency. USBridge-streamer version checks are a
+// separate, cheaper ticker -- see streamerUpdateCheckInterval.
 const entitlementRecheckInterval = 6 * time.Hour
+
+// streamerUpdateCheckInterval is how often streamerUpdateWatchdog asks the
+// backend whether a newer USBridge-streamer build exists -- a cheap
+// metadata call only; the archive is downloaded only if auto-update is on
+// or the user confirms. Once an hour is frequent enough to pick up a
+// release the same day and rare enough not to add load or interrupt a stream.
+const streamerUpdateCheckInterval = 1 * time.Hour
 
 // entitlementRetryInterval is how soon entitlementWatchdog retries after a
 // FAILED recheck (network down, backend unreachable), instead of leaving
@@ -1783,6 +2394,243 @@ func (a *App) entitlementWatchdog(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// streamerUpdateWatchdog periodically checks whether a newer
+// USBridge-streamer build is published. Separate from entitlementWatchdog
+// so license re-verify stays at 6h while this stays at one hour
+// (see streamerUpdateCheckInterval). Fires once immediately so a
+// just-started agent doesn't wait a full interval to notice an already-
+// published release.
+func (a *App) streamerUpdateWatchdog(ctx context.Context) {
+	a.tickStreamerUpdate(ctx)
+	ticker := time.NewTicker(streamerUpdateCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.tickStreamerUpdate(ctx)
+		}
+	}
+}
+
+func (a *App) tickStreamerUpdate(ctx context.Context) {
+	token := a.cfg.EntitlementToken
+	if strings.TrimSpace(token) == "" {
+		return
+	}
+	// First-time StageRustShine still lives on ensureRustShineFresh
+	// (purchase / 6h entitlement tick). This loop is only the cheap
+	// "is there a newer tagged build?" check against an already-staged
+	// binary -- running the full initial download every minute would be
+	// the opposite of a light probe.
+	if !a.rustshineStaged() {
+		return
+	}
+	a.checkRustShineUpdate(ctx, token)
+}
+
+// turnCredentialsRefreshInterval is how often turnCredentialsWatchdog mints
+// a fresh Cloudflare Realtime TURN credential (see usbridge-entitlement-
+// backend's webrtcTurn.ts) and writes it for rust-shine to pick up.
+// Deliberately much shorter than entitlementRecheckInterval (6h): a minted
+// credential is only valid for usbridge-entitlement's own
+// TURN_CREDENTIAL_TTL_SECONDS (1h) -- this refreshes comfortably before
+// that expires, and stays well under the backend's 12-mints/hour rate limit
+// per hardware id (this is the only caller of FetchTurnCredentials, ticking
+// once per interval, so there's no risk of this loop alone exhausting it).
+const turnCredentialsRefreshInterval = 50 * time.Minute
+
+// turnCredentialsWatchdog periodically mints a fresh TURN credential for
+// this hardware id and writes it to entitlement.TurnCredentialsFilePath,
+// which rust-shine's own background poller picks up (see crates/webrtc-
+// video's turn_credentials module) -- entirely additive to an ordinary
+// WebRTC session: a free-tier install, one that's never linked, or a
+// backend that's briefly unreachable all just mean "no TURN server offered
+// this tick", never a hard failure. Mirrors streamerUpdateWatchdog's shape
+// (fire once immediately, then on a ticker) so a freshly started agent's
+// first WebRTC session doesn't wait out a full interval for TURN to become
+// available.
+func (a *App) turnCredentialsWatchdog(ctx context.Context) {
+	a.tickTurnCredentials(ctx)
+	ticker := time.NewTicker(turnCredentialsRefreshInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.tickTurnCredentials(ctx)
+		}
+	}
+}
+
+func (a *App) tickTurnCredentials(ctx context.Context) {
+	// Cheap local pre-filter before ever making a network call: a hw_id
+	// whose cached token doesn't even locally verify as pro/enterprise has
+	// no chance of getting a credential (the backend's own live KV check is
+	// still the actual authority -- see webrtcTurn.ts -- this just avoids a
+	// wasted round trip for the common free-tier case). Also skips outright
+	// if RustShine isn't even staged, same gate tickStreamerUpdate uses --
+	// no WebRTC session exists to hand a TURN server to otherwise.
+	if !a.rustshineStaged() {
+		return
+	}
+	hwID, err := hwid.Get()
+	if err != nil {
+		return
+	}
+	claims, verifyErr := entitlement.VerifyForHardware(a.cfg.EntitlementToken, hwID)
+	if verifyErr != nil || (claims.Tier != "pro" && claims.Tier != "enterprise") {
+		// Not currently pro/enterprise (or no token at all yet) -- clear
+		// any previously written credential rather than leaving a stale one
+		// sitting there for up to its own remaining TTL after a downgrade.
+		if err := entitlement.ClearTurnCredentialsFile(a.cfg.StateDir); err != nil {
+			log.Printf("[app] warning: failed to clear turn credentials file: %v", err)
+		}
+		return
+	}
+
+	fetchedAt := time.Now()
+	creds, err := entitlement.FetchTurnCredentials(ctx, hwID)
+	if err != nil {
+		if refused, ok := err.(*entitlement.TurnCredentialsRefused); ok && refused.Reason == "not_pro" {
+			// Backend's own live tier check disagrees with our locally
+			// cached claims (a lapsed subscription the local token hasn't
+			// caught up to yet, e.g.) -- trust it, same as above.
+			if err := entitlement.ClearTurnCredentialsFile(a.cfg.StateDir); err != nil {
+				log.Printf("[app] warning: failed to clear turn credentials file: %v", err)
+			}
+			return
+		}
+		// rate_limited, network error, or a backend hiccup -- leave
+		// whatever's already on disk alone (it may well still be fresh)
+		// and just try again next tick.
+		log.Printf("[app] turn credentials refresh failed (will retry next tick): %v", err)
+		return
+	}
+	if err := entitlement.WriteTurnCredentialsFile(a.cfg.StateDir, creds, fetchedAt); err != nil {
+		log.Printf("[app] warning: failed to write turn credentials file: %v", err)
+	}
+}
+
+// deviceCertRegisterInterval is how often deviceCertWatchdog re-registers
+// this machine's current LAN IP with the backend (see internal/devicecert)
+// as a periodic heartbeat even when no IP change has been detected.
+const deviceCertRegisterInterval = 5 * time.Minute
+
+// deviceCertPollInterval is how frequently deviceCertWatchdog checks the local
+// routing table for IP address / interface changes.
+const deviceCertPollInterval = 3 * time.Second
+
+// deviceCertWatchdog keeps this machine's <label>.device.usbridge.io DNS
+// record and shared wildcard TLS cert (see internal/tlshost,
+// internal/devicecert) up to date -- what lets the browser-based web
+// client (client/web, loaded from https://web.usbridge.io) reach this
+// agent's HTTPS listener (a.tlsServer) at all.
+//
+// Actively monitors the local IP address of the egress network interface:
+// when a DHCP lease change, Wi-Fi switch, or manual IP change occurs, the new
+// LAN IP is immediately registered with the domain backend so the browser web
+// client can connect without waiting for the 5-minute fallback heartbeat.
+func (a *App) deviceCertWatchdog(ctx context.Context) {
+	var lastRegisteredIP string
+	var lastRegisterTime time.Time
+
+	runTick := func() {
+		ip := netutil.PreferredIPv4()
+		if ip == "" {
+			return
+		}
+		if err := a.tickDeviceCert(ctx); err == nil {
+			if lastRegisteredIP != "" && lastRegisteredIP != ip {
+				log.Printf("🌐 [app] device-cert: local IP changed (%s -> %s), registered domain", lastRegisteredIP, ip)
+			}
+			lastRegisteredIP = ip
+			lastRegisterTime = time.Now()
+		}
+	}
+
+	runTick()
+	ticker := time.NewTicker(deviceCertPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			currentIP := netutil.PreferredIPv4()
+			if currentIP == "" {
+				continue
+			}
+			// Trigger registration if:
+			// 1. IP changed from last successfully registered IP
+			// 2. OR registration hasn't succeeded yet (lastRegisterTime is zero)
+			// 3. OR periodic heartbeat interval (5m) has elapsed
+			if currentIP != lastRegisteredIP || lastRegisterTime.IsZero() || time.Since(lastRegisterTime) >= deviceCertRegisterInterval {
+				runTick()
+			}
+		}
+	}
+}
+
+// tickDeviceCert registers this machine's current LAN IP, then -- only if
+// the hostname changed or the installed device cert is missing/expiring
+// soon (tlshost.Manager.DeviceCertStatus, a cheap in-memory check) --
+// fetches and installs a fresh cert. The common case is register-only: no
+// cert fetch, since the shared wildcard cert changes far less often than
+// this ticks. Best-effort throughout: any failure here just leaves the
+// self-signed fallback (or whatever device cert is already installed) in
+// place until the next tick, never blocks or crashes the agent.
+func (a *App) tickDeviceCert(ctx context.Context) error {
+	hwID, err := hwid.Get()
+	if err != nil {
+		log.Printf("[app] device-cert: hwid unavailable: %v", err)
+		return fmt.Errorf("hwid unavailable: %w", err)
+	}
+	ip := netutil.PreferredIPv4()
+	if ip == "" {
+		return fmt.Errorf("no LAN interface up")
+	}
+
+	regCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	hostname, err := devicecert.RegisterIP(regCtx, hwID, ip)
+	cancel()
+	if err != nil {
+		log.Printf("[app] device-cert: register IP failed: %v", err)
+		return fmt.Errorf("register IP failed: %w", err)
+	}
+
+	if a.tlsMgr != nil {
+		selfSignedIPs := []net.IP{net.ParseIP("127.0.0.1")}
+		if parsed := net.ParseIP(ip); parsed != nil {
+			selfSignedIPs = append(selfSignedIPs, parsed)
+		}
+		if err := a.tlsMgr.EnsureSelfSigned(selfSignedIPs, nil); err != nil {
+			log.Printf("[app] device-cert: update self-signed TLS cert: %v", err)
+		}
+	}
+
+	currentHostname, needsRefresh := a.tlsMgr.DeviceCertStatus()
+	if currentHostname == hostname && !needsRefresh {
+		return nil
+	}
+
+	certCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	cert, err := devicecert.FetchCert(certCtx, hwID)
+	cancel()
+	if err != nil {
+		log.Printf("[app] device-cert: fetch cert failed: %v", err)
+		return fmt.Errorf("fetch cert failed: %w", err)
+	}
+	if err := a.tlsMgr.InstallDeviceCert(hostname, cert.CertPEM, cert.KeyPEM); err != nil {
+		log.Printf("[app] device-cert: install cert failed: %v", err)
+		return fmt.Errorf("install cert failed: %w", err)
+	}
+	return nil
 }
 
 // recheckEntitlement re-verifies whatever's currently cached in
@@ -1877,7 +2725,123 @@ func (a *App) recheckEntitlement(ctx context.Context) bool {
 	}
 	a.refreshLocalEntitlementStatus()
 	a.ensureRustShineFresh(ctx, res.Token)
+	a.ensureUSBBroker(ctx, res.Token)
 	return true
+}
+
+// usbBrokerWatchdogInterval is how often usbBrokerWatchdog checks whether
+// the usb-broker subprocess is actually alive and restarts it if not.
+// ensureUSBBroker (below) only ever stages+starts it once, gated on
+// Staged() -- which just checks the binary exists on disk, not that the
+// process is actually running -- so a broker that crashes after a
+// successful launch (fork succeeded, cmd.Start() returned nil, so Go never
+// saw a staging failure) stayed dead forever until this watchdog existed.
+// Confirmed live: an unrelated Windows process (WsToastNotification.exe)
+// happened to be squatting on the broker's hardcoded URB port, so the
+// broker's own bind() failed at startup and it exited immediately -- the
+// agent kept relaying every USB-passthrough Hello into that *other*
+// process's own HTTP listener on the same port instead, indefinitely, and
+// every attach failed with a misleading "requires a license" error with no
+// hint anywhere that the actual broker had died over an hour earlier.
+// Mirrors sunshineWatchdog's exact shape: Start() is an idempotent no-op
+// when the broker is already running (see Service.Start's own guard), so
+// calling it unconditionally every tick is safe.
+const usbBrokerWatchdogInterval = 15 * time.Second
+
+// usbBrokerWatchdog periodically verifies the broker's control-plane port
+// actually answers (Service.Status's BrokerAlive, a real dial+status-query
+// against 127.0.0.1:<controlAddr>, not just "is a *os.Process handle set")
+// and restarts it if not -- see this const's own doc comment for why
+// ensureUSBBroker's one-shot staging call can't catch this on its own.
+func (a *App) usbBrokerWatchdog(ctx context.Context) {
+	if a.usbBroker == nil {
+		return
+	}
+	ticker := time.NewTicker(usbBrokerWatchdogInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if !a.cfg.USBBrokerConsentGiven() || !a.usbBroker.Staged() {
+			continue
+		}
+		if a.usbBroker.Status().BrokerAlive {
+			continue
+		}
+		if err := a.usbBroker.Start(); err != nil {
+			log.Printf("[usbpass] broker restart failed: %v", err)
+		} else {
+			log.Printf("[usbpass] broker was not alive -- restarted")
+		}
+	}
+}
+
+// ensureUSBBroker stages and starts the usb-broker regardless of which
+// stream backend is active or which license tier is current: the broker is
+// a separate process from RustShine (it only needs the entitlement token
+// file, see usbpass.Start), and which specific *devices* a free-tier
+// session may attach is decided per attach inside the closed broker itself
+// (rust-shine's license_class/devlist_probe, see docs/USB_PASSTHROUGH.md in
+// that repo) -- there is nothing left for Go to gate on tier here.
+//
+// What Go DOES still gate on is USBBrokerConsentGiven: this agent must run
+// only open-source code until the user explicitly opts in (see the USB
+// status row's button, ui.Window's usbBrokerRow, and App.EnableUSBBroker,
+// the only place that flips the consent flag). No-op without that consent,
+// or once the broker is already on disk.
+func (a *App) ensureUSBBroker(ctx context.Context, token string) {
+	if a.usbBroker == nil || !a.cfg.USBBrokerConsentGiven() || a.usbBroker.Staged() {
+		return
+	}
+	log.Printf("[app] USB broker consent on record — staging usb-broker")
+	if err := a.stageAndStartUSBBroker(ctx, token, nil); err != nil {
+		log.Printf("[app] usb-broker not staged/started (will retry next interval): %v", err)
+	}
+}
+
+// EnableUSBBroker records the user's one-time, explicit consent to run the
+// closed usb-broker binary (see the USB status row's button in ui.Window)
+// and immediately stages+starts it if entitled — the same staging path
+// ensureUSBBroker's watchdog would otherwise only reach on its next tick.
+// onProgress mirrors DownloadRustShine's identical threading contract.
+func (a *App) EnableUSBBroker(onProgress entitlement.ProgressFunc) error {
+	consent := true
+	next := a.cfg
+	next.USBBrokerConsent = &consent
+	if err := a.SaveConfig(next); err != nil {
+		return err
+	}
+
+	token := strings.TrimSpace(a.cfg.EntitlementToken)
+	if token == "" {
+		// Consent alone doesn't require entitlement -- ensureUSBBroker's own
+		// next watchdog tick (or a subsequent EnableUSBBroker retry) picks
+		// this up the moment a token exists. Not an error: recording "yes,
+		// I want the proprietary broker enabled" is a valid, standalone
+		// action even before/without ever linking a license.
+		return nil
+	}
+	return a.stageAndStartUSBBroker(context.Background(), token, onProgress)
+}
+
+// stageAndStartUSBBroker is the "download the release, then launch it" pair
+// both ensureUSBBroker's watchdog path and EnableUSBBroker's immediate path
+// need -- factored out purely to keep that pairing in one place; callers
+// still decide for themselves whether a failure here is fire-and-forget
+// (logged, retried on the next tick) or something the caller should
+// propagate to the user (EnableUSBBroker's return value, surfaced by the
+// consent button).
+func (a *App) stageAndStartUSBBroker(ctx context.Context, token string, onProgress entitlement.ProgressFunc) error {
+	if a.usbBroker == nil {
+		return fmt.Errorf("usb passthrough not available on this platform")
+	}
+	if err := entitlement.StageUSBBroker(ctx, a.cfg.StateDir, token, onProgress); err != nil {
+		return err
+	}
+	return a.usbBroker.Start()
 }
 
 // ensureRustShineFresh makes sure a licensed/trialing customer always has
@@ -1897,7 +2861,7 @@ func (a *App) ensureRustShineFresh(ctx context.Context, entitlementToken string)
 	}
 	if !a.rustshineStaged() {
 		log.Printf("[app] entitlement linked — downloading rustshine")
-		if err := entitlement.StageRustShine(ctx, a.cfg.StateDir, entitlementToken, nil); err != nil {
+		if err := a.stageRustShine(ctx, entitlementToken, nil); err != nil {
 			// Non-fatal -- retried at the next watchdog interval (offline,
 			// transient backend error, ...). Until it succeeds, this install
 			// simply keeps running Sunshine.
@@ -1933,8 +2897,19 @@ func (a *App) checkRustShineUpdate(ctx context.Context, entitlementToken string)
 		return
 	}
 	if !needsUpdate {
+		a.entMu.Lock()
+		a.pendingStreamerUpdate = ""
+		a.entMu.Unlock()
 		return
 	}
+	if !a.cfg.StreamerAutoUpdateEnabled() {
+		a.entMu.Lock()
+		a.pendingStreamerUpdate = version
+		a.entMu.Unlock()
+		log.Printf("[app] rustshine update available (%s) — auto-update off, waiting for the user", version)
+		return
+	}
+
 	// Same reentrancy guard as CheckRustShineUpdateNow (see its doc comment)
 	// -- this silent background tick and a manual "check for updates" click
 	// share the same StageRustShine/stopRustShineForUpdate sequence and can
@@ -1954,27 +2929,50 @@ func (a *App) checkRustShineUpdate(ctx context.Context, entitlementToken string)
 		a.setRustShineUpdatePaused(false)
 	}()
 
+	if err := a.applyRustShineUpdate(ctx, entitlementToken, version); err != nil {
+		log.Printf("[app] rustshine auto-update to %s failed (will retry next interval): %v", version, err)
+	}
+}
+
+// applyRustShineUpdate downloads and stages a newer USBridge-streamer
+// build, then hot-swaps the running backend if it's already rustshine.
+// Callers must hold the RustShineUpdateInProgress / UpdatePauser pairing
+// around this (checkRustShineUpdate and CheckRustShineUpdateNow).
+func (a *App) applyRustShineUpdate(ctx context.Context, entitlementToken, version string) error {
 	log.Printf("[app] rustshine update available (%s) — downloading", version)
 	stopped := a.stopRustShineForUpdate()
-	if err := entitlement.StageRustShine(ctx, a.cfg.StateDir, entitlementToken, nil); err != nil {
-		// On Windows this shouldn't fire anymore now that
-		// stopRustShineForUpdate releases the file lock first -- if it
-		// still does (AV scan holding the file, some other locker), it's
-		// non-fatal: retried at the next watchdog interval. Relaunch
-		// immediately (on the still-old binary) if we stopped an actively
-		// streaming backend for this attempt, rather than leaving the user
-		// without video until the next 15s watchdog tick.
-		log.Printf("[app] rustshine auto-update to %s failed (will retry next interval): %v", version, err)
+	if err := a.stageRustShine(ctx, entitlementToken, nil); err != nil {
 		if stopped {
+			// The bundle on disk may have changed under the launcher
+			// decision made before the update: re-verify first.
+			a.syncSunshineCapExec()
 			a.startSunshineNow()
 		}
-		return
+		return err
 	}
 	log.Printf("[app] rustshine updated to %s", version)
+	// Only re-stage if the user already consented to running the broker at
+	// all (see App.EnableUSBBroker/ensureUSBBroker's doc comments) -- an
+	// update to RustShine must never be what silently pulls the closed
+	// usb-broker binary down for the first time.
+	if a.cfg.USBBrokerConsentGiven() {
+		if err := entitlement.StageUSBBroker(ctx, a.cfg.StateDir, entitlementToken, nil); err != nil {
+			log.Printf("[app] usb-broker not re-staged (USB passthrough unavailable): %v", err)
+		}
+	}
 	a.entMu.Lock()
 	a.entStatus.RustShineStaged = a.rustshineStaged()
+	a.pendingStreamerUpdate = ""
 	a.entMu.Unlock()
+	if strings.TrimSpace(a.cfg.StreamerUpdateSnoozed) != "" {
+		next := a.cfg
+		next.StreamerUpdateSnoozed = ""
+		if err := a.SaveConfig(next); err != nil {
+			log.Printf("[app] warning: could not clear snoozed streamer update: %v", err)
+		}
+	}
 	a.restartRustShineIfActive()
+	return nil
 }
 
 // setRustShineUpdatePaused tells the active backend (if it implements
@@ -2028,46 +3026,32 @@ func (a *App) stopRustShineForUpdate() bool {
 	// unconditionally by name as a belt-and-suspenders guarantee that
 	// nothing named gamestream-server.exe survives this point, regardless
 	// of how it got there or whether this backend ever tracked it.
-	killCmd := exec.Command("taskkill", "/F", "/IM", "gamestream-server.exe")
+	killCmd := exec.Command("taskkill", "/F", "/IM", "usbridge-streamer.exe")
 	maybeHideWindow(killCmd)
 	_ = killCmd.Run()
+	legacyKillCmd := exec.Command("taskkill", "/F", "/IM", "gamestream-server.exe")
+	maybeHideWindow(legacyKillCmd)
+	_ = legacyKillCmd.Run()
 	// Stop() only signals termination; give the OS a moment to actually
 	// release the exe's image-section file lock before the upcoming rename.
 	time.Sleep(500 * time.Millisecond)
-	// Confirmed live: the plain taskkill above can still leave a
-	// gamestream-server.exe alive with "Access is denied" even from this
-	// same agent's own same-user call -- root cause not fully pinned down
-	// (not self-spawned: gamestream-server's own source spawns no child
-	// processes on Windows), but reproducible: a manual StageRustShine
-	// against a genuinely clean process list staged and renamed in ~1.3s
-	// every time, while this exact flow, with a survivor still present,
-	// lost to "Access is denied" for the entire 20s renameWithRetry budget
-	// regardless. Escalating to a UAC-elevated taskkill closes that gap the
-	// same-level sweep above can't: an elevated `taskkill /F` carries
-	// enough privilege to reach a process a plain same-user one can't, the
-	// same reason Task Manager's own "End task" needs "Run as
-	// administrator" for some processes. Only fires when something is
-	// actually still there (a UAC prompt on every single update, needed or
-	// not, would be needlessly disruptive) and is itself non-fatal on
-	// failure/decline/no-desktop-to-prompt-on -- StageRustShine's own
-	// caller already retries at the next interval and falls back to
-	// relaunching the old binary regardless of how this returns.
-	if a.perms != nil && processRunning("gamestream-server.exe") {
-		log.Printf("[app] gamestream-server.exe survived the plain taskkill -- requesting elevation to force it (a UAC prompt may appear)")
-		if err := a.perms.KillGamestreamServerElevated(); err != nil {
-			log.Printf("[app] elevated taskkill failed or was declined: %v", err)
-		} else {
-			time.Sleep(500 * time.Millisecond)
-		}
+	// Do not escalate to a UAC-elevated taskkill. A consent prompt runs on
+	// the secure desktop: the update flow has already stopped capture, so
+	// video is gone, and a remote client cannot click Yes. Leftover
+	// elevated copies (Autostart-at-Boot LocalSystem instance before
+	// reboot, GPU clock-lock daemon using the same .exe) are left alone;
+	// StageRustShine writes dest+".new" when dest is still locked.
+	if processRunning("usbridge-streamer.exe") || processRunning("gamestream-server.exe") {
+		log.Printf("[app] usbridge-streamer.exe still running after taskkill — not requesting UAC; staging will use a sidecar if the .exe stays locked")
 	}
 	return true
 }
 
 // processRunning reports whether any process named imageName (e.g.
 // "gamestream-server.exe") is currently running, via `tasklist`'s own
-// image-name filter -- used by stopRustShineForUpdate to decide whether the
-// plain taskkill above actually needs the elevated escalation, rather than
-// firing a UAC prompt unconditionally on every update.
+// image-name filter -- used by stopRustShineForUpdate only to log that a
+// leftover instance is still holding the .exe (staging then writes a
+// sidecar instead of prompting UAC).
 func processRunning(imageName string) bool {
 	cmd := exec.Command("tasklist", "/NH", "/FI", "IMAGENAME eq "+imageName)
 	maybeHideWindow(cmd)
@@ -2076,6 +3060,23 @@ func processRunning(imageName string) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(string(out)), strings.ToLower(imageName))
+}
+
+// stageRustShine downloads and stages RustShine. With the KMS launcher
+// installed (Linux), the new build must pass that launcher's own
+// verification before it replaces the current one -- so an update can
+// never leave the next restart without CAP_SYS_ADMIN (and the remote user
+// staring at a portal prompt they can't click). Without the launcher it's
+// plain entitlement.StageRustShine.
+func (a *App) stageRustShine(ctx context.Context, token string, onProgress entitlement.ProgressFunc) error {
+	var verify entitlement.BundleVerifier
+	if runtime.GOOS == "linux" && a.perms != nil && a.perms.KMSCaptureGranted(streamerlaunch.InstallPath) {
+		verify = func(bundleDir string) error {
+			_, err := a.perms.StreamerLauncherVerify(bundleDir)
+			return err
+		}
+	}
+	return entitlement.StageRustShineVerified(ctx, a.cfg.StateDir, token, onProgress, verify)
 }
 
 // restartRustShineIfActive re-execs the running RustShine subprocess (via
@@ -2099,6 +3100,9 @@ func (a *App) restartRustShineIfActive() {
 	if a.currentStreamKind() != "rustshine" {
 		return
 	}
+	// Re-check the launcher against the freshly staged bundle before the
+	// restart rather than trusting the decision made for the old build.
+	a.syncSunshineCapExec()
 	log.Printf("[app] rustshine is the active backend — restarting it to pick up the update")
 	if err := a.RestartSunshine(); err != nil {
 		// Non-fatal: the newer binary is already staged and will be used
@@ -2176,23 +3180,16 @@ func (a *App) CheckRustShineUpdateNow() error {
 	}
 	if !needsUpdate {
 		log.Printf("[app] rustshine is already up to date")
+		a.entMu.Lock()
+		a.pendingStreamerUpdate = ""
+		a.entMu.Unlock()
 		return nil
 	}
 
-	log.Printf("[app] rustshine update available (%s) — downloading (manual check)", version)
-	stopped := a.stopRustShineForUpdate()
-	if err := entitlement.StageRustShine(ctx, a.cfg.StateDir, token, nil); err != nil {
+	if err := a.applyRustShineUpdate(ctx, token, version); err != nil {
 		a.setEntError(fmt.Sprintf("update failed: %v", err))
-		if stopped {
-			a.startSunshineNow()
-		}
 		return err
 	}
-	log.Printf("[app] rustshine updated to %s", version)
-	a.entMu.Lock()
-	a.entStatus.RustShineStaged = a.rustshineStaged()
-	a.entMu.Unlock()
-	a.restartRustShineIfActive()
 	return nil
 }
 
@@ -2252,25 +3249,185 @@ func (a *App) waitForMonitorCorrelation() {
 	}
 }
 
-// KMSCaptureGranted reports whether the bundled sunshine_capexec launcher
-// has the CAP_SYS_ADMIN capability needed for KMS capture.
+// kmsCaptureTarget returns what the Linux KMS-capture grant targets for
+// the active backend -- a key permissions.KMSCaptureGranted/
+// RequestKMSCapture understand, never a file that itself gets a setcap:
+//
+//   - RustShine: streamerlaunch.InstallPath. Granting installs the
+//     root-owned usbridge-streamer-launch once; it runs only builds signed
+//     by rust-shine's release key, so streamer updates no longer drop the
+//     grant (a setcap directly on usbridge-streamer did, on every update,
+//     since each update writes a new inode).
+//   - Sunshine: the bundled Sunshine install-tree root. Granting copies it
+//     into the root-owned streamerlaunch.SunshineDir, which the same
+//     launcher execs. This replaced a user-writable sunshine_capexec that
+//     gave CAP_SYS_ADMIN to any binary it was pointed at.
+//
+// Both need CAP_SYS_ADMIN in the first place for fullscreen games'
+// direct-scanout buffers (confirmed live: plain KMS capture of the
+// composited desktop worked without it, a fullscreen game didn't).
+func (a *App) kmsCaptureTarget() string {
+	if a.currentStreamKind() == "rustshine" {
+		if a.stream != nil {
+			return a.stream.CapExecPath()
+		}
+		return ""
+	}
+	return a.SunshineCapExecPath()
+}
+
+// removeLegacyKMSGrants deletes the capability-carrying files earlier
+// builds left in the user-writable state dir:
+//
+//   - capexec-runtime/sunshine-capexec: cap_sys_admin on a launcher that
+//     exec'd any path it was given -- CAP_SYS_ADMIN for any process of this
+//     user. Removed unconditionally; nothing launches it anymore.
+//   - a setcap directly on the staged usbridge-streamer, but only once the
+//     root-owned launcher can actually take over -- installed AND
+//     accepting the staged signed bundle (see shouldDropLegacySetcap). A
+//     user can't drop a file capability in place (that needs
+//     CAP_SETFCAP), but rewriting the file does: the kernel never copies
+//     security.capability to a new inode.
+func (a *App) removeLegacyKMSGrants() {
+	if runtime.GOOS != "linux" || a.cfg.StateDir == "" {
+		return
+	}
+	for _, name := range []string{"capexec-runtime", "rustshine-capexec-runtime"} {
+		legacyCapexec := filepath.Join(a.cfg.StateDir, name)
+		if _, err := os.Stat(legacyCapexec); err != nil {
+			continue
+		}
+		if err := os.RemoveAll(legacyCapexec); err != nil {
+			log.Printf("[app] could not remove legacy %s: %v", legacyCapexec, err)
+		} else {
+			log.Printf("[app] removed legacy capability launcher %s", legacyCapexec)
+		}
+	}
+	if a.perms == nil {
+		return
+	}
+	bin := entitlement.StagePath(a.cfg.StateDir)
+	if !permissions.HasFileCapability(bin) {
+		return
+	}
+	installed := a.perms.KMSCaptureGranted(streamerlaunch.InstallPath)
+	var verifyErr error
+	if installed {
+		_, verifyErr = a.perms.StreamerLauncherVerify(streamerlaunch.BundleDir(a.rustshineStagedDir()))
+	}
+	if !shouldDropLegacySetcap(installed, verifyErr) {
+		if installed {
+			log.Printf("[app] keeping legacy setcap on %s until the launcher accepts a staged bundle: %v", bin, verifyErr)
+		}
+		return
+	}
+	if err := rewriteWithoutXattrs(bin); err != nil {
+		log.Printf("[app] could not drop legacy setcap on %s: %v", bin, err)
+		return
+	}
+	log.Printf("[app] dropped legacy setcap on %s (launcher %s is installed)", bin, streamerlaunch.InstallPath)
+}
+
+// shouldDropLegacySetcap: the per-binary setcap may only go once the
+// launcher can run the staged build itself. Dropping it on "launcher
+// installed" alone -- before any signed bundle had been staged (the
+// backend didn't pass the manifest through yet) -- left RustShine with no
+// CAP_SYS_ADMIN at all: confirmed live, KMS capture failed with
+// "framebuffer has no exportable plane-0 handle" and clients got no video.
+func shouldDropLegacySetcap(launcherInstalled bool, bundleVerifyErr error) bool {
+	return launcherInstalled && bundleVerifyErr == nil
+}
+
+// rewriteWithoutXattrs replaces p with a fresh copy of its bytes and mode.
+func rewriteWithoutXattrs(p string) error {
+	st, err := os.Stat(p)
+	if err != nil {
+		return err
+	}
+	src, err := os.Open(p)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	tmp, err := os.CreateTemp(filepath.Dir(p), ".rewrite-*")
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(tmp, src); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Chmod(st.Mode().Perm()); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return err
+	}
+	return os.Rename(tmp.Name(), p)
+}
+
+// KMSCaptureTargetPath exposes kmsCaptureTarget to a GUI thin client (see
+// runThinClientGUI), which runs the pkexec grant itself in its own session.
+func (a *App) KMSCaptureTargetPath() string { return a.kmsCaptureTarget() }
+
+// rustshineStagedDir is the directory holding the staged usbridge-streamer
+// (and its signed release bundle, streamerlaunch.BundleDirName).
+func (a *App) rustshineStagedDir() string {
+	return filepath.Dir(entitlement.StagePath(a.cfg.StateDir))
+}
+
+// rustshineLauncherPath returns streamerlaunch.InstallPath when RustShine
+// should launch through it: KMS capture mode, launcher installed, and the
+// launcher accepts the staged bundle with its capability effective. Any
+// failure falls back to "" (plain exec) and is logged -- never a hard
+// failure that would take the stream down.
+func (a *App) rustshineLauncherPathFor(b streamhost.Backend) string {
+	if runtime.GOOS != "linux" || a.perms == nil || a.captureModeOf(b) != "kms" {
+		return ""
+	}
+	if !a.perms.KMSCaptureGranted(streamerlaunch.InstallPath) {
+		return ""
+	}
+	version, err := a.perms.StreamerLauncherVerify(streamerlaunch.BundleDir(a.rustshineStagedDir()))
+	if err != nil {
+		log.Printf("[app] rustshine: launcher installed but staged bundle not usable, plain exec: %v", err)
+		return ""
+	}
+	log.Printf("[app] rustshine: launching %s via %s", version, streamerlaunch.InstallPath)
+	return streamerlaunch.InstallPath
+}
+
+// KMSCaptureGranted reports whether the file KMS capture actually needs
+// CAP_SYS_ADMIN on for the active backend (see kmsCaptureTarget) has it.
 func (a *App) KMSCaptureGranted() bool {
 	if a.perms == nil {
 		return false
 	}
-	return a.perms.KMSCaptureGranted(a.SunshineCapExecPath())
+	// The launcher file alone is not enough: if it refuses the staged
+	// bundle (e.g. after a streamer update), RustShine silently runs by
+	// plain exec without CAP_SYS_ADMIN -- report that so the UI offers the
+	// grant/refresh instead of showing it as done.
+	if runtime.GOOS == "linux" && a.currentStreamKind() == "rustshine" && a.SunshineCaptureMode() == "kms" {
+		if b, ok := a.stream.(interface{ LauncherActive() bool }); ok && !b.LauncherActive() {
+			return false
+		}
+	}
+	return a.perms.KMSCaptureGranted(a.kmsCaptureTarget())
 }
 
-// RequestKMSCapture grants CAP_SYS_ADMIN to the bundled sunshine_capexec
-// launcher (prompts for elevation via pkexec) — never to Sunshine itself,
-// which would break its bundled-library resolution, see
-// internal/permissions.RequestKMSCapture — then restarts Sunshine so the
+// RequestKMSCapture grants CAP_SYS_ADMIN to whichever file KMS capture
+// actually needs it on for the active backend (see kmsCaptureTarget) —
+// prompts for elevation via pkexec — then restarts the stream host so the
 // newly-granted capability is actually picked up.
 func (a *App) RequestKMSCapture() bool {
 	if a.perms == nil {
 		return false
 	}
-	granted := a.perms.RequestKMSCapture(a.SunshineCapExecPath())
+	granted := a.perms.RequestKMSCapture(a.kmsCaptureTarget())
 	if granted {
 		a.syncSunshineCapExec()
 		if err := a.RestartSunshine(); err != nil {
@@ -2315,6 +3472,52 @@ func (a *App) LockGPUClocksEnabled() bool {
 	return a.cfg.LockGPUClocksEnabled
 }
 
+func (a *App) StreamerAutoUpdateEnabled() bool {
+	return a.cfg.StreamerAutoUpdateEnabled()
+}
+
+func (a *App) SetStreamerAutoUpdate(enabled bool) error {
+	next := a.cfg
+	v := enabled
+	next.StreamerAutoUpdate = &v
+	if enabled {
+		next.StreamerUpdateSnoozed = ""
+	}
+	if err := a.SaveConfig(next); err != nil {
+		return err
+	}
+	if enabled {
+		a.entMu.Lock()
+		pending := a.pendingStreamerUpdate
+		a.entMu.Unlock()
+		if pending != "" {
+			go func() {
+				if err := a.CheckRustShineUpdateNow(); err != nil {
+					log.Printf("[app] rustshine apply after enabling auto-update failed: %v", err)
+				}
+			}()
+		}
+	}
+	return nil
+}
+
+func (a *App) SnoozeStreamerUpdate(version string) error {
+	next := a.cfg
+	next.StreamerUpdateSnoozed = strings.TrimSpace(version)
+	return a.SaveConfig(next)
+}
+
+func (a *App) RemoteWindowLockEnabled() bool {
+	return a.cfg.RemoteWindowLockEnabled()
+}
+
+func (a *App) SetRemoteWindowLock(enabled bool) error {
+	next := a.cfg
+	v := enabled
+	next.RemoteWindowLock = &v
+	return a.SaveConfig(next)
+}
+
 // SetLockGPUClocksEnabled persists the "Lock GPU clocks" setting and, if
 // turning it on, immediately arms the lock (see applyGPUClockLock) instead of
 // waiting for the next stream-host start. Turning it off does NOT tear down
@@ -2354,8 +3557,12 @@ func (a *App) SetLockGPUClocksEnabled(enabled bool) error {
 // on every call; errors (including a declined UAC prompt) are logged only,
 // never fatal to starting the stream, and deliberately leave gpuClockArmed
 // unset so the next call retries instead of giving up silently forever.
+//
+// Superseded by the NVIDIA power mode "max" (the driver profile keeps the clocks
+// up without elevation) and no longer offered in the UI: a lock turned on
+// before only still applies while that preference is off.
 func (a *App) applyGPUClockLock() {
-	if !a.cfg.LockGPUClocksEnabled || a.perms == nil || a.stream == nil {
+	if !a.cfg.LockGPUClocksEnabled || a.cfg.NvidiaMaxPerformanceOK() || a.perms == nil || a.stream == nil {
 		return
 	}
 	if !a.perms.GPUClockLockSupported() {
@@ -2428,6 +3635,20 @@ func (a *App) QRLink() (string, string) {
 		return "", ""
 	}
 	internalHost := localIPv4()
+	// Prefer the device's own <label>.device.usbridge.io hostname (see
+	// internal/tlshost, internal/devicecert) over the bare LAN IP once
+	// deviceCertWatchdog has registered+fetched one -- it re-resolves via
+	// DNS on every connect instead of pinning a LAN IP that goes stale the
+	// moment this machine's address changes (DHCP renewal, different
+	// network), and a browser web client needs this exact hostname anyway
+	// (SNI is never sent for an IP-literal connection, so
+	// tlshost.Manager.GetCertificate can never select the trusted device
+	// wildcard cert -- only the untrusted self-signed one -- for a bare-IP
+	// connection). Falls back to the bare IP when no hostname is registered
+	// yet, e.g. offline or still within the first tick.
+	if deviceHost := a.DeviceHostname(); deviceHost != "" {
+		internalHost = deviceHost
+	}
 	tailscaleHost := ""
 	if a.ts != nil {
 		if status, err := a.ts.Status(context.Background()); err == nil && status != nil && status.LoggedIn {
@@ -2439,7 +3660,18 @@ func (a *App) QRLink() (string, string) {
 			}
 		}
 	}
-	link := buildQRLink(internalHost, tailscaleHost, masterKey)
+	// hwID (best-effort -- an empty string just omits hw_id from the link,
+	// same "degrade gracefully" posture every other field here already has)
+	// lets a browser client that later can't reach this agent directly
+	// address the Cloudflare signaling relay for it (see
+	// agent/internal/streamhost/webrtc_signal_relay.go and
+	// client/internal/webrtcweb/client_wasm.go's postOffer). Not a new
+	// exposure: master_key, the actual API credential, is already in this
+	// same plaintext link -- hw_id alone only lets someone request a
+	// free-tier entitlement token for it (see desktopLicense.ts's
+	// documented trust model), no new capability against this device.
+	hwID, _ := hwid.Get()
+	link := buildQRLink(internalHost, tailscaleHost, masterKey, hwID)
 	return link, masterKey
 }
 
@@ -2466,7 +3698,47 @@ func applyStreamWebRTCEnabled(stream streamhost.Backend, enabled bool) {
 	}
 }
 
-func buildQRLink(internalHost, tailscaleHost, masterKey string) string {
+// applyStreamUSBPassBridgeAddr hands addr to stream if it implements the
+// optional interface{ SetUSBPassBridgeAddr(string) } -- only rustshineBackend
+// does today, same optional-interface probe pattern as
+// applyStreamSharedSecret above; a no-op for sunshineBackend, which has no
+// browser USB passthrough / WebRTC DataChannel path to bridge into. addr is
+// api.Server.StartUSBPassBridge's own localhost listener address, started
+// once at boot (see the app.New call site) and re-applied here every time
+// SetStreamBackend swaps in a new rustshineBackend instance, since the
+// bridge listener itself outlives any individual backend.
+func applyStreamUSBPassBridgeAddr(stream streamhost.Backend, addr string) {
+	if setter, ok := stream.(interface{ SetUSBPassBridgeAddr(string) }); ok {
+		setter.SetUSBPassBridgeAddr(addr)
+	}
+}
+
+// DeviceHostname returns this machine's <label>.device.usbridge.io
+// hostname (see internal/tlshost, internal/devicecert) once
+// deviceCertWatchdog has registered one, "" otherwise or when the HTTPS
+// listener is disabled -- nothing answers on that name without it. Shared
+// by QRLink and the GUI's token dialog (ui.TokenProvider) so both hand out
+// the same link.
+func (a *App) DeviceHostname() string {
+	if a.tlsMgr == nil || !a.cfg.TLSEnabledOK() {
+		return ""
+	}
+	hostname, _ := a.tlsMgr.DeviceCertStatus()
+	return hostname
+}
+
+// CertStatus reports the HTTPS listener's current certificate -- see
+// tlshost.Manager.CertStatus. Zero value (no hostname, LetsEncrypt false)
+// when HTTPS is disabled or the manager hasn't been created yet, which the
+// Status UI's cert row reads as "HTTPS off".
+func (a *App) CertStatus() tlshost.CertStatus {
+	if a.tlsMgr == nil || !a.cfg.TLSEnabledOK() {
+		return tlshost.CertStatus{}
+	}
+	return a.tlsMgr.CertStatus()
+}
+
+func buildQRLink(internalHost, tailscaleHost, masterKey, hwID string) string {
 	if masterKey == "" {
 		return ""
 	}
@@ -2481,6 +3753,9 @@ func buildQRLink(internalHost, tailscaleHost, masterKey string) string {
 		values.Set("tailscale_host", tailscaleHost)
 	}
 	values.Set("master_key", masterKey)
+	if hwID != "" {
+		values.Set("hw_id", hwID)
+	}
 	return "usbridge://connect?" + values.Encode()
 }
 
@@ -2503,18 +3778,18 @@ func (a *App) Status() api.SystemStatus {
 			Timestamp: time.Now(),
 			Uptime:    time.Since(a.state.startedAt).String(),
 		},
-		Timestamp: time.Now(),
-		OS:        runtime.GOOS,
-		Streamer:  a.StreamerName(),
+		Timestamp:     time.Now(),
+		OS:            runtime.GOOS,
+		Streamer:      a.StreamerName(),
+		AgentProtocol: a.EntitlementStatus().Protocol(),
 	}
 }
 
 func (a *App) DeviceInfo() api.DeviceInfoResponse {
 	a.state.mu.Lock()
-	defer a.state.mu.Unlock()
 	out := make([]api.DeviceInfo, len(a.state.devices))
 	copy(out, a.state.devices)
-	return api.DeviceInfoResponse{
+	resp := api.DeviceInfoResponse{
 		Devices:         out,
 		Count:           len(out),
 		MountInProgress: a.state.mountInProgress,
@@ -2522,6 +3797,9 @@ func (a *App) DeviceInfo() api.DeviceInfoResponse {
 		AgentOS:         capture.GetOSInfo(),
 		AgentDisplay:    capture.GetDisplayServer(),
 	}
+	a.state.mu.Unlock()
+	resp.AgentProtocol = a.EntitlementStatus().Protocol()
+	return resp
 }
 
 func (a *App) ReplaceDevices(reqs []api.DeviceRequest) error {
@@ -2680,6 +3958,18 @@ func (a *App) StreamerName() string {
 	return a.stream.DisplayName()
 }
 
+// StreamerRunning reports whether the active streaming host backend's own
+// child process is currently alive -- for the GUI's status traffic light
+// (see ui/window.go's streamerStatusDot), distinct from StreamerName (which
+// backend it is) and entitlement.Status.RustShineStaged (whether it's
+// downloaded at all, regardless of whether it's running right now).
+func (a *App) StreamerRunning() bool {
+	if a.stream == nil {
+		return false
+	}
+	return a.stream.Running()
+}
+
 // AdminUser returns the streaming host's admin-API username.
 func (a *App) AdminUser() string {
 	if a.stream == nil {
@@ -2699,6 +3989,8 @@ func (a *App) AdminPass() string {
 // ListSunshineClients returns Moonlight clients currently paired with the
 // bundled Sunshine instance.
 func (a *App) ListSunshineClients() ([]streamhost.Client, error) {
+	a.streamMu.Lock()
+	defer a.streamMu.Unlock()
 	if a.stream == nil {
 		return nil, nil
 	}
@@ -2739,12 +4031,47 @@ func (a *App) Color444Status() (active bool, available bool) {
 	if a.stream == nil {
 		return false, false
 	}
-	return a.stream.Color444Status()
+	active, available = a.stream.Color444Status()
+	// Sunshine has no license gate of its own: a Pro/Enterprise entitlement
+	// unlocks the 4:4:4 option there too, offered whenever the host's encoder
+	// can actually produce a 4:4:4 format (the client negotiates it via the
+	// codec-support flags, see client moonlightVideoFormat).
+	if !available {
+		if sb, ok := a.stream.(interface{ Color444Supported(int) bool }); ok {
+			a.entMu.Lock()
+			tier := a.entStatus.Tier
+			a.entMu.Unlock()
+			if (tier == "pro" || tier == "enterprise") && sb.Color444Supported(a.SunshineAdminPort()) {
+				available = true
+			}
+		}
+	}
+	return active, available
+}
+
+// HdrStatus mirrors Color444Status exactly, for the RustShine HDR color
+// upgrade -- see Application interface's doc comment.
+func (a *App) HdrStatus() (active bool, available bool) {
+	if a.stream == nil {
+		return false, false
+	}
+	return a.stream.HdrStatus()
+}
+
+// VirtualDisplaySupported reports whether the current stream backend
+// supports native virtual displays (without external physical monitors).
+func (a *App) VirtualDisplaySupported() bool {
+	if a.stream == nil {
+		return false
+	}
+	return a.stream.VirtualDisplaySupported()
 }
 
 // UnpairSunshineClient removes the Moonlight client with the given UUID from
 // Sunshine's authorized client list.
 func (a *App) UnpairSunshineClient(uniqueID string) error {
+	a.streamMu.Lock()
+	defer a.streamMu.Unlock()
 	if a.stream == nil {
 		return nil
 	}
@@ -2789,6 +4116,67 @@ func (a *App) restartMainHTTP() {
 	}
 }
 
+// UpdateTLSAddr updates the agent's HTTPS listen port and "Enable HTTPS"
+// flag, persists the config, and hot-restarts the TLS server so the change
+// takes effect immediately -- mirrors UpdateListenAddr/restartMainHTTP
+// exactly, see restartTLS.
+func (a *App) UpdateTLSAddr(port int, enabled bool) (config.Config, error) {
+	a.cfg.TLSPort = port
+	a.cfg.TLSEnabled = &enabled
+	if err := config.Save(a.cfgPath, a.cfg); err != nil {
+		return a.cfg, err
+	}
+	go a.restartTLS()
+	return a.cfg, nil
+}
+
+// restartTLS shuts down the current TLS server (if one was running) and
+// starts a new one on the host/port currently in a.cfg -- unless
+// TLSEnabledOK is now false, in which case this only tears the old one
+// down (used for both "port changed" and "HTTPS just got turned off").
+// Mirrors restartMainHTTP's shape exactly; see that doc comment.
+func (a *App) restartTLS() {
+	old := a.tlsServer
+	if old != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = old.Shutdown(ctx)
+	}
+	if !a.cfg.TLSEnabledOK() {
+		log.Printf("[app] https disabled, not restarting")
+		return
+	}
+	if a.tlsMgr == nil {
+		return
+	}
+	addr := fmt.Sprintf("%s:%d", a.cfg.EffectiveListenHost(), a.cfg.TLSPort)
+	next := &http.Server{
+		Addr:              addr,
+		Handler:           a.handler,
+		TLSConfig:         &tls.Config{GetCertificate: a.tlsMgr.GetCertificate, MinVersion: tls.VersionTLS12},
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	a.tlsServer = next
+	log.Printf("[app] https restarted on %s", addr)
+	a.startDeviceCertWatchdogOnce()
+	if err := next.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+		log.Printf("[app] https server error: %v", err)
+	}
+}
+
+// startDeviceCertWatchdogOnce starts deviceCertWatchdog the first time
+// HTTPS becomes active during this process's lifetime -- see
+// tlsWatchdogOnce's doc comment. A no-op (not an error) if a.runCtx isn't
+// set yet (restartTLS could theoretically race a UI call in before Run has
+// reached the point that sets it; the initial Run() call site is the
+// common path and always has it set by the time it calls this).
+func (a *App) startDeviceCertWatchdogOnce() {
+	if a.runCtx == nil {
+		return
+	}
+	a.tlsWatchdogOnce.Do(func() { go a.deviceCertWatchdog(a.runCtx) })
+}
+
 // UpdateSunshinePort updates the Sunshine admin API port in agent config and
 // in sunshine.conf, then restarts Sunshine so the change takes effect.
 // port is the admin/web port (e.g. 47990); sunshine.conf receives port-1 (NvHTTP base).
@@ -2831,9 +4219,86 @@ func (a *App) UpdateSunshineStreamAddr(host string, streamPort int) (config.Conf
 	return a.cfg, nil
 }
 
+// RelinquishEngine steps this process down from owning the engine so
+// another process -- normally a --headless autostart launch that just
+// started via launchctl/systemd/the Windows service right after the user
+// checked "launch at login" -- can take over without needing a hard kill.
+// Called over the admin socket by evictEngineLockHolder (see enginelock.go)
+// as its first, cooperative attempt before ever falling back to killing the
+// holder's PID outright.
+//
+// Stops the streamhost backend (killing whatever streamer is currently
+// running -- the incoming owner starts its own fresh one right after
+// acquiring the lock, so there is no point leaving this one up) and
+// releases the engine lock so the waiting process's acquireEngineLock can
+// succeed. If this process has a GUI window (it isn't headless), it also
+// relaunches itself as a plain GUI process before exiting: that relaunch
+// runs through Start()'s normal discovery, finds the new owner's admin
+// socket already up, and attaches as a thin client -- so the user ends up
+// looking at the same window in the same place, just backed by the new
+// headless engine instead of running its own, rather than it simply
+// vanishing.
+//
+// The actual process exit is deferred a moment (see the goroutine below) so
+// the RPC caller gets a clean response before this process's admin socket
+// (which is what's still carrying that very response) goes away.
+func (a *App) RelinquishEngine() error {
+	log.Printf("[app] relinquishing engine ownership (pid=%d) -- another process is taking over", os.Getpid())
+
+	a.streamMu.Lock()
+	if a.stream != nil {
+		_ = a.stream.Stop()
+	}
+	a.streamMu.Unlock()
+
+	if a.engineLock != nil {
+		_ = a.engineLock.Close()
+		a.engineLock = nil
+	}
+
+	if !a.headless {
+		if exe, err := os.Executable(); err != nil {
+			log.Printf("[app] warning: could not resolve own executable to relaunch as a thin client: %v", err)
+		} else {
+			cmd := exec.Command(exe)
+			if err := cmd.Start(); err != nil {
+				log.Printf("[app] warning: could not relaunch as a thin client: %v", err)
+			} else {
+				log.Printf("[app] relaunched pid=%d as a thin-client GUI against the incoming engine owner", cmd.Process.Pid)
+			}
+		}
+	}
+
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		os.Exit(0)
+	}()
+	return nil
+}
+
 // SubmitMoonlightPIN sends the PIN shown by a Moonlight client to Sunshine
 // to complete the pairing handshake.
+//
+// Takes streamMu (matching SetStreamBackend, which holds it for its entire
+// Stop-old/Start-new/WaitReady sequence) rather than reading a.stream
+// unguarded -- a real race, not theoretical: a client's PIN submission
+// landing in the middle of a backend switch used to read a.stream (or a
+// stream host it points at) mid-teardown, sent against the old process
+// after it had already been killed, and got rejected outright. The
+// Moonlight client on the other end only tries once and falls back to
+// manual PIN entry on any failure, so this used to surface as "switching
+// streamers broke auto-pairing" -- confirmed live: session was active,
+// switch was triggered, and the very next auto-pair attempt 401'd while
+// the switch was still settling, a moment before it started working again
+// on its own. Blocking here for the (bounded, ~5s worst case -- see
+// SetStreamBackend's own WaitReady) duration of an in-flight switch is
+// well inside the client's own 10s HTTP timeout for this call
+// (submitPinToService in the client's moonlight_service.go), so this PIN
+// now simply waits for the switch to finish and lands on the fresh,
+// correctly-provisioned backend instead of racing it.
 func (a *App) SubmitMoonlightPIN(pin string) error {
+	a.streamMu.Lock()
+	defer a.streamMu.Unlock()
 	if a.stream == nil {
 		return nil
 	}
@@ -2876,6 +4341,107 @@ func (a *App) SunshineOutputName() string {
 	return a.cfg.SunshineOutputName
 }
 
+// reconcileOutputName snaps a persisted OutputName back onto a currently
+// valid capture device when it no longer matches any device the backend
+// currently reports. This is the fix for a real deadlock: a monitor
+// (physical or virtual) that was selected and then torn down or
+// disconnected leaves its old connector index behind in sunshine.conf, but
+// Sunshine/RustShine's own connector indices aren't stable identifiers --
+// see streamhost.CaptureDevice's own doc comment -- so removing e.g. a
+// second, virtual monitor renumbers the remaining real one out from under
+// the stale saved index (observed live: "Monitor 1 is DP-2" + "Monitor 0 is
+// Virtual-1" before, "Monitor 0 is DP-2" after, with output_name still
+// pinned to "1"). Sunshine then fails every encoder against a monitor index
+// that no longer exists ("Couldn't find monitor [1]") and loops forever
+// inside its own process without ever exiting, so nothing else in the
+// agent notices or recovers automatically -- this call, made on every
+// startSunshineNow (i.e. every sunshineWatchdog tick), is what breaks that
+// loop.
+//
+// Deliberately left alone whenever more than one valid device remains:
+// with two or more genuinely still-connected choices (which may well
+// include a deliberately-configured virtual display), the stale value's
+// intended target is ambiguous, and guessing wrong would silently override
+// a manual pick instead of fixing one that's actually broken.
+func (a *App) reconcileOutputName() {
+	if a.stream == nil {
+		return
+	}
+	current := a.stream.OutputName()
+	if current == "" {
+		return
+	}
+	if strings.HasPrefix(current, "virtual:") {
+		// RustShine's virtual-display pick (see rustshineBackend.SetOutputName)
+		// deliberately isn't a real KMS connector, so it never shows up in
+		// ListCaptureDevices' real-monitor enumeration -- that's expected,
+		// not staleness, and must never be "corrected" away from here.
+		return
+	}
+	if fb, ok := disconnectedPinFallback(current); ok {
+		log.Printf("[app] output_name %q points at a connector that is not connected; falling back to %q", current, fb)
+		if err := a.SetSunshineOutputName(fb); err != nil {
+			log.Printf("[app] failed to fall back to a connected output: %v", err)
+		}
+		return
+	}
+	devices := a.stream.ListCaptureDevices()
+	if len(devices) == 0 {
+		// No correlation data yet (fresh boot, or the backend hasn't
+		// reported anything this session) -- nothing to validate against.
+		return
+	}
+	for _, d := range devices {
+		if d.OutputName == current {
+			return
+		}
+	}
+	if len(devices) != 1 {
+		log.Printf("[app] output_name %q matches none of %d current capture devices; leaving it as-is (ambiguous -- needs a manual pick)", current, len(devices))
+		return
+	}
+	only := devices[0]
+	log.Printf("[app] output_name %q no longer matches any current capture device (stale/disconnected monitor); snapping to the only one currently reported: %q (%q)", current, only.Key, only.OutputName)
+	if err := a.SetSunshineOutputName(only.OutputName); err != nil {
+		log.Printf("[app] failed to auto-correct output_name: %v", err)
+	}
+}
+
+// reconcileAudioSink clears a persisted audio_sink that no longer names any
+// sink on this host (e.g. an Intel HDMI output left over from a hardware
+// change: "alsa_output.pci-0000_00_1f.3.hdmi-stereo" on a box that now only
+// has USB + NVIDIA HDMI). Sunshine doesn't fall back on its own: it fails
+// "Couldn't set default-sink [...]: No such entity" and streams with no audio
+// at all, while RustShine silently uses the default sink -- which is why the
+// same stale value only ever broke audio under Sunshine. An empty audio_sink
+// makes both backends capture the system default sink.
+func (a *App) reconcileAudioSink() {
+	if a.stream == nil {
+		return
+	}
+	current := a.stream.AudioSink()
+	if current == "" || strings.HasPrefix(current, "sink-sunshine-") {
+		// Sunshine's own virtual sinks only exist while it runs, so their
+		// absence right now isn't staleness.
+		return
+	}
+	sinks, err := audio.ListSinks()
+	if err != nil || len(sinks) == 0 {
+		// PipeWire/PulseAudio not up yet (headless boot) -- nothing to
+		// validate against.
+		return
+	}
+	for _, s := range sinks {
+		if s.Name == current {
+			return
+		}
+	}
+	log.Printf("[app] audio_sink %q matches none of %d current sinks; resetting to the system default sink", current, len(sinks))
+	if err := a.SetAudioSink(""); err != nil {
+		log.Printf("[app] failed to reset stale audio_sink: %v", err)
+	}
+}
+
 // SetSunshineOutputName pins Sunshine's capture to the given monitor
 // (Sunshine's connected-output index, stringified, or "" to auto-pick),
 // persists it into both sunshine.conf and the agent config, and restarts
@@ -2884,12 +4450,28 @@ func (a *App) SetSunshineOutputName(name string) error {
 	if a.stream == nil {
 		return nil
 	}
-	unchanged := a.stream.OutputName() == name && a.stream.Running()
+	// Compares against OutputName() *after* SetOutputName runs, not the raw
+	// `name` argument against the pre-write value -- RustShine's own
+	// SetOutputName resolves a bare numeric index (what videoSetDevice
+	// sends for a "drm:N" device path) into its real stored
+	// "cardPath|connector" form internally (see rustshineBackend's own
+	// doc comment), so a before/raw-`name` comparison could never match
+	// that already-canonical stored string, even when the client is just
+	// re-confirming the exact same monitor it already has selected.
+	// Confirmed live: this made every /api/video/set_device call for an
+	// unchanged device force a full Sunshine/RustShine restart -- and the
+	// client calls it on every reconnect, so every reconnect was hard-
+	// killing and relaunching the stream host from scratch, tearing down
+	// whatever encode/packetize work (including a multi-threaded FEC
+	// block build) happened to be mid-flight at that exact moment.
+	before := a.stream.OutputName()
 	if err := a.stream.SetOutputName(name); err != nil {
 		return fmt.Errorf("write sunshine.conf: %w", err)
 	}
+	after := a.stream.OutputName()
+	unchanged := before == after && a.stream.Running()
 	next := a.cfg
-	next.SunshineOutputName = name
+	next.SunshineOutputName = after
 	if err := a.SaveConfig(next); err != nil {
 		return err
 	}

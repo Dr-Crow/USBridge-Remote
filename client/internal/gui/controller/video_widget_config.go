@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"usbridge-client/internal/api"
@@ -24,10 +25,30 @@ var (
 	videoInfoCachedAt   time.Time
 	videoInfoCachedData *models.VideoInfoData
 	videoInfoCachedErr  error
+
+	captureModesCacheMu        sync.Mutex
+	captureModesCacheDevice    string
+	captureModesCacheInfo      *models.VideoInfoData
+	captureModesCacheAt        time.Time
+	captureModesRefreshRunning atomic.Bool
+	captureHostDesktopW        float32
+	captureHostDesktopH        float32
 )
+
+// captureModesCacheStaleAfter: menu/dialog still use the cache immediately
+// (stale-while-revalidate). A background refresh runs if the snapshot is
+// older than this, so a newly plugged HDMI source shows up without a
+// blocking fetch on click.
+const captureModesCacheStaleAfter = 20 * time.Second
 
 func getVideoInfoData(usbClient *api.USBClient) (*models.VideoInfoData, error) {
 	return getVideoInfoDataForDevice(usbClient, "")
+}
+
+func PeekVideoInfoData() *models.VideoInfoData {
+	videoInfoCacheMu.Lock()
+	defer videoInfoCacheMu.Unlock()
+	return videoInfoCachedData
 }
 
 func getVideoInfoDataForDevice(usbClient *api.USBClient, devicePath string) (*models.VideoInfoData, error) {
@@ -36,60 +57,203 @@ func getVideoInfoDataForDevice(usbClient *api.USBClient, devicePath string) (*mo
 	}
 
 	videoInfoCacheMu.Lock()
-	if strings.TrimSpace(devicePath) == "" && time.Since(videoInfoCachedAt) < 750*time.Millisecond {
-		cached := videoInfoCachedData
-		err := videoInfoCachedErr
-		videoInfoCacheMu.Unlock()
-		if err != nil {
-			return nil, err
-		}
-		if cached != nil {
+	if time.Since(videoInfoCachedAt) < 3*time.Second {
+		if videoInfoCachedData != nil && (devicePath == "" || videoInfoCachedData.Device == devicePath) {
+			cached := videoInfoCachedData
+			videoInfoCacheMu.Unlock()
+			logrus.Infof("🎯 [VIDEO-INFO-TRACE] Returning cached video info for device=%q (age=%v)", devicePath, time.Since(videoInfoCachedAt))
 			return cached, nil
 		}
-	} else {
-		videoInfoCacheMu.Unlock()
-	}
-
-	resp, err := usbClient.GetVideoInfoForDevice(devicePath)
-	if err != nil {
-		if strings.TrimSpace(devicePath) == "" {
-			videoInfoCacheMu.Lock()
-			videoInfoCachedAt = time.Now()
-			videoInfoCachedData = nil
-			videoInfoCachedErr = err
+		if videoInfoCachedErr != nil && devicePath == "" {
+			err := videoInfoCachedErr
 			videoInfoCacheMu.Unlock()
+			return nil, err
 		}
+	}
+	videoInfoCacheMu.Unlock()
+
+	logrus.Infof("🎯 [VIDEO-INFO-TRACE] Fetching video info for device=%q...", devicePath)
+	start := time.Now()
+	resp, err := usbClient.GetVideoInfoForDevice(devicePath)
+	duration := time.Since(start)
+	if err != nil {
+		logrus.Errorf("❌ [VIDEO-INFO-TRACE] GetVideoInfoForDevice failed after %v for device=%q: %v", duration, devicePath, err)
+		videoInfoCacheMu.Lock()
+		videoInfoCachedAt = time.Now()
+		videoInfoCachedData = nil
+		videoInfoCachedErr = err
+		videoInfoCacheMu.Unlock()
 		return nil, err
 	}
+	logrus.Infof("✅ [VIDEO-INFO-TRACE] GetVideoInfoForDevice succeeded in %v for device=%q", duration, devicePath)
 	if resp == nil || !resp.Success || resp.Data == nil {
 		err := fmt.Errorf("%s", i18n.Current.VideoInfoUnavailable)
-		if strings.TrimSpace(devicePath) == "" {
-			videoInfoCacheMu.Lock()
-			videoInfoCachedAt = time.Now()
-			videoInfoCachedData = nil
-			videoInfoCachedErr = err
-			videoInfoCacheMu.Unlock()
-		}
+		videoInfoCacheMu.Lock()
+		videoInfoCachedAt = time.Now()
+		videoInfoCachedData = nil
+		videoInfoCachedErr = err
+		videoInfoCacheMu.Unlock()
 		return nil, err
 	}
 
 	info, err := models.ParseVideoInfoData(resp.Data)
-	if strings.TrimSpace(devicePath) == "" {
-		videoInfoCacheMu.Lock()
-		videoInfoCachedAt = time.Now()
-		videoInfoCachedData = info
-		videoInfoCachedErr = err
-		videoInfoCacheMu.Unlock()
+	if err == nil && info != nil {
+		logrus.Infof("🎯 [CODEC-TRACE] GET /api/video/info (device=%q) -> encoding=%q mode=%q streaming=%v -- \"encoding\" is the agent's best-effort report of what the server is ACTUALLY running right now",
+			devicePath, info.Encoding, info.Mode, info.Streaming)
+	}
+
+	videoInfoCacheMu.Lock()
+	videoInfoCachedAt = time.Now()
+	videoInfoCachedData = info
+	videoInfoCachedErr = err
+	videoInfoCacheMu.Unlock()
+
+	if err == nil && info != nil && len(info.CaptureModes) > 0 {
+		rememberCaptureModes(devicePath, info)
 	}
 	return info, err
 }
 
 func resetVideoInfoCache() {
 	videoInfoCacheMu.Lock()
-	defer videoInfoCacheMu.Unlock()
 	videoInfoCachedAt = time.Time{}
 	videoInfoCachedData = nil
 	videoInfoCachedErr = nil
+	videoInfoCacheMu.Unlock()
+}
+
+func rememberCaptureModes(devicePath string, info *models.VideoInfoData) {
+	if info == nil || len(info.CaptureModes) == 0 {
+		return
+	}
+	key := strings.TrimSpace(devicePath)
+	if key == "" {
+		key = strings.TrimSpace(info.Device)
+	}
+	if key == "" {
+		return
+	}
+	captureModesCacheMu.Lock()
+	captureModesCacheDevice = key
+	captureModesCacheInfo = cloneVideoInfoData(info)
+	captureModesCacheAt = time.Now()
+	captureHostDesktopW, captureHostDesktopH = hostDesktopSizeFromModes(info.CaptureModes)
+	if nw, nh, ok := parseWxH(info.Device); ok && nw*nh > captureHostDesktopW*captureHostDesktopH {
+		captureHostDesktopW, captureHostDesktopH = nw, nh
+	}
+	for _, d := range info.AvailableDevices {
+		if key != "" && d.Path != "" && d.Path != key && d.Path != info.Device {
+			continue
+		}
+		if nw, nh, ok := parseWxH(d.Name); ok && nw*nh >= captureHostDesktopW*captureHostDesktopH {
+			captureHostDesktopW, captureHostDesktopH = nw, nh
+		}
+	}
+	captureModesCacheMu.Unlock()
+}
+
+// patchCaptureModesCacheStatus writes the just-applied stream settings into
+// the capture-modes snapshot so Video Parameters / header menus show the new
+// resolution/FPS immediately, without waiting for the next /api/video/info.
+func patchCaptureModesCacheStatus(cfg models.VideoDeviceConfig) {
+	captureModesCacheMu.Lock()
+	defer captureModesCacheMu.Unlock()
+	if captureModesCacheInfo == nil {
+		return
+	}
+	key := strings.TrimSpace(cfg.DevicePath)
+	if key != "" && captureModesCacheDevice != "" && captureModesCacheDevice != key {
+		return
+	}
+	if cfg.VideoWidth > 0 {
+		captureModesCacheInfo.Width = cfg.VideoWidth
+	}
+	if cfg.VideoHeight > 0 {
+		captureModesCacheInfo.Height = cfg.VideoHeight
+	}
+	if cfg.VideoFPS > 0 {
+		captureModesCacheInfo.FPS = cfg.VideoFPS
+	}
+	if strings.TrimSpace(cfg.VideoBitrate) != "" {
+		captureModesCacheInfo.Bitrate = cfg.VideoBitrate
+	}
+	if enc := strings.TrimSpace(cfg.VideoMode); enc != "" {
+		captureModesCacheInfo.Encoding = enc
+	}
+	captureModesCacheAt = time.Now()
+}
+
+func cachedCaptureInfo(devicePath string) (*models.VideoInfoData, bool) {
+	key := strings.TrimSpace(devicePath)
+	captureModesCacheMu.Lock()
+	defer captureModesCacheMu.Unlock()
+	if captureModesCacheInfo == nil || len(captureModesCacheInfo.CaptureModes) == 0 {
+		return nil, false
+	}
+	if key != "" && captureModesCacheDevice != "" && captureModesCacheDevice != key {
+		return nil, false
+	}
+	return cloneVideoInfoData(captureModesCacheInfo), true
+}
+
+func captureModesCacheStale() bool {
+	captureModesCacheMu.Lock()
+	defer captureModesCacheMu.Unlock()
+	return captureModesCacheInfo == nil || time.Since(captureModesCacheAt) > captureModesCacheStaleAfter
+}
+
+func clearCaptureModesCache() {
+	captureModesCacheMu.Lock()
+	captureModesCacheDevice = ""
+	captureModesCacheInfo = nil
+	captureModesCacheAt = time.Time{}
+	captureHostDesktopW, captureHostDesktopH = 0, 0
+	captureModesCacheMu.Unlock()
+}
+
+func cloneVideoInfoData(info *models.VideoInfoData) *models.VideoInfoData {
+	if info == nil {
+		return nil
+	}
+	cp := *info
+	if info.CaptureModes != nil {
+		cp.CaptureModes = make([]models.VideoCaptureMode, len(info.CaptureModes))
+		for i, m := range info.CaptureModes {
+			cp.CaptureModes[i] = m
+			cp.CaptureModes[i].FPS = append([]int(nil), m.FPS...)
+		}
+	}
+	if info.SupportedModes != nil {
+		cp.SupportedModes = append([]models.VideoTransportMode(nil), info.SupportedModes...)
+	}
+	return &cp
+}
+
+func localPreferredVideoConfig() (models.VideoDeviceConfig, error) {
+	path := selectedVideoDevicePath()
+	if path == "" {
+		return models.VideoDeviceConfig{}, fmt.Errorf("%s", i18n.Current.VideoDevicesNotFound)
+	}
+	cfg := loadSavedVideoDeviceConfig(path, "")
+	cfg.DevicePath = path
+	return cfg, nil
+}
+
+// CurrentCaptureDevice is the saved selected capture path/name, without a
+// bridge round-trip -- Control's monitor chip reads this for its label.
+func (vw *VideoWidget) CurrentCaptureDevice() (path, name string) {
+	if vw == nil {
+		return "", ""
+	}
+	cfg, err := localPreferredVideoConfig()
+	if err != nil {
+		return selectedVideoDevicePath(), ""
+	}
+	name = strings.TrimSpace(cfg.DeviceName)
+	if name == "" {
+		name = filepath.Base(cfg.DevicePath)
+	}
+	return cfg.DevicePath, name
 }
 
 func normalizeCaptureVideoDevices(devices []models.SystemDevice) []models.SystemDevice {
@@ -227,6 +391,42 @@ func (vw *VideoWidget) GetAvailableVideoDevices() ([]models.SystemDevice, error)
 	return getAvailableVideoDevices(vw.usbClient)
 }
 
+// findDeviceByPathOrName looks up selectedPath in devices, falling back to a
+// match on savedName (the device name the client last saved a config under
+// for that path) when the path itself isn't present. Returns byName=true
+// only for that fallback match, so the caller can tell "found, but the path
+// changed shape" apart from "found by path" and "not found at all" (zero
+// models.SystemDevice, byName=false).
+//
+// The device path can change shape across a reconnect without the
+// underlying monitor actually changing -- confirmed live
+// (mergeVideoConfigWithInfo's doc comment, 2026-09-19): a codec switch
+// restarts the stream, and the device list that comes back can report
+// "winid:{GUID}" where "winid:0" used to be. Falling straight through to
+// devices[0] in that case doesn't just capture the wrong monitor, it also
+// silently swaps in devices[0]'s own saved settings (or the lack of any)
+// instead of the ones the user actually set for their monitor -- looking
+// exactly like "codec switch reset me to the first/default monitor". The
+// device's name is far more stable than its path/id across this kind of
+// reshaping, so callers try this correlation before giving up on the saved
+// device entirely.
+func findDeviceByPathOrName(devices []models.SystemDevice, selectedPath, savedName string) (device models.SystemDevice, byName bool) {
+	for _, d := range devices {
+		if d.Path == selectedPath {
+			return d, false
+		}
+	}
+	if savedName == "" {
+		return models.SystemDevice{}, false
+	}
+	for _, d := range devices {
+		if d.Name == savedName {
+			return d, true
+		}
+	}
+	return models.SystemDevice{}, false
+}
+
 func (vw *VideoWidget) resolvePreferredVideoConfig() (models.VideoDeviceConfig, error) {
 	devices, err := vw.GetAvailableVideoDevices()
 	if err != nil {
@@ -237,12 +437,15 @@ func (vw *VideoWidget) resolvePreferredVideoConfig() (models.VideoDeviceConfig, 
 	}
 
 	deviceByPath := make(map[string]models.SystemDevice, len(devices))
+	devicePaths := make([]string, 0, len(devices))
 	for _, device := range devices {
 		deviceByPath[device.Path] = device
+		devicePaths = append(devicePaths, device.Path)
 	}
 
 	var info *models.VideoInfoData
-	selectedPath := selectedVideoDevicePath()
+	rawSelectedPath := selectedVideoDevicePath()
+	selectedPath := rawSelectedPath
 	// Only inherit server's current device when the client already has a saved
 	// preference — on a fresh install, default to devices[0] (USB first after sort).
 	if selectedPath != "" && vw.usbClient != nil {
@@ -254,13 +457,45 @@ func (vw *VideoWidget) resolvePreferredVideoConfig() (models.VideoDeviceConfig, 
 		selectedPath = devices[0].Path
 	}
 
+	// Loaded from here unless a by-name migration below points it at the
+	// old path's saved settings instead.
+	configSourcePath := selectedPath
+
 	device, ok := deviceByPath[selectedPath]
 	if !ok {
-		device = devices[0]
+		savedName := strings.TrimSpace(loadVideoPreferences().Devices[rawSelectedPath].DeviceName)
+		matched, byName := findDeviceByPathOrName(devices, selectedPath, savedName)
+		if byName {
+			logrus.Infof("🎯 [CODEC-TRACE] resolvePreferredVideoConfig: saved SelectedDevice=%q not found by path, but matched by name %q -> %q -- re-pinning instead of falling back to devices[0]",
+				rawSelectedPath, savedName, matched.Path)
+			device, ok, configSourcePath = matched, true, rawSelectedPath
+		} else {
+			logrus.Warnf("🎯 [CODEC-TRACE] resolvePreferredVideoConfig: saved SelectedDevice=%q NOT FOUND in current device list %v (by path or name) -- falling back to devices[0]=%q, its saved config (if any) will be used instead, NOT the one just configured",
+				rawSelectedPath, devicePaths, devices[0].Path)
+			device = devices[0]
+			configSourcePath = device.Path
+		}
 		selectedPath = device.Path
+		// Self-heal: without this, prefs.SelectedDevice stays permanently
+		// pointed at the phantom device forever (see
+		// correctSelectedVideoDevicePath's doc comment) -- every future
+		// ShowCurrentVideoSettings (header/status-bar gear) would keep
+		// opening the settings popup for a device that doesn't exist, and
+		// changes made there would never reach the device actually
+		// streaming.
+		correctSelectedVideoDevicePath(selectedPath)
 	}
 
-	cfg := loadSavedVideoDeviceConfig(selectedPath, device.Name)
+	cfg := loadSavedVideoDeviceConfig(configSourcePath, device.Name)
+	if configSourcePath != selectedPath {
+		// Migrate the old path's saved settings onto the new one now,
+		// rather than re-running this same by-name correlation on every
+		// future reconcile.
+		cfg.DevicePath = selectedPath
+		cfg.DeviceName = device.Name
+		saveVideoDeviceConfig(cfg)
+	}
+	logrus.Infof("🎯 [CODEC-TRACE] resolvePreferredVideoConfig: loaded from saved prefs VideoMode=%q device=%s (rawSelectedPath=%q, in list=%v)", cfg.VideoMode, selectedPath, rawSelectedPath, ok)
 	cfg.DeviceName = device.Name
 	cfg.DevicePath = selectedPath
 	if vw.usbClient != nil {
@@ -270,7 +505,9 @@ func (vw *VideoWidget) resolvePreferredVideoConfig() (models.VideoDeviceConfig, 
 	}
 	if !hasSavedVideoDeviceConfig(selectedPath) && info != nil && info.Device == selectedPath {
 		cfg = mergeVideoConfigWithInfo(cfg, info)
+		logrus.Infof("🎯 [CODEC-TRACE] resolvePreferredVideoConfig: no saved prefs yet, merged server info.Encoding=%q -> VideoMode=%q", info.Encoding, cfg.VideoMode)
 	}
+	logrus.Infof("🎯 [CODEC-TRACE] resolvePreferredVideoConfig: final VideoMode=%q device=%s", cfg.VideoMode, selectedPath)
 	return cfg, nil
 }
 
@@ -312,10 +549,75 @@ func mergeVideoConfigWithInfo(cfg models.VideoDeviceConfig, info *models.VideoIn
 	if strings.TrimSpace(info.Bitrate) != "" {
 		cfg.VideoBitrate = info.Bitrate
 	}
-	if strings.TrimSpace(info.Mode) != "" {
-		cfg.VideoMode = info.Mode
+	// info.Mode is the TRANSPORT label ("moonlight", VideoStatus.Mode) --
+	// always the literal string "moonlight" per the agent's /api/video/info
+	// handler (server.go), never a codec. cfg.VideoMode is the CODEC
+	// selector (models.VideoModeH264/H265/AV1) that flows into
+	// MoonlightService.SetVideoMode -> moonlightVideoFormat. Assigning
+	// info.Mode here used to stuff the literal string "moonlight" into
+	// cfg.VideoMode whenever this device had no saved config yet (e.g. the
+	// reconcile-time device-list fallback landing on a device that was never
+	// explicitly configured) -- moonlightVideoFormat doesn't recognize
+	// "moonlight" as a mode, so it silently defaulted to VIDEO_FORMAT_H264,
+	// making a codec switch look like it was completely ignored even though
+	// every step up to this merge had the right value. info.Encoding is the
+	// field that actually carries the codec the server is running right now
+	// (VideoStatus.Encoding, "h264"/"h265"/"av1") -- see CurrentVideoCodec on
+	// the agent.
+	//
+	// EXCEPT av1: confirmed live via [CODEC-TRACE] (2026-09-19, app.log
+	// ~14:42:36) that a mid-stream reconnect can hand back a device list
+	// whose winid paths changed shape (plain "winid:0"/"winid:1" ->
+	// GUID-keyed "winid:{...}", e.g. after the host re-enumerates its
+	// outputs), which makes resolvePreferredVideoConfig's saved-device
+	// lookup miss and fall back to devices[0]. That device has no saved
+	// config yet, so this merge runs -- and if the server just happened to
+	// be reporting "av1" at that instant (for reasons unrelated to any
+	// choice made here), the client would permanently adopt av1 for that
+	// device path. win_deliver_frame's win32 win_deliver_frame_vulkan
+	// comment records why that's specifically bad on this client: AV1 has
+	// no Vulkan Video zero-copy decode implemented here and always falls
+	// through to the CPU sws_scale+overlay path (moonlight_cgo_windows.go),
+	// costing ~25-45ms/frame at high resolutions instead of a few ms --
+	// exactly the "DEC 25-30ms, scattered yellow" NetGraph symptom this was
+	// diagnosed from, sustained for the rest of that session because the
+	// device had no prior config to fall back to instead. Never silently
+	// auto-adopt av1 this way; require the user to pick it explicitly via
+	// the device-settings dialog. h264/h265 are unaffected -- both have the
+	// zero-copy path and are safe to inherit.
+	if enc := strings.TrimSpace(info.Encoding); enc != "" && enc != models.VideoModeAV1 {
+		cfg.VideoMode = enc
 	}
 	return cfg
+}
+
+// videoDeviceConfigFromRequest builds the VideoDeviceConfig to persist from a
+// submitted VideoStartRequest. Both the "Start Video" dialog
+// (handleVideoStartWithParams) and the device-settings "Apply" dialog
+// (ShowVideoDeviceSettings) funnel through this single place so every field
+// the dialog collects survives into the saved config -- Color444/Hdr in
+// particular have no other persistence path, so dropping them here (as two
+// separate hand-written struct literals previously did, independently)
+// silently discards the user's 4:4:4/HDR checkbox choice: the save clobbers
+// whatever was on disk with false, and the very next reconcile/restart reads
+// that same false back via VideoDeviceConfig.ToVideoStartRequest().
+func videoDeviceConfigFromRequest(devicePath, deviceName string, request *models.VideoStartRequest) models.VideoDeviceConfig {
+	logrus.Infof("🎯 [CODEC-TRACE] videoDeviceConfigFromRequest: request.VideoMode=%q device=%s", request.VideoMode, devicePath)
+	return models.VideoDeviceConfig{
+		DevicePath:         devicePath,
+		DeviceName:         deviceName,
+		VideoWidth:         request.VideoWidth,
+		VideoHeight:        request.VideoHeight,
+		VideoFPS:           request.VideoFPS,
+		VideoQuality:       request.VideoQuality,
+		VideoBitrate:       request.VideoBitrate,
+		VideoMode:          request.VideoMode,
+		CapturePixelFormat: request.CapturePixelFormat,
+		EnableVSync:        request.EnableVSync,
+		Color444:           request.Color444,
+		Hdr:                request.Hdr,
+		UpscaleMode:        request.UpscaleMode,
+	}
 }
 
 func (vw *VideoWidget) applyVideoDeviceConfig(cfg models.VideoDeviceConfig, restart bool) error {
@@ -332,6 +634,7 @@ func (vw *VideoWidget) applyVideoDeviceConfig(cfg models.VideoDeviceConfig, rest
 	if cfg.VideoMode == "" {
 		cfg.VideoMode = models.VideoModeH264
 	}
+	logrus.Infof("🎯 [CODEC-TRACE] applyVideoDeviceConfig: VideoMode=%q restart=%v device=%s", cfg.VideoMode, restart, cfg.DevicePath)
 
 	if vw.usbClient != nil {
 		if err := vw.usbClient.SetVideoDevice(cfg.DevicePath, cfg.CapturePixelFormat); err != nil {
@@ -341,6 +644,16 @@ func (vw *VideoWidget) applyVideoDeviceConfig(cfg models.VideoDeviceConfig, rest
 
 	saveVideoDeviceConfig(cfg)
 	resetVideoInfoCache()
+	patchCaptureModesCacheStatus(cfg)
+	vw.refreshAgentProtocol()
+	vw.rememberHostDesktopFromConfig(cfg)
+	// Keep the modes list current in the background; status fields above are
+	// already patched so open dialogs/menus do not wait on this round-trip.
+	vw.PrefetchCaptureModesAsync()
+
+	if vw.onResolutionChanged != nil {
+		vw.onResolutionChanged(cfg.VideoWidth, cfg.VideoHeight)
+	}
 
 	if !restart {
 		return nil
@@ -381,61 +694,70 @@ func (vw *VideoWidget) RequestStreaming(shouldStream bool) {
 }
 
 func (vw *VideoWidget) StartVideoDeviceAsync(devicePath string) {
+	go vw.StartVideoDevice(devicePath)
+}
+
+// StartVideoDevice pins capture to devicePath, restarts the stream, and
+// blocks until the first frame of that new session arrives (or a timeout).
+// Called from the Devices radio path so the dashboard stays locked like a
+// keyboard/mouse connect until the picture is actually up.
+func (vw *VideoWidget) StartVideoDevice(devicePath string) {
 	vw.setDesiredStreaming(true)
-	go func() {
-		devices, err := vw.GetAvailableVideoDevices()
-		if err != nil {
-			logrus.Warnf("⚠️ cannot load available video devices: %v", err)
-			// Continue with fallback below
-		}
+	prevTrace := vw.videoTraceID.Load()
 
-		var selectedDevice *models.SystemDevice
-		for i := range devices {
-			if devices[i].Path == devicePath {
-				selectedDevice = &devices[i]
-				break
-			}
-		}
+	devices, err := vw.GetAvailableVideoDevices()
+	if err != nil {
+		logrus.Warnf("⚠️ cannot load available video devices: %v", err)
+	}
 
-		var cfg models.VideoDeviceConfig
-		var deviceName string
-		if selectedDevice != nil {
-			deviceName = selectedDevice.Name
-			cfg = loadSavedVideoDeviceConfig(selectedDevice.Path, selectedDevice.Name)
+	var selectedDevice *models.SystemDevice
+	for i := range devices {
+		if devices[i].Path == devicePath {
+			selectedDevice = &devices[i]
+			break
+		}
+	}
+
+	var cfg models.VideoDeviceConfig
+	var deviceName string
+	if selectedDevice != nil {
+		deviceName = selectedDevice.Name
+		cfg = loadSavedVideoDeviceConfig(selectedDevice.Path, selectedDevice.Name)
+	} else {
+		deviceName = filepath.Base(devicePath)
+		cfg = loadSavedVideoDeviceConfig(devicePath, deviceName)
+	}
+
+	cfg.DevicePath = devicePath
+	cfg.DeviceName = deviceName
+
+	// Query /api/video/info scoped to THIS device, not whatever's
+	// currently streaming — at switch time the server is still on
+	// the old device, so its default (unscoped) video info reports
+	// the old device's path/resolution and the merge below would
+	// silently no-op, leaving the stale 1280x720 default in cfg
+	// (see defaultVideoDeviceConfig) and mis-sizing absolute mouse
+	// mapping for the newly selected monitor.
+	if info, err := getVideoInfoDataForDevice(vw.usbClient, devicePath); err == nil && info != nil && info.Device == devicePath {
+		if !hasSavedVideoDeviceConfig(devicePath) {
+			cfg = mergeVideoConfigWithInfo(cfg, info)
 		} else {
-			deviceName = filepath.Base(devicePath)
-			cfg = loadSavedVideoDeviceConfig(devicePath, deviceName)
+			// A saved config already exists for this device (we've switched to
+			// it before), so don't clobber the user's saved quality/bitrate/fps
+			// preferences — but resolution must still be refreshed every time:
+			// the cached width/height is whatever was true the first time this
+			// monitor was selected, and a switch back to it after switching
+			// through others otherwise reused that stale value, mis-scaling
+			// absolute mouse mapping (or, with a different-aspect monitor in
+			// between, making the touch field look like it spans both).
+			cfg = mergeVideoConfigResolution(cfg, info)
 		}
-
-		cfg.DevicePath = devicePath
-		cfg.DeviceName = deviceName
-
-		// Query /api/video/info scoped to THIS device, not whatever's
-		// currently streaming — at switch time the server is still on
-		// the old device, so its default (unscoped) video info reports
-		// the old device's path/resolution and the merge below would
-		// silently no-op, leaving the stale 1280x720 default in cfg
-		// (see defaultVideoDeviceConfig) and mis-sizing absolute mouse
-		// mapping for the newly selected monitor.
-		if info, err := getVideoInfoDataForDevice(vw.usbClient, devicePath); err == nil && info != nil && info.Device == devicePath {
-			if !hasSavedVideoDeviceConfig(devicePath) {
-				cfg = mergeVideoConfigWithInfo(cfg, info)
-			} else {
-				// A saved config already exists for this device (we've switched to
-				// it before), so don't clobber the user's saved quality/bitrate/fps
-				// preferences — but resolution must still be refreshed every time:
-				// the cached width/height is whatever was true the first time this
-				// monitor was selected, and a switch back to it after switching
-				// through others otherwise reused that stale value, mis-scaling
-				// absolute mouse mapping (or, with a different-aspect monitor in
-				// between, making the touch field look like it spans both).
-				cfg = mergeVideoConfigResolution(cfg, info)
-			}
-		}
-		if err := vw.applyVideoDeviceConfig(cfg, true); err != nil {
-			logrus.Warnf("⚠️ cannot start selected video device %s: %v", devicePath, err)
-		}
-	}()
+	}
+	if err := vw.applyVideoDeviceConfig(cfg, true); err != nil {
+		logrus.Warnf("⚠️ cannot start selected video device %s: %v", devicePath, err)
+		return
+	}
+	vw.waitForNextFirstFrame(prevTrace, videoSwitchReadyTimeout)
 }
 
 func (vw *VideoWidget) StopVideoAsync() {
@@ -444,12 +766,160 @@ func (vw *VideoWidget) StopVideoAsync() {
 }
 
 func (vw *VideoWidget) ShowCurrentVideoSettings(showFullscreen bool) {
-	cfg, err := vw.resolvePreferredVideoConfig()
-	if err != nil {
-		logrus.Warnf("⚠️ cannot open video settings: %v", err)
+	// Do not resolvePreferredVideoConfig here: it hits the bridge on the
+	// caller thread, and this is invoked from header/status-bar taps on the
+	// Fyne UI goroutine. That froze the whole desktop window for a couple of
+	// seconds whenever video/info or /devices was slow.
+	_ = showFullscreen
+	logrus.Infof("🎯 [CODEC-TRACE] video settings opened from header/status bar: restartOnApply=true (always)")
+	vw.ShowVideoDeviceSettings(selectedVideoDevicePath(), true, false)
+}
+
+// AvailableCaptureModes returns the current device's known capture modes
+// (each a resolution with its own supported fps list) and its live config.
+// Uses a per-device cache so header FPS/resolution menus can open without
+// waiting on the bridge; a stale snapshot is still returned immediately and
+// refreshed in the background. Callers may invoke this from the UI thread
+// when a cache hit is likely (after PrefetchCaptureModesAsync / a prior open).
+func (vw *VideoWidget) AvailableCaptureModes() ([]models.VideoCaptureMode, models.VideoDeviceConfig, error) {
+	cfg, cfgErr := localPreferredVideoConfig()
+	if info, ok := cachedCaptureInfo(cfg.DevicePath); ok {
+		if captureModesCacheStale() {
+			vw.refreshCaptureModesAsync(cfg.DevicePath)
+		}
+		modes := info.CaptureModes
+		if cfgErr != nil {
+			cfg = loadSavedVideoDeviceConfig(info.Device, info.Device)
+			cfg.DevicePath = info.Device
+		}
+		if len(modes) == 0 {
+			modes = []models.VideoCaptureMode{{Width: cfg.VideoWidth, Height: cfg.VideoHeight, FPS: []int{cfg.VideoFPS}}}
+		}
+		return modes, cfg, nil
+	}
+
+	if cfgErr != nil {
+		var err error
+		cfg, err = vw.resolvePreferredVideoConfig()
+		if err != nil {
+			return nil, models.VideoDeviceConfig{}, err
+		}
+	}
+	info := vw.fetchVideoInfoForStartDialog(cfg.DevicePath)
+	if info != nil && len(info.CaptureModes) > 0 {
+		rememberCaptureModes(cfg.DevicePath, info)
+	}
+	var modes []models.VideoCaptureMode
+	if info != nil && len(info.CaptureModes) > 0 {
+		modes = info.CaptureModes
+	}
+	if len(modes) == 0 {
+		modes = []models.VideoCaptureMode{{Width: cfg.VideoWidth, Height: cfg.VideoHeight, FPS: []int{cfg.VideoFPS}}}
+	}
+	return modes, cfg, nil
+}
+
+func (vw *VideoWidget) refreshCaptureModesAsync(devicePath string) {
+	if vw == nil || vw.usbClient == nil {
 		return
 	}
-	vw.ShowVideoDeviceSettings(cfg.DevicePath, true, false)
+	if !captureModesRefreshRunning.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer captureModesRefreshRunning.Store(false)
+		info := vw.fetchVideoInfoForStartDialogAttempts(devicePath, 1)
+		if info != nil && len(info.CaptureModes) > 0 {
+			rememberCaptureModes(devicePath, info)
+		}
+	}()
+}
+
+func (vw *VideoWidget) PrefetchCaptureModesAsync() {
+	// Seed the header resolution label from saved prefs immediately so the
+	// first connect does not sit on a stale mw.config default until reconcile.
+	if cfg, err := localPreferredVideoConfig(); err == nil && cfg.VideoWidth > 0 && cfg.VideoHeight > 0 {
+		if vw.onResolutionChanged != nil {
+			w, h := cfg.VideoWidth, cfg.VideoHeight
+			fyne.Do(func() { vw.onResolutionChanged(w, h) })
+		}
+	}
+	path := selectedVideoDevicePath()
+	vw.refreshCaptureModesAsync(path)
+}
+
+// PeekCaptureModes returns cached capture modes without hitting the bridge.
+// ok is false when nothing has been fetched yet (call AvailableCaptureModes
+// in a goroutine). Used by the header FPS/resolution menus so the popup can
+// open on the same tap, not after a round-trip.
+func (vw *VideoWidget) PeekCaptureModes() ([]models.VideoCaptureMode, models.VideoDeviceConfig, bool) {
+	cfg, _ := localPreferredVideoConfig()
+	info, ok := cachedCaptureInfo(cfg.DevicePath)
+	if !ok {
+		return nil, cfg, false
+	}
+	if cfg.DevicePath == "" {
+		cfg = loadSavedVideoDeviceConfig(info.Device, "")
+		cfg.DevicePath = info.Device
+	}
+	modes := info.CaptureModes
+	if len(modes) == 0 {
+		modes = []models.VideoCaptureMode{{Width: cfg.VideoWidth, Height: cfg.VideoHeight, FPS: []int{cfg.VideoFPS}}}
+	}
+	return modes, cfg, true
+}
+
+func (vw *VideoWidget) RefreshCaptureModesIfStaleAsync() {
+	if captureModesCacheStale() {
+		vw.PrefetchCaptureModesAsync()
+	}
+}
+
+// ApplyVideoFPS restarts the current stream with a new fps, keeping every
+// other current setting (resolution, bitrate, mode, pixel format...) as-is
+// -- see AvailableCaptureModes' own doc comment.
+func (vw *VideoWidget) ApplyVideoFPS(fps int) error {
+	cfg, err := localPreferredVideoConfig()
+	if err != nil {
+		cfg, err = vw.resolvePreferredVideoConfig()
+		if err != nil {
+			return err
+		}
+	}
+	cfg.VideoFPS = fps
+	return vw.applyVideoDeviceConfig(cfg, true)
+}
+
+// ApplyVideoResolution restarts the current stream at a new resolution,
+// keeping every other current setting as-is -- see AvailableCaptureModes'
+// own doc comment. Does not change fps even if the new resolution doesn't
+// actually support the current one; the server is the authority on that
+// and the fps dropdown will show whatever it reports as valid next time
+// it's opened.
+func (vw *VideoWidget) ApplyVideoResolution(width, height int) error {
+	cfg, err := localPreferredVideoConfig()
+	if err != nil {
+		cfg, err = vw.resolvePreferredVideoConfig()
+		if err != nil {
+			return err
+		}
+	}
+	cfg.VideoWidth = width
+	cfg.VideoHeight = height
+	return vw.applyVideoDeviceConfig(cfg, true)
+}
+
+func (vw *VideoWidget) ensureStartDialog() {
+	if vw.startDialog != nil || vw.parentWindow == nil {
+		return
+	}
+	vw.startDialog = view.NewVideoStartDialog(vw.parentWindow)
+	vw.startDialog.SetLiveCodecProvider(func() (string, bool) {
+		if vw.videoClient == nil {
+			return "", false
+		}
+		return vw.videoClient.NegotiatedVideoCodecName()
+	})
 }
 
 func (vw *VideoWidget) ShowVideoDeviceSettings(devicePath string, restartOnApply bool, showFullscreen bool) {
@@ -461,24 +931,19 @@ func (vw *VideoWidget) ShowVideoDeviceSettings(devicePath string, restartOnApply
 	logrus.Infof("⚙️ opening video settings for device: %s", devicePath)
 
 	go func() {
-		devices, err := vw.GetAvailableVideoDevices()
-		if err != nil {
-			logrus.Warnf("⚠️ failed to load video devices: %v", err)
-			// Continue with fallback
-		}
-
 		var device models.SystemDevice
-		for _, candidate := range devices {
-			if candidate.Path == devicePath {
-				device = candidate
-				break
-			}
-		}
-
-		if device.Path == "" && devicePath != "" {
+		if strings.TrimSpace(devicePath) != "" {
 			device.Path = devicePath
 			device.Name = filepath.Base(devicePath)
 			device.Description = i18n.Current.CaptureDevice
+		} else {
+			devices, err := vw.GetAvailableVideoDevices()
+			if err != nil {
+				logrus.Warnf("⚠️ failed to load video devices: %v", err)
+			}
+			if len(devices) > 0 {
+				device = devices[0]
+			}
 		}
 
 		if device.Path == "" {
@@ -490,79 +955,120 @@ func (vw *VideoWidget) ShowVideoDeviceSettings(devicePath string, restartOnApply
 		cfg.DevicePath = device.Path
 		cfg.DeviceName = device.Name
 
-		info := vw.fetchVideoInfoForStartDialog(device.Path)
-		isDisplayDevice := strings.HasPrefix(device.Path, "display:") || strings.HasPrefix(device.Path, "drm:")
-		// Only merge server params into the dialog defaults when the server is actively
-		// streaming. When not streaming, the server returns its hard-coded config defaults
-		// (1280x720 @ 30fps) which would silently overwrite the client's saved preferences.
-		if info != nil && info.Streaming && (info.Device == device.Path || isDisplayDevice) {
-			cfg = mergeVideoConfigWithInfo(cfg, info)
-		}
-		if isDisplayDevice {
-			// Parse resolution from display name like "Display 0 (1920x1080)" as a
-			// fallback for when the server returned zero dimensions.
-			if cfg.VideoWidth <= 0 || cfg.VideoHeight <= 0 {
-				w, h := 1920, 1080
-				re := regexp.MustCompile(`\((\d+)x(\d+)\)`)
-				matches := re.FindStringSubmatch(device.Name)
-				if len(matches) == 3 {
-					if parsedW, err := strconv.Atoi(matches[1]); err == nil {
-						w = parsedW
-					}
-					if parsedH, err := strconv.Atoi(matches[2]); err == nil {
-						h = parsedH
-					}
-				}
-				cfg.VideoWidth = w
-				cfg.VideoHeight = h
-			}
-			if cfg.VideoFPS <= 0 {
-				cfg.VideoFPS = 30
-			}
-			if info == nil {
-				info = &models.VideoInfoData{
-					VideoStatus: models.VideoStatus{
-						Device: device.Path,
-						Width:  cfg.VideoWidth,
-						Height: cfg.VideoHeight,
-						FPS:    cfg.VideoFPS,
-					},
-				}
-			}
-		}
-
-		fyne.Do(func() {
+		present := func(info *models.VideoInfoData, cfg models.VideoDeviceConfig) {
+			info, cfg = prepareVideoStartDialogInfo(device, info, cfg)
+			started := time.Now()
 			logrus.Infof("📦 showing video start dialog for %s", device.Path)
-			if vw.startDialog == nil {
-				vw.startDialog = view.NewVideoStartDialog(vw.parentWindow)
-			}
-
+			vw.ensureStartDialog()
 			vw.startDialog.Configure(info, cfg.VideoWidth, cfg.VideoHeight, cfg.VideoFPS, cfg.VideoBitrate)
+			vw.startDialog.SetUpscaleMode(cfg.UpscaleMode)
 			vw.startDialog.SetDeviceLabel(device.Path)
 			vw.startDialog.SetPrimaryAction(i18n.Current.Apply)
 			_ = showFullscreen
 			vw.startDialog.SetExtraAction("", nil)
-
+			logrus.Infof("📦 video start dialog ready in %s", time.Since(started).Round(time.Millisecond))
 			vw.startDialog.Show(func(request *models.VideoStartRequest) {
-				applied := models.VideoDeviceConfig{
-					DevicePath:         device.Path,
-					DeviceName:         device.Name,
-					VideoWidth:         request.VideoWidth,
-					VideoHeight:        request.VideoHeight,
-					VideoFPS:           request.VideoFPS,
-					VideoQuality:       request.VideoQuality,
-					VideoBitrate:       request.VideoBitrate,
-					VideoMode:          request.VideoMode,
-					CapturePixelFormat: request.CapturePixelFormat,
-				}
+				applied := videoDeviceConfigFromRequest(device.Path, device.Name, request)
 				logrus.Infof("💾 applying video settings for %s: %dx%d @ %d fps", device.Path, applied.VideoWidth, applied.VideoHeight, applied.VideoFPS)
-				if err := vw.applyVideoDeviceConfig(applied, restartOnApply); err != nil {
-					logrus.Warnf("⚠️ failed to apply video config: %v", err)
-					fyne.Do(func() {
-						vw.statusLabel.SetText(fmt.Sprintf("❌ %v", err))
-					})
-				}
+				logrus.Infof("🎯 [CODEC-TRACE] ShowVideoDeviceSettings onApply: VideoMode=%q restartOnApply=%v -- if false, the stream is NOT restarted and the old codec keeps running on the server regardless of what was just saved", applied.VideoMode, restartOnApply)
+				go func() {
+					if err := vw.applyVideoDeviceConfig(applied, restartOnApply); err != nil {
+						logrus.Warnf("⚠️ failed to apply video config: %v", err)
+						fyne.Do(func() {
+							vw.statusLabel.SetText(fmt.Sprintf("❌ %v", err))
+						})
+					}
+				}()
 			})
-		})
+		}
+
+		shownFromCache := false
+		if cached, ok := cachedCaptureInfo(device.Path); ok {
+			cachedCfg := cfg
+			fyne.Do(func() { present(cached, cachedCfg) })
+			shownFromCache = true
+		}
+
+		attempts := 2
+		if shownFromCache {
+			attempts = 1
+		}
+		info := vw.fetchVideoInfoForStartDialogAttempts(device.Path, attempts)
+		if info != nil && len(info.CaptureModes) > 0 {
+			rememberCaptureModes(device.Path, info)
+		}
+		if shownFromCache {
+			// Cache opened the dialog instantly; still re-apply when the
+			// bridge returns so stale Width/FPS/modes update in place.
+			freshCfg := cfg
+			fyne.Do(func() {
+				if vw.startDialog == nil {
+					return
+				}
+				present(info, freshCfg)
+			})
+			return
+		}
+		freshCfg := cfg
+		fyne.Do(func() { present(info, freshCfg) })
 	}()
+}
+
+func prepareVideoStartDialogInfo(device models.SystemDevice, info *models.VideoInfoData, cfg models.VideoDeviceConfig) (*models.VideoInfoData, models.VideoDeviceConfig) {
+	isDisplayDevice := strings.HasPrefix(device.Path, "display:") || strings.HasPrefix(device.Path, "drm:")
+	if info != nil && info.Streaming && (info.Device == device.Path || isDisplayDevice) {
+		saved := cfg
+		cfg = mergeVideoConfigWithInfo(cfg, info)
+		// Saved prefs win for resolution/FPS/codec after the user applied
+		// a change — live /api/video/info can lag until the restart settles,
+		// and the capture-modes cache used to keep showing those old values.
+		if hasSavedVideoDeviceConfig(device.Path) {
+			if saved.VideoWidth > 0 {
+				cfg.VideoWidth = saved.VideoWidth
+			}
+			if saved.VideoHeight > 0 {
+				cfg.VideoHeight = saved.VideoHeight
+			}
+			if saved.VideoFPS > 0 {
+				cfg.VideoFPS = saved.VideoFPS
+			}
+			if strings.TrimSpace(saved.VideoBitrate) != "" {
+				cfg.VideoBitrate = saved.VideoBitrate
+			}
+			if strings.TrimSpace(saved.VideoMode) != "" {
+				cfg.VideoMode = saved.VideoMode
+			}
+		}
+	}
+	if isDisplayDevice {
+		if cfg.VideoWidth <= 0 || cfg.VideoHeight <= 0 {
+			w, h := 1920, 1080
+			re := regexp.MustCompile(`\((\d+)x(\d+)\)`)
+			matches := re.FindStringSubmatch(device.Name)
+			if len(matches) == 3 {
+				if parsedW, err := strconv.Atoi(matches[1]); err == nil {
+					w = parsedW
+				}
+				if parsedH, err := strconv.Atoi(matches[2]); err == nil {
+					h = parsedH
+				}
+			}
+			cfg.VideoWidth = w
+			cfg.VideoHeight = h
+		}
+		if cfg.VideoFPS <= 0 {
+			cfg.VideoFPS = 30
+		}
+		if info == nil {
+			info = &models.VideoInfoData{
+				VideoStatus: models.VideoStatus{
+					Device: device.Path,
+					Width:  cfg.VideoWidth,
+					Height: cfg.VideoHeight,
+					FPS:    cfg.VideoFPS,
+				},
+			}
+		}
+	}
+	return info, cfg
 }

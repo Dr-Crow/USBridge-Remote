@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"net"
 	"net/url"
 	"path/filepath"
 	"runtime"
@@ -16,6 +17,7 @@ import (
 	"usbridge-client/internal/models"
 	"usbridge-client/internal/platform"
 	"usbridge-client/internal/service"
+	"usbridge-client/internal/usbpass"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/widget"
@@ -36,22 +38,139 @@ type DiskWidget struct {
 	compactMountBtn   *view.DeviceActionButton
 	compactUnmountBtn *view.DeviceActionButton
 
+	// Card-grid Devices tab (see disk_widget_dashboard.go) -- built lazily by
+	// GetDashboardContainer, nil until then. refreshDashboard no-ops while
+	// nil so the old list-based GetContainer keeps working untouched if the
+	// dashboard is never requested.
+	dashboardContainer   fyne.CanvasObject
+	dashboardHID         *fyne.Container
+	dashboardVideo       *fyne.Container
+	dashboardAudio       *fyne.Container
+	dashboardAudioCard   fyne.CanvasObject
+	dashboardAudioGap    fyne.CanvasObject
+	dashboardStorage     *fyne.Container
+	dashboardEmulation   *fyne.Container
+	dashboardNetworkRows *fyne.Container
+	dashboardBackup      *fyne.Container
+	// dashboardNetworkCard is only shown once a real RNDIS device exists --
+	// see refreshDashboard -- so it's kept by reference to Show()/Hide().
+	// dashboardBackupCard is the same for the MTP backup flash. Both sit
+	// in one short row under Storage (dashboardPairSection), not stacked.
+	dashboardNetworkCard fyne.CanvasObject
+	dashboardBackupCard  fyne.CanvasObject
+	// dashboardPairSection is the one-row Network+Backups pair under
+	// USB Emulation (plus the gap above it) -- shown if either card has
+	// rows, or on a software agent as a dismissible firmware promo.
+	dashboardPairSection   fyne.CanvasObject
+	dashboardPairRow       fyne.CanvasObject
+	dashboardFirmwarePromo *view.DeviceFirmwarePromo
+	firmwareChip           *view.FooterHardwareChip
+	dashboardWideColumn    *fyne.Container
+	// dashboardXHover is card X's own onHover cell (view.NewDeviceDashboardHoverCell),
+	// created once in GetDashboardContainer and reused by every refreshDashboard
+	// call so each rebuilt row's own buttons/toggles can still be wired to
+	// the same card's hover-border logic (see NewDeviceDashboardCard's own
+	// doc comment for why a stable cell is needed instead of wiring hover
+	// directly).
+	dashboardHIDHover       func(bool)
+	dashboardVideoHover     func(bool)
+	dashboardAudioHover     func(bool)
+	dashboardStorageHover   func(bool)
+	dashboardEmulationHover func(bool)
+	dashboardNetworkHover   func(bool)
+	dashboardBackupHover    func(bool)
+
+	// dashboardAddImageBtn is Storage's own "Mount New ISO" header button --
+	// kept so refreshDashboard can darken it (SetBusy) while its own file
+	// picker is in flight, without rebuilding it every refresh. On a
+	// software agent it is icon-only "+" next to the Hardware only plaque.
+	dashboardAddImageBtn *view.DeviceDashboardHeaderButton
+
+	// dashboardStorageHardwareBadge is Storage's "Hardware only" plaque,
+	// shown while connected to a software agent (ISO gadget is KVM-only).
+	dashboardStorageHardwareBadge *view.DeviceDashboardHeaderBadge
+
+	// dashboardAddVirtualDisplayBtn is the dynamic header action for Video.
+	dashboardAddVirtualDisplayBtn *view.DeviceDashboardHeaderButton
+
+	// dashboardHIDConnectBtn is the "Connect USB" header action on the HID &
+	// Input Hub card -- wasm-only (see disk_widget_hid_connect_wasm.go/
+	// _other.go), nil on every native platform. Its Tapped is a no-op: the
+	// real navigator.hid.requestDevice() call has to run from a genuine DOM
+	// click, not a Go callback (see index.html's own doc comment on that
+	// restriction), so a plain HTML button is overlaid exactly on top of
+	// this widget's on-screen rect (disk_widget_hid_overlay_wasm.go) and is
+	// what actually receives the click; this Fyne widget exists to draw the
+	// label/pill in the app's own style and to give that overlay something
+	// to track the position of.
+	dashboardHIDConnectBtn *view.DeviceDashboardHeaderButton
+
+	// dashboardFooterDisconnect is Devices' own footer "Disconnect All"
+	// text action -- shown only while something is actually mounted.
+	dashboardFooterDisconnect *view.DeviceDashboardFooterTextButton
+
+	// dashboardBusySpinner is the lime footer spinner shown while a
+	// mount/unmount is in flight (beginOperation/endOperation), with
+	// "connecting device" next to the dots.
+	dashboardBusySpinner *view.DeviceDashboardBusySpinner
+
+	// dashboardScriptFooter is the shared script-run chip injected by
+	// MainWindow so Devices can show the same running/error/done state
+	// as the Scripts tab. May be nil until SetDashboardScriptFooter.
+	dashboardScriptFooter *view.ScriptFooterStatus
+
+	// connectingHints are extra "connecting device" spinners on Control /
+	// Scripts / Snapshots so gadget mount/unmount is visible from every
+	// connected-session tab, not only Devices.
+	connectingHints []*view.DeviceDashboardBusySpinner
+
+	// dashboardBackupSpace is the compact SD fill meter in the Backups
+	// card header (used/total + a short teal bar). Hidden until
+	// updateSDStorageInfo has a reading.
+	dashboardBackupSpace *view.DeviceDashboardSpaceMeter
+
+	// dashboardSnapshotCount is the number of snapshots last reported by
+	// BackupWidget (via SetDashboardSnapshotCount). Shown as a plaque on
+	// the Backups row; dashboardSnapshotKnown is false until the first
+	// successful (or disconnected) report so we don't flash "0 snapshots"
+	// before the list has loaded.
+	dashboardSnapshotCount   int
+	dashboardSnapshotKnown   bool
+	dashboardSnapshotMounted bool
+
+	// dashboardStorageScroll wraps dashboardStorage (the Storage card's own
+	// row list) so it can become internally scrollable once there are more
+	// rows than fit comfortably -- see refreshDashboard's own height cap.
+	dashboardStorageScroll   fyne.CanvasObject
+	dashboardEmulationScroll fyne.CanvasObject
+
 	// Data
 	localDrives    []*models.LocalDrive
 	localFiles     []*models.DiskInfo
 	videoDevices   []models.SystemDevice
 	audioDevices   []models.SystemDevice
 	gamepadDevices []platform.GamepadDevice
+	penTablets     []platform.PenTabletInfo
 	usbPassDevices []models.USBPassthroughDevice
 	// usbPassSessions is the latest /api/usb/passthrough/status Sessions
 	// list from the agent (e.g. "24A9:205A 2-3"). Used with
 	// usbpass.ActiveBusIDs for the green mounted marker.
 	usbPassSessions []string
-	sdSpaceInfo    *models.ISOSpaceInfo
+	sdSpaceInfo     *models.ISOSpaceInfo
 
 	// Gamepad capture
-	activeCaptures    map[string]*platform.GamepadCapture
+	activeCaptures map[string]gamepadCaptureHandle
+	// activeTouchpads are the touchpad-as-mouse readers of the captured pads that have one.
+	activeTouchpads map[string]*platform.TouchpadCapture
+	// padSlots gives every captured pad its Moonlight controller number; it is
+	// safe from the Moonlight rumble callback thread, which must not touch
+	// activeCaptures (UI-goroutine only).
+	padSlots          gamepadSlots
+	rumbleOnce        sync.Once
 	moonlightProvider moonlightProvider
+
+	// Pen/tablet capture (macOS and the web build -- see platform.ListPenTablets)
+	activePenCaptures map[string]penCaptureHandle
 
 	onStorageInfoUpdate   func(usedPct float64, available, total int64)
 	userImages            []*models.DiskInfo
@@ -62,26 +181,41 @@ type DiskWidget struct {
 	selectedItemsMu       sync.RWMutex
 	devicesTraceBudget    int
 	lastDrivesTraceSig    string
+	// lastGamepadLogSig is the last logged EnumerateGamepads() result (see
+	// loadGamepadDevices) -- logged only when it changes, since the wasm
+	// build polls this every second for the widget's whole lifetime
+	// (browserGamepadPollInterval) and an unconditional log there spams
+	// "gamepads found: 0 []" forever whenever nothing is plugged in.
+	lastGamepadLogSig string
 	preferredMouseMode    string
 	observedMouseMode     string
 	preferredDisplayIndex int // 0-based display index for absolute mouse (0 = first)
 	preferredDisplayCount int // total display count for absolute mouse (0/1 = single)
 
-	loadingLocalDrives    atomic.Bool
-	loadingLocalFiles     atomic.Bool
-	loadingVideoDevices   atomic.Bool
-	loadingAudioDevices   atomic.Bool
-	loadingMountedInfo    atomic.Bool
-	devicesRefreshPending atomic.Bool
-	devicesRefreshQueued  atomic.Bool
-	userOperationInFlight atomic.Bool
-	apiMountInProgress    atomic.Bool
-	audioAutoStarted      atomic.Bool
-	audioConnectGen       atomic.Uint64 // incremented on every manual audio connect to cancel in-flight auto-start
-	pendingAudioPath      atomic.Value  // string: effective audio path while switch is in-flight; cleared after onAudioConnect returns
-	imagePickerInFlight   atomic.Bool
+	loadingLocalDrives         atomic.Bool
+	loadingLocalFiles          atomic.Bool
+	loadingVideoDevices        atomic.Bool
+	loadingAudioDevices        atomic.Bool
+	loadingMountedInfo         atomic.Bool
+	devicesRefreshPending      atomic.Bool
+	devicesRefreshQueued       atomic.Bool
+	userOperationInFlight      atomic.Bool
+	apiMountInProgress         atomic.Bool
+	audioAutoStarted           atomic.Bool
+	audioConnectGen            atomic.Uint64 // incremented on every manual audio connect to cancel in-flight auto-start
+	pendingAudioPath           atomic.Value  // string: effective audio path while switch is in-flight; cleared after onAudioConnect returns
+	imagePickerInFlight        atomic.Bool
+	virtualDisplaySupported    atomic.Bool
+	videoCardHadVirtualDisplay bool
 	// pendingCombine guards the scheduleCombine debounce timer.
 	pendingCombine atomic.Bool
+	// combineDeferred is set when Control skipped a combine so Devices can
+	// flush it on tab select instead of waiting for the 10s poll.
+	combineDeferred atomic.Bool
+	isClosing       atomic.Bool
+
+	refreshStop     chan struct{}
+	stopRefreshOnce sync.Once
 
 	refreshMu          sync.Mutex
 	lastDevicesRefresh time.Time
@@ -95,6 +229,23 @@ type DiskWidget struct {
 	nbdServers   map[string]service.NBDRunner
 	usbClient    *api.USBClient
 	updateStatus func()
+	// tailscaleSvc, when set, lets mountUSBPassthrough route usbpass.Attach's
+	// AES control-plane dial through the embedded tsnet stack for a tailnet
+	// agent address -- see SetTailscaleService.
+	tailscaleSvc *service.TailscaleService
+
+	// peerConn opens a labeled DataChannel on the video/control WebRTC
+	// PeerConnection (client/internal/webrtcweb.WebRTCClient.OpenDataChannel,
+	// reached via WebRTCVideoClient's same-shaped wrapper) -- browser USB/IP
+	// passthrough (gamepad/pen, see disk_widget_gamepad_start_wasm.go /
+	// disk_widget_pen_start_wasm.go) rides this instead of a separate
+	// ws://+ WebSocket, so that traffic is DTLS-encrypted end to end and
+	// never subject to the browser's mixed-content blocking. nil on
+	// platforms with no WebRTC video client, or before one has connected --
+	// see SetPeerConnection.
+	peerConn interface {
+		OpenDataChannel(label string) (net.Conn, error)
+	}
 
 	// Configuration
 	config         *models.AppConfig
@@ -106,14 +257,47 @@ type DiskWidget struct {
 	onVideoConfigRequested  func(devicePath string)
 	onVideoConnect          func(devicePath string)
 	onVideoDisconnect       func()
+	onVideoDevicesChanged   func(devices []models.SystemDevice)
 	onAudioConnect          func(devicePath string)
 	onAudioDisconnect       func()
 	onUSBAudioConnect       func(mode string)
 	onButtonsChanged        func()
+	onAgentProtocol         func(protocol string)
 
 	safHelper *platform.SAFHelper
 
-	agentOS string
+	agentOS       string
+	agentProtocol string
+}
+
+// SetAgentIdentity records OS/tariff from connect verification (or the last
+// saved connection row) before UpdateClient starts the Devices loaders, so
+// the first dashboard paint is already software vs KVM instead of flashing
+// KVM chrome while agentOS is still empty.
+func (dw *DiskWidget) SetAgentIdentity(osName, protocol string) {
+	if dw == nil {
+		return
+	}
+	osName = strings.TrimSpace(osName)
+	protocol = strings.TrimSpace(protocol)
+	changed := false
+	if osName != "" && dw.agentOS != osName {
+		dw.agentOS = osName
+		changed = true
+	}
+	if protocol != "" && dw.agentProtocol != protocol {
+		dw.agentProtocol = protocol
+		changed = true
+	}
+	if changed {
+		dw.combineDeferred.Store(true)
+	}
+}
+
+// applyLiveAgentIdentity updates OS/tariff from /api/device/info without
+// wiping a reconnect seed when the live payload still has empty fields.
+func (dw *DiskWidget) applyLiveAgentIdentity(osName, protocol string) {
+	dw.SetAgentIdentity(osName, protocol)
 }
 
 // MaxDevicesToMount maximum number of devices that can be selected at once
@@ -124,20 +308,70 @@ var rndisModeOptions = []string{"auto", "wifirouter", "etherouter", "etherbridge
 const (
 	gamepadModeDirectInput = "directinput"
 	gamepadModeXInput      = "xinput"
+	// gamepadModeMapX360 maps the local gamepad to a virtual Xbox 360 pad on
+	// the agent (Moonlight controller path). Software agents only; the
+	// hardware KVM has no such mode.
+	gamepadModeMapX360 = "mapx360"
 )
 
 func normalizeGamepadMode(mode string) string {
-	if strings.ToLower(mode) == gamepadModeXInput {
+	switch strings.ToLower(mode) {
+	case gamepadModeXInput:
 		return gamepadModeXInput
+	case gamepadModeMapX360:
+		return gamepadModeMapX360
 	}
 	return gamepadModeDirectInput
 }
 
 func gamepadModeLabel(mode string) string {
-	if mode == gamepadModeXInput {
+	switch mode {
+	case gamepadModeXInput:
 		return i18n.Current.DeviceXInput
+	case gamepadModeMapX360:
+		return i18n.Current.DeviceMapX360
 	}
 	return i18n.Current.DeviceDirectInput
+}
+
+// effectiveGamepadMode resolves a row's stored mode against the connected
+// agent. An empty mode (the user has not picked one) defaults to Map Xbox 360
+// on a software agent and to XInput on the KVM hardware; Map Xbox 360 is not
+// available on the hardware, so it falls back to XInput there.
+func (dw *DiskWidget) effectiveGamepadMode(mode string) string {
+	software := IsSoftwareAgentOS(dw.agentOS)
+	switch strings.ToLower(mode) {
+	case gamepadModeMapX360:
+		if software {
+			return gamepadModeMapX360
+		}
+		return gamepadModeXInput
+	case gamepadModeXInput, gamepadModeDirectInput:
+		return normalizeGamepadMode(mode)
+	}
+	if software {
+		return gamepadModeMapX360
+	}
+	return gamepadModeXInput
+}
+
+// gamepadModeOptions lists the mode picker's labels for the connected agent.
+func (dw *DiskWidget) gamepadModeOptions() []string {
+	if IsSoftwareAgentOS(dw.agentOS) {
+		return []string{i18n.Current.DeviceMapX360, i18n.Current.DeviceDirectInput, i18n.Current.DeviceXInput}
+	}
+	return []string{i18n.Current.DeviceDirectInput, i18n.Current.DeviceXInput}
+}
+
+// gamepadModeFromLabel is gamepadModeOptions' inverse.
+func gamepadModeFromLabel(label string) string {
+	switch label {
+	case i18n.Current.DeviceXInput:
+		return gamepadModeXInput
+	case i18n.Current.DeviceMapX360:
+		return gamepadModeMapX360
+	}
+	return gamepadModeDirectInput
 }
 
 func normalizeRNDISMode(mode string) string {
@@ -173,6 +407,14 @@ type DriveItem struct {
 	GamepadMode      string
 	GamepadVendorID  string
 	GamepadProductID string
+	// IsPenTablet/PenTabletID identify a platform.ListPenTablets() row (see
+	// disk_widget_data.go's loadPenTabletDevices) -- distinct from
+	// IsUSBPassthrough's own isWacomTablet case, which is a real tablet
+	// attached to the *agent's* machine and forwarded raw, not one this
+	// client itself captures (macOS IOKit natively, or WebHID on the web
+	// build).
+	IsPenTablet      bool
+	PenTabletID      string
 	IsAudio          bool
 	AudioDevice      *models.SystemDevice
 	IsUSBAudio       bool
@@ -221,6 +463,7 @@ func NewDiskWidget(usbClient *api.USBClient, updateStatus func(), app fyne.App, 
 		safHelper:             platform.GetSAFHelper(app),
 		rowsCache:             make(map[string]fyne.CanvasObject),
 		cardsCache:            make(map[string]fyne.CanvasObject),
+		refreshStop:           make(chan struct{}),
 	}
 
 	if runtime.GOOS == "android" && dw.safHelper != nil {
@@ -231,9 +474,45 @@ func NewDiskWidget(usbClient *api.USBClient, updateStatus func(), app fyne.App, 
 	dw.createInterface()
 	dw.startPeriodicRefresh()
 	go dw.loadGamepadDevices()
+	dw.startBrowserGamepadPolling()
+	go dw.loadPenTabletDevices()
+	dw.startPenTabletPolling()
 	go dw.loadUSBPassthroughDevices()
 
 	return dw
+}
+
+// penTabletPollInterval matches browserGamepadPollInterval's own reasoning:
+// platform.ListPenTablets() (macOS's IOKit enumeration, or the web build's
+// WebHID grant list) can change at any time with no refresh trigger of its
+// own -- a tablet plugged in mid-session, or a WebHID grant completing after
+// the user picks it from the browser's own device chooser -- so this polls
+// instead of only refreshing on an explicit Refresh click or a mount/unmount
+// round-trip.
+const penTabletPollInterval = 1 * time.Second
+
+// startPenTabletPolling runs loadPenTabletDevices on a short ticker for the
+// lifetime of the widget, same shutdown signal (dw.refreshStop) and busy
+// guard (dw.isClosing) startBrowserGamepadPolling's own ticker goroutine
+// uses. Unlike that one, this needs no per-platform stub: ListPenTablets
+// itself is already a no-op returning nil on platforms with no pen support
+// (pen_capture_stub.go), so polling it everywhere is harmless.
+func (dw *DiskWidget) startPenTabletPolling() {
+	go func() {
+		ticker := time.NewTicker(penTabletPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-dw.refreshStop:
+				return
+			case <-ticker.C:
+				if dw.isClosing.Load() {
+					continue
+				}
+				dw.loadPenTabletDevices()
+			}
+		}
+	}()
 }
 
 // SetWindow sets the window used for dialogs
@@ -446,6 +725,10 @@ func (dw *DiskWidget) SetOnVideoConnect(fn func(devicePath string)) {
 	dw.onVideoConnect = fn
 }
 
+func (dw *DiskWidget) SetOnVideoDevicesChanged(fn func(devices []models.SystemDevice)) {
+	dw.onVideoDevicesChanged = fn
+}
+
 func (dw *DiskWidget) SetOnVideoDisconnect(fn func()) {
 	dw.onVideoDisconnect = fn
 }
@@ -462,12 +745,32 @@ func (dw *DiskWidget) SetOnUSBAudioConnect(fn func(mode string)) {
 	dw.onUSBAudioConnect = fn
 }
 
+func (dw *DiskWidget) SetOnAgentProtocol(fn func(protocol string)) {
+	dw.onAgentProtocol = fn
+}
+
 func (dw *DiskWidget) setPreferredAudioDevice(device models.SystemDevice) {
-	if strings.TrimSpace(device.Path) == "" {
+	if strings.TrimSpace(device.Path) == "" || dw.controlsLocked() {
 		return
 	}
+	already := false
+	switchingFromUSBAudio := false
+	for _, d := range dw.allDrives {
+		if d.IsUSBAudio && d.IsMounted {
+			switchingFromUSBAudio = true
+		}
+		if d.IsAudio && d.AudioDevice != nil && d.IsMounted && d.AudioDevice.Path == device.Path {
+			already = true
+		}
+	}
+	if already && !switchingFromUSBAudio {
+		return
+	}
+
 	dw.audioConnectGen.Add(1) // cancel any in-flight auto-start goroutine
+	dw.beginOperation()
 	go func() {
+		defer dw.endOperation()
 		// Set pending path before fyne.Do to close the race window where combineDrives
 		// could fire between the optimistic UI update and the pending path being set,
 		// causing the inference block to re-select UAC from stale server state.
@@ -500,8 +803,29 @@ func (dw *DiskWidget) setPreferredAudioDevice(device models.SystemDevice) {
 }
 
 func (dw *DiskWidget) selectUSBAudio(mode string) {
+	if dw.controlsLocked() {
+		return
+	}
+	alreadySame := false
+	for _, d := range dw.allDrives {
+		if d.IsUSBAudio && d.IsMounted {
+			current := d.USBAudioMode
+			if current == "" {
+				current = "uac1"
+			}
+			if current == mode {
+				alreadySame = true
+			}
+		}
+	}
+	if alreadySame {
+		return
+	}
+
 	dw.audioConnectGen.Add(1) // cancel any in-flight auto-start goroutine
+	dw.beginOperation()
 	go func() {
+		defer dw.endOperation()
 		// Set pending path before fyne.Do to close the race window (same as setPreferredAudioDevice).
 		dw.pendingAudioPath.Store("uac")
 		fyne.Do(func() {
@@ -615,34 +939,66 @@ func (dw *DiskWidget) setPreferredVideoDevice(device models.SystemDevice) {
 	}()
 }
 
-// selectVideoDevice saves the preferred device and, if video is currently
-// streaming, reconnects to the new device — mirrors setPreferredAudioDevice.
+// selectVideoDevice saves the preferred device and reconnects the pipeline
+// to it — only when this is a different capture than the one already
+// selected. Tapping the already-active radio used to bounce
+// disconnect→connect on the same device; with a single screen that just
+// looked broken. Switching between two+ captures still goes through here.
 func (dw *DiskWidget) selectVideoDevice(device models.SystemDevice) {
-	if strings.TrimSpace(device.Path) == "" {
+	path := strings.TrimSpace(device.Path)
+	if path == "" || dw.controlsLocked() {
 		return
 	}
+	if path == strings.TrimSpace(selectedVideoDevicePath()) {
+		return
+	}
+	// Same lock as keyboard/mouse/audio: radios stay disabled until the
+	// new capture actually comes up. Rapid taps used to stack Sunshine
+	// restarts and Moonlight reconnects until the whole session died.
+	dw.beginOperation()
 	go func() {
+		defer dw.endOperation()
 		// Optimistic UI: mark the selected device as mounted, clear others.
 		fyne.Do(func() {
 			for i := range dw.allDrives {
 				if dw.allDrives[i].IsVideo && dw.allDrives[i].VideoDevice != nil {
-					dw.allDrives[i].IsMounted = dw.allDrives[i].VideoDevice.Path == device.Path
+					dw.allDrives[i].IsMounted = dw.allDrives[i].VideoDevice.Path == path
 				}
 			}
 			dw.requestDevicesRefresh()
 		})
-		cfg := loadSavedVideoDeviceConfig(device.Path, device.Name)
-		cfg.DevicePath = device.Path
+		cfg := loadSavedVideoDeviceConfig(path, device.Name)
+		cfg.DevicePath = path
 		cfg.DeviceName = device.Name
 		saveVideoDeviceConfig(cfg)
-		logrus.Infof("💾 [VIDEO-SELECT] Selected device: %s (%s)", device.Name, device.Path)
-		if dw.onVideoDisconnect != nil {
-			dw.onVideoDisconnect()
-		}
+		logrus.Infof("💾 [VIDEO-SELECT] Selected device: %s (%s)", device.Name, path)
+		// Do not StopVideoAsync here: StartVideoDevice already restarts the
+		// stream. A stop+start pair raced (desired=false then immediately
+		// true) and left the previous handshake running while the next
+		// switch began.
 		if dw.onVideoConnect != nil {
-			dw.onVideoConnect(device.Path)
+			dw.onVideoConnect(path)
 		}
 	}()
+}
+
+// availableVideoDriveCount is how many Video Pipe rows can actually be
+// switched to (connected, or a software-agent desktop capture). The radio
+// is only clickable when this is more than one — a single screen has
+// nothing to switch to.
+func (dw *DiskWidget) availableVideoDriveCount() int {
+	n := 0
+	for _, drive := range dw.allDrives {
+		if !drive.IsVideo || drive.VideoDevice == nil {
+			continue
+		}
+		unavailable := !drive.VideoDevice.Connected && !drive.IsMounted && isUSBridgeAgentOS(dw.agentOS)
+		if unavailable {
+			continue
+		}
+		n++
+	}
+	return n
 }
 
 func (dw *DiskWidget) isPreferredVideoDrive(drive DriveItem) bool {
@@ -662,7 +1018,7 @@ func (dw *DiskWidget) isPreferredVideoDrive(drive DriveItem) bool {
 }
 
 func (dw *DiskWidget) applyMouseModeSelection(rowID int, newMode string) {
-	if rowID < 0 || rowID >= len(dw.allDrives) {
+	if dw.controlsLocked() || rowID < 0 || rowID >= len(dw.allDrives) {
 		return
 	}
 	newMode = normalizeMouseMode(newMode)
@@ -753,6 +1109,7 @@ func (dw *DiskWidget) Refresh() {
 	dw.loadAudioDevices()
 	dw.loadMountedDevices()
 	go dw.loadGamepadDevices()
+	go dw.loadUSBPassthroughDevices()
 }
 
 // GetContainer returns the widget's container
@@ -790,6 +1147,25 @@ func (dw *DiskWidget) setButtonsEnabled(enabled bool) {
 	}
 }
 
+// markSelectedDrivesMounting flips IsMounting on the drives about to be
+// mounted so their Connect buttons darken on the next dashboard rebuild --
+// including API/MTP drives that never get an NBD export name for
+// setMountingStateByExportNames. Called on the Fyne thread immediately
+// before beginOperation, which rebuilds the dashboard while locked.
+// endOperation clears the flags when done.
+func (dw *DiskWidget) markSelectedDrivesMounting() {
+	dw.selectedItemsMu.RLock()
+	for id, selected := range dw.selectedItems {
+		if selected && id < len(dw.allDrives) {
+			d := dw.allDrives[id]
+			if !d.IsMounted && !d.IsVideo && !d.IsAudio {
+				dw.allDrives[id].IsMounting = true
+			}
+		}
+	}
+	dw.selectedItemsMu.RUnlock()
+}
+
 // setMountingStateByExportNames sets IsMounting for devices matching the given export names
 func (dw *DiskWidget) setMountingStateByExportNames(exportNames map[string]bool, mounting bool) {
 	for i := range dw.allDrives {
@@ -809,6 +1185,9 @@ func (dw *DiskWidget) setMountingStateByExportNames(exportNames map[string]bool,
 
 // updateUIAsync safely updates the UI from a goroutine
 func (dw *DiskWidget) updateUIAsync(updateFunc func()) {
+	if dw.isClosing.Load() {
+		return
+	}
 	fyne.Do(updateFunc)
 }
 
@@ -827,6 +1206,27 @@ func (dw *DiskWidget) showErrorAsync(err error) {
 	})
 }
 
+// showUSBPassthroughErrorAsync shows a USB-passthrough claim error from a
+// goroutine. On macOS, when the underlying cause is missing Input
+// Monitoring access (hidbridge_darwin.go's IOHIDDeviceOpen -- the only way
+// a HID-class device like a mouse/keyboard dongle can be tapped there), it
+// adds a button that takes the user straight to the System Settings pane
+// instead of leaving them to puzzle out a raw libusb/hidbridge error string.
+func (dw *DiskWidget) showUSBPassthroughErrorAsync(err error) {
+	logrus.Errorf("Error: %v", err)
+	needsInputMonitoring := !usbpass.InputMonitoringGranted()
+	dw.updateUIAsync(func() {
+		if dw.window == nil {
+			return
+		}
+		if needsInputMonitoring {
+			view.ShowErrorDialogWithAction(err, i18n.Current.USBPassthroughOpenSettingsButton, usbpass.OpenInputMonitoringSettingsPane, dw.window)
+			return
+		}
+		view.ShowErrorDialog(err, dw.window)
+	})
+}
+
 // showWarningAsync shows a warning from a goroutine
 func (dw *DiskWidget) showWarningAsync(title, message string) {
 	dw.updateUIAsync(func() {
@@ -836,20 +1236,45 @@ func (dw *DiskWidget) showWarningAsync(title, message string) {
 	})
 }
 
+// SetPeerConnection wires the video/control WebRTC PeerConnection's
+// DataChannel opener into this widget -- called once from main_window.go via
+// an optional-interface probe on the platform's VideoClient (same pattern as
+// SetAPISecret/SetTailscaleService), since not every platform has a WebRTC
+// video client at all (nil pc is fine: browser USB passthrough attach then
+// fails with a clear "connect video/control first" error instead of the old
+// direct-WebSocket path it used to have as a fallback).
+func (dw *DiskWidget) SetPeerConnection(pc interface {
+	OpenDataChannel(label string) (net.Conn, error)
+}) {
+	dw.peerConn = pc
+}
+
+// SetTailscaleService wires in the Tailscale service so mountUSBPassthrough
+// can dial a tailnet agent address through tsnet -- same pattern as
+// VideoWidget.SetTailscaleService.
+func (dw *DiskWidget) SetTailscaleService(ts *service.TailscaleService) {
+	dw.tailscaleSvc = ts
+}
+
 // UpdateClient updates the USB client. On disconnect — immediately clears the data;
 // on connect — kicks off the full load cycle.
 func (dw *DiskWidget) UpdateClient(usbClient *api.USBClient) {
 	dw.usbClient = usbClient
-	dw.agentOS = ""
 	dw.audioAutoStarted.Store(false)
 	if usbClient == nil {
+		dw.agentOS = ""
+		dw.agentProtocol = ""
 		fyne.Do(func() {
 			dw.localDrives = nil
 			dw.mountedDevices = nil
 			dw.audioDevices = nil
 			dw.sdSpaceInfo = nil
+			dw.dashboardSnapshotCount = 0
+			dw.dashboardSnapshotKnown = false
+			dw.dashboardSnapshotMounted = false
 			dw.updateSDStorageInfo()
 			dw.stopAllGamepadCaptures()
+			dw.stopAllPenCaptures()
 			dw.combineDrives()
 			dw.requestDevicesRefresh()
 		})

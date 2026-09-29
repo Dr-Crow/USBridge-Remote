@@ -29,12 +29,21 @@ extern void do_send_multi_controller(
     short leftStickX, short leftStickY,
     short rightStickX, short rightStickY);
 extern void do_send_utf8_text(const char *text, unsigned int len);
+extern void do_send_pen(unsigned char eventType, unsigned char toolType, unsigned char penButtons,
+                        float x, float y, float pressureOrDistance,
+                        unsigned short rotation, unsigned char tilt);
 extern void do_get_rtp_video_stats(uint32_t *out);
+extern int do_get_estimated_rtt_info(uint32_t *out);
+extern uint16_t do_get_last_host_latency_tenths_ms(void);
+extern uint64_t do_get_playout_jitter_us(void);
+extern uint64_t do_get_playout_applied_delay_us(void);
+extern uint64_t do_get_total_video_bytes(void);
 */
 import "C"
 
 import (
 	"fmt"
+
 	"image"
 	"os"
 	"sync"
@@ -79,6 +88,89 @@ func GetRTPVideoStats() RTPVideoStats {
 		PacketCountInvalid:      uint32(raw[5]),
 		PacketCountFecInvalid:   uint32(raw[6]),
 	}
+}
+
+// GetEstimatedRttInfo reads moonlight-common-c's smoothed RTT estimate
+// (LiGetEstimatedRttInfo). ok is false when there's no active session or no
+// estimate yet -- both fields are then meaningless, not just zero.
+func GetEstimatedRttInfo() (rttMs, rttVarianceMs float64, ok bool) {
+	var raw [2]C.uint32_t
+	got := C.do_get_estimated_rtt_info(&raw[0])
+	if got == 0 {
+		return 0, 0, false
+	}
+	return float64(raw[0]), float64(raw[1]), true
+}
+
+// GetLastHostLatencyMs reads the most recent frame's host processing
+// latency, as reported by the server in its standard Sunshine-protocol
+// frame header (DECODE_UNIT.frameHostProcessingLatency -- see
+// moonlight_cgo_shared.h's dr_submit/do_get_last_host_latency_tenths_ms).
+// Limelight.h documents exactly 0 as "the host doesn't provide the latency
+// data", but in practice a real 0 is indistinguishable from that: the host
+// also reports (or simply stops updating) 0 whenever a frame's picture
+// didn't change and nothing was actually encoded, which is a normal,
+// frequent condition, not a rare "unsupported" edge case -- so 0 is treated
+// as a genuine measurement here (valid is always true) rather than hidden.
+func GetLastHostLatencyMs() (ms float64, valid bool) {
+	tenths := uint16(C.do_get_last_host_latency_tenths_ms())
+	return float64(tenths) / 10.0, true
+}
+
+// GetPlayoutJitterMs reads the client-side adaptive playout buffer's live
+// jitter estimate (LiGetPlayoutJitterUs) -- arrival-time variance measured
+// locally from received frames' RTP timestamps, distinct from
+// GetEstimatedRttInfo's network-level RTT variance. 0 before the first
+// jitter sample exists.
+func GetPlayoutJitterMs() float64 {
+	return float64(uint64(C.do_get_playout_jitter_us())) / 1000.0
+}
+
+// GetPlayoutAppliedDelayMs reads the playout buffer's currently-applied
+// extra delay (LiGetPlayoutAppliedDelayUs) -- how much it's actually
+// stretching frame release right now to absorb GetPlayoutJitterMs's
+// measured jitter.
+func GetPlayoutAppliedDelayMs() float64 {
+	return float64(uint64(C.do_get_playout_applied_delay_us())) / 1000.0
+}
+
+// GetTotalVideoBytes reads the cumulative compressed video bytes handed to
+// the decoder so far (moonlight_cgo_shared.h's g_total_video_bytes) --
+// net_graph.go diffs successive calls into a per-tick delta, same
+// convention as GetRTPVideoStats' packet counters.
+func GetTotalVideoBytes() uint64 {
+	return uint64(C.do_get_total_video_bytes())
+}
+
+// init wires net_graph.go's platform-agnostic network-stats hook to the
+// getters above -- same "core stays tag-free, platform files wire the
+// hooks" split as metal_video_darwin.go's own init() for the render/decode/
+// push hooks. This file's build tag (darwin/ios/linux, not windows/android)
+// means net_graph.go simply reads zero-value stats on the platforms that
+// don't have this wired yet (see net_graph.go's package doc comment).
+func init() {
+	netGraphNetworkStatsFn = func() netGraphRawNetworkStats {
+		rtp := GetRTPVideoStats()
+		rttMs, rttVarianceMs, rttOk := GetEstimatedRttInfo()
+		hostLatencyMs, hostLatencyOk := GetLastHostLatencyMs()
+		return netGraphRawNetworkStats{
+			PacketCountVideo:        rtp.PacketCountVideo,
+			PacketCountFec:          rtp.PacketCountFec,
+			PacketCountFecRecovered: rtp.PacketCountFecRecovered,
+			PacketCountFecFailed:    rtp.PacketCountFecFailed,
+			PacketCountOOS:          rtp.PacketCountOOS,
+			PacketCountInvalid:      rtp.PacketCountInvalid,
+			RTTMs:                   rttMs,
+			RTTVarianceMs:           rttVarianceMs,
+			RTTValid:                rttOk,
+			HostLatencyMs:           hostLatencyMs,
+			HostLatencyValid:        hostLatencyOk,
+			JitterMs:                GetPlayoutJitterMs(),
+			PlayoutDelayMs:          GetPlayoutAppliedDelayMs(),
+			BytesVideo:              GetTotalVideoBytes(),
+		}
+	}
+	netGraphCodecFn = negotiatedVideoCodecNameNow
 }
 
 // startRTPStatsLoggerIfEnabled logs GetRTPVideoStats() periodically for the
@@ -387,6 +479,21 @@ func (w *MoonlightCgoWrapper) SendMoonlightControllerEvent(
 	)
 }
 
+func (w *MoonlightCgoWrapper) SendMoonlightPenEvent(
+	eventType, toolType, penButtons uint8,
+	x, y, pressureOrDistance float32,
+	rotation uint16, tilt uint8,
+) {
+	if !liStartConnectionActive.Load() {
+		return
+	}
+	C.do_send_pen(
+		C.uchar(eventType), C.uchar(toolType), C.uchar(penButtons),
+		C.float(x), C.float(y), C.float(pressureOrDistance),
+		C.ushort(rotation), C.uchar(tilt),
+	)
+}
+
 func (w *MoonlightCgoWrapper) IsInputActive() bool {
 	return liStartConnectionActive.Load()
 }
@@ -428,6 +535,15 @@ func goMoonlightStage(stage, result, errCode C.int) {
 //export goMoonlightConnected
 func goMoonlightConnected() {
 	logrus.Info("🌕 [Moonlight] stream connected ✅")
+	notifyMoonlightStreamReady()
+}
+
+// goMoonlightRumble receives the host's gamepad rumble (moonlight-common-c
+// ConnListenerRumble) and hands it to the handler set with SetRumbleHandler.
+//
+//export goMoonlightRumble
+func goMoonlightRumble(controller, lowFreq, highFreq C.ushort) {
+	dispatchRumble(uint16(controller), uint16(lowFreq), uint16(highFreq))
 }
 
 //export goMoonlightTerminated
@@ -483,9 +599,11 @@ func goVideoFormatNegotiated(format C.int) {
 	name, ok := videoFormatCodecName(int32(format))
 	if !ok {
 		logrus.Warnf("🎬 [Moonlight/HW] negotiated video format: unrecognized 0x%04X", int(format))
+		logrus.Warnf("🎯 [CODEC-TRACE] dr_setup: server negotiated an UNRECOGNIZED format 0x%04X", int(format))
 		return
 	}
 	logrus.Infof("🎬 [Moonlight/HW] negotiated video format: %s (0x%04X)", name, int(format))
+	logrus.Infof("🎯 [CODEC-TRACE] dr_setup: SERVER ACTUALLY NEGOTIATED codec=%s (0x%04X) -- this is the ground truth for what's really streaming, compare against the videoMode logged before Launch()/StartStream above", name, int(format))
 }
 
 // NegotiatedVideoCodecName returns the codec moonlight-common-c actually
@@ -495,6 +613,13 @@ func goVideoFormatNegotiated(format C.int) {
 // the client's requested mode or the agent's best-effort guess, it reflects
 // what the server actually accepted.
 func (w *MoonlightCgoWrapper) NegotiatedVideoCodecName() (string, bool) {
+	return negotiatedVideoCodecNameNow()
+}
+
+// negotiatedVideoCodecNameNow is NegotiatedVideoCodecName's package-level
+// body, split out so net_graph.go's netGraphCodecFn hook (which has no
+// MoonlightCgoWrapper instance to call a method on) can wire it directly.
+func negotiatedVideoCodecNameNow() (string, bool) {
 	if !liStartConnectionActive.Load() {
 		return "", false
 	}
@@ -599,6 +724,26 @@ func goAIVisionOverlay(rgba *C.uint8_t, width, height, stride C.int) {
 	ApplyAIVisionOverlay(buf, w, h, s)
 }
 
+// goNetGraphOverlay is the cgo entry point for the Net Graph HUD's
+// CPU-buffer blit path (net_graph.go's ApplyNetGraphOverlay) -- called from
+// moonlight_cgo_linux.go's deliver_frame, right next to goAIVisionOverlay's
+// call site above. Not called from moonlight_cgo_apple.go: macOS/iOS use a
+// native compositor HUD layer instead (metal_video_impl_darwin.m's
+// g_hud_layer / metal_video_impl_ios.m's mirror of it) since their zero-copy
+// decode path never produces a CPU-writable buffer -- see net_graph.go's
+// ApplyNetGraphOverlay doc comment. Harmless no-op if ever reached on those
+// platforms (ApplyNetGraphOverlay's own atomic check).
+//
+//export goNetGraphOverlay
+func goNetGraphOverlay(rgba *C.uint8_t, width, height, stride C.int) {
+	if rgba == nil || width <= 0 || height <= 0 || stride <= 0 {
+		return
+	}
+	w, h, s := int(width), int(height), int(stride)
+	buf := unsafe.Slice((*byte)(unsafe.Pointer(rgba)), s*h)
+	ApplyNetGraphOverlay(buf, w, h, s, false) // Linux's deliver_frame always converts to RGBA
+}
+
 // goAIVisionShouldSample is a cheap (atomics + time comparisons, no pixel
 // access) pre-check called every frame from vt_callback's Metal fast-path
 // branch in moonlight_cgo_apple.go: it lets the C side skip the BGRA→RGBA
@@ -661,6 +806,7 @@ var vtFrameCount int64
 
 //export goVTFrame
 func goVTFrame(rgba *C.uint8_t, width, height, stride C.int) {
+	noteNativeFrameSize(int(width), int(height))
 	vtFrameCallbackMu.Lock()
 	cb := vtFrameCallback
 	vtFrameCallbackMu.Unlock()
@@ -689,24 +835,12 @@ func goVTFrame(rgba *C.uint8_t, width, height, stride C.int) {
 		return
 	}
 
-	// When the native GPU overlay (Metal/GL) is active it already received this
-	// frame at the C level via metal_video_try_submit / gl_video_try_submit.
-	// Skip the 3.5 MB Go image allocation most of the time — only the Go-level
-	// frame count is needed for stats. However, pass a real frame on the first
-	// 10 frames and every 120th frame so that handleVideoFrame can run
-	// updateFrameContentRect → detectDarkInset to detect letterbox/pillarbox
-	// bars embedded in the video stream (e.g. Sunshine pillarboxing 4:3 content
-	// into a 16:9 stream). Without this, frameContentX/Y stays 0 and
-	// PositionToAbsolute never adjusts for in-stream black bars. Only reachable
-	// with a real (non-nil) buffer, e.g. Android's non-hwbuffer GL readback
-	// path, which passes real pixels even while its own Vulkan overlay is active.
+	// Overlay already presented this frame at C level. In-stream letterbox is
+	// cropped from host vs stream aspect, not from a dark-pixel scan of a CPU
+	// copy, so there is no reason to allocate a Go image here.
 	if NativeVideoOverlayIsActive() {
-		if cnt > 10 && cnt%120 != 0 {
-			// Deliver a nil frame to let handleVideoFrame update its own counter.
-			cb(nil)
-			return
-		}
-		// Fall through to create a real image for black-bar detection.
+		cb(nil)
+		return
 	}
 
 	w, h, s := int(width), int(height), int(stride)

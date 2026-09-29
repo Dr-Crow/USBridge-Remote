@@ -236,6 +236,10 @@ func (s *Server) mcpMouseAction(args json.RawMessage) ([]map[string]any, error) 
 	if err := json.Unmarshal(args, &req); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
 	}
+	owner := nextMouseOwner()
+	if s.noteMouse(owner, req) {
+		s.releaseHTTPMouseLater(owner)
+	}
 	if err := s.applyMouse(req); err != nil {
 		return nil, err
 	}

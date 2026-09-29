@@ -77,10 +77,21 @@ func StartLogin(ctx context.Context) (*LoginStart, error) {
 		VerificationURL string `json:"verification_url"`
 		ExpiresIn       int    `json:"expires_in"`
 	}
-	if err := doJSON(ctx, http.MethodPost, "/v1/account/login/start", nil, "", &out); err != nil {
+	if err := doJSON(ctx, http.MethodPost, "/v1/account/login/start", startBody(), "", &out); err != nil {
 		return nil, err
 	}
 	return &LoginStart{Code: out.Code, VerificationURL: out.VerificationURL, ExpiresIn: out.ExpiresIn}, nil
+}
+
+// startBody is the (optional, best-effort) hardware summary sent with the
+// login start request -- see DeviceInfo's doc comment. A marshal failure
+// just means the request goes out without a body, same as before.
+func startBody() []byte {
+	b, err := json.Marshal(map[string]any{"device_info": CollectDeviceInfo()})
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // LoginPollResult is Poll's outcome for one poll tick.
@@ -133,9 +144,28 @@ type Status struct {
 // shape as billing.usbridge.io/manage's own license list (db.ts's
 // LicenseRow, the fields this package's caller actually needs).
 type License struct {
-	Identifier string `json:"identifier"`
-	Status     string `json:"status"` // "licensed" | "trial" | "trial_used" | "revoked"
-	Tier       string `json:"tier"`
+	Identifier   string `json:"identifier"`
+	Status       string `json:"status"` // "licensed" | "trial" | "trial_used" | "revoked"
+	Tier         string `json:"tier"`
+	OnThisDevice bool   `json:"on_this_device,omitempty"`
+}
+
+// MarkOnThisDevice copies licenses and flags the row whose Identifier is
+// this machine's hardware id — Identifier is the bound hwid (see Rebind).
+func MarkOnThisDevice(licenses []License, hwID string) []License {
+	if len(licenses) == 0 {
+		return licenses
+	}
+	out := make([]License, len(licenses))
+	copy(out, licenses)
+	hwID = strings.TrimSpace(hwID)
+	if hwID == "" {
+		return out
+	}
+	for i := range out {
+		out[i].OnThisDevice = strings.EqualFold(out[i].Identifier, hwID)
+	}
+	return out
 }
 
 // ListLicenses fetches every desktop license belonging to the account
@@ -208,4 +238,28 @@ func truncate(b []byte) string {
 		return string(b)
 	}
 	return string(b[:max]) + "..."
+}
+
+// UserFacingError strips HTTP/path wrappers from a doJSON error, leaving
+// the backend's "error" (or "message") field when the body was JSON.
+func UserFacingError(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if i := strings.LastIndex(raw, "{"); i >= 0 {
+		var payload struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal([]byte(raw[i:]), &payload) == nil {
+			if s := strings.TrimSpace(payload.Error); s != "" {
+				return s
+			}
+			if s := strings.TrimSpace(payload.Message); s != "" {
+				return s
+			}
+		}
+	}
+	return raw
 }

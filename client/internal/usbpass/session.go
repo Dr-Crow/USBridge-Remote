@@ -19,10 +19,20 @@ const claimTimeout = 20 * time.Second
 
 var errClaimTimeout = errors.New("libusb claim timed out")
 
+// usbipLoopbackExportAddr is where the real USB/IP exporter (server.go)
+// binds — loopback-only, never reachable from the network directly. The
+// network-facing address (StartSession's listenAddr, e.g. "0.0.0.0:3240")
+// is instead a TunnelListener that only forwards bytes here after a
+// connection has proven it holds a valid per-attach tunnel key (see
+// usbtunnel.go) — an unauthenticated OP_REQ_IMPORT/OP_REQ_DEVLIST can no
+// longer reach the real USB/IP protocol at all.
+const usbipLoopbackExportAddr = "127.0.0.1:57240"
+
 // Session owns the local USB/IP export for one (or more) mounted devices.
 type Session struct {
 	mu     sync.Mutex
 	server *Server
+	tunnel *TunnelListener
 	addr   string
 	busIDs []string
 }
@@ -116,7 +126,7 @@ func claimDevice(ed *ExportedDevice, ref usbDevRef) (use *ExportedDevice, abando
 		return fresh, false, err
 	}
 	if err != nil && !isGousbDisabled(err) {
-		logrus.Warnf("usbpass: claim %s failed (%v); requesting unbind/grant via pkexec", ed.BusID, err)
+		logrus.Warnf("usbpass: claim %s failed (%v); requesting OS-level access grant", ed.BusID, err)
 		if !RequestUSBAccess([]usbDevRef{ref}) {
 			if msg := LastUSBAccessError(); msg != "" {
 				return ed, false, fmt.Errorf("USB access: %s", msg)
@@ -178,6 +188,9 @@ func StartSession(listenAddr string, devices []models.USBPassthroughDevice) (*Se
 			busID = StableUSBIPBusID(d.InstanceID)
 		}
 		ed := NewExportedFromVIDPID(busID, vid, pid)
+		ed.InstanceID = d.InstanceID
+		ed.HIDUsagePage = d.HIDUsagePage
+		ed.HIDUsage = d.HIDUsage
 		accessRefs = append(accessRefs, usbDevRef{BusID: busID, Busnum: ed.Busnum, Devnum: ed.Devnum})
 		exported = append(exported, ed)
 		busIDs = append(busIDs, busID)
@@ -215,14 +228,20 @@ func StartSession(listenAddr string, devices []models.USBPassthroughDevice) (*Se
 			return nil, err
 		}
 		logrus.Infof("usbpass: live libusb claim for %s (busnum=%d devnum=%d)", used.BusID, used.Busnum, used.Devnum)
+		probeHIDUsage(used)
 	}
 
-	srv, err := StartExport(listenAddr, exported)
+	srv, err := StartExport(usbipLoopbackExportAddr, exported)
 	if err != nil {
 		closeExported(exported)
 		return nil, err
 	}
-	s := &Session{server: srv, addr: listenAddr, busIDs: busIDs}
+	tun, err := StartTunnelListener(listenAddr, usbipLoopbackExportAddr)
+	if err != nil {
+		srv.Stop()
+		return nil, err
+	}
+	s := &Session{server: srv, tunnel: tun, addr: listenAddr, busIDs: busIDs}
 	sessionMu.Lock()
 	active = s
 	sessionMu.Unlock()
@@ -237,6 +256,9 @@ func StopSession() {
 	active = nil
 	sessionMu.Unlock()
 	if s != nil {
+		if s.tunnel != nil {
+			s.tunnel.Stop()
+		}
 		s.server.Stop()
 	}
 }

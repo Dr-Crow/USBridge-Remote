@@ -6,17 +6,20 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"runtime"
 	"time"
 )
 
 // statusResponse mirrors gamestream-server's confirmed GET /api/status JSON
 // shape: {"active_video_codec": "h264"|"h265", "active_pixel_format": "...",
-// "active_chroma_444": bool, "color_444_available": bool} -- see
-// gamestream_proto::http::admin::StatusInfo.
+// "active_chroma_444": bool, "color_444_available": bool, "active_hdr": bool,
+// "hdr_available": bool} -- see gamestream_proto::http::admin::StatusInfo.
 type statusResponse struct {
 	ActiveVideoCodec  string `json:"active_video_codec"`
 	ActiveChroma444   bool   `json:"active_chroma_444"`
 	Color444Available bool   `json:"color_444_available"`
+	ActiveHdr         bool   `json:"active_hdr"`
+	HdrAvailable      bool   `json:"hdr_available"`
 }
 
 // rustshineAdminHTTPClient is shared across every CurrentVideoCodec call --
@@ -66,6 +69,7 @@ func (b *rustshineBackend) fetchStatus() *statusResponse {
 	req.SetBasicAuth(b.AdminUser(), b.AdminPass())
 	resp, err := rustshineAdminHTTPClient.Do(req)
 	if err != nil {
+		log.Printf("🎯 [CODEC-TRACE] [rustshine] GET %s failed: %v", url, err)
 		return nil
 	}
 	defer resp.Body.Close()
@@ -74,6 +78,7 @@ func (b *rustshineBackend) fetchStatus() *statusResponse {
 		log.Printf("[rustshine] /api/status decode failed: %v", err)
 		return nil
 	}
+	log.Printf("🎯 [CODEC-TRACE] [rustshine] GET %s -> active_video_codec=%q chroma444=%v hdr=%v", url, status.ActiveVideoCodec, status.ActiveChroma444, status.ActiveHdr)
 	return &status
 }
 
@@ -100,6 +105,28 @@ func (b *rustshineBackend) Color444Status() (active bool, available bool) {
 	return status.ActiveChroma444, status.Color444Available
 }
 
+// HdrStatus reports the RustShine HDR color upgrade's state -- mirrors
+// Color444Status exactly, see CodecProbe's doc comment.
+func (b *rustshineBackend) HdrStatus() (active bool, available bool) {
+	status := b.fetchStatus()
+	if status == nil {
+		return false, false
+	}
+	return status.ActiveHdr, status.HdrAvailable
+}
+
+// VirtualDisplaySupported reports whether this backend supports native
+// virtual displays: Windows (MttVDD, or SudoVDA), macOS (CGVirtualDisplay), and Linux
+// desktop builds (the in-tree vkms kernel module -- see rust-shine's
+// virtual_display::linux doc comment). The desktop Linux AppImage/deb this
+// agent ever stages is always built with the "desktop" feature (KMS
+// capture, the only realistic desktop-screen-capture path), which is the
+// same feature vkms support is gated behind -- so unconditionally true
+// here mirrors Windows/macOS, not a runtime capability probe.
+func (b *rustshineBackend) VirtualDisplaySupported() bool {
+	return runtime.GOOS == "windows" || runtime.GOOS == "darwin" || runtime.GOOS == "linux"
+}
+
 // SupportedVideoCodecs reuses the exact same /serverinfo NvHTTP probe as
 // Sunshine's (fetchSupportedVideoCodecs, sunshine_codec.go) — confirmed
 // gamestream-server implements the identical ServerCodecModeSupport bitmask
@@ -113,11 +140,19 @@ func (b *rustshineBackend) SupportedVideoCodecs(adminPort int) []string {
 	}
 	b.supportedCodecsCache.mu.Unlock()
 
-	codecs := fetchSupportedVideoCodecs(adminPort)
-
-	b.supportedCodecsCache.mu.Lock()
-	b.supportedCodecsCache.codecs = codecs
-	b.supportedCodecsCache.fetchedAt = time.Now()
-	b.supportedCodecsCache.mu.Unlock()
+	flags, ok := fetchServerCodecFlags(adminPort)
+	codecs := codecsFromFlags(flags, ok)
+	// A failed query (the streamer restarting -- an update, a config
+	// change -- and not listening yet) yields the h264-only fallback. Caching
+	// that pinned the client to H.264 for the whole TTL: confirmed live, an
+	// update restart at 01:53:30 was queried 0.8s later, got "connection
+	// refused", and H.265 vanished from the client's codec list for 30
+	// minutes. Only a real answer is cached; the next call retries.
+	if ok {
+		b.supportedCodecsCache.mu.Lock()
+		b.supportedCodecsCache.codecs = codecs
+		b.supportedCodecsCache.fetchedAt = time.Now()
+		b.supportedCodecsCache.mu.Unlock()
+	}
 	return codecs
 }

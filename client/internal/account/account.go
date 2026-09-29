@@ -62,10 +62,21 @@ func StartLogin(ctx context.Context) (*LoginStart, error) {
 		VerificationURL string `json:"verification_url"`
 		ExpiresIn       int    `json:"expires_in"`
 	}
-	if err := doJSON(ctx, http.MethodPost, "/v1/account/login/start", nil, "", &out); err != nil {
+	if err := doJSON(ctx, http.MethodPost, "/v1/account/login/start", startBody(), "", &out); err != nil {
 		return nil, err
 	}
 	return &LoginStart{Code: out.Code, VerificationURL: out.VerificationURL, ExpiresIn: out.ExpiresIn}, nil
+}
+
+// startBody is the (optional, best-effort) hardware summary sent with the
+// login start request -- see DeviceInfo's doc comment. A marshal failure
+// just means the request goes out without a body, same as before.
+func startBody() []byte {
+	b, err := json.Marshal(map[string]any{"device_info": CollectDeviceInfo()})
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // LoginPollResult is Poll's outcome for one poll tick.
@@ -115,6 +126,39 @@ func ListLicenses(ctx context.Context, accountToken string) ([]License, error) {
 		return nil, err
 	}
 	return out.Licenses, nil
+}
+
+// DeleteAccount sends a deletion request for the account identified by accountToken.
+// If active commercial licenses block deletion (HTTP 409), returns the server-provided message.
+func DeleteAccount(ctx context.Context, accountToken string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, backendBaseURL+"/v1/account", nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "usbridge-client-account")
+	if accountToken != "" {
+		req.Header.Set("Authorization", "Bearer "+accountToken)
+	}
+	resp, err := httpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("account: request /v1/account: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		var errResp struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(respBody, &errResp) == nil && errResp.Message != "" {
+			return fmt.Errorf("%s", errResp.Message)
+		}
+		return fmt.Errorf("account: /v1/account: HTTP %d: %s", resp.StatusCode, truncate(respBody))
+	}
+	return nil
 }
 
 func doJSON(ctx context.Context, method, path string, body []byte, bearer string, out any) error {

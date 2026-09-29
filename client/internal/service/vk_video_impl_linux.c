@@ -29,6 +29,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "shader_arrays.h" // g_ycbcr_crop_vert_spv / g_ycbcr_frag_spv (zero-copy dma-buf path)
+
 extern void goVKLog(char *msg, int level);
 
 // g_pipe_{r,w} is a self-pipe used purely to wake select() (or break the
@@ -53,6 +55,17 @@ static Window   g_parent_win = 0;
 
 // Desired overlay rect — updated atomically; render thread uses for swapchain recreation.
 static atomic_int g_dst_x, g_dst_y, g_dst_w, g_dst_h;
+static atomic_int g_video_dx, g_video_dy, g_video_dw, g_video_dh;
+static atomic_int g_video_sw, g_video_sh;
+
+static void vk_store_video_dest(int dx, int dy, int dw, int dh, int sw, int sh) {
+    atomic_store(&g_video_dx, dx);
+    atomic_store(&g_video_dy, dy);
+    atomic_store(&g_video_dw, dw);
+    atomic_store(&g_video_dh, dh);
+    atomic_store(&g_video_sw, sw);
+    atomic_store(&g_video_sh, sh);
+}
 
 // Hide flag: set by vk_video_set_hidden(); applied in vk_video_update_frame() (CGO thread).
 static volatile atomic_int g_hidden;
@@ -75,6 +88,7 @@ static VkImage                 *g_swap_imgs    = NULL;
 static VkImageView             *g_swap_views   = NULL;
 static VkFormat                 g_swap_fmt     = VK_FORMAT_UNDEFINED;
 static VkExtent2D               g_swap_ext     = {0, 0};
+static int                      g_have_vk13    = 0; // set by vk_create_instance
 
 // Staging buffer (host-visible, coherent).
 static VkBuffer                 g_stage_buf    = VK_NULL_HANDLE;
@@ -103,6 +117,38 @@ static uint8_t         *g_buf    = NULL;
 static size_t           g_buf_sz = 0;
 static int              g_fw = 0, g_fh = 0, g_fs = 0;
 static volatile int     g_ready  = 0;
+
+// Zero-copy dma-buf frame slot — parallel to g_buf/g_ready above, capacity 1,
+// drop-on-full. Only one of {g_ready, g_dmabuf_ready} is meaningful at a
+// time: a session either runs decode entirely in software/unsupported-hw
+// (RGBA path, g_ready) or on VAAPI/QSV with a Vulkan-capable device
+// (dma-buf path, g_dmabuf_ready) -- see moonlight_cgo_linux.go's
+// deliver_frame for which one a given frame takes. fd/release_ctx/
+// release_fn ownership transfers to this struct once queued (see
+// vk_video_try_submit_dmabuf's doc comment).
+typedef struct {
+    int      fd;
+    uint64_t modifier;
+    int      surf_w, surf_h; // VAAPI/QSV surface's allocated (padded) extent
+    int      vis_w, vis_h;   // negotiated/visible frame extent (for UV crop)
+    uint32_t plane_count;
+    uint32_t offset0, pitch0, offset1, pitch1;
+    void     *release_ctx;
+    void    (*release_fn)(void*);
+} DmabufFrame;
+static DmabufFrame      g_dmabuf_pending;
+static volatile int     g_dmabuf_ready = 0;
+
+// NV12 upload frame slot (see vk_video_try_submit_nv12) -- triple-buffered
+// so neither side copies under g_mu: the decoder fills g_nv12_back, then
+// swaps it with g_nv12_pending under the lock; the render thread swaps
+// g_nv12_pending with g_nv12_front under the lock and uploads from front.
+// Each buffer is tightly packed Y (w*h) followed by interleaved UV
+// (cw*2 * ch) at nv12_uv_offset(). Capacity 1, drop-on-full like the others.
+typedef struct { uint8_t *p; size_t cap; int w, h; } Nv12Buf;
+static Nv12Buf          g_nv12_bufs[3];
+static int              g_nv12_back = 0, g_nv12_pending = 1, g_nv12_front = 2;
+static volatile int     g_nv12_ready = 0;
 
 static pthread_mutex_t  g_mu     = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t        g_thread = 0;
@@ -147,9 +193,27 @@ static int vk_create_instance(void) {
         VK_KHR_SURFACE_EXTENSION_NAME,
         VK_KHR_XLIB_SURFACE_EXTENSION_NAME,
     };
+    // apiVersion 1.3: the zero-copy dma-buf render path needs
+    // VkSamplerYcbcrConversion and dynamic rendering (vkCmdBeginRendering),
+    // both core since 1.3 -- requesting a plain 1.0 instance (the previous
+    // default here) leaves those core entry points/features unavailable per
+    // spec even though the underlying driver (checked: Mesa ANV 1.4.x)
+    // supports them.
+    VkApplicationInfo appInfo = { VK_STRUCTURE_TYPE_APPLICATION_INFO };
+    appInfo.apiVersion = VK_API_VERSION_1_3;
     VkInstanceCreateInfo ci = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
+    ci.pApplicationInfo       = &appInfo;
     ci.enabledExtensionCount   = 2;
     ci.ppEnabledExtensionNames = exts;
+    if (vkCreateInstance(&ci, NULL, &g_inst) == VK_SUCCESS) {
+        g_have_vk13 = 1;
+        return 1;
+    }
+    // Fall back to a plain 1.0 instance on drivers too old for 1.3 --
+    // zero-copy dma-buf render stays disabled (vk_ycbcr_ensure_pipeline
+    // checks g_have_vk13), the RGBA blit path still works unchanged.
+    g_have_vk13 = 0;
+    ci.pApplicationInfo = NULL;
     return vkCreateInstance(&ci, NULL, &g_inst) == VK_SUCCESS;
 }
 
@@ -192,20 +256,105 @@ static int vk_select_device(void) {
     return 1;
 }
 
+// Extensions needed by the zero-copy VAAPI/QSV dma-buf render path (see
+// vk_ycbcr_ensure_pipeline / vk_render_frame_dmabuf below). Enabled only if
+// the device actually reports them and the instance is 1.3+ (for core
+// VkSamplerYcbcrConversion + dynamic rendering) -- on a driver missing any
+// of these, g_zerocopy_supported stays 0 and frames just take the existing
+// RGBA blit path, same as before this feature existed.
+static const char *kZeroCopyExts[] = {
+    VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
+    VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+    VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
+    VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
+};
+#define N_ZEROCOPY_EXTS (int)(sizeof(kZeroCopyExts)/sizeof(kZeroCopyExts[0]))
+static int g_zerocopy_supported = 0;
+static int g_ycbcr_supported = 0;    // samplerYcbcrConversion + dynamicRendering enabled on g_dev
+static int g_nv12_supported = 0;     // NV12 upload path usable (see vk_render_frame_nv12)
+
 static int vk_create_device(void) {
+    uint32_t navail = 0;
+    vkEnumerateDeviceExtensionProperties(g_pdev, NULL, &navail, NULL);
+    VkExtensionProperties *avail = malloc(navail * sizeof(*avail));
+    vkEnumerateDeviceExtensionProperties(g_pdev, NULL, &navail, avail);
+
+    const char *dev_exts[1 + N_ZEROCOPY_EXTS];
+    uint32_t next = 0;
+    dev_exts[next++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+
+    int have_all_zc = g_have_vk13 ? 1 : 0;
+    for (int i = 0; i < N_ZEROCOPY_EXTS && have_all_zc; i++) {
+        int found = 0;
+        for (uint32_t j = 0; j < navail; j++)
+            if (strcmp(avail[j].extensionName, kZeroCopyExts[i]) == 0) { found = 1; break; }
+        if (!found) have_all_zc = 0;
+    }
+    if (have_all_zc) {
+        for (int i = 0; i < N_ZEROCOPY_EXTS; i++) dev_exts[next++] = kZeroCopyExts[i];
+    }
+    free(avail);
+    g_zerocopy_supported = have_all_zc;
+
+    // VkSamplerYcbcrConversion and dynamic rendering are core 1.3 but are
+    // still *features* that must be explicitly enabled at device creation
+    // (previously they weren't -- the dma-buf path relied on ANV tolerating
+    // that). Both the dma-buf zero-copy path and the NV12 upload path need
+    // them; without them both stay off and frames take the RGBA blit path.
+    VkPhysicalDeviceVulkan13Features f13 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
+    VkPhysicalDeviceVulkan11Features f11 = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, &f13 };
+    VkPhysicalDeviceFeatures2 feats = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f11 };
+    int ycbcr_ok = 0;
+    if (g_have_vk13) {
+        VkPhysicalDeviceProperties pr;
+        vkGetPhysicalDeviceProperties(g_pdev, &pr);
+        if (pr.apiVersion >= VK_API_VERSION_1_3) {
+            vkGetPhysicalDeviceFeatures2(g_pdev, &feats);
+            ycbcr_ok = f11.samplerYcbcrConversion && f13.dynamicRendering;
+        }
+    }
+    if (ycbcr_ok) {
+        // Enable only what we use.
+        VkPhysicalDeviceFeatures2 keep = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &f11 };
+        memset(&f11, 0, sizeof(f11)); f11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES; f11.pNext = &f13;
+        memset(&f13, 0, sizeof(f13)); f13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+        f11.samplerYcbcrConversion = VK_TRUE;
+        f13.dynamicRendering = VK_TRUE;
+        feats = keep;
+    }
+    g_ycbcr_supported = ycbcr_ok;
+    if (!ycbcr_ok) g_zerocopy_supported = 0;
+    if (ycbcr_ok) {
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(g_pdev, VK_FORMAT_G8_B8R8_2PLANE_420_UNORM, &fp);
+        VkFormatFeatureFlags need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT |
+                                    VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT |
+                                    VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT;
+        g_nv12_supported = (fp.optimalTilingFeatures & need) == need;
+    }
+    if (getenv("USBRIDGE_VK_NO_NV12")) g_nv12_supported = 0;
+
     float pri = 1.0f;
     VkDeviceQueueCreateInfo qci = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
     qci.queueFamilyIndex = g_qfam;
     qci.queueCount       = 1;
     qci.pQueuePriorities = &pri;
-    const char *dev_exts[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
     VkDeviceCreateInfo dci = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
     dci.queueCreateInfoCount    = 1;
     dci.pQueueCreateInfos       = &qci;
-    dci.enabledExtensionCount   = 1;
+    dci.enabledExtensionCount   = next;
     dci.ppEnabledExtensionNames = dev_exts;
+    if (ycbcr_ok) dci.pNext = &feats;
     if (vkCreateDevice(g_pdev, &dci, NULL, &g_dev) != VK_SUCCESS) return 0;
     vkGetDeviceQueue(g_dev, g_qfam, 0, &g_queue);
+
+    char msg[96];
+    snprintf(msg, sizeof(msg), "zero-copy dma-buf render path: %s",
+             g_zerocopy_supported ? "available" : "unavailable (falling back to RGBA blit)");
+    goVKLog(msg, 0);
+    snprintf(msg, sizeof(msg), "NV12 upload render path (GPU YCbCr): %s",
+             g_nv12_supported ? "available" : "unavailable");
+    goVKLog(msg, 0);
     return 1;
 }
 
@@ -419,6 +568,855 @@ static void vk_image_barrier(VkCommandBuffer cb, VkImage img,
     vkCmdPipelineBarrier(cb, src_st, dst_st, 0, 0, NULL, 0, NULL, 1, &b);
 }
 
+// ─── zero-copy VAAPI/QSV dma-buf render path ─────────────────────────────────
+// moonlight_cgo_linux.go's deliver_frame maps a decoded QSV/VAAPI frame to
+// its underlying VASurfaceID and exports that surface as a dma-buf (see
+// vaExportSurfaceHandle) without ever touching the pixels on the CPU. This
+// path imports that dma-buf directly as a VkImage (NV12, multi-planar) and
+// samples it into the swapchain through a real VkSamplerYcbcrConversion --
+// the GPU does the YCbCr->RGB conversion during sampling, so decode output
+// never leaves GPU memory. Falls back to the RGBA blit path above whenever
+// g_zerocopy_supported is 0 (older driver/instance) or a given frame's
+// surface can't be exported/imported for any reason (see deliver_frame's
+// fallback branch in moonlight_cgo_linux.go).
+//
+// Verified feasible end-to-end on this exact Intel ADL iGPU (Mesa ANV)
+// before writing this: h264_qsv decode -> av_hwframe_map to a VAAPI-derived
+// frames ctx -> vaExportSurfaceHandle (NV12, Y-tiled modifier
+// 0x0100000000000002) -> vkCreateImage with
+// VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT + that exact modifier ->
+// vkAllocateMemory importing the dma-buf fd -> vkBindImageMemory, all
+// VK_SUCCESS. ANV's vkGetPhysicalDeviceFormatProperties2 for
+// VK_FORMAT_G8_B8R8_2PLANE_420_UNORM confirmed that modifier is one of the
+// ones it advertises support for, so this isn't relying on undefined
+// driver behavior.
+//
+// Sync note: VAAPI decode and this Vulkan device are different APIs with no
+// shared timeline, so instead of a semaphore we sync on the CPU --
+// moonlight_cgo_linux.go calls vaSyncSurface() (which blocks until the
+// VAAPI decode job has retired) before exporting the dma-buf, so by the
+// time Vulkan ever touches the imported memory, decode is unconditionally
+// finished. No memory is copied by this wait, only synchronized.
+
+static VkSamplerYcbcrConversion g_yconv        = VK_NULL_HANDLE;
+static VkSampler                g_ysampler     = VK_NULL_HANDLE;
+static VkDescriptorSetLayout    g_ydsl         = VK_NULL_HANDLE;
+static VkPipelineLayout         g_yplayout     = VK_NULL_HANDLE;
+static VkPipeline               g_ypipeline    = VK_NULL_HANDLE;
+static VkDescriptorPool         g_ydpool       = VK_NULL_HANDLE;
+static VkDescriptorSet          g_ydset        = VK_NULL_HANDLE;
+static VkImageView              g_ydset_bound_view = VK_NULL_HANDLE; // NV12 path's view g_ydset currently points at (NULL = something else)
+static int                      g_ypipeline_ok = 0; // 0=not tried, 1=ready, -1=failed (don't retry)
+
+// Previous zero-copy frame's per-frame resources (fresh VkImage/VkDeviceMemory
+// /VkImageView every frame, since the underlying VASurfaceID's contents
+// change every frame -- unlike the RGBA path's reused g_tex, there is no
+// benefit to keeping these around). Torn down (and release_fn called) once
+// the NEXT frame's fence wait below confirms this GPU work has retired --
+// same deferred-release timing as vk_video_impl_windows.c's
+// g_vkf_prev_release_ctx/fn.
+static VkImage        g_dmabuf_prev_img  = VK_NULL_HANDLE;
+static VkDeviceMemory g_dmabuf_prev_mem  = VK_NULL_HANDLE;
+static VkImageView    g_dmabuf_prev_view = VK_NULL_HANDLE;
+static void           *g_dmabuf_prev_release_ctx = NULL;
+static void          (*g_dmabuf_prev_release_fn)(void*) = NULL;
+
+static VkShaderModule vk_shader_from_spv(const uint32_t *code, size_t code_size) {
+    VkShaderModuleCreateInfo ci = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+    ci.codeSize = code_size;
+    ci.pCode    = code;
+    VkShaderModule mod = VK_NULL_HANDLE;
+    vkCreateShaderModule(g_dev, &ci, NULL, &mod);
+    return mod;
+}
+
+// vk_ycbcr_ensure_pipeline lazily creates the fixed NV12 sampler-conversion
+// pipeline (single format, single descriptor set reused/repointed every
+// frame via vkUpdateDescriptorSets -- unlike Windows' vk_video_impl, our
+// source VkImage is freshly created every frame anyway, so there is no
+// image-handle cache worth keeping). Returns 1 once ready, 0 on failure
+// (permanent -- doesn't retry).
+static int vk_ycbcr_ensure_pipeline(void) {
+    if (g_ypipeline_ok) return g_ypipeline_ok > 0;
+    g_ypipeline_ok = -1; // assume failure; flipped to 1 at the end on success
+
+    VkSamplerYcbcrConversionCreateInfo convCI = { VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_CREATE_INFO };
+    convCI.format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
+    convCI.ycbcrModel = VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601;
+    convCI.ycbcrRange = VK_SAMPLER_YCBCR_RANGE_ITU_NARROW;
+    convCI.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+    convCI.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+    convCI.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+    convCI.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+    convCI.xChromaOffset = VK_CHROMA_LOCATION_COSITED_EVEN;
+    convCI.yChromaOffset = VK_CHROMA_LOCATION_COSITED_EVEN;
+    convCI.chromaFilter = VK_FILTER_LINEAR;
+    if (vkCreateSamplerYcbcrConversion(g_dev, &convCI, NULL, &g_yconv) != VK_SUCCESS) {
+        goVKLog("vk_ycbcr_ensure_pipeline: vkCreateSamplerYcbcrConversion failed", 2);
+        return 0;
+    }
+
+    VkSamplerYcbcrConversionInfo convInfo = { VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO };
+    convInfo.conversion = g_yconv;
+    VkSamplerCreateInfo sampCI = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, &convInfo };
+    sampCI.magFilter = VK_FILTER_LINEAR;
+    sampCI.minFilter = VK_FILTER_LINEAR;
+    sampCI.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampCI.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampCI.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    if (vkCreateSampler(g_dev, &sampCI, NULL, &g_ysampler) != VK_SUCCESS) {
+        goVKLog("vk_ycbcr_ensure_pipeline: vkCreateSampler failed", 2);
+        return 0;
+    }
+
+    VkDescriptorSetLayoutBinding binding = {0};
+    binding.binding = 0;
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    binding.descriptorCount = 1;
+    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    binding.pImmutableSamplers = &g_ysampler;
+    VkDescriptorSetLayoutCreateInfo dslCI = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+    dslCI.bindingCount = 1; dslCI.pBindings = &binding;
+    if (vkCreateDescriptorSetLayout(g_dev, &dslCI, NULL, &g_ydsl) != VK_SUCCESS) {
+        goVKLog("vk_ycbcr_ensure_pipeline: vkCreateDescriptorSetLayout failed", 2);
+        return 0;
+    }
+
+    VkPushConstantRange pcr = { VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(float) * 2 };
+    VkPipelineLayoutCreateInfo plCI = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+    plCI.setLayoutCount = 1; plCI.pSetLayouts = &g_ydsl;
+    plCI.pushConstantRangeCount = 1; plCI.pPushConstantRanges = &pcr;
+    if (vkCreatePipelineLayout(g_dev, &plCI, NULL, &g_yplayout) != VK_SUCCESS) {
+        goVKLog("vk_ycbcr_ensure_pipeline: vkCreatePipelineLayout failed", 2);
+        return 0;
+    }
+
+    VkDescriptorPoolSize poolSize = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
+    VkDescriptorPoolCreateInfo poolCI = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    poolCI.maxSets = 1; poolCI.poolSizeCount = 1; poolCI.pPoolSizes = &poolSize;
+    if (vkCreateDescriptorPool(g_dev, &poolCI, NULL, &g_ydpool) != VK_SUCCESS) {
+        goVKLog("vk_ycbcr_ensure_pipeline: vkCreateDescriptorPool failed", 2);
+        return 0;
+    }
+    VkDescriptorSetAllocateInfo dsai = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    dsai.descriptorPool = g_ydpool; dsai.descriptorSetCount = 1; dsai.pSetLayouts = &g_ydsl;
+    if (vkAllocateDescriptorSets(g_dev, &dsai, &g_ydset) != VK_SUCCESS) {
+        goVKLog("vk_ycbcr_ensure_pipeline: vkAllocateDescriptorSets failed", 2);
+        return 0;
+    }
+
+    VkShaderModule vs = vk_shader_from_spv(g_ycbcr_crop_vert_spv, sizeof(g_ycbcr_crop_vert_spv));
+    VkShaderModule fs = vk_shader_from_spv(g_ycbcr_frag_spv, sizeof(g_ycbcr_frag_spv));
+    if (!vs || !fs) {
+        if (vs) vkDestroyShaderModule(g_dev, vs, NULL);
+        if (fs) vkDestroyShaderModule(g_dev, fs, NULL);
+        goVKLog("vk_ycbcr_ensure_pipeline: shader module creation failed", 2);
+        return 0;
+    }
+    VkPipelineShaderStageCreateInfo stages[2] = {0};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT; stages[0].module = vs; stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
+
+    VkPipelineVertexInputStateCreateInfo vi = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+    VkPipelineInputAssemblyStateCreateInfo ia = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo vpState = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+    vpState.viewportCount = 1; vpState.scissorCount = 1; // dynamic
+    VkDynamicState dynStates[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynCI = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+    dynCI.dynamicStateCount = 2; dynCI.pDynamicStates = dynStates;
+    VkPipelineRasterizationStateCreateInfo rs = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+    rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE; rs.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo ms = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    VkPipelineColorBlendAttachmentState cba = {0};
+    cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    VkPipelineColorBlendStateCreateInfo cb = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+    cb.attachmentCount = 1; cb.pAttachments = &cba;
+
+    VkPipelineRenderingCreateInfo renderingCI = { VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+    renderingCI.colorAttachmentCount = 1; renderingCI.pColorAttachmentFormats = &g_swap_fmt;
+
+    VkGraphicsPipelineCreateInfo pipeCI = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, &renderingCI };
+    pipeCI.stageCount = 2; pipeCI.pStages = stages;
+    pipeCI.pVertexInputState = &vi; pipeCI.pInputAssemblyState = &ia;
+    pipeCI.pViewportState = &vpState; pipeCI.pRasterizationState = &rs;
+    pipeCI.pMultisampleState = &ms; pipeCI.pColorBlendState = &cb;
+    pipeCI.pDynamicState = &dynCI;
+    pipeCI.layout = g_yplayout;
+    VkResult pr = vkCreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pipeCI, NULL, &g_ypipeline);
+    vkDestroyShaderModule(g_dev, vs, NULL);
+    vkDestroyShaderModule(g_dev, fs, NULL);
+    if (pr != VK_SUCCESS) {
+        goVKLog("vk_ycbcr_ensure_pipeline: vkCreateGraphicsPipelines failed", 2);
+        return 0;
+    }
+
+    g_ypipeline_ok = 1;
+    goVKLog("vk: zero-copy dma-buf NV12 pipeline ready", 0);
+    return 1;
+}
+
+// vk_dmabuf_release_prev tears down the previous zero-copy frame's VkImage/
+// memory/view and calls its release_fn (freeing the decoder's AVFrame ref,
+// letting VAAPI reclaim that surface). Safe to call once the caller has
+// confirmed (via fence wait) that no in-flight command buffer references
+// these anymore -- see the call site in vk_render_frame_dmabuf.
+static void vk_dmabuf_release_prev(void) {
+    if (g_dmabuf_prev_view) { vkDestroyImageView(g_dev, g_dmabuf_prev_view, NULL); g_dmabuf_prev_view = VK_NULL_HANDLE; }
+    if (g_dmabuf_prev_img)  { vkDestroyImage(g_dev, g_dmabuf_prev_img, NULL);       g_dmabuf_prev_img  = VK_NULL_HANDLE; }
+    if (g_dmabuf_prev_mem)  { vkFreeMemory(g_dev, g_dmabuf_prev_mem, NULL);         g_dmabuf_prev_mem  = VK_NULL_HANDLE; }
+    if (g_dmabuf_prev_release_fn) {
+        g_dmabuf_prev_release_fn(g_dmabuf_prev_release_ctx);
+        g_dmabuf_prev_release_fn  = NULL;
+        g_dmabuf_prev_release_ctx = NULL;
+    }
+}
+
+#define VKOV_MUTEX_DECL static pthread_mutex_t g_hud_mu = PTHREAD_MUTEX_INITIALIZER;
+#define VKOV_LOCK()     pthread_mutex_lock(&g_hud_mu)
+#define VKOV_UNLOCK()   pthread_mutex_unlock(&g_hud_mu)
+#include "vk_overlay_common.h"
+
+// vk_render_frame_dmabuf — zero-copy counterpart to vk_render_frame: imports
+// the caller's dma-buf as a VkImage and samples it directly into the
+// swapchain instead of blitting an uploaded RGBA staging texture. Takes
+// ownership of f->fd and f->release_ctx/release_fn regardless of outcome
+// (matches vk_video_try_submit_dmabuf's contract) -- callers must not touch
+// either afterward.
+static int vk_render_frame_dmabuf(DmabufFrame *f) {
+    if (!g_dev || !g_swap) { close(f->fd); if (f->release_fn) f->release_fn(f->release_ctx); return 0; }
+    if (!vk_ycbcr_ensure_pipeline()) {
+        // Pipeline creation failed for a reason vk_create_device's
+        // extension check couldn't catch (e.g. an unexpected format/
+        // modifier combination on some other GPU) -- disable the
+        // zero-copy path for the rest of this session so deliver_frame
+        // falls back to the CPU path on every subsequent frame instead of
+        // silently dropping frames forever (vk_video_zerocopy_supported()
+        // is what it checks before ever calling here again).
+        g_zerocopy_supported = 0;
+        close(f->fd); if (f->release_fn) f->release_fn(f->release_ctx);
+        return 0;
+    }
+    char dbg[128];
+
+    uint32_t img_idx = 0;
+    g_render_stage = 3;
+    VkResult res = vkAcquireNextImageKHR(g_dev, g_swap, 3000000000ULL,
+                                          g_img_sem, VK_NULL_HANDLE, &img_idx);
+    if (res == VK_ERROR_OUT_OF_DATE_KHR) {
+        g_render_stage = 7; vk_recreate_swapchain(); g_render_stage = 1;
+        close(f->fd); if (f->release_fn) f->release_fn(f->release_ctx);
+        return 0;
+    }
+    if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
+        snprintf(dbg, sizeof(dbg), "AcquireNextImage (dmabuf) failed res=%d", (int)res);
+        goVKLog(dbg, 2);
+        g_render_stage = 1;
+        close(f->fd); if (f->release_fn) f->release_fn(f->release_ctx);
+        return 0;
+    }
+
+    g_render_stage = 4;
+    VkResult fence_res = vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, 2000000000ULL);
+    if (fence_res == VK_TIMEOUT) {
+        goVKLog("WaitForFences TIMEOUT 2s (dmabuf path) — GPU hang?", 2);
+        vkResetFences(g_dev, 1, &g_fence);
+        g_render_stage = 1;
+        close(f->fd); if (f->release_fn) f->release_fn(f->release_ctx);
+        return 0;
+    }
+    vkResetFences(g_dev, 1, &g_fence);
+
+    // The fence wait above just confirmed the PREVIOUS zero-copy frame's
+    // GPU read has fully retired -- safe to tear it down now (this frame's
+    // own resources become "prev" further down, released on the call after
+    // this one).
+    vk_dmabuf_release_prev();
+
+    // ---- import this frame's dma-buf as a VkImage ----
+    VkFormat fmt = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM; // NV12 8-bit -- the only format deliver_frame exports today
+    VkSubresourceLayout planeLayouts[2] = {0};
+    planeLayouts[0].offset = f->offset0; planeLayouts[0].rowPitch = f->pitch0;
+    planeLayouts[1].offset = f->offset1; planeLayouts[1].rowPitch = f->pitch1;
+
+    VkImageDrmFormatModifierExplicitCreateInfoEXT explicitInfo = {
+        VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT
+    };
+    explicitInfo.drmFormatModifier = f->modifier;
+    explicitInfo.drmFormatModifierPlaneCount = f->plane_count;
+    explicitInfo.pPlaneLayouts = planeLayouts;
+
+    VkExternalMemoryImageCreateInfo extMemImgInfo = {
+        VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO, &explicitInfo
+    };
+    extMemImgInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+
+    VkImageCreateInfo ici = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &extMemImgInfo };
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.format = fmt;
+    ici.extent = (VkExtent3D){ (uint32_t)f->surf_w, (uint32_t)f->surf_h, 1 };
+    ici.mipLevels = 1; ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+    ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+    ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VkImage img = VK_NULL_HANDLE;
+    if (vkCreateImage(g_dev, &ici, NULL, &img) != VK_SUCCESS) {
+        goVKLog("vk_render_frame_dmabuf: vkCreateImage failed", 2);
+        close(f->fd); if (f->release_fn) f->release_fn(f->release_ctx);
+        g_render_stage = 1; return 0;
+    }
+
+    VkMemoryRequirements mr;
+    vkGetImageMemoryRequirements(g_dev, img, &mr);
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_pdev, &mp);
+    uint32_t memType = vk_find_mem(&mp, mr.memoryTypeBits, 0);
+    if (memType == UINT32_MAX) {
+        goVKLog("vk_render_frame_dmabuf: no compatible memory type", 2);
+        vkDestroyImage(g_dev, img, NULL);
+        close(f->fd); if (f->release_fn) f->release_fn(f->release_ctx);
+        g_render_stage = 1; return 0;
+    }
+
+    VkImportMemoryFdInfoKHR importInfo = { VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR };
+    importInfo.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    importInfo.fd = f->fd;
+    VkMemoryDedicatedAllocateInfo dedicated = { VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, &importInfo };
+    dedicated.image = img;
+    VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &dedicated };
+    mai.allocationSize = mr.size;
+    mai.memoryTypeIndex = memType;
+
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    VkResult mres = vkAllocateMemory(g_dev, &mai, NULL, &mem);
+    if (mres != VK_SUCCESS) {
+        // Import failed -- per VkImportMemoryFdInfoKHR semantics ownership
+        // only transfers on success, so we still own f->fd here.
+        snprintf(dbg, sizeof(dbg), "vk_render_frame_dmabuf: vkAllocateMemory (import) failed res=%d", (int)mres);
+        goVKLog(dbg, 2);
+        vkDestroyImage(g_dev, img, NULL);
+        close(f->fd); if (f->release_fn) f->release_fn(f->release_ctx);
+        g_render_stage = 1; return 0;
+    }
+    // Import succeeded: the driver now owns f->fd (spec: "the application
+    // must not perform any operations on the file descriptor after a
+    // successful import") -- do not close it ourselves from here on.
+
+    if (vkBindImageMemory(g_dev, img, mem, 0) != VK_SUCCESS) {
+        goVKLog("vk_render_frame_dmabuf: vkBindImageMemory failed", 2);
+        vkFreeMemory(g_dev, mem, NULL);
+        vkDestroyImage(g_dev, img, NULL);
+        if (f->release_fn) f->release_fn(f->release_ctx);
+        g_render_stage = 1; return 0;
+    }
+
+    VkSamplerYcbcrConversionInfo convInfo = { VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO };
+    convInfo.conversion = g_yconv;
+    VkImageViewCreateInfo viewCI = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, &convInfo };
+    viewCI.image = img;
+    viewCI.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewCI.format = fmt;
+    viewCI.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewCI.subresourceRange.levelCount = 1;
+    viewCI.subresourceRange.layerCount = 1;
+    VkImageView view = VK_NULL_HANDLE;
+    if (vkCreateImageView(g_dev, &viewCI, NULL, &view) != VK_SUCCESS) {
+        goVKLog("vk_render_frame_dmabuf: vkCreateImageView failed", 2);
+        vkFreeMemory(g_dev, mem, NULL);
+        vkDestroyImage(g_dev, img, NULL);
+        if (f->release_fn) f->release_fn(f->release_ctx);
+        g_render_stage = 1; return 0;
+    }
+
+    VkDescriptorImageInfo imgInfo = { VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+    write.dstSet = g_ydset; write.dstBinding = 0; write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &imgInfo;
+    vkUpdateDescriptorSets(g_dev, 1, &write, 0, NULL);
+    g_ydset_bound_view = VK_NULL_HANDLE; // NV12 path must re-point g_ydset
+
+    // ---- record + submit + present ----
+    vkResetCommandBuffer(g_cmdbuf, 0);
+    VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(g_cmdbuf, &bi);
+
+    // Queue-family-ownership acquire: this image was produced entirely
+    // outside Vulkan (VAAPI), so it starts life owned by
+    // VK_QUEUE_FAMILY_FOREIGN_EXT and must be formally transferred to our
+    // queue family before use -- a barrier-only operation, no semaphore
+    // needed (the actual GPU-work sync already happened via vaSyncSurface
+    // on the CPU before this fd ever reached us).
+    {
+        VkImageMemoryBarrier b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT;
+        b.dstQueueFamilyIndex = g_qfam;
+        b.image = img;
+        b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        b.subresourceRange.levelCount = 1;
+        b.subresourceRange.layerCount = 1;
+        b.srcAccessMask = 0;
+        b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(g_cmdbuf, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                              0, 0, NULL, 0, NULL, 1, &b);
+    }
+
+    // Overlay textures (Net Graph HUD) upload here: transfers are not valid
+    // inside the rendering pass below.
+    int draw_hud = vk_hud_maybe_upload_cmds(g_cmdbuf);
+    vk_aivision_maybe_upload_cmds(g_cmdbuf);
+
+    vk_image_barrier(g_cmdbuf, g_swap_imgs[img_idx],
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+
+    int sw = (int)g_swap_ext.width, sh = (int)g_swap_ext.height;
+    int fw = f->vis_w, fh = f->vis_h;
+    float fa = (float)fw / (float)(fh ? fh : 1);
+    float wa = (float)sw / (float)(sh ? sh : 1);
+    int dx = 0, dy = 0, dw = sw, dh = sh;
+    if (fa > wa) { dh = (int)(sw / fa + 0.5f); dy = (sh - dh) / 2; }
+    else         { dw = (int)(sh * fa + 0.5f); dx = (sw - dw) / 2; }
+
+    VkRenderingAttachmentInfo colorAtt = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+    colorAtt.imageView = g_swap_views[img_idx];
+    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAtt.clearValue.color = (VkClearColorValue){{0,0,0,1}};
+
+    VkRenderingInfo renderInfo = { VK_STRUCTURE_TYPE_RENDERING_INFO };
+    renderInfo.renderArea = (VkRect2D){ {0,0}, g_swap_ext };
+    renderInfo.layerCount = 1;
+    renderInfo.colorAttachmentCount = 1;
+    renderInfo.pColorAttachments = &colorAtt;
+    vkCmdBeginRendering(g_cmdbuf, &renderInfo);
+
+    VkViewport vp = { (float)dx, (float)dy, (float)dw, (float)dh, 0.0f, 1.0f };
+    VkRect2D scissor = { {dx, dy}, {(uint32_t)dw, (uint32_t)dh} };
+    vkCmdSetViewport(g_cmdbuf, 0, 1, &vp);
+    vkCmdSetScissor(g_cmdbuf, 0, 1, &scissor);
+
+    vkCmdBindPipeline(g_cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, g_ypipeline);
+    vkCmdBindDescriptorSets(g_cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, g_yplayout, 0, 1, &g_ydset, 0, NULL);
+    float uvScale[2] = {
+        f->surf_w > 0 ? (float)f->vis_w / (float)f->surf_w : 1.0f,
+        f->surf_h > 0 ? (float)f->vis_h / (float)f->surf_h : 1.0f,
+    };
+    vkCmdPushConstants(g_cmdbuf, g_yplayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(uvScale), uvScale);
+    vkCmdDraw(g_cmdbuf, 3, 1, 0, 0);
+
+    vk_aivision_record_draw(g_cmdbuf, f->vis_w, f->vis_h);
+    if (draw_hud) vk_hud_record_draw(g_cmdbuf, f->vis_w, f->vis_h);
+
+    vkCmdEndRendering(g_cmdbuf);
+
+    vk_image_barrier(g_cmdbuf, g_swap_imgs[img_idx],
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+
+    vkEndCommandBuffer(g_cmdbuf);
+
+    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    si.waitSemaphoreCount = 1; si.pWaitSemaphores = &g_img_sem; si.pWaitDstStageMask = &wait_stage;
+    si.commandBufferCount = 1; si.pCommandBuffers = &g_cmdbuf;
+    si.signalSemaphoreCount = 1; si.pSignalSemaphores = &g_rnd_sem;
+    g_render_stage = 5;
+    vkQueueSubmit(g_queue, 1, &si, g_fence);
+
+    // This frame's resources become "prev" -- released on the NEXT call's
+    // fence wait, once we know this submission has retired.
+    g_dmabuf_prev_img  = img;
+    g_dmabuf_prev_mem  = mem;
+    g_dmabuf_prev_view = view;
+    g_dmabuf_prev_release_ctx = f->release_ctx;
+    g_dmabuf_prev_release_fn  = f->release_fn;
+
+    VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+    pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &g_rnd_sem;
+    pi.swapchainCount = 1; pi.pSwapchains = &g_swap; pi.pImageIndices = &img_idx;
+    g_render_stage = 6;
+    res = vkQueuePresentKHR(g_queue, &pi);
+    g_render_stage = 1;
+    if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
+        g_render_stage = 7; vk_recreate_swapchain(); g_render_stage = 1;
+        return 1;
+    }
+    if (res != VK_SUCCESS) {
+        snprintf(dbg, sizeof(dbg), "QueuePresent (dmabuf) failed res=%d", (int)res);
+        goVKLog(dbg, 2);
+    }
+    return (res == VK_SUCCESS) ? 1 : 0;
+}
+
+// vk_video_try_submit_dmabuf — zero-copy counterpart to vk_video_try_submit.
+// On success (return 1), ownership of `fd` and of (release_ctx, release_fn)
+// transfers to this module: it will eventually either import `fd` into a
+// VkImage (closing it per vkAllocateMemory's dma-buf-import contract) or
+// close it directly on a fallback/drop path, and will call
+// release_fn(release_ctx) exactly once, once the corresponding GPU read (if
+// any) has retired. On failure (return 0, e.g. renderer not active), the
+// caller keeps ownership of both and must release them itself.
+int vk_video_try_submit_dmabuf(int fd, uint64_t modifier, int surf_w, int surf_h,
+                                int vis_w, int vis_h, uint32_t plane_count,
+                                uint32_t offset0, uint32_t pitch0,
+                                uint32_t offset1, uint32_t pitch1,
+                                void *release_ctx, void (*release_fn)(void*)) {
+    if (!atomic_load(&g_active)) return 0;
+    pthread_mutex_lock(&g_mu);
+    if (!atomic_load(&g_active)) { pthread_mutex_unlock(&g_mu); return 0; }
+
+    // Drop-on-full: a previous zero-copy frame the render thread hasn't
+    // picked up yet gets released right here instead of leaking its fd/ref.
+    if (g_dmabuf_ready) {
+        close(g_dmabuf_pending.fd);
+        if (g_dmabuf_pending.release_fn) g_dmabuf_pending.release_fn(g_dmabuf_pending.release_ctx);
+    }
+    g_ready = 0; // only one of {RGBA, dma-buf, NV12} frame modes is live at a time
+    g_nv12_ready = 0;
+
+    g_dmabuf_pending.fd          = fd;
+    g_dmabuf_pending.modifier    = modifier;
+    g_dmabuf_pending.surf_w      = surf_w;
+    g_dmabuf_pending.surf_h      = surf_h;
+    g_dmabuf_pending.vis_w       = vis_w;
+    g_dmabuf_pending.vis_h       = vis_h;
+    g_dmabuf_pending.plane_count = plane_count;
+    g_dmabuf_pending.offset0     = offset0;
+    g_dmabuf_pending.pitch0      = pitch0;
+    g_dmabuf_pending.offset1     = offset1;
+    g_dmabuf_pending.pitch1      = pitch1;
+    g_dmabuf_pending.release_ctx = release_ctx;
+    g_dmabuf_pending.release_fn  = release_fn;
+    g_dmabuf_ready = 1;
+    g_submitted++;
+    pthread_mutex_unlock(&g_mu);
+    if (g_pipe_w >= 0) pipe_wake(g_pipe_w, 1);
+    return 1;
+}
+
+// vk_video_zerocopy_supported lets moonlight_cgo_linux.go check, before
+// doing any VAAPI mapping/export work, whether this renderer's device/
+// instance actually support the zero-copy path (see vk_create_device) --
+// avoids wasted vaExportSurfaceHandle calls when it doesn't.
+int vk_video_zerocopy_supported(void) { return g_zerocopy_supported; }
+
+// ─── NV12 upload render path ─────────────────────────────────────────────────
+// For frames that aren't dma-buf exportable (NVDEC/CUDA on NVIDIA, software
+// decode): the decoder hands over system-memory NV12, we copy it into the
+// staging buffer, vkCmdCopyBufferToImage into a persistent multi-planar
+// NV12 image, and sample that through the same VkSamplerYcbcrConversion
+// pipeline as the dma-buf path -- YCbCr->RGB, scaling and letterboxing all
+// on the GPU. Compared with the RGBA path this skips sws_scale NV12->RGBA on
+// the CPU (~13ms/frame at 2560x1600), the per-pixel R/B swizzle loop, and
+// moves 2.7x less data per frame (12 vs 32 bits/pixel).
+
+static VkImage        g_nv12_img  = VK_NULL_HANDLE;
+static VkDeviceMemory g_nv12_mem  = VK_NULL_HANDLE;
+static VkImageView    g_nv12_view = VK_NULL_HANDLE;
+static int            g_nv12_img_w = 0, g_nv12_img_h = 0;
+
+static size_t nv12_uv_offset(int w, int h) {
+    return ((size_t)w * (size_t)h + 15) & ~(size_t)15;
+}
+static size_t nv12_total_size(int w, int h) {
+    size_t cw = (size_t)(w + 1) / 2, ch = (size_t)(h + 1) / 2;
+    return nv12_uv_offset(w, h) + cw * 2 * ch;
+}
+
+static void vk_nv12_destroy_image(void) {
+    if (g_nv12_view) { vkDestroyImageView(g_dev, g_nv12_view, NULL); g_nv12_view = VK_NULL_HANDLE; }
+    if (g_nv12_img)  { vkDestroyImage(g_dev, g_nv12_img, NULL);     g_nv12_img  = VK_NULL_HANDLE; }
+    if (g_nv12_mem)  { vkFreeMemory(g_dev, g_nv12_mem, NULL);       g_nv12_mem  = VK_NULL_HANDLE; }
+    g_nv12_img_w = g_nv12_img_h = 0;
+    g_ydset_bound_view = VK_NULL_HANDLE;
+}
+
+// Caller must have waited g_fence (no in-flight work references the old image).
+static int vk_nv12_ensure_image(int w, int h) {
+    if (g_nv12_img && g_nv12_img_w == w && g_nv12_img_h == h) return 1;
+    vk_nv12_destroy_image();
+
+    VkImageCreateInfo ici = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
+    // 4:2:0 multi-planar images need even extents; the padding row/col is
+    // cropped off by the draw's UV scale.
+    ici.extent = (VkExtent3D){ (uint32_t)((w + 1) & ~1), (uint32_t)((h + 1) & ~1), 1 };
+    ici.mipLevels = 1; ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (vkCreateImage(g_dev, &ici, NULL, &g_nv12_img) != VK_SUCCESS) {
+        goVKLog("vk_nv12_ensure_image: vkCreateImage failed", 2);
+        g_nv12_img = VK_NULL_HANDLE; return 0;
+    }
+    VkMemoryRequirements mr;
+    vkGetImageMemoryRequirements(g_dev, g_nv12_img, &mr);
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(g_pdev, &mp);
+    uint32_t mi = vk_find_mem(&mp, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (mi == UINT32_MAX) { vk_nv12_destroy_image(); return 0; }
+    VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    mai.allocationSize = mr.size; mai.memoryTypeIndex = mi;
+    if (vkAllocateMemory(g_dev, &mai, NULL, &g_nv12_mem) != VK_SUCCESS) {
+        g_nv12_mem = VK_NULL_HANDLE; vk_nv12_destroy_image(); return 0;
+    }
+    if (vkBindImageMemory(g_dev, g_nv12_img, g_nv12_mem, 0) != VK_SUCCESS) { vk_nv12_destroy_image(); return 0; }
+
+    VkSamplerYcbcrConversionInfo convInfo = { VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO };
+    convInfo.conversion = g_yconv;
+    VkImageViewCreateInfo viewCI = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, &convInfo };
+    viewCI.image = g_nv12_img;
+    viewCI.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewCI.format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
+    viewCI.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewCI.subresourceRange.levelCount = 1;
+    viewCI.subresourceRange.layerCount = 1;
+    if (vkCreateImageView(g_dev, &viewCI, NULL, &g_nv12_view) != VK_SUCCESS) {
+        g_nv12_view = VK_NULL_HANDLE; vk_nv12_destroy_image(); return 0;
+    }
+    g_nv12_img_w = w; g_nv12_img_h = h;
+    char msg[96];
+    snprintf(msg, sizeof(msg), "vk: NV12 upload image ready %dx%d", w, h);
+    goVKLog(msg, 0);
+    return 1;
+}
+
+static int vk_render_frame_nv12(const Nv12Buf *fb) {
+    if (!g_dev || !g_swap) return 0;
+    if (!vk_ycbcr_ensure_pipeline()) { g_nv12_supported = 0; return 0; }
+    char dbg[128];
+    int fw = fb->w, fh = fb->h;
+    size_t total = nv12_total_size(fw, fh);
+
+    // Wait for the previous submission FIRST: it may still be reading the
+    // staging buffer / NV12 image / descriptor set we're about to touch.
+    g_render_stage = 4;
+    if (vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, 2000000000ULL) == VK_TIMEOUT) {
+        goVKLog("WaitForFences TIMEOUT 2s (nv12 path) — GPU hang?", 2);
+        g_render_stage = 1; return 0;
+    }
+    // Any dma-buf frame deferred from a previous mode switch is retired now.
+    vk_dmabuf_release_prev();
+
+    g_render_stage = 2;
+    if (!vk_ensure_staging(total))     { g_render_stage = 1; return 0; }
+    if (!vk_nv12_ensure_image(fw, fh)) { g_render_stage = 1; return 0; }
+    memcpy(g_stage_ptr, fb->p, total);
+
+    // The dma-buf path repoints g_ydset every frame; re-point it here
+    // whenever it isn't already at our persistent view.
+    if (g_ydset_bound_view != g_nv12_view) {
+        VkDescriptorImageInfo imgInfo = { VK_NULL_HANDLE, g_nv12_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        write.dstSet = g_ydset; write.dstBinding = 0; write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &imgInfo;
+        vkUpdateDescriptorSets(g_dev, 1, &write, 0, NULL);
+        g_ydset_bound_view = g_nv12_view;
+    }
+
+    uint32_t img_idx = 0;
+    g_render_stage = 3;
+    double t0 = mono_sec();
+    VkResult res = vkAcquireNextImageKHR(g_dev, g_swap, 3000000000ULL, g_img_sem, VK_NULL_HANDLE, &img_idx);
+    double dt = mono_sec() - t0;
+    if (dt > 0.1) {
+        snprintf(dbg, sizeof(dbg), "SLOW AcquireNextImage (nv12) %.0f ms res=%d", dt * 1000.0, (int)res);
+        goVKLog(dbg, 1);
+    }
+    if (res == VK_ERROR_OUT_OF_DATE_KHR) {
+        g_render_stage = 7; vk_recreate_swapchain(); g_render_stage = 1; return 0;
+    }
+    if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
+        snprintf(dbg, sizeof(dbg), "AcquireNextImage (nv12) failed res=%d", (int)res);
+        goVKLog(dbg, 2);
+        g_render_stage = 1; return 0;
+    }
+    // Reset only once we're certain to submit (an early return above must
+    // leave the fence signaled, or the next wait would hang for 2s).
+    vkResetFences(g_dev, 1, &g_fence);
+
+    vkResetCommandBuffer(g_cmdbuf, 0);
+    VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(g_cmdbuf, &bi);
+
+    // Whole image is overwritten -- UNDEFINED discards the old contents.
+    vk_image_barrier(g_cmdbuf, g_nv12_img,
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        0, VK_ACCESS_TRANSFER_WRITE_BIT,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkBufferImageCopy bic[2];
+    memset(bic, 0, sizeof(bic));
+    bic[0].bufferOffset = 0;
+    bic[0].bufferRowLength = (uint32_t)fw;
+    bic[0].bufferImageHeight = (uint32_t)fh;
+    bic[0].imageSubresource.aspectMask = VK_IMAGE_ASPECT_PLANE_0_BIT;
+    bic[0].imageSubresource.layerCount = 1;
+    bic[0].imageExtent = (VkExtent3D){ (uint32_t)fw, (uint32_t)fh, 1 };
+    uint32_t cw = (uint32_t)(fw + 1) / 2, ch = (uint32_t)(fh + 1) / 2;
+    bic[1].bufferOffset = nv12_uv_offset(fw, fh);
+    bic[1].bufferRowLength = cw;   // in R8G8 texels
+    bic[1].bufferImageHeight = ch;
+    bic[1].imageSubresource.aspectMask = VK_IMAGE_ASPECT_PLANE_1_BIT;
+    bic[1].imageSubresource.layerCount = 1;
+    bic[1].imageExtent = (VkExtent3D){ cw, ch, 1 };
+    vkCmdCopyBufferToImage(g_cmdbuf, g_stage_buf, g_nv12_img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 2, bic);
+    vk_image_barrier(g_cmdbuf, g_nv12_img,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+    // Overlay textures (Net Graph HUD, AI Vision) upload outside the pass.
+    int draw_hud = vk_hud_maybe_upload_cmds(g_cmdbuf);
+    vk_aivision_maybe_upload_cmds(g_cmdbuf);
+
+    vk_image_barrier(g_cmdbuf, g_swap_imgs[img_idx],
+        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+
+    int sw = (int)g_swap_ext.width, sh = (int)g_swap_ext.height;
+    float fa = (float)fw / (float)(fh ? fh : 1);
+    float wa = (float)sw / (float)(sh ? sh : 1);
+    int dx = 0, dy = 0, dw = sw, dh = sh;
+    if (fa > wa) { dh = (int)(sw / fa + 0.5f); dy = (sh - dh) / 2; }
+    else         { dw = (int)(sh * fa + 0.5f); dx = (sw - dw) / 2; }
+    vk_store_video_dest(dx, dy, dw, dh, sw, sh);
+
+    VkRenderingAttachmentInfo colorAtt = { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+    colorAtt.imageView = g_swap_views[img_idx];
+    colorAtt.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorAtt.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    colorAtt.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    colorAtt.clearValue.color = (VkClearColorValue){{0,0,0,1}};
+    VkRenderingInfo renderInfo = { VK_STRUCTURE_TYPE_RENDERING_INFO };
+    renderInfo.renderArea = (VkRect2D){ {0,0}, g_swap_ext };
+    renderInfo.layerCount = 1;
+    renderInfo.colorAttachmentCount = 1;
+    renderInfo.pColorAttachments = &colorAtt;
+    vkCmdBeginRendering(g_cmdbuf, &renderInfo);
+
+    VkViewport vp = { (float)dx, (float)dy, (float)dw, (float)dh, 0.0f, 1.0f };
+    VkRect2D scissor = { {dx, dy}, {(uint32_t)dw, (uint32_t)dh} };
+    vkCmdSetViewport(g_cmdbuf, 0, 1, &vp);
+    vkCmdSetScissor(g_cmdbuf, 0, 1, &scissor);
+    vkCmdBindPipeline(g_cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, g_ypipeline);
+    vkCmdBindDescriptorSets(g_cmdbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, g_yplayout, 0, 1, &g_ydset, 0, NULL);
+    float uvScale[2] = {
+        (float)fw / (float)((fw + 1) & ~1),
+        (float)fh / (float)((fh + 1) & ~1),
+    };
+    vkCmdPushConstants(g_cmdbuf, g_yplayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(uvScale), uvScale);
+    vkCmdDraw(g_cmdbuf, 3, 1, 0, 0);
+    vk_aivision_record_draw(g_cmdbuf, fw, fh);
+    if (draw_hud) vk_hud_record_draw(g_cmdbuf, fw, fh);
+    vkCmdEndRendering(g_cmdbuf);
+
+    vk_image_barrier(g_cmdbuf, g_swap_imgs[img_idx],
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    vkEndCommandBuffer(g_cmdbuf);
+
+    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    si.waitSemaphoreCount = 1; si.pWaitSemaphores = &g_img_sem; si.pWaitDstStageMask = &wait_stage;
+    si.commandBufferCount = 1; si.pCommandBuffers = &g_cmdbuf;
+    si.signalSemaphoreCount = 1; si.pSignalSemaphores = &g_rnd_sem;
+    g_render_stage = 5;
+    vkQueueSubmit(g_queue, 1, &si, g_fence);
+
+    VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
+    pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &g_rnd_sem;
+    pi.swapchainCount = 1; pi.pSwapchains = &g_swap; pi.pImageIndices = &img_idx;
+    g_render_stage = 6;
+    t0 = mono_sec();
+    res = vkQueuePresentKHR(g_queue, &pi);
+    dt = mono_sec() - t0;
+    if (dt > 0.1) {
+        snprintf(dbg, sizeof(dbg), "SLOW QueuePresent (nv12) %.0f ms res=%d", dt * 1000.0, (int)res);
+        goVKLog(dbg, 1);
+    }
+    g_render_stage = 1;
+    if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
+        g_render_stage = 7; vk_recreate_swapchain(); g_render_stage = 1;
+        return 1;
+    }
+    if (res != VK_SUCCESS) {
+        snprintf(dbg, sizeof(dbg), "QueuePresent (nv12) failed res=%d", (int)res);
+        goVKLog(dbg, 2);
+    }
+    return (res == VK_SUCCESS) ? 1 : 0;
+}
+
+int vk_video_nv12_supported(void) { return g_nv12_supported; }
+
+// vk_video_try_submit_nv12 queues one NV12 frame (arbitrary strides) for the
+// render thread. The copy into the back buffer happens outside g_mu.
+// Must only be called from the (single) decoder thread.
+int vk_video_try_submit_nv12(const uint8_t *y, int y_stride,
+                             const uint8_t *uv, int uv_stride,
+                             int width, int height) {
+    if (!atomic_load(&g_active) || !g_nv12_supported || width <= 0 || height <= 0) return 0;
+    Nv12Buf *b = &g_nv12_bufs[g_nv12_back];
+    size_t total = nv12_total_size(width, height);
+    if (b->cap < total) {
+        free(b->p);
+        b->p = malloc(total);
+        b->cap = b->p ? total : 0;
+        if (!b->p) return 0;
+    }
+    if (y_stride == width) {
+        memcpy(b->p, y, (size_t)width * (size_t)height);
+    } else {
+        for (int r = 0; r < height; r++)
+            memcpy(b->p + (size_t)r * width, y + (size_t)r * y_stride, (size_t)width);
+    }
+    size_t uvrow = (size_t)((width + 1) / 2) * 2;
+    int ch = (height + 1) / 2;
+    uint8_t *uvdst = b->p + nv12_uv_offset(width, height);
+    if ((size_t)uv_stride == uvrow) {
+        memcpy(uvdst, uv, uvrow * (size_t)ch);
+    } else {
+        for (int r = 0; r < ch; r++)
+            memcpy(uvdst + (size_t)r * uvrow, uv + (size_t)r * uv_stride, uvrow);
+    }
+    b->w = width; b->h = height;
+
+    pthread_mutex_lock(&g_mu);
+    if (!atomic_load(&g_active)) { pthread_mutex_unlock(&g_mu); return 0; }
+    // Only one frame mode is live at a time -- drop stale frames of the others.
+    if (g_dmabuf_ready) {
+        close(g_dmabuf_pending.fd);
+        if (g_dmabuf_pending.release_fn) g_dmabuf_pending.release_fn(g_dmabuf_pending.release_ctx);
+        g_dmabuf_ready = 0;
+    }
+    g_ready = 0;
+    int t = g_nv12_pending; g_nv12_pending = g_nv12_back; g_nv12_back = t;
+    g_nv12_ready = 1;
+    g_submitted++;
+    pthread_mutex_unlock(&g_mu);
+    if (g_pipe_w >= 0) pipe_wake(g_pipe_w, 1);
+    return 1;
+}
+
 // ─── render one frame ─────────────────────────────────────────────────────────
 
 static int vk_render_frame(uint8_t *pixels, int fw, int fh, int fs) {
@@ -526,6 +1524,7 @@ static int vk_render_frame(uint8_t *pixels, int fw, int fh, int fs) {
     int dx = 0, dy = 0, dw = sw, dh = sh;
     if (fa > wa) { dh = (int)(sw / fa + 0.5f); dy = (sh - dh) / 2; }
     else         { dw = (int)(sh * fa + 0.5f); dx = (sw - dw) / 2; }
+    vk_store_video_dest(dx, dy, dw, dh, sw, sh);
 
     VkClearColorValue black = {0};
     VkImageSubresourceRange full = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
@@ -631,8 +1630,19 @@ static void *vk_render_thread(void *unused) {
 
         uint8_t *tmp = NULL;
         int fw = 0, fh = 0, fs = 0;
+        int have_dmabuf = 0;
+        DmabufFrame dmaf;
+        int have_nv12 = 0;
         pthread_mutex_lock(&g_mu);
-        if (g_ready && g_buf) {
+        if (g_nv12_ready) {
+            int t = g_nv12_front; g_nv12_front = g_nv12_pending; g_nv12_pending = t;
+            g_nv12_ready = 0;
+            have_nv12 = 1;
+        } else if (g_dmabuf_ready) {
+            dmaf = g_dmabuf_pending;
+            g_dmabuf_ready = 0;
+            have_dmabuf = 1;
+        } else if (g_ready && g_buf) {
             fw = g_fw; fh = g_fh; fs = g_fs;
             size_t sz = (size_t)fh * (size_t)fs;
             tmp = malloc(sz);
@@ -640,10 +1650,17 @@ static void *vk_render_thread(void *unused) {
             g_ready = 0;
         }
         pthread_mutex_unlock(&g_mu);
-        if (!tmp) continue;
+        if (!tmp && !have_dmabuf && !have_nv12) continue;
 
         g_render_stage = 1;
-        int rf = vk_render_frame(tmp, fw, fh, fs);
+        int rf;
+        if (have_nv12) {
+            rf = vk_render_frame_nv12(&g_nv12_bufs[g_nv12_front]);
+            fw = g_nv12_bufs[g_nv12_front].w; fh = g_nv12_bufs[g_nv12_front].h;
+        } else {
+            rf = have_dmabuf ? vk_render_frame_dmabuf(&dmaf) : vk_render_frame(tmp, fw, fh, fs);
+            if (have_dmabuf) { fw = dmaf.vis_w; fh = dmaf.vis_h; }
+        }
         free(tmp);
         if (!rf) {
             consec_fail++;
@@ -692,6 +1709,17 @@ int vk_video_try_submit(uint8_t *rgba, int width, int height, int stride) {
         pthread_mutex_unlock(&g_mu);
         return 0;
     }
+    // A session runs either the RGBA path or the dma-buf zero-copy path,
+    // never both -- drop any stale pending zero-copy frame the render
+    // thread hasn't picked up yet (e.g. right after a codec switch moved
+    // this session from hw-dmabuf back to software/RGBA) instead of
+    // leaking its fd/AVFrame ref.
+    if (g_dmabuf_ready) {
+        close(g_dmabuf_pending.fd);
+        if (g_dmabuf_pending.release_fn) g_dmabuf_pending.release_fn(g_dmabuf_pending.release_ctx);
+        g_dmabuf_ready = 0;
+    }
+    g_nv12_ready = 0;
     if (!g_buf || g_buf_sz < sz) {
         free(g_buf);
         g_buf    = malloc(sz);
@@ -762,6 +1790,30 @@ static void vk_full_cleanup(void) {
         if (g_tex)     { vkDestroyImage(g_dev, g_tex, NULL);   g_tex = VK_NULL_HANDLE; }
         if (g_tex_mem) { vkFreeMemory(g_dev, g_tex_mem, NULL); g_tex_mem = VK_NULL_HANDLE; }
         g_tex_w = 0; g_tex_h = 0;
+
+        // Zero-copy dma-buf path: the render thread is already joined (see
+        // above), so nothing else can be touching these -- release whatever
+        // frame was in flight (prev, mid-render-defer) or still queued
+        // (pending, never picked up) and tear down the fixed NV12 pipeline.
+        vk_dmabuf_release_prev();
+        vk_nv12_destroy_image();
+        vk_hud_destroy();
+        if (g_dmabuf_ready) {
+            close(g_dmabuf_pending.fd);
+            if (g_dmabuf_pending.release_fn) g_dmabuf_pending.release_fn(g_dmabuf_pending.release_ctx);
+            g_dmabuf_ready = 0;
+        }
+        if (g_ydset)     { /* freed with pool below */ g_ydset = VK_NULL_HANDLE; }
+        if (g_ydpool)    { vkDestroyDescriptorPool(g_dev, g_ydpool, NULL); g_ydpool = VK_NULL_HANDLE; }
+        if (g_ypipeline) { vkDestroyPipeline(g_dev, g_ypipeline, NULL); g_ypipeline = VK_NULL_HANDLE; }
+        if (g_yplayout)  { vkDestroyPipelineLayout(g_dev, g_yplayout, NULL); g_yplayout = VK_NULL_HANDLE; }
+        if (g_ydsl)      { vkDestroyDescriptorSetLayout(g_dev, g_ydsl, NULL); g_ydsl = VK_NULL_HANDLE; }
+        if (g_ysampler)  { vkDestroySampler(g_dev, g_ysampler, NULL); g_ysampler = VK_NULL_HANDLE; }
+        if (g_yconv)     { vkDestroySamplerYcbcrConversion(g_dev, g_yconv, NULL); g_yconv = VK_NULL_HANDLE; }
+        g_ypipeline_ok = 0;
+        g_zerocopy_supported = 0;
+        g_nv12_supported = 0;
+        g_ycbcr_supported = 0;
         if (g_img_sem) { vkDestroySemaphore(g_dev, g_img_sem, NULL); g_img_sem = VK_NULL_HANDLE; }
         if (g_rnd_sem) { vkDestroySemaphore(g_dev, g_rnd_sem, NULL); g_rnd_sem = VK_NULL_HANDLE; }
         if (g_fence)   { vkDestroyFence(g_dev, g_fence, NULL);       g_fence   = VK_NULL_HANDLE; }
@@ -783,6 +1835,8 @@ static void vk_full_cleanup(void) {
     pthread_mutex_lock(&g_mu);
     if (g_buf) { free(g_buf); g_buf = NULL; g_buf_sz = 0; }
     g_ready = 0;
+    g_nv12_ready = 0;
+    for (int i = 0; i < 3; i++) { free(g_nv12_bufs[i].p); g_nv12_bufs[i].p = NULL; g_nv12_bufs[i].cap = 0; }
     pthread_mutex_unlock(&g_mu);
     g_ready = 0;
     g_rendered = 0; g_submitted = 0;
@@ -970,6 +2024,15 @@ void vk_video_clear_pending_stats(void) {
 void vk_video_get_diag(long long *hb, int *stage) {
     *hb    = g_render_hb;
     *stage = g_render_stage;
+}
+
+void vk_video_get_video_dest(int *dx, int *dy, int *dw, int *dh, int *sw, int *sh) {
+    if (dx) *dx = atomic_load(&g_video_dx);
+    if (dy) *dy = atomic_load(&g_video_dy);
+    if (dw) *dw = atomic_load(&g_video_dw);
+    if (dh) *dh = atomic_load(&g_video_dh);
+    if (sw) *sw = atomic_load(&g_video_sw);
+    if (sh) *sh = atomic_load(&g_video_sh);
 }
 
 #endif // defined(__linux__) && !defined(__ANDROID__)

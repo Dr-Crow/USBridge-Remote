@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"sync/atomic"
 	"encoding/json"
 	"strings"
 	"time"
@@ -89,7 +90,24 @@ func saveVideoPreferences(prefs videoPreferences) {
 	app.Preferences().SetString(videoPreferencesKey, string(data))
 }
 
+// benchmarkCodec, when set, replaces the saved codec for every stream
+// started while the benchmark runs (SetBenchmarkCodec).
+var benchmarkCodec atomic.Value // string
+
+// SetBenchmarkCodec forces the streams the benchmark starts to one codec
+// (models.VideoModeH264/H265/AV1), or with "" goes back to the saved one.
+// Nothing is saved: the user's own codec pick is left as it was.
+func SetBenchmarkCodec(codec string) { benchmarkCodec.Store(codec) }
+
 func loadSavedVideoDeviceConfig(devicePath, deviceName string) models.VideoDeviceConfig {
+	cfg := loadSavedVideoDeviceConfigRaw(devicePath, deviceName)
+	if codec, _ := benchmarkCodec.Load().(string); codec != "" {
+		cfg.VideoMode = codec
+	}
+	return cfg
+}
+
+func loadSavedVideoDeviceConfigRaw(devicePath, deviceName string) models.VideoDeviceConfig {
 	prefs := loadVideoPreferences()
 	if cfg, ok := prefs.Devices[devicePath]; ok {
 		if cfg.DeviceName == "" {
@@ -132,8 +150,36 @@ func saveVideoDeviceConfig(cfg models.VideoDeviceConfig) {
 	prefs.SelectedDevice = cfg.DevicePath
 	prefs.Devices[cfg.DevicePath] = cfg
 	saveVideoPreferences(prefs)
+	logrus.Infof("🎯 [CODEC-TRACE] saveVideoDeviceConfig: wrote prefs.SelectedDevice=%q VideoMode=%q", prefs.SelectedDevice, cfg.VideoMode)
 }
 
 func selectedVideoDevicePath() string {
 	return loadVideoPreferences().SelectedDevice
+}
+
+// correctSelectedVideoDevicePath updates prefs.SelectedDevice to newPath
+// without touching any per-device saved config -- call this when
+// resolvePreferredVideoConfig's device-list lookup falls back to a
+// different device than the one saved as "selected".
+//
+// Without this, a stale SelectedDevice (e.g. a virtual display whose agent
+// process has since restarted and forgotten it -- the agent only keeps
+// virtual displays in memory, see server.go's virtualDisplayCreate) never
+// self-heals: selectedVideoDevicePath() keeps returning the phantom path
+// forever, so every future ShowCurrentVideoSettings (header/status-bar gear)
+// opens the settings popup for a device that doesn't exist, any change the
+// user makes there gets saved under that same phantom path, and the device
+// that's actually streaming never sees it -- exactly the "picked H265, still
+// streams H264" bug, confirmed live via [CODEC-TRACE] logging (2026-09-18).
+func correctSelectedVideoDevicePath(newPath string) {
+	if strings.TrimSpace(newPath) == "" {
+		return
+	}
+	prefs := loadVideoPreferences()
+	if prefs.SelectedDevice == newPath {
+		return
+	}
+	logrus.Infof("🎯 [CODEC-TRACE] correctSelectedVideoDevicePath: prefs.SelectedDevice %q -> %q (previous device not in current device list)", prefs.SelectedDevice, newPath)
+	prefs.SelectedDevice = newPath
+	saveVideoPreferences(prefs)
 }

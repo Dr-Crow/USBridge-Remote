@@ -34,10 +34,30 @@ type SavedConnection struct {
 	Host          string `json:"host,omitempty"`
 	// MasterKey holds the API master secret (obtained by scanning the device QR code).
 	// It is used to sign requests and perform the initial sync.
-	MasterKey         string `json:"master_key"`
+	MasterKey string `json:"master_key"`
+	// Protocol is the connection route (AUTO/TS/LAN), not the agent tariff.
 	Protocol          string `json:"protocol,omitempty"`
 	TailscaleRegister bool   `json:"tailscale_register,omitempty"`
 	RemoteOS          string `json:"remote_os,omitempty"`
+	// RemoteProtocol is the agent tariff reported after a successful
+	// connect: opensource, free, pro, or enterprise.
+	RemoteProtocol string `json:"remote_protocol,omitempty"`
+	// Origin is "local" (this device only: connections.json, survives
+	// logout, not written to the account blob) or "cloud" (account blob,
+	// memory overlay, gone on logout). Empty is treated as local so
+	// existing connections.json files keep working.
+	Origin string `json:"origin,omitempty"`
+	// HwID is the agent's hardware id (agent/internal/hwid), carried in the
+	// pairing QR/deep link's hw_id param (see agent/internal/app's
+	// buildQRLink) when the agent that generated it knew one. Lets the wasm
+	// build's postOffer (client/internal/webrtcweb/client_wasm.go) address
+	// usbridge-entitlement's WebRTC signaling relay when this agent isn't
+	// directly reachable at all -- see that relay's own doc comment
+	// (usbridge-entitlement-backend's webrtcSignalRelay.ts) for why. Empty
+	// for any connection saved before this field existed, or made without a
+	// hw_id-carrying QR/link (e.g. manual host:key entry) -- both just mean
+	// "no relay fallback available for this one", same as today.
+	HwID string `json:"hw_id,omitempty"`
 }
 
 type ConnectionManager struct {
@@ -51,6 +71,28 @@ type ConnectionManager struct {
 	connectionPending     bool
 	activeConnectionIndex int
 	syncingForm           bool
+
+	// editingGridIndex is the connections slice index of the Grid-mode card
+	// currently showing its inline edit layout (see
+	// connection_grid_card.go's ConnectionRowState.Editing), or -1 when no
+	// card is being edited. Grid and List each track their own edit target
+	// independently (editingListIndex is List's) since the two view modes
+	// can't both be showing at once anyway.
+	editingGridIndex int
+	// editingListIndex is the connections slice index of the List row
+	// currently shown in the split-edit layout (see
+	// connection_list_table.go's NewConnectionsListSplit and
+	// connection_manager_list_edit.go's buildListEditPanel), or -1 when
+	// List is showing its normal full table. The old modal editor
+	// (showEditDialog) is unused now that List's pencil drives this instead.
+	editingListIndex int
+
+	// connectionSortMode drives the connections header's KVM/Agent badge
+	// toggle (see connectionsDisplayOrder/handleConnectionSortToggle):
+	// "" (default) leaves the list in creation-date order, "kvm"/"agent"/
+	// "unknown" stably moves that category to the front without hiding
+	// anything else.
+	connectionSortMode string
 
 	hostEntry      *widget.Entry
 	masterKeyEntry *widget.Entry
@@ -67,6 +109,52 @@ type ConnectionManager struct {
 	onConnectionsStateChange func(bool)
 	tsPollStop               chan struct{}
 
+	// tsStatusSink pushes raw Tailscale status text into the connection
+	// header's toggle (see gui.ConnectionHeaderHandle.SetTailscaleState).
+	// Set once by MainWindow after it builds that header -- this package
+	// never references the header's own type, only this callback shape, so
+	// there's no import cycle back to package gui.
+	tsStatusSink func(status, authLabel string)
+
+	// accountStateSink pushes the account login state into the connection
+	// header's avatar button (see gui.ConnectionHeaderHandle.SetAccountState)
+	// -- same wiring shape as tsStatusSink above, fired both once up front
+	// (SetAccountStateSink) and again on every login/logout (see the
+	// AccountManager onChange callback in NewConnectionManager).
+	accountStateSink func(loggedIn bool, email string)
+
+	// connectingStateSink pushes connectionPending's own start/stop into a
+	// bottom "Connecting to X..." toast with a progress bar (see
+	// gui.MainWindow's wiring) -- fired from setConnectionPendingState, the
+	// single choke point every connectionPending transition (both the Grid/
+	// List Connect button and MainWindow's own clearConnectionPending) goes
+	// through. name is only meaningful while connecting=true.
+	// connectingStateSink pushes connectionPending's own start/stop into a
+	// bottom "Connecting to X..." toast with a progress bar (see
+	// gui.MainWindow's wiring) -- fired from setConnectionPendingState, the
+	// single choke point every connectionPending transition (both the Grid/
+	// List Connect button and MainWindow's own clearConnectionPending) goes
+	// through. name is only meaningful while connecting=true.
+	connectingStateSink func(connecting bool, name string)
+
+	// openAccount opens the account login/sync dialog (MainWindow.
+	// showAccountDialog), wired once from the connections header. Used when
+	// the user picks Cloud on a connection while logged out.
+	openAccount func()
+
+	// addCardDismissed hides Grid mode's "Add New Connect" tile and shows
+	// a footer "+" (before Size) that restores it -- persisted so a closed
+	// hint stays closed across restarts.
+	addCardDismissed bool
+	promoChip        *view.FooterTintChip
+
+	// firmwarePromoDismissed hides the firmware banner and shows
+	// firmwareChip (Hardware Agent) in the Connections footer instead.
+	firmwarePromoDismissed bool
+	firmwareBanner         *view.FirmwarePromoBanner
+	firmwareChip           *view.FooterHardwareChip
+	agentChip              *view.FooterTintChip
+
 	// Account owns the account login + sync passphrase this connections
 	// list is end-to-end synced under -- see account_manager.go and
 	// connection_manager_sync.go. nil is a valid state (no account
@@ -79,6 +167,7 @@ type ConnectionManager struct {
 	syncVersion   int // last version this device knows the backend to be at; 0 = never successfully synced
 	syncPushTimer *time.Timer
 	syncLastError string
+	syncPollStop  chan struct{}
 }
 
 func (cm *ConnectionManager) ResolveMasterKey(host, currentMasterKey string) string {
@@ -155,6 +244,8 @@ func NewConnectionManager(app fyne.App, window fyne.Window, config *models.AppCo
 		selectedIndex:         -1,
 		connections:           make([]SavedConnection, 0),
 		activeConnectionIndex: -1,
+		editingGridIndex:      -1,
+		editingListIndex:      -1,
 		ts:                    ts,
 	}
 	if cm.ts == nil {
@@ -162,15 +253,15 @@ func NewConnectionManager(app fyne.App, window fyne.Window, config *models.AppCo
 	}
 	// Centralizes "open the login link in a browser": tsnet can produce an
 	// AuthURL from any first touch of the server (WarmUpPeer, WaitUntilReady,
-	// HTTPClient, TailnetIPv4 — not just the explicit Sign-In button), and
+	// HTTPClient, TailnetIPv4 -- not just the explicit Sign-In button), and
 	// only tsnet's own internal auto-login attempts it once per server
-	// lifetime. Keying the open off "a genuinely new URL appeared" — rather
-	// than each caller racing its own poll loop against Status() — is what
+	// lifetime. Keying the open off "a genuinely new URL appeared" -- rather
+	// than each caller racing its own poll loop against Status() -- is what
 	// makes the login reliably surface instead of sometimes silently timing
 	// out with nothing ever opened.
 	cm.ts.SetAuthURLHandler(func(authURL string) {
 		if runtime.GOOS == "android" {
-			// Android already opens it via the JNI opener inside setLatestAuthURL —
+			// Android already opens it via the JNI opener inside setLatestAuthURL --
 			// calling openExternalLink too would pop a second browser/intent.
 			return
 		}
@@ -178,7 +269,7 @@ func NewConnectionManager(app fyne.App, window fyne.Window, config *models.AppCo
 			"Tailscale: auth URL received",
 			"Google: opening browser",
 			authURL,
-			"Sign In With Google",
+			i18n.Current.TailscaleSignInGoogle,
 		)
 		cm.openExternalLink(authURL, "Tailscale login URL")
 	})
@@ -195,15 +286,15 @@ func NewConnectionManager(app fyne.App, window fyne.Window, config *models.AppCo
 			}
 			logrus.Infof("QR connect: host=%s", host)
 		},
-		func(name, internalHost, tailscaleHost, masterKey, protocol string, tailscaleRegister bool) {
-			cm.SaveConnection(name, internalHost, tailscaleHost, masterKey, protocol, tailscaleRegister)
+		func(name, internalHost, tailscaleHost, masterKey, protocol, hwID string, tailscaleRegister bool) {
+			cm.SaveConnection(name, internalHost, tailscaleHost, masterKey, protocol, hwID, tailscaleRegister)
 			fyne.Do(func() {
 				cm.applyConnectionToForm(resolveScannedHost(protocol, internalHost, tailscaleHost), masterKey, protocol)
 			})
 			logrus.Infof("QR saved directly: internal=%s tailscale=%s", internalHost, tailscaleHost)
 		},
 		func(internalHost, tailscaleHost, masterKey, protocol string, scanned bool) {
-			cm.showPrefilledAddDialog("", internalHost, tailscaleHost, masterKey, protocol, scanned)
+			cm.showPrefilledAddDialog("", internalHost, tailscaleHost, masterKey, protocol, scanned, false)
 		},
 	)
 
@@ -212,19 +303,20 @@ func NewConnectionManager(app fyne.App, window fyne.Window, config *models.AppCo
 	cm.startTailscaleStatusPolling()
 
 	cm.Account = NewAccountManager(app, func() {
-		// Fires on every login/passphrase/logout change -- cheap to call
-		// unconditionally (trySyncPullAndMerge no-ops the instant sync
-		// credentials aren't both set yet) and is exactly the moment a
-		// fresh set of credentials becomes available worth reconciling
-		// against, e.g. right after SetSyncPassphrase on a second device.
+		// Fires on every login/passphrase/logout change. Pulls when sync
+		// credentials are present; drops the cloud overlay on logout so
+		// only this device's local connections remain.
 		go cm.trySyncPullAndMerge()
+		cm.notifyAccountState()
 	})
+	cm.Account.SetBeforeLogout(cm.flushSyncPush)
 	go cm.trySyncPullAndMerge()
+	cm.startConnectionsSyncPolling()
 	return cm
 }
 
 // startTailscaleLogin handles a tap on the toggle while it's off. The intent
-// is fixed at "get me connected" — it must never fall through to a logout,
+// is fixed at "get me connected" -- it must never fall through to a logout,
 // even if resuming tsnet's persisted session (below) happens to land it in a
 // LoggedIn state by the time the check runs.
 func (cm *ConnectionManager) startTailscaleLogin() {
@@ -241,23 +333,23 @@ func (cm *ConnectionManager) startTailscaleLogin() {
 		// Show the spinner immediately on tap. The resume attempt below
 		// (Start + WaitUntilReady, up to 8s) previously ran silently before
 		// any state update reached the UI, so the toggle looked dead/unresponsive
-		// for up to 8 seconds — as if the tap had done nothing — until this
+		// for up to 8 seconds -- as if the tap had done nothing -- until this
 		// same "starting login" state finally got set afterwards.
 		cm.setTailscaleStateAsync(
 			"Tailscale: checking saved session",
 			"Google: connecting",
 			"Address: unavailable",
-			"Sign In With Google",
+			i18n.Current.TailscaleSignInGoogle,
 		)
 
 		// Status() reports a default "not logged in, not running" result
-		// whenever the tsnet server hasn't been explicitly started yet — and
+		// whenever the tsnet server hasn't been explicitly started yet -- and
 		// this button, unlike Connect (which starts tsnet via
 		// WaitUntilReady/HTTPClient before ever checking status), could
 		// previously be the very first thing to touch tsnet. That made it
 		// look like there was never a saved session, so it always fell
 		// through to StartLogin/StartLoginInteractive and forced a brand new
-		// browser sign-in — even when a valid Tailscale session was already
+		// browser sign-in -- even when a valid Tailscale session was already
 		// persisted on disk from a previous run. Start tsnet and give it a
 		// moment to resume that persisted session first, exactly like
 		// Connect does, so this button only prompts for a fresh login when
@@ -271,12 +363,20 @@ func (cm *ConnectionManager) startTailscaleLogin() {
 
 		status, err := cm.ts.Status(context.Background())
 		if err == nil && status != nil && status.LoggedIn {
-			// The persisted session was resumed successfully — already
+			// The persisted session was resumed successfully -- already
 			// connected, nothing more to do. This must NOT trigger a
 			// logout: that was a real regression where resuming a valid
 			// session right here made it look, one line down, like the
 			// user had asked to sign out.
-			logrus.Info("tailscale client ui: login button pressed — session already resumed, nothing to do")
+			logrus.Info("tailscale client ui: login button pressed -- session already resumed, nothing to do")
+			// refreshTailscaleStatus no-ops while tailscaleAuthInProgress is
+			// true (so the 60s poller can't stomp an in-flight spinner) --
+			// but that flag is only cleared by this goroutine's own defer,
+			// which hasn't run yet. Clear it now so this authoritative,
+			// terminal update actually reaches the toggle instead of
+			// leaving it stuck on "checking saved session" until the next
+			// poll tick.
+			cm.tailscaleAuthInProgress.Store(false)
 			cm.refreshTailscaleStatus()
 			return
 		}
@@ -285,12 +385,12 @@ func (cm *ConnectionManager) startTailscaleLogin() {
 			"Tailscale: starting login",
 			"Google: waiting for browser sign-in",
 			"Address: unavailable until login completes",
-			"Sign In With Google",
+			i18n.Current.TailscaleSignInGoogle,
 		)
 		logrus.Info("tailscale client ui: login button pressed")
 		// The actual "open the login link in a browser" happens in the
 		// AuthURLHandler registered in NewConnectionManager, once tsnet
-		// actually produces a URL — not off this call's return value, since
+		// actually produces a URL -- not off this call's return value, since
 		// tsnet may have already silently started (and even completed) the
 		// interactive login via some earlier, unrelated call (WarmUpPeer,
 		// WaitUntilReady, ...) before this button was ever clicked.
@@ -300,15 +400,16 @@ func (cm *ConnectionManager) startTailscaleLogin() {
 				"Tailscale: login failed",
 				fmt.Sprintf("Google: %v", err),
 				"Address: unavailable",
-				"Sign In With Google",
+				i18n.Current.TailscaleSignInGoogle,
 			)
 		}
+		cm.tailscaleAuthInProgress.Store(false)
 		cm.refreshTailscaleStatus()
 	}()
 }
 
 // startTailscaleLogout handles a tap on the toggle while it's on, after the
-// user has confirmed the sign-out dialog. Intent is fixed at "disconnect" —
+// user has confirmed the sign-out dialog. Intent is fixed at "disconnect" --
 // unlike startTailscaleLogin, it never re-derives what to do from a status
 // check.
 func (cm *ConnectionManager) startTailscaleLogout() {
@@ -327,19 +428,19 @@ func (cm *ConnectionManager) startTailscaleLogout() {
 			"Tailscale: signing out",
 			"Google: disconnecting account",
 			"Address: unavailable",
-			"Sign Out",
+			i18n.Current.TailscaleSignOut,
 		)
 		if logoutErr := cm.ts.Logout(context.Background()); logoutErr != nil {
 			logrus.WithError(logoutErr).Error("tailscale client ui: Logout failed")
 		}
+		cm.tailscaleAuthInProgress.Store(false)
 		cm.refreshTailscaleStatus()
 	}()
 }
 
 func (cm *ConnectionManager) handleTailscaleToggleAction() {
 	if cm.tsStatus != nil && cm.tsStatus.LoggedIn {
-		view.ShowConfirmYesLeft(
-			i18n.Current.Confirmation,
+		view.ShowConfirmToast(
 			i18n.Current.TailscaleLogoutConfirm,
 			func(confirmed bool) {
 				if confirmed {
@@ -365,6 +466,21 @@ func (cm *ConnectionManager) SelectConnection(idx int) {
 	if cm.onSelect != nil {
 		cm.onSelect(conn.TailscaleRegister)
 	}
+}
+
+// SelectedConnectionHwID returns the hw_id of the SavedConnection currently
+// populating the form (see SelectConnection/HandleFormEdited for how
+// selectedIndex tracks that), or "" when no saved connection is selected --
+// a manual entry, or a QR/deep-link "Connect now" that never went through
+// Save (both of those explicitly clear the selection, see
+// NewQRScanner's onConnect wiring). Consumed by attachUSBClient
+// (main_window.go) to address the WebRTC signaling relay when this agent
+// isn't directly reachable -- see SavedConnection.HwID's own doc comment.
+func (cm *ConnectionManager) SelectedConnectionHwID() string {
+	if cm == nil || cm.selectedIndex < 0 || cm.selectedIndex >= len(cm.connections) {
+		return ""
+	}
+	return cm.connections[cm.selectedIndex].HwID
 }
 
 func (cm *ConnectionManager) applyConnectionToForm(host, masterKey, protocol string) {
@@ -397,7 +513,16 @@ func (cm *ConnectionManager) HandleFormEdited(host, masterKey, protocol string) 
 	protocol = normalizeConnectionProtocol(protocol)
 
 	current := cm.connections[cm.selectedIndex]
-	if strings.TrimSpace(current.Host) == host &&
+	// Compares against the SAME resolveHostForProtocol value
+	// applyConnectionToForm used to populate the form in the first place
+	// (not current.Host, the legacy pre-split field) -- comparing against
+	// current.Host false-positived as "edited" for any connection whose
+	// legacy Host string doesn't happen to match its InternalHost/
+	// TailscaleHost split (e.g. one merged in from an account sync), wrongly
+	// clearing the selection out from under an in-flight connect attempt
+	// (see beginConnectionFromRow/SetConnectionPending's activeIndex mixup).
+	expectedHost := cm.resolveHostForProtocol(current, protocol)
+	if strings.TrimSpace(expectedHost) == host &&
 		strings.TrimSpace(current.MasterKey) == masterKey &&
 		normalizeConnectionProtocol(current.Protocol) == protocol {
 		return false
@@ -405,6 +530,25 @@ func (cm *ConnectionManager) HandleFormEdited(host, masterKey, protocol string) 
 
 	cm.selectedIndex = -1
 	return true
+}
+
+// SetFormTextSilently runs fn (expected to SetText the host/master-key
+// entries) under the same syncingForm guard applyConnectionToForm uses --
+// so the resulting OnChanged callbacks don't reach HandleFormEdited and
+// misread a programmatic value push (not a real user edit) as the user
+// having typed something different, which would otherwise clear
+// selectedIndex out from under whatever SelectConnection just set it to.
+// Used by gui.MainWindow.handleConnectionFromManager, which redundantly
+// re-sets the same entries SelectConnection just populated (needed for its
+// other caller, a deep link, which has no prior SelectConnection call).
+func (cm *ConnectionManager) SetFormTextSilently(fn func()) {
+	if cm == nil {
+		fn()
+		return
+	}
+	cm.syncingForm = true
+	defer func() { cm.syncingForm = false }()
+	fn()
 }
 
 func (cm *ConnectionManager) ClearSelection() {
@@ -426,7 +570,22 @@ func (cm *ConnectionManager) SetConnectionPending(pending bool) {
 	if cm == nil {
 		return
 	}
-	cm.connectionPending = pending
+	// Deliberately NOT cm.connectionPending = pending here -- that's
+	// setConnectionPendingState's own job, and doing it here first used to
+	// make its wasPending := cm.connectionPending capture read the value
+	// this call had already written, so pending != wasPending could never
+	// be true for a call routed through this method. That's the only one
+	// of setConnectionPendingState's two OR'd trigger conditions
+	// (pending != wasPending || activeIndex != wasActiveIndex) a *closing*
+	// transition can ever satisfy on its own -- clearConnectionPending's
+	// SetConnectionPending(false) always goes through here, so the
+	// connectingStateSink (the connecting toast's close signal) silently
+	// never fired on its own for a successful connect. It only appeared to
+	// work before by accident, riding the OTHER half of that OR condition
+	// via a since-fixed bug that corrupted activeIndex to -1 on every
+	// connect (see HandleFormEdited/SetFormTextSilently) -- once that bug
+	// stopped moving activeIndex around, this one was fully exposed: the
+	// toast stopped closing at all once a session actually connected.
 	activeIndex := cm.selectedIndex
 	if cm.selectedIndex < 0 || cm.selectedIndex >= len(cm.connections) {
 		activeIndex = -1
@@ -435,6 +594,16 @@ func (cm *ConnectionManager) SetConnectionPending(pending bool) {
 }
 
 func (cm *ConnectionManager) setConnectionPendingState(pending bool, activeIndex int) {
+	// wasPending/wasActiveIndex let the connectingStateSink call below fire
+	// only on an actual transition -- refreshConnectionControls
+	// (main_window_layout.go) redundantly calls SetConnectionPending(true)
+	// on every refresh for as long as MainWindow's own isConnectionPending
+	// flag is set, which used to make this re-fire the sink every time too
+	// (tearing the "Connecting to X..." toast down and immediately rebuilding
+	// it) even though nothing about the pending state actually changed.
+	wasPending := cm.connectionPending
+	wasActiveIndex := cm.activeConnectionIndex
+
 	cm.connectionPending = pending
 	cm.activeConnectionIndex = activeIndex
 
@@ -443,6 +612,16 @@ func (cm *ConnectionManager) setConnectionPendingState(pending bool, activeIndex
 			cm.ui.SetActionButtonsDisabled(pending)
 			cm.refreshConnectionsList()
 		})
+	}
+
+	if cm.connectingStateSink != nil && (pending != wasPending || activeIndex != wasActiveIndex) {
+		name := ""
+		if pending && activeIndex >= 0 && activeIndex < len(cm.connections) {
+			name = cm.connections[activeIndex].Name
+		}
+		logrus.Infof("?? [CONNECT-TOAST] state change: pending=%v activeIndex=%d name=%q (was pending=%v activeIndex=%d)",
+			pending, activeIndex, name, wasPending, wasActiveIndex)
+		cm.connectingStateSink(pending, name)
 	}
 }
 
@@ -469,8 +648,8 @@ func (cm *ConnectionManager) resolveHostForProtocol(conn SavedConnection, protoc
 func normalizeConnectionProtocol(protocol string) string {
 	if runtime.GOOS == "js" {
 		// No embedded tsnet in a browser tab (tailscale_service_wasm.go is
-		// a stub, same reasoning as HeaderAccessory's own Tailscale-toggle
-		// omission above) -- always dial over plain LAN, regardless of
+		// a stub, same reasoning as newConnectionHeader's own Tailscale-toggle
+		// omission on wasm, in package gui) -- always dial over plain LAN, regardless of
 		// what a connection saved on a native client set this to, or what
 		// a stale saved value in localStorage says. Single choke point:
 		// every caller (resolveHostForProtocol, connectionProtocolBadge,
@@ -528,18 +707,83 @@ func (cm *ConnectionManager) OpenDiscordInvite() {
 	cm.openDiscordInvite()
 }
 
-func (cm *ConnectionManager) HeaderAccessory() fyne.CanvasObject {
-	if cm == nil || cm.ui == nil {
-		return nil
+func (cm *ConnectionManager) OpenInfoPage() {
+	cm.openInfoPage()
+}
+
+// SetTailscaleStatusSink registers where live Tailscale status text goes --
+// normally the connection header's toggle, wired up once by MainWindow right
+// after it builds that header (see connection_header.go's
+// ConnectionHeaderHandle.SetTailscaleState).
+func (cm *ConnectionManager) SetTailscaleStatusSink(sink func(status, authLabel string)) {
+	cm.tsStatusSink = sink
+	// Language reload tears down the header and builds a new toggle at
+	// on=false. Replay the last known header on this same call so the
+	// first frame is already signed-in (or loading) instead of flashing
+	// off and then back on when refreshTailscaleStatus returns.
+	if status, auth, ok := lastTailscaleHeader(); ok && sink != nil {
+		sink(status, auth)
 	}
-	if runtime.GOOS == "js" {
-		// No embedded tsnet in a browser tab (tailscale_service_wasm.go is
-		// a stub) -- the "Sign In With Google" Tailscale toggle has nothing
-		// to do here, so don't show it at all rather than show a button
-		// that can't function.
-		return nil
+}
+
+// SetConnectingStateSink registers where the "connecting" toast's
+// start/stop goes -- see connectingStateSink's own doc comment.
+func (cm *ConnectionManager) SetConnectingStateSink(sink func(connecting bool, name string)) {
+	cm.connectingStateSink = sink
+}
+
+// SetOpenAccount registers the account-dialog opener (the same callback the
+// header avatar uses) so a Cloud pick while logged out can open login.
+func (cm *ConnectionManager) SetOpenAccount(open func()) {
+	cm.openAccount = open
+}
+
+func (cm *ConnectionManager) OpenAccount() {
+	if cm == nil || cm.openAccount == nil {
+		return
 	}
-	return cm.ui.HeaderAccessory()
+	cm.openAccount()
+}
+
+// SetAccountStateSink registers where live account login state goes --
+// normally the connection header's avatar button, wired up once by
+// MainWindow right after it builds that header (see connection_header.go's
+// ConnectionHeaderHandle.SetAccountState). Pushes the current state right
+// away too, so an already-logged-in account (persisted from a previous
+// session) shows correctly from the first frame instead of waiting for the
+// next login/logout event.
+func (cm *ConnectionManager) SetAccountStateSink(sink func(loggedIn bool, email string)) {
+	cm.accountStateSink = sink
+	// Off the main goroutine: this runs during MainWindow construction,
+	// before the Fyne event loop is pumping, and notifyAccountState calls
+	// fyne.Do -- which errors if invoked directly from the main goroutine
+	// at that point (same reasoning as initTailscaleMode's own comment).
+	go cm.notifyAccountState()
+}
+
+// notifyAccountState pushes the account manager's current login state into
+// accountStateSink, if one is registered.
+func (cm *ConnectionManager) notifyAccountState() {
+	loggedIn := false
+	email := ""
+	if cm.Account != nil {
+		loggedIn = cm.Account.LoggedIn()
+		email = cm.Account.Email()
+	}
+	fyne.Do(func() {
+		// Badges depend on login (Cloud while synced, Local after logout).
+		// Refresh here so logout does not wait for the async pull/drop goroutine.
+		cm.refreshConnectionsList()
+		if cm.accountStateSink != nil {
+			cm.accountStateSink(loggedIn, email)
+		}
+	})
+}
+
+// ToggleTailscale runs the same sign-in/sign-out flow the connection
+// header's Tailscale toggle triggers on tap.
+func (cm *ConnectionManager) ToggleTailscale() {
+	cm.handleTailscaleToggleAction()
 }
 
 func (cm *ConnectionManager) startTailscaleStatusPolling() {
@@ -549,7 +793,7 @@ func (cm *ConnectionManager) startTailscaleStatusPolling() {
 	cm.tsPollStop = make(chan struct{})
 
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 
 		for {
@@ -573,7 +817,7 @@ func (cm *ConnectionManager) refreshTailscaleStatus() {
 		// This function also runs off a 5s background ticker, and used to
 		// stomp over that in-flight state with whatever tsnet's status
 		// happened to be mid-transition (e.g. still NeedsLogin a moment
-		// before StartLogin's AuthURL arrives) — flipping the spinner back
+		// before StartLogin's AuthURL arrives) -- flipping the spinner back
 		// to a plain toggle for a second or two before the browser opened.
 		// The auth goroutine itself calls refreshTailscaleStatus once it's
 		// actually done, so skipping here just avoids the race.
@@ -585,7 +829,7 @@ func (cm *ConnectionManager) refreshTailscaleStatus() {
 			"Tailscale: status unavailable",
 			fmt.Sprintf("Error: %v", err),
 			"Address: unavailable",
-			"Sign In With Google",
+			i18n.Current.TailscaleSignInGoogle,
 		)
 		return
 	}
@@ -614,17 +858,38 @@ func (cm *ConnectionManager) refreshTailscaleStatus() {
 		header,
 		fmt.Sprintf("Google: %s", loginText),
 		fmt.Sprintf("Address: %s (%s)", address, ternary(status.Userspace, "embedded", "system")),
-		ternary(status.LoggedIn, "Sign Out", "Sign In With Google"),
+		ternary(status.LoggedIn, i18n.Current.TailscaleSignOut, i18n.Current.TailscaleSignInGoogle),
 	)
 }
 
 func (cm *ConnectionManager) setTailscaleStateAsync(header, subHeader, addr, button string) {
-	if cm.ui == nil {
+	rememberTailscaleHeader(header, button)
+	if cm.tsStatusSink == nil {
 		return
 	}
 	fyne.Do(func() {
-		cm.ui.SetTailscaleState(header, subHeader, addr, button)
+		cm.tsStatusSink(header, button)
 	})
+}
+
+// lastTailscaleHeader survives ConnectionManager rebuilds (language
+// reload recreates the manager but keeps the same tsnet session).
+var lastTailscaleHeaderMu sync.Mutex
+var lastTailscaleHeaderStatus, lastTailscaleHeaderAuth string
+var lastTailscaleHeaderOK bool
+
+func rememberTailscaleHeader(status, auth string) {
+	lastTailscaleHeaderMu.Lock()
+	lastTailscaleHeaderStatus = status
+	lastTailscaleHeaderAuth = auth
+	lastTailscaleHeaderOK = strings.TrimSpace(status) != ""
+	lastTailscaleHeaderMu.Unlock()
+}
+
+func lastTailscaleHeader() (status, auth string, ok bool) {
+	lastTailscaleHeaderMu.Lock()
+	defer lastTailscaleHeaderMu.Unlock()
+	return lastTailscaleHeaderStatus, lastTailscaleHeaderAuth, lastTailscaleHeaderOK
 }
 
 func (cm *ConnectionManager) notifyConnectionsState() {
@@ -637,14 +902,7 @@ func (cm *ConnectionManager) beginConnectionFromRow(idx int) bool {
 	if cm.connectionPending {
 		return false
 	}
-	cm.connectionPending = true
-	cm.activeConnectionIndex = idx
-	if cm.ui != nil {
-		fyne.Do(func() {
-			cm.ui.SetActionButtonsDisabled(true)
-			cm.refreshConnectionsList()
-		})
-	}
+	cm.setConnectionPendingState(true, idx)
 	return true
 }
 
@@ -670,6 +928,31 @@ func connectionProtocolFromBadge(badge string) string {
 	}
 }
 
+func connectionSyncBadge(origin string) string {
+	if connectionOrigin(SavedConnection{Origin: origin}) == connectionOriginCloud {
+		if i18n.Current != nil && i18n.Current.ConnectionSyncCloud != "" {
+			return i18n.Current.ConnectionSyncCloud
+		}
+		return "Cloud"
+	}
+	if i18n.Current != nil && i18n.Current.ConnectionSyncLocal != "" {
+		return i18n.Current.ConnectionSyncLocal
+	}
+	return "Local"
+}
+
+func connectionOriginFromBadge(label string) string {
+	label = strings.TrimSpace(label)
+	cloud := "Cloud"
+	if i18n.Current != nil && i18n.Current.ConnectionSyncCloud != "" {
+		cloud = i18n.Current.ConnectionSyncCloud
+	}
+	if strings.EqualFold(label, connectionOriginCloud) || strings.EqualFold(label, cloud) {
+		return connectionOriginCloud
+	}
+	return connectionOriginLocal
+}
+
 func isLikelyTailnetHost(host string) bool {
 	host = strings.ToLower(strings.TrimSpace(host))
 	return strings.HasSuffix(host, ".ts.net") || strings.HasPrefix(host, "100.")
@@ -680,6 +963,20 @@ func (cm *ConnectionManager) GetContainer() fyne.CanvasObject {
 		return nil
 	}
 	return cm.ui.Container
+}
+
+func (cm *ConnectionManager) ViewMode() string {
+	if cm == nil || cm.ui == nil {
+		return "grid"
+	}
+	return cm.ui.CurrentViewMode()
+}
+
+func (cm *ConnectionManager) SetViewMode(mode string) {
+	if cm == nil || cm.ui == nil {
+		return
+	}
+	cm.ui.SetViewMode(mode)
 }
 
 func (cm *ConnectionManager) OpenQuickStartDocs() {

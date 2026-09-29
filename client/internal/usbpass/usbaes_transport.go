@@ -1,36 +1,82 @@
-//go:build linux || windows
+//go:build linux || windows || darwin || (js && wasm)
 
 package usbpass
 
 // AES-256-GCM framing for the USB passthrough control plane, byte-for-byte
 // compatible with rust-shine's crates/usb-passthrough/src/transport.rs
-// (AeadStream). Only Linux and Windows ship real USB passthrough today;
-// other platforms (hardware KVM, macOS — HID only) get the stub in
-// usbaes_attach_stub.go instead of linking this file.
+// (AeadStream). Linux and Windows export raw USB via libusb
+// (backend_gousb.go); macOS exports HID devices via the non-exclusive
+// IOHIDManager tap in hidbridge_darwin.go instead (see its doc comment for
+// why libusb can't claim a HID interface there) — this control-plane
+// exchange with the agent is identical either way, so all three platforms
+// link this file. Only a platform with neither (hardware KVM, etc.) gets
+// the stub in usbaes_attach_stub.go.
+//
+// wasm also links this: it's typed against net.Conn (an interface, not a
+// concrete OS socket), and wasm's browser-sourced devices (usbaes_attach_wasm.go)
+// speak this exact same AES-GCM framing to the agent, just over a
+// platform.DialWebSocket-backed net.Conn instead of a raw net.Dialer.Dial
+// one -- see wsconn_wasm.go's doc comment for why the transport has to
+// differ there.
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"strings"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 // usbAesInfo must match the Rust side's transport::INFO exactly.
 const usbAesInfo = "usbridge-usb-passthrough-v1"
 
+// usbTunnelInfo must match the Rust side's transport::TUNNEL_INFO exactly.
+const usbTunnelInfo = "usbridge-usb-tunnel-v1"
+
 const (
-	usbAesMinFrame = 12 + 16       // nonce + GCM tag, empty plaintext
+	usbAesMinFrame = 12 + 16 // nonce + GCM tag, empty plaintext
 	usbAesMaxFrame = 16 * 1024 * 1024
 )
+
+// ErrAgentLicenseRequired is returned by recvFrame when the broker answers
+// the very first frame with a plain-text HTTP response instead of the
+// AES-framed protocol. Live-verified: rust-shine's entitlement gate for HID/
+// pen passthrough on the closed usbridge-usb-broker binary rejects an
+// unlicensed agent this way rather than an AES-encrypted HelloAck{ok:false}
+// -- without this check, recvFrame reads "HTTP"'s 4 ASCII bytes as a
+// length-prefix (0x48545450 = 1,213,486,160), fails usbAesMaxFrame's bounds
+// check, and surfaces as an opaque "aes frame size out of range" error.
+var ErrAgentLicenseRequired = errors.New("usb passthrough: this feature requires a license on the agent")
 
 func deriveSessionKey(masterKey []byte) [32]byte {
 	h := sha256.New()
 	h.Write([]byte(usbAesInfo))
 	h.Write(masterKey)
+	var out [32]byte
+	copy(out[:], h.Sum(nil))
+	return out
+}
+
+// deriveTunnelKey mirrors rust-shine's transport::derive_tunnel_key exactly:
+// an ephemeral, single-attach key for the USB/IP data-plane tunnel, distinct
+// per (session key, busID, nonce) so a leaked key only ever covers one
+// attach of one device, never the whole pairing.
+func deriveTunnelKey(sessionKey [32]byte, busID string, nonce []byte) [32]byte {
+	h := sha256.New()
+	h.Write([]byte(usbTunnelInfo))
+	h.Write(sessionKey[:])
+	h.Write([]byte(busID))
+	h.Write(nonce)
 	var out [32]byte
 	copy(out[:], h.Sum(nil))
 	return out
@@ -47,6 +93,15 @@ type aeadStream struct {
 }
 
 func newAeadStream(conn net.Conn, key [32]byte) (*aeadStream, error) {
+	return newAeadStreamWithCounters(conn, key, 0, 0)
+}
+
+// newAeadStreamWithCounters is newAeadStream plus explicit starting
+// counters, for a stream that continues an AEAD sequence whose first frame
+// was already consumed elsewhere (see the tunnel listener's key-probing
+// accept path in usbtunnel.go, which must decrypt frame #1 itself before it
+// even knows which registered key matched).
+func newAeadStreamWithCounters(conn net.Conn, key [32]byte, sendCounter, recvCounter uint64) (*aeadStream, error) {
 	if tc, ok := conn.(*net.TCPConn); ok {
 		_ = tc.SetNoDelay(true)
 		// A dead agent (crashed, network drop, machine asleep) otherwise
@@ -60,15 +115,19 @@ func newAeadStream(conn net.Conn, key [32]byte) (*aeadStream, error) {
 			Count:    6,
 		})
 	}
+	gcm, err := newGCMCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	return &aeadStream{gcm: gcm, sendCounter: sendCounter, recvCounter: recvCounter, conn: conn}, nil
+}
+
+func newGCMCipher(key [32]byte) (cipher.AEAD, error) {
 	block, err := aes.NewCipher(key[:])
 	if err != nil {
 		return nil, err
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	return &aeadStream{gcm: gcm, conn: conn}, nil
+	return cipher.NewGCM(block)
 }
 
 func frameIV(counter uint64, sending bool) [12]byte {
@@ -107,6 +166,9 @@ func (s *aeadStream) recvFrame() ([]byte, error) {
 	if _, err := io.ReadFull(s.conn, lenb[:]); err != nil {
 		return nil, err
 	}
+	if string(lenb[:]) == "HTTP" {
+		return nil, s.readLicenseRejection(lenb[:])
+	}
 	n := binary.BigEndian.Uint32(lenb[:])
 	if n < usbAesMinFrame || n > usbAesMaxFrame {
 		return nil, fmt.Errorf("aes frame size out of range (%d bytes)", n)
@@ -124,4 +186,22 @@ func (s *aeadStream) recvFrame() ([]byte, error) {
 		return nil, fmt.Errorf("aes decrypt: %w", err)
 	}
 	return pt, nil
+}
+
+// readLicenseRejection finishes reading the plain-text HTTP response
+// recvFrame detected (already-consumed bytes passed as prefix), logs the
+// broker's actual status/body for diagnostics, and returns
+// ErrAgentLicenseRequired regardless of parse success -- an HTTP response on
+// this port is only ever the entitlement gate, so even a malformed one still
+// means "no license".
+func (s *aeadStream) readLicenseRejection(prefix []byte) error {
+	resp, err := http.ReadResponse(bufio.NewReader(io.MultiReader(bytes.NewReader(prefix), s.conn)), nil)
+	if err != nil {
+		logrus.Warnf("usbpass: agent rejected hello with an unparsable HTTP response: %v", err)
+		return ErrAgentLicenseRequired
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	logrus.Warnf("usbpass: agent rejected hello: HTTP %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	return ErrAgentLicenseRequired
 }

@@ -4,7 +4,7 @@ package service
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
-#cgo LDFLAGS: -framework AppKit -framework CoreVideo -framework QuartzCore -framework CoreFoundation
+#cgo LDFLAGS: -framework AppKit -framework CoreVideo -framework QuartzCore -framework CoreFoundation -framework Metal
 
 #include <stdint.h>
 #include <CoreVideo/CoreVideo.h>
@@ -18,9 +18,18 @@ extern void metal_video_destroy(void);
 extern double metal_video_last_fps(void);
 extern void metal_video_set_hidden(int hidden);
 extern int  metal_video_get_last_frame_rgba(int *outW, int *outH, uint8_t **out);
-extern int  metal_video_next_event(int *type_out, float *x_out, float *y_out, int *btn_out);
+extern void metal_video_set_hdr(int enabled);
+extern void metal_video_set_upscale_mode(int mode);
+
 extern void metal_video_set_overlay(const uint8_t *rgba, int w, int h, int stride);
 extern void metal_video_clear_overlay(void);
+
+extern void metal_video_set_hud_overlay(const uint8_t *rgba, int w, int h, int stride);
+extern void metal_video_clear_hud_overlay(void);
+extern void metal_video_set_hud_scale(float s);
+extern double metal_video_last_decode_ms(void);
+
+extern void metal_video_debug_link_counts(int64_t *created, int64_t *invalidated);
 
 // Forward declaration matching the CGO-generated export signature (char*, not const char*).
 extern void goMetalLog(char *msg, int level);
@@ -29,11 +38,13 @@ import "C"
 
 import (
 	"image"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/sirupsen/logrus"
 
 	"usbridge-client/internal/localui"
+	"usbridge-client/internal/models"
 )
 
 // init wires the AI Vision overlay (ai_vision.go) to this platform's
@@ -46,6 +57,50 @@ import (
 func init() {
 	aiVisionMetalPush = pushAIVisionOverlayToMetal
 	aiVisionMetalClear = MetalVideoClearOverlay
+
+	// Net Graph HUD (net_graph.go): same "platform-agnostic core, thin
+	// platform push hook" split as AI Vision above -- net_graph.go builds
+	// the HUD image itself with no cgo dependency, and only these four
+	// hooks touch the Metal-specific side (a dedicated small HUD layer, see
+	// metal_video_impl_darwin.m's g_hud_layer, not the full-frame-sized
+	// g_overlay_layer AI Vision uses).
+	netGraphMetalPush = pushNetGraphOverlayToMetal
+	netGraphMetalClear = MetalVideoClearHudOverlay
+	netGraphScalePush = func(scale float32) {
+		C.metal_video_set_hud_scale(C.float(scale))
+	}
+	netGraphRenderFPS = MetalVideoLastFPS
+	netGraphDecodeMs = MetalVideoLastDecodeMs
+
+	// UpscaleMode (upscale_mode.go's cross-platform SetUpscaleMode) -- see
+	// that file's own doc comment for why this hook indirection exists.
+	upscaleModeMetalSet = MetalVideoSetUpscaleMode
+}
+
+// pushNetGraphOverlayToMetal hands a just-built HUD canvas (see
+// net_graph.go's buildNetGraphHUD) to the native compositor's dedicated HUD
+// layer. Unlike pushAIVisionOverlayToMetal's full-frame-sized image, img
+// here is always the small fixed HUD canvas -- cheap to upload even at
+// net_graph.go's 10Hz cadence (see metal_video_impl_darwin.m's
+// metal_video_set_hud_overlay doc comment).
+// netGraphMetalWasActive tracks MetalVideoIsActive()'s last-seen value so
+// transitions (not every push) get logged -- diagnoses the "HUD sometimes
+// freezes" report: if the overlay goes inactive for a stretch (e.g. during
+// a codec-switch restart's destroy/create cycle) the HUD legitimately
+// stops updating for that whole stretch, which is a different cause than
+// either of the two "gap" logs in net_graph.go / metal_video_impl_darwin.m.
+// Remove once the report is resolved.
+var netGraphMetalWasActive atomic.Bool
+
+func pushNetGraphOverlayToMetal(img *image.RGBA) {
+	active := MetalVideoIsActive()
+	if active != netGraphMetalWasActive.Swap(active) {
+		logrus.Infof("📊 [Net Graph] Metal overlay active=%v (HUD pushes %s while this is false)", active, map[bool]string{true: "resume", false: "stop"}[active])
+	}
+	if !active {
+		return
+	}
+	MetalVideoSetHudOverlay(img.Pix, img.Rect.Dx(), img.Rect.Dy(), img.Stride)
 }
 
 // pushAIVisionOverlayToMetal renders a just-completed AI Vision detection
@@ -63,31 +118,6 @@ func pushAIVisionOverlayToMetal(result *localui.Result, w, h int) {
 	}
 	img := buildAIVisionOverlayImage(result, w, h)
 	MetalVideoSetOverlay(img.Pix, w, h, img.Stride)
-}
-
-// buildAIVisionOverlayImage draws result's boxes+tags onto a fully
-// transparent w×h RGBA canvas using the exact same drawing code as the
-// static ui.parse annotated screenshot and the CPU-buffer live overlay
-// (localui.DrawDetectionBox/Tag) -- every color those use is fully opaque
-// (alpha 255, see draw.go), so untouched pixels stay alpha 0 and this is
-// trivially already in the premultiplied form CGImage needs, no separate
-// conversion required.
-func buildAIVisionOverlayImage(result *localui.Result, w, h int) *image.RGBA {
-	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	for _, icon := range result.Icons {
-		localui.DrawDetectionBox(img, icon.Bbox, false)
-		localui.DrawDetectionTag(img, icon.ID, icon.Bbox)
-	}
-	for _, t := range result.Text {
-		localui.DrawDetectionBox(img, t.Bbox, true)
-		if t.ID != "" {
-			// Empty ID means this box was published via maybeKickOCR's
-			// onTextBoxes before svtr recognized it (see
-			// ParseFastNearIconsStaged) -- outline only, no tag yet.
-			localui.DrawDetectionTag(img, t.ID, t.Bbox)
-		}
-	}
-	return img
 }
 
 // goMetalLog is called from C (metal_video_impl_darwin.m) to log via logrus.
@@ -173,6 +203,42 @@ func MetalVideoClearOverlay() {
 	C.metal_video_clear_overlay()
 }
 
+// MetalVideoSetHudOverlay uploads the Net Graph HUD canvas (a small, mostly-
+// opaque RGBA image, see net_graph.go's buildNetGraphHUD) onto the native
+// compositor's dedicated HUD layer, anchored bottom-right independent of the
+// video content's own size/scaling -- see MetalVideoSetOverlay's doc
+// comment for why this needs its own layer rather than reusing that one.
+func MetalVideoSetHudOverlay(rgba []byte, w, h, stride int) {
+	if len(rgba) == 0 || w <= 0 || h <= 0 || stride <= 0 {
+		return
+	}
+	C.metal_video_set_hud_overlay((*C.uint8_t)(unsafe.Pointer(&rgba[0])), C.int(w), C.int(h), C.int(stride))
+}
+
+// MetalVideoClearHudOverlay removes the Net Graph HUD image (checkbox
+// turned off) without touching the video or AI Vision layers.
+func MetalVideoClearHudOverlay() {
+	C.metal_video_clear_hud_overlay()
+}
+
+// MetalVideoLastDecodeMs returns the rolling-average submit-to-display
+// latency (ms) from the current ~2s measurement window -- see
+// metal_video_impl_darwin.m's metal_video_last_decode_ms doc comment. 0 if
+// the overlay is inactive or no sample has landed yet.
+func MetalVideoLastDecodeMs() float64 {
+	return float64(C.metal_video_last_decode_ms())
+}
+
+// MetalVideoDebugLinkCounts returns how many CADisplayLinks
+// metal_video_create has ever created vs. actually invalidated -- test-only
+// instrumentation for metal_video_leak_darwin_test.go's leak regression test (see
+// metal_video_impl_darwin.m's g_display_link_created_count doc comment).
+func MetalVideoDebugLinkCounts() (created, invalidated int64) {
+	var c, i C.int64_t
+	C.metal_video_debug_link_counts(&c, &i)
+	return int64(c), int64(i)
+}
+
 // MetalVideoSetHidden hides or shows the Metal overlay NSView without destroying it.
 // Use this to let Fyne popups/menus render on top of the video.
 func MetalVideoSetHidden(hidden bool) {
@@ -183,14 +249,39 @@ func MetalVideoSetHidden(hidden bool) {
 	C.metal_video_set_hidden(h)
 }
 
-// MetalVideoNextEvent drains one pending pointer event from the Metal overlay view.
-// Returns (type, button, x, y, ok). Types: 1=motion 2=button-press 3=button-release.
-// Buttons: 1=left 2=middle 3=right 4=wheel-up 5=wheel-down.
-// Coordinates are in NSView points with top-left origin (matches Fyne dp directly).
-// Safe to call from any goroutine.
-func MetalVideoNextEvent() (typ, button int, x, y float32, ok bool) {
-	var t, btn C.int
-	var ex, ey C.float
-	r := C.metal_video_next_event(&t, &ex, &ey, &btn)
-	return int(t), int(btn), float32(ex), float32(ey), r != 0
+// MetalVideoSetHdr toggles the video layer's EDR (extended dynamic range)
+// presentation mode -- called from platform_set_video_format the moment the
+// negotiated codec is known, before the first HDR frame ever arrives. See
+// metal_video_impl_darwin.m's metal_video_set_hdr doc comment for why this
+// is the only color-pipeline change needed on the render side (Core
+// Animation's own compositor does the actual BT.2020/PQ -> display
+// conversion using the color tags VideoToolbox already attaches to the
+// decoded IOSurface).
+func MetalVideoSetHdr(enabled bool) {
+	e := C.int(0)
+	if enabled {
+		e = 1
+	}
+	C.metal_video_set_hdr(e)
+}
+
+// MetalVideoSetUpscaleMode selects how the decoded video frame is resized
+// to fit the window when it isn't already an exact pixel match -- see
+// models.UpscaleMode* for the string values and metal_video_impl_darwin.m's
+// metal_video_set_upscale_mode for what each one actually does. Unlike
+// MetalVideoSetHdr, this has no codec-negotiation dependency: called
+// directly, as soon as the value is known/changed (see upscale_mode.go's
+// SetUpscaleMode, called from startVideoWithParamsInternal alongside
+// SetColor444/SetHdr).
+func MetalVideoSetUpscaleMode(mode string) {
+	m := C.int(0) // bilinear -- matches models.UpscaleModeBilinear and UPSCALE_MODE_BILINEAR
+	switch mode {
+	case models.UpscaleModeBicubic:
+		m = 1
+	case models.UpscaleModeLanczos:
+		m = 2
+	case models.UpscaleModeFSR1:
+		m = 3
+	}
+	C.metal_video_set_upscale_mode(m)
 }

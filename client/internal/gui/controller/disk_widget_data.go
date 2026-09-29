@@ -38,12 +38,13 @@ func (dw *DiskWidget) loadLocalDrives() {
 	}
 	go func() {
 		defer dw.loadingLocalDrives.Store(false)
-		if dw.usbClient == nil {
+		client := dw.usbClient
+		if client == nil {
 			logrus.Debug("USB client not initialized, skipping local device load")
 			return
 		}
 
-		localDrives, err := dw.usbClient.GetLocalDrives()
+		localDrives, err := client.GetLocalDrives()
 		if err != nil {
 			logrus.Errorf("Error loading local devices: %v", err)
 			return
@@ -67,10 +68,11 @@ func (dw *DiskWidget) loadLocalDrives() {
 
 // loadISOSpace loads info about SD card space
 func (dw *DiskWidget) loadISOSpace() {
-	if dw.usbClient == nil {
+	client := dw.usbClient
+	if client == nil {
 		return
 	}
-	spaceInfo, err := dw.usbClient.GetISOSpace()
+	spaceInfo, err := client.GetISOSpace()
 	if err != nil {
 		logrus.Debugf("SD card space info unavailable: %v", err)
 		dw.updateUIAsync(func() {
@@ -87,6 +89,7 @@ func (dw *DiskWidget) loadISOSpace() {
 
 // updateSDStorageInfo updates the progress bar in the main window via callback
 func (dw *DiskWidget) updateSDStorageInfo() {
+	dw.syncDashboardBackupSpace()
 	if dw.sdSpaceInfo == nil || dw.sdSpaceInfo.TotalSpace <= 0 {
 		if dw.onStorageInfoUpdate != nil {
 			dw.onStorageInfoUpdate(0, 0, 0)
@@ -99,6 +102,33 @@ func (dw *DiskWidget) updateSDStorageInfo() {
 	if dw.onStorageInfoUpdate != nil {
 		dw.onStorageInfoUpdate(usedPct/100, available, total)
 	}
+}
+
+// syncDashboardBackupSpace fills the Backups card header meter from the
+// latest SD-card reading (same ISOSpaceInfo the header chip uses). Hidden
+// until a real total is known -- GetDashboardContainer may not have built
+// the meter yet, which is why this no-ops on a nil widget.
+func (dw *DiskWidget) syncDashboardBackupSpace() {
+	if dw.dashboardBackupSpace == nil {
+		return
+	}
+	info := dw.sdSpaceInfo
+	if info == nil || info.TotalSpace <= 0 {
+		dw.dashboardBackupSpace.Clear()
+		return
+	}
+	used := info.UsedSpace
+	if used <= 0 {
+		used = info.TotalSpace - info.AvailableSpace
+		if used < 0 {
+			used = 0
+		}
+	}
+	pct := info.UsedPercent / 100
+	if pct <= 0 && info.TotalSpace > 0 {
+		pct = float64(used) / float64(info.TotalSpace)
+	}
+	dw.dashboardBackupSpace.Set(pct, models.FormatStorageSizeOnly(used, info.TotalSpace))
 }
 
 // loadLocalFiles loads local files from the isos folder
@@ -173,6 +203,9 @@ func (dw *DiskWidget) loadVideoDevices() {
 		dw.updateUIAsync(func() {
 			dw.videoDevices = devices
 			dw.scheduleCombine()
+			if dw.onVideoDevicesChanged != nil {
+				dw.onVideoDevicesChanged(devices)
+			}
 		})
 	}()
 }
@@ -222,8 +255,14 @@ func (dw *DiskWidget) combineDrives() {
 	selectedKeys := make(map[string]bool)
 	oldMouseType := normalizeMouseMode(dw.preferredMouseMode) // preserve the user's choice (touchpad/touchscreen/absolute)
 	oldRNDISMode := "auto"
-	oldGamepadMode := gamepadModeXInput
+	oldGamepadMode := "" // "" = not chosen; resolved per agent by effectiveGamepadMode
 	oldUSBAudioMode := "uac1"
+	// oldPenMounted preserves a locally-captured pen tablet's toggle state
+	// across the rebuild below -- there is no agent-reported "mounted"
+	// signal for this source the way gamepad/keyboard/mouse have (see
+	// disk_widget_pen.go's newPenTabletToggle doc comment), so it has to be
+	// carried over by hand like oldGamepadMode is.
+	oldPenMounted := make(map[string]bool)
 	for i, d := range dw.allDrives {
 		if d.IsMouse && d.MouseType != "" {
 			oldMouseType = d.MouseType
@@ -233,6 +272,9 @@ func (dw *DiskWidget) combineDrives() {
 		}
 		if d.IsGamepad && d.GamepadMode != "" {
 			oldGamepadMode = d.GamepadMode
+		}
+		if d.IsPenTablet && d.PenTabletID != "" {
+			oldPenMounted[d.PenTabletID] = d.IsMounted
 		}
 		if d.IsUSBAudio && d.USBAudioMode != "" {
 			oldUSBAudioMode = d.USBAudioMode
@@ -279,6 +321,12 @@ func (dw *DiskWidget) combineDrives() {
 
 	if dw.devicesTraceBudget > 0 {
 		logrus.Infof("[devices-ui] combineDrives: api localDrives=%d", len(dw.localDrives))
+		// Charged even with zero drives to iterate below -- otherwise this
+		// summary line alone never decrements the budget and logs on every
+		// combineDrives call forever whenever localDrives is empty (the
+		// common case before any device is plugged in). Confirmed live:
+		// this was spamming "api localDrives=0" once a second indefinitely.
+		dw.devicesTraceBudget--
 		for idx, drive := range dw.localDrives {
 			if dw.devicesTraceBudget <= 0 {
 				break
@@ -397,9 +445,8 @@ func (dw *DiskWidget) combineDrives() {
 	}
 	dw.allDrives = append(dw.allDrives, mouseItem)
 
-	// Add the network card (RNDIS) - only if the host OS is "usbridge"
-	osName := strings.ToLower(dw.agentOS)
-	if strings.Contains(osName, "usbridge") {
+	// Add the network card (RNDIS) - only on known USBridge KVM hardware
+	if knownUSBridgeHardware(dw.agentOS) {
 		rndisItem := DriveItem{
 			Name:      i18n.Current.DeviceNetworkCard,
 			Size:      "N/A",
@@ -427,6 +474,38 @@ func (dw *DiskWidget) combineDrives() {
 		dw.allDrives = append(dw.allDrives, gamepadItem)
 	}
 
+	// usbpassVIDs tracks which vendor IDs are already represented by a raw
+	// USB-passthrough row (dw.usbPassDevices, populated below) so the pen-
+	// tablet loop right after can skip adding a second, redundant card for
+	// the same physical device -- see that loop's doc comment.
+	usbpassVIDs := make(map[string]bool, len(dw.usbPassDevices))
+	for _, d := range dw.usbPassDevices {
+		usbpassVIDs[strings.ToLower(d.VID)] = true
+	}
+
+	// Add pen tablets captured locally (macOS: IOKit; web build: a WebHID
+	// grant) -- distinct from a real tablet forwarded raw from the agent's
+	// own machine (drive.IsUSBPassthrough && isWacomTablet, see
+	// disk_widget_dashboard.go). When the same physical tablet is also
+	// enumerated as a raw USB-passthrough device (true for every Wacom on
+	// macOS since listHIDDarwin's HID enumeration was generalized beyond
+	// Wacom), skip the local-capture row here and let the passthrough one
+	// represent it -- otherwise the same tablet shows up as two cards.
+	for _, tab := range dw.penTablets {
+		if usbpassVIDs[strings.ToLower(fmt.Sprintf("%04x", tab.VID))] {
+			continue
+		}
+		penItem := DriveItem{
+			Name:        tab.Name,
+			Size:        "N/A",
+			Source:      "pen",
+			IsMounted:   oldPenMounted[tab.ID],
+			IsPenTablet: true,
+			PenTabletID: tab.ID,
+		}
+		dw.allDrives = append(dw.allDrives, penItem)
+	}
+
 	// Add audio capture devices
 	for i := range dw.audioDevices {
 		device := dw.audioDevices[i]
@@ -441,8 +520,8 @@ func (dw *DiskWidget) combineDrives() {
 		dw.allDrives = append(dw.allDrives, audioItem)
 	}
 
-	// USB Audio Gadget (UAC) — only if the host OS is "usbridge"
-	if strings.Contains(osName, "usbridge") {
+	// USB Audio Gadget (UAC) — only on known USBridge KVM hardware
+	if knownUSBridgeHardware(dw.agentOS) {
 		usbAudioItem := DriveItem{
 			Name:         i18n.Current.DeviceUSBAudio,
 			Size:         "N/A",
@@ -505,14 +584,40 @@ func (dw *DiskWidget) combineDrives() {
 	dw.rebuildListItems()
 
 	logrus.Debugf("Combined %d items (API: %d, local: %d, user: %d, video: %d, keyboard: 1, mouse: 1, RNDIS: %v), agentOS: %q",
-		len(dw.allDrives), len(dw.localDrives), len(dw.localFiles), len(dw.userImages), len(dw.videoDevices), strings.Contains(osName, "usbridge"), dw.agentOS)
+		len(dw.allDrives), len(dw.localDrives), len(dw.localFiles), len(dw.userImages), len(dw.videoDevices), knownUSBridgeHardware(dw.agentOS), dw.agentOS)
 }
 
 // loadGamepadDevices refreshes the gamepad list from the OS and rebuilds the device list.
 func (dw *DiskWidget) loadGamepadDevices() {
 	gamepads := platform.EnumerateGamepads()
+	ids := make([]string, 0, len(gamepads))
+	for _, g := range gamepads {
+		ids = append(ids, fmt.Sprintf("%s %q %s:%s", g.ID, g.Name, g.VendorID, g.ProductID))
+	}
+	// Logged only when the result changes -- this runs on a 1s poll for the
+	// browser build's whole widget lifetime (browserGamepadPollInterval),
+	// so logging unconditionally spams "gamepads found: 0 []" indefinitely
+	// whenever nothing is plugged in. Native platforms only call this from
+	// an explicit Refresh(), where an unconditional log is fine, but the
+	// dedupe is harmless there too (each Refresh still logs on its own
+	// first call, and again only if the result actually changed).
+	if sig := fmt.Sprintf("%d %v", len(gamepads), ids); sig != dw.lastGamepadLogSig {
+		dw.lastGamepadLogSig = sig
+		logrus.Infof("🎮 gamepads found: %d %v", len(gamepads), ids)
+	}
 	dw.updateUIAsync(func() {
 		dw.gamepadDevices = gamepads
+		dw.scheduleCombine()
+	})
+}
+
+// loadPenTabletDevices refreshes the pen tablet list (platform.ListPenTablets --
+// macOS's own IOKit tap, or a WebHID grant on the web build) and rebuilds the
+// device list, same pattern as loadGamepadDevices.
+func (dw *DiskWidget) loadPenTabletDevices() {
+	tablets := platform.ListPenTablets()
+	dw.updateUIAsync(func() {
+		dw.penTablets = tablets
 		dw.scheduleCombine()
 	})
 }
@@ -539,19 +644,23 @@ func (dw *DiskWidget) loadMountedDevices() {
 	}
 	go func() {
 		defer dw.loadingMountedInfo.Store(false)
-		if dw.usbClient == nil {
+		// Capture once: UpdateClient(nil) on disconnect races with this
+		// goroutine (seen on Windows as a nil deref in GetUSBPassthroughStatus
+		// after GetDeviceInfo already succeeded).
+		client := dw.usbClient
+		if client == nil {
 			logrus.Debug("USB client not initialized, skipping device load")
 			return
 		}
 
-		deviceInfo, err := dw.usbClient.GetDeviceInfo()
+		deviceInfo, err := client.GetDeviceInfo()
 		if err != nil {
 			logrus.Errorf("Error loading device info: %v", err)
 			return
 		}
 
 		var passSessions []string
-		if st, err := dw.usbClient.GetUSBPassthroughStatus(); err == nil && st != nil {
+		if st, err := client.GetUSBPassthroughStatus(); err == nil && st != nil {
 			passSessions = append([]string(nil), st.Sessions...)
 		}
 
@@ -562,8 +671,11 @@ func (dw *DiskWidget) loadMountedDevices() {
 			for i := range deviceInfo.Devices {
 				dw.mountedDevices[i] = &deviceInfo.Devices[i]
 			}
-			dw.agentOS = deviceInfo.AgentOS
+			dw.applyLiveAgentIdentity(deviceInfo.AgentOS, deviceInfo.AgentProtocol)
 			dw.usbPassSessions = passSessions
+			if dw.onAgentProtocol != nil && dw.agentProtocol != "" {
+				dw.onAgentProtocol(dw.agentProtocol)
+			}
 			// Only propagate the server's MountInProgress flag when no local user
 			// operation is in flight — a stale poll response must not re-lock the UI
 			// after endOperation() already cleared the flag.
@@ -601,6 +713,7 @@ func (dw *DiskWidget) updateDevicesStatus() {
 	if info, err := getVideoInfoData(dw.usbClient); err == nil && info != nil {
 		currentVideoPath = info.Device
 		videoStreaming = info.Streaming
+		dw.virtualDisplaySupported.Store(info.VirtualDisplaySupported)
 	}
 
 	var currentAudioPath string
@@ -649,6 +762,22 @@ func (dw *DiskWidget) updateDevicesStatus() {
 			}
 			drive.IsMounted = isMounted
 			logrus.Debugf("🔊 %s (%s): %v -> %v", drive.Name, drive.Source, oldStatus, drive.IsMounted)
+			continue
+		}
+
+		// A locally-captured pen tablet (IsPenTablet) has no agent-reported
+		// mountedDevices entry at all -- its IsMounted is purely the
+		// newPenTabletToggle click already applied during the rebuild above
+		// (disk_widget_pen.go), and this whole per-drive loop only exists to
+		// reconcile *that* signal, which doesn't apply here. Leaving
+		// isMounted (the local var, defaulted to false above) in charge past
+		// this point -- as every kind below IsPenTablet in this loop except
+		// the ones with their own early continue does -- would silently
+		// reset the toggle back off on every single combine cycle: confirmed
+		// live as the toggle appearing to take effect (capture starts) and
+		// then getting torn down again within a few hundred ms, every time,
+		// since combineDrives calls syncPenCaptures at its own tail.
+		if drive.IsPenTablet {
 			continue
 		}
 
@@ -708,7 +837,15 @@ func (dw *DiskWidget) updateDevicesStatus() {
 				break
 			}
 
-			if drive.IsGamepad && (device.Type == "gamepad" || strings.HasPrefix(device.Type, "gamepad:")) {
+			// A software agent reports the requested mode ("mapx360", "xinput", ...) as the
+			// type, not "gamepad:<mode>" like the KVM hardware, so also match the device kind.
+			if drive.IsGamepad && (device.Device == "gamepad" || device.Type == "gamepad" || strings.HasPrefix(device.Type, "gamepad:")) {
+				// Several local pads can be listed, but the agent only knows the
+				// VID/PID we sent, so a software agent's entry belongs to the
+				// row with that identity, not simply to the first gamepad row.
+				if IsSoftwareAgentOS(dw.agentOS) && !gamepadIdentityMatches(drive.GamepadVendorID, drive.GamepadProductID, device.VendorID, device.ProductID) {
+					continue
+				}
 				isMounted = true
 				usedMountedIdx[j] = true
 				logrus.Debugf("🎮 Found connected gamepad: %s (type: %s, device: %s)", device.Name, device.Type, device.Device)
@@ -856,5 +993,5 @@ func (dw *DiskWidget) updateDevicesStatus() {
 
 	dw.updateButtons()
 	dw.syncGamepadCaptures()
+	dw.syncPenCaptures()
 }
-

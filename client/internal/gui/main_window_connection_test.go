@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"usbridge-client/internal/api"
+	"usbridge-client/internal/models"
 )
 
 // newTestUSBClient points a *api.USBClient at an httptest.Server -- NewUSBClient
@@ -68,7 +69,7 @@ func TestVerifyActiveConnectionRejectsWrongMasterKey(t *testing.T) {
 
 	mw := &MainWindow{usbClient: newTestUSBClient(t, server)}
 
-	if err := mw.verifyActiveConnectionWithContext(context.Background()); err == nil {
+	if _, err := mw.verifyActiveConnectionWithContext(context.Background()); err == nil {
 		t.Fatal("verifyActiveConnectionWithContext succeeded against a server that 401s /api/device/info -- a wrong master key would falsely look connected")
 	} else if !strings.Contains(err.Error(), "401") {
 		t.Errorf("expected the 401 to surface in the error, got: %v", err)
@@ -85,7 +86,7 @@ func TestVerifyActiveConnectionAcceptsCorrectMasterKey(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		case "/api/device/info":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"success":true,"data":{}}`))
+			_, _ = w.Write([]byte(`{"success":true,"data":{"agent_os":"Windows","agent_protocol":"opensource"}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -94,8 +95,12 @@ func TestVerifyActiveConnectionAcceptsCorrectMasterKey(t *testing.T) {
 
 	mw := &MainWindow{usbClient: newTestUSBClient(t, server)}
 
-	if err := mw.verifyActiveConnectionWithContext(context.Background()); err != nil {
+	info, err := mw.verifyActiveConnectionWithContext(context.Background())
+	if err != nil {
 		t.Fatalf("verifyActiveConnectionWithContext failed against a server that accepts /api/device/info: %v", err)
+	}
+	if info == nil || info.AgentOS != "Windows" || info.AgentProtocol != "opensource" {
+		t.Fatalf("verify must return the agent identity payload, got %+v", info)
 	}
 }
 
@@ -131,5 +136,22 @@ func TestConnectionRecoveryRetryDelaysCoverRealisticTsnetReconnect(t *testing.T)
 	const minBudget = 30 * time.Second
 	if total < minBudget {
 		t.Fatalf("total recovery budget = %v, want at least %v to outlast a real tsnet reconnect after a network path change (observed 15-30s in the field)", total, minBudget)
+	}
+}
+
+func TestShouldAttemptConnectionRecoverySkipsDirectLAN(t *testing.T) {
+	direct := &MainWindow{connectedProtocol: models.ConnectionProtocolDirect}
+	if direct.shouldAttemptConnectionRecovery() {
+		t.Fatal("direct LAN must not sit in the multi-minute Tailscale recovery loop after a hard transport loss")
+	}
+
+	autoLAN := &MainWindow{connectedProtocol: models.ConnectionProtocolAuto}
+	if autoLAN.shouldAttemptConnectionRecovery() {
+		t.Fatal("auto/LAN without a Tailscale host must not attempt long recovery")
+	}
+
+	ts := &MainWindow{connectedProtocol: models.ConnectionProtocolTailscale}
+	if !ts.shouldAttemptConnectionRecovery() {
+		t.Fatal("tailscale must still attempt recovery after a transport blip")
 	}
 }

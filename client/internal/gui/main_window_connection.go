@@ -2,6 +2,7 @@ package gui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image/color"
 	"net"
@@ -11,6 +12,7 @@ import (
 
 	"usbridge-client/internal/api"
 	"usbridge-client/internal/gui/assets"
+	"usbridge-client/internal/gui/controller"
 	"usbridge-client/internal/gui/design"
 	"usbridge-client/internal/gui/i18n"
 	"usbridge-client/internal/gui/view"
@@ -32,17 +34,33 @@ func (mw *MainWindow) handleConnectionFromDeepLink(host, masterKey, protocol str
 // handleConnectionFromManager handles connection from the manager (arrow on the card).
 // masterKey is the API secret (from QR sync).
 func (mw *MainWindow) handleConnectionFromManager(host, masterKey, protocol string, tailscaleRegister bool) {
-	mw.hostEntry.SetText(host)
-	mw.tokenEntry.SetText(masterKey)
-	mw.pendingTailscaleRegister = tailscaleRegister
-	if protocol != "" {
-		mw.protocolSelect.SetSelected(protocol)
+	setForm := func() {
+		mw.hostEntry.SetText(host)
+		mw.tokenEntry.SetText(masterKey)
+		if protocol != "" {
+			mw.protocolSelect.SetSelected(protocol)
+		}
 	}
+	// Silently, via connectionManager -- for the OnUse (Grid/List card)
+	// caller, cm.SelectConnection(idx) already just populated these same
+	// entries under its own syncingForm guard; setting them again here
+	// unguarded fires OnChanged -> HandleFormEdited, which (before this fix)
+	// compared against a value the form was never actually populated with
+	// and wrongly cleared cm.selectedIndex mid-connect -- see
+	// HandleFormEdited's and SetFormTextSilently's doc comments for the
+	// full chain (it also desyncs SetConnectionPending's redundant-call
+	// activeIndex, which is what made the toast/button flicker).
+	if mw.connectionManager != nil {
+		mw.connectionManager.SetFormTextSilently(setForm)
+	} else {
+		setForm()
+	}
+	mw.pendingTailscaleRegister = tailscaleRegister
 	mw.handleConnectionToggle()
 }
 
 // handleSaveFromDeepLink saves data from a deep link WITHOUT connecting.
-func (mw *MainWindow) handleSaveFromDeepLink(name, internalHost, tailscaleHost, masterKey, protocol string, tailscaleRegister bool) {
+func (mw *MainWindow) handleSaveFromDeepLink(name, internalHost, tailscaleHost, masterKey, protocol, hwID string, tailscaleRegister bool) {
 	host := strings.TrimSpace(tailscaleHost)
 	if host == "" {
 		host = strings.TrimSpace(internalHost)
@@ -58,7 +76,7 @@ func (mw *MainWindow) handleSaveFromDeepLink(name, internalHost, tailscaleHost, 
 	})
 
 	if mw.connectionManager != nil {
-		generatedName := mw.connectionManager.SaveConnection(name, internalHost, tailscaleHost, masterKey, protocol, tailscaleRegister)
+		generatedName := mw.connectionManager.SaveConnection(name, internalHost, tailscaleHost, masterKey, protocol, hwID, tailscaleRegister)
 		logrus.Infof("✅ Connection '%s' saved", generatedName)
 		fyne.Do(func() {
 			logrus.Infof("💾 Saved as: %s", generatedName)
@@ -75,6 +93,50 @@ func (mw *MainWindow) canAttemptConnection() bool {
 func (mw *MainWindow) setConnectionLoading(loading bool) {
 	mw.isConnectionLoading = loading
 	mw.refreshConnectionControls()
+}
+
+// connectingToastBarDuration paces the connecting toast's progress bar --
+// deliberately NOT mw.config.APITimeout: that bounds only the first network
+// call inside doConnect, while several earlier steps (tsnet's own 25s
+// WaitUntilReady waits, sync, Tailscale registration polling) run on their
+// own separate timeouts and can make the real wall-clock attempt take
+// noticeably longer than APITimeout before anything actually resolves. The
+// bar reaching 100% doesn't close the toast (handleConnectingStateChange
+// only closes it once the real attempt resolves) -- it just gives a sense
+// of pace for a typical attempt without pretending to know the real one.
+const connectingToastBarDuration = 15 * time.Second
+
+// handleConnectingStateChange is ConnectionManager's connectingStateSink --
+// wired up once in createConnectionAddressBar (main_window_layout.go),
+// alongside the header's other cross-package status sinks. Shows/hides the
+// bottom "Connecting to X…" toast (view.ShowConnectingToast) in lockstep
+// with connectionPending's own start/stop, so it tracks a Connect press
+// regardless of which button started it (Grid card, List row, or a saved
+// deep link) without any of those call sites needing to know about the
+// toast themselves.
+func (mw *MainWindow) handleConnectingStateChange(connecting bool, name string) {
+	fyne.Do(func() {
+		if !connecting && mw.suppressConnectingToastClose {
+			// A connect failure just called ShowError on this same toast
+			// (see handleConnectFailure) -- leave it open instead of
+			// closing it out from under that transform.
+			mw.suppressConnectingToastClose = false
+			return
+		}
+
+		if mw.connectingToast != nil {
+			logrus.Infof("🔌 [CONNECT-TOAST] closing (connecting=%v name=%q)", connecting, name)
+			mw.connectingToast.Close()
+			mw.connectingToast = nil
+		}
+		if !connecting {
+			return
+		}
+
+		logrus.Infof("🔌 [CONNECT-TOAST] showing (name=%q)", name)
+		message := fmt.Sprintf(i18n.Current.ConnectingToConnection, name)
+		mw.connectingToast = view.ShowConnectingToast(message, connectingToastBarDuration, mw.window, mw.abortInFlightConnect)
+	})
 }
 
 func (mw *MainWindow) clearConnectionPending() {
@@ -140,8 +202,32 @@ var connectionRecoveryRetryDelays = []time.Duration{
 	20 * time.Second,
 }
 
+// shouldAttemptConnectionRecovery is true only for Tailscale paths, where a
+// transport blip can be a real tsnet/DERP re-handshake that we should ride
+// out. A direct LAN KVM that just lost power will never come back within
+// the multi-minute recovery budget, and leaving widgets attached during
+// that wait freezes the Fyne loop (HTTP timeouts + Vulkan overlay input).
+func (mw *MainWindow) shouldAttemptConnectionRecovery() bool {
+	if mw.connectedProtocol == models.ConnectionProtocolTailscale {
+		return true
+	}
+	host := ""
+	if mw.hostEntry != nil {
+		host = mw.hostEntry.Text
+	}
+	return isLikelyTailscaleHost(host)
+}
+
 func (mw *MainWindow) tryRecoverConnectionAfterLoss(client *api.USBClient, lastErr error) bool {
 	if client == nil || client != mw.usbClient || !mw.isConnected {
+		return false
+	}
+	if !mw.shouldAttemptConnectionRecovery() {
+		host := ""
+		if mw.hostEntry != nil {
+			host = mw.hostEntry.Text
+		}
+		logrus.Infof("⏭️ Skipping automatic connection recovery for non-Tailscale host=%s protocol=%s", host, mw.connectedProtocol)
 		return false
 	}
 
@@ -172,7 +258,7 @@ func (mw *MainWindow) tryRecoverConnectionAfterLoss(client *api.USBClient, lastE
 		})
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(mw.config.APITimeout)*time.Second)
-		err := mw.doConnectWithProtocol(ctx, mw.hostEntry.Text, protocol)
+		err := mw.doConnectWithProtocol(ctx, mw.hostEntry.Text, protocol, 0)
 		cancel()
 		if err == nil {
 			return true
@@ -193,6 +279,10 @@ func (mw *MainWindow) handleConnectionLost(err error, client *api.USBClient) {
 		return
 	}
 
+	// Detach pollers / overlay / clipboard *before* any recovery wait so the
+	// Fyne loop stays responsive even if the host never comes back.
+	mw.pauseDeadConnectionIO()
+
 	if mw.tryRecoverConnectionAfterLoss(client, err) {
 		logrus.Infof("✅ Connection recovered automatically after transport loss")
 		mw.connectionLossInProgress.Store(false)
@@ -210,20 +300,56 @@ func (mw *MainWindow) handleConnectionLost(err error, client *api.USBClient) {
 		mw.protocolSelect.Enable()
 		mw.updateStatus()
 		mw.showConnectionManager()
-		view.ShowErrorDialog(fmt.Errorf(i18n.Current.ConnectionLost, err), mw.window)
+		view.ShowConnectionErrorDialog(fmt.Errorf(i18n.Current.ConnectionLost, err), mw.window)
 	})
 
 	mw.connectionLossInProgress.Store(false)
 }
 
-func (mw *MainWindow) cleanupDeadConnectionState() {
-	mw.isConnected = false
-	mw.isStreaming = false
+// pauseDeadConnectionIO stops every client that still holds a pointer to the
+// dead USBClient. cleanupDeadConnectionState used to only nil mw.usbClient
+// and tear down video — disk/backup/pcpanel/scripts/clipboard kept polling
+// the powered-off KVM (15s HTTP timeouts) and video reconcile kept retrying
+// Moonlight with desiredStreaming=true.
+func (mw *MainWindow) pauseDeadConnectionIO() {
+	if mw.clipboardSync != nil {
+		mw.clipboardSync.Stop()
+		mw.clipboardSync = nil
+	}
 
 	if mw.videoWidget != nil {
+		mw.videoWidget.MarkUserStopped()
 		mw.videoWidget.HandleConnectionLost()
 	}
 
+	fyne.Do(func() {
+		if mw.diskWidget != nil {
+			mw.diskWidget.UpdateClient(nil)
+		}
+		if mw.videoWidget != nil {
+			mw.videoWidget.UpdateClient(nil)
+		}
+		if mw.backupWidget != nil {
+			mw.backupWidget.UpdateClient(nil)
+		}
+		if mw.pcpanelWidget != nil {
+			mw.pcpanelWidget.SetClient(nil)
+		}
+		if mw.scriptsWidget != nil {
+			mw.scriptsWidget.SetClient(nil)
+		}
+	})
+}
+
+func (mw *MainWindow) cleanupDeadConnectionState() {
+	mw.isConnected = false
+	mw.isStreaming = false
+	if mw.appState != nil {
+		mw.appState.IsConnected = false
+		mw.appState.IsStreaming = false
+	}
+
+	mw.pauseDeadConnectionIO()
 	mw.usbClient = nil
 }
 
@@ -295,18 +421,161 @@ func (mw *MainWindow) handleConnectionToggle() {
 		return
 	}
 
+	// Register cancel BEFORE the toast appears so an X tap that lands
+	// between SetConnectionPending and handleConnect still aborts this
+	// attempt instead of racing a newly begun generation.
+	userCtx, gen := mw.beginConnectAttempt()
 	mw.isConnectionPending.Store(true)
 	mw.setConnectionLoading(true)
 	mw.hostEntry.Disable()
 	mw.tokenEntry.Disable()
 	mw.protocolSelect.Disable()
 
-	go mw.handleConnect()
+	go mw.handleConnect(userCtx, gen)
+}
+
+// errConnectAborted is returned when the user cancelled an in-flight connect
+// (the connecting toast's X). Distinct from a timeout / network error so
+// handleConnect does not transform the toast into an error.
+var errConnectAborted = errors.New("connection attempt canceled")
+
+func (mw *MainWindow) beginConnectAttempt() (context.Context, uint64) {
+	ctx, cancel := context.WithCancel(context.Background())
+	mw.connectCancelMu.Lock()
+	mw.connectCancel = cancel
+	mw.connectCtx = ctx
+	gen := mw.connectGen.Add(1)
+	mw.connectLiveGen.Store(gen)
+	mw.connectCancelMu.Unlock()
+	return ctx, gen
+}
+
+func (mw *MainWindow) abortConnectAttempt() {
+	mw.connectCancelMu.Lock()
+	mw.connectGen.Add(1)
+	cancel := mw.connectCancel
+	mw.connectCancelMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (mw *MainWindow) connectAttemptLive(gen uint64) bool {
+	return gen != 0 && mw.connectGen.Load() == gen
+}
+
+func (mw *MainWindow) connectAborted(ctx context.Context, gen uint64) bool {
+	if gen == 0 {
+		return false
+	}
+	if !mw.connectAttemptLive(gen) {
+		return true
+	}
+	return ctx != nil && errors.Is(ctx.Err(), context.Canceled)
+}
+
+func (mw *MainWindow) finishConnectAttempt(gen uint64) {
+	mw.connectCancelMu.Lock()
+	defer mw.connectCancelMu.Unlock()
+	if mw.connectLiveGen.Load() == gen {
+		mw.connectLiveGen.Store(0)
+		mw.connectCancel = nil
+		mw.connectCtx = nil
+	}
+}
+
+// abortInFlightConnect is the connecting toast's X. It only cancels the
+// attempt's context and invalidates its generation -- teardown runs on the
+// connect goroutine (handleConnectCanceled) so a second Connect cannot
+// start until USB/Moonlight cleanup has finished.
+func (mw *MainWindow) abortInFlightConnect() {
+	if !mw.isConnectionPending.Load() {
+		return
+	}
+	logrus.Info("🔌 [CONNECT] aborted by user")
+	mw.abortConnectAttempt()
+}
+
+func (mw *MainWindow) handleConnectCanceled() {
+	logrus.Info("🔌 [CONNECT] attempt canceled — tearing down any partial session")
+
+	if mw.videoWidget != nil {
+		mw.videoWidget.MarkUserStopped()
+	}
+
+	if mw.tailscalePollCancel != nil {
+		mw.tailscalePollCancel()
+		mw.tailscalePollCancel = nil
+	}
+
+	if mw.clipboardSync != nil {
+		mw.clipboardSync.Stop()
+		mw.clipboardSync = nil
+	}
+
+	// Moonlight /cancel and overlay teardown on this goroutine — not via
+	// handleDisconnect, which would SetContent+RefreshList the Connections
+	// screen (and rebuild the Devices dashboard) even when we never left it.
+	// That work on the Fyne loop is what the Vulkan watchdog reports as a
+	// main-loop freeze after a toast-X cancel.
+	if mw.videoWidget != nil {
+		_ = mw.videoWidget.StopVideoSync()
+	}
+	if mw.videoClient != nil {
+		_ = mw.videoClient.Disconnect()
+	}
+
+	client := mw.usbClient
+	mw.usbClient = nil
+	mw.isConnected = false
+	mw.isStreaming = false
+	mw.connectedProtocol = ""
+	if mw.appState != nil {
+		mw.appState.IsConnected = false
+		mw.appState.IsStreaming = false
+	}
+	if client != nil {
+		client.Disconnect()
+	}
+
+	fyne.Do(func() {
+		if mw.videoWidget != nil {
+			mw.videoWidget.UpdateClient(nil)
+		}
+		if mw.pcpanelWidget != nil {
+			mw.pcpanelWidget.SetClient(nil)
+		}
+		if mw.scriptsWidget != nil {
+			mw.scriptsWidget.SetClient(nil)
+		}
+		if mw.onMainContent {
+			if mw.diskWidget != nil {
+				mw.diskWidget.UpdateClient(nil)
+			}
+			if mw.backupWidget != nil {
+				mw.backupWidget.UpdateClient(nil)
+			}
+			mw.showConnectionManagerNow()
+		}
+
+		mw.clearConnectionPending()
+		mw.refreshConnectionControls()
+		if mw.hostEntry != nil {
+			mw.hostEntry.Enable()
+		}
+		if mw.tokenEntry != nil {
+			mw.tokenEntry.Enable()
+		}
+		if mw.protocolSelect != nil {
+			mw.protocolSelect.Enable()
+		}
+	})
 }
 
 // handleConnect handles connecting
-func (mw *MainWindow) handleConnect() {
+func (mw *MainWindow) handleConnect(userCtx context.Context, gen uint64) {
 	logrus.Infof("🔍 [DEBUG] handleConnect() called")
+	defer mw.finishConnectAttempt(gen)
 
 	host := mw.hostEntry.Text
 	masterKey := mw.tokenEntry.Text
@@ -318,10 +587,20 @@ func (mw *MainWindow) handleConnect() {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(mw.config.APITimeout)*time.Second)
-	defer cancel()
+	if mw.connectAborted(userCtx, gen) {
+		mw.handleConnectCanceled()
+		return
+	}
 
-	if err := mw.doConnect(ctx, host, masterKey); err != nil {
+	apiCtx, apiCancel := context.WithTimeout(userCtx, time.Duration(mw.config.APITimeout)*time.Second)
+	defer apiCancel()
+
+	err := mw.doConnect(userCtx, apiCtx, host, masterKey, gen)
+	if mw.connectAborted(userCtx, gen) || errors.Is(err, errConnectAborted) {
+		mw.handleConnectCanceled()
+		return
+	}
+	if err != nil {
 		mw.handleConnectFailure("Connection failed", err)
 	}
 }
@@ -371,7 +650,7 @@ func getFreeVideoUDPPort() int {
 
 // doConnect performs the blocking connection logic (called from a goroutine).
 // masterKey — API master secret (from the QR code): used for sync and to sign API requests.
-func (mw *MainWindow) doConnect(ctx context.Context, host, masterKey string) error {
+func (mw *MainWindow) doConnect(waitCtx, apiCtx context.Context, host, masterKey string, gen uint64) error {
 	mw.lastTailscaleAuthURL = ""
 
 	selectedProtocol := mw.protocolSelect.Selected
@@ -390,7 +669,7 @@ func (mw *MainWindow) doConnect(ctx context.Context, host, masterKey string) err
 	// window on top of the app.
 	if usesTsnetTransport() && mw.tailscaleService != nil &&
 		(isLikelyTailscaleHost(host) || selectedProtocol == models.ConnectionProtocolTailscale) {
-		// Deliberately not derived from ctx (which is bounded by the short
+		// Deliberately not derived from apiCtx (which is bounded by the short
 		// APITimeout meant for the actual API calls below): tsnet coming up
 		// cold — especially first-ever interactive login — can take well
 		// longer than that. Carving this wait out of ctx's budget left
@@ -399,11 +678,18 @@ func (mw *MainWindow) doConnect(ctx context.Context, host, masterKey string) err
 		// "context deadline exceeded"-style error even though tsnet itself
 		// was still fine — a second press then worked because tsnet was
 		// already Running by then.
-		waitCtx, waitCancel := context.WithTimeout(context.Background(), 25*time.Second)
-		if waitErr := mw.tailscaleService.WaitUntilReady(waitCtx); waitErr != nil {
+		//
+		// Parent is waitCtx (user-cancelable, no API timeout) so the
+		// connecting toast's X still unblocks this wait.
+		waitReadyCtx, waitCancel := context.WithTimeout(waitCtx, 25*time.Second)
+		waitErr := mw.tailscaleService.WaitUntilReady(waitReadyCtx)
+		waitCancel()
+		if mw.connectAborted(waitCtx, gen) {
+			return errConnectAborted
+		}
+		if waitErr != nil {
 			logrus.Warnf("⚠️ [CONNECT] tsnet not yet ready: %v (proceeding anyway)", waitErr)
 		}
-		waitCancel()
 	}
 
 	if mw.videoWidget != nil {
@@ -411,6 +697,9 @@ func (mw *MainWindow) doConnect(ctx context.Context, host, masterKey string) err
 	}
 	if mw.videoClient != nil {
 		_ = mw.videoClient.Disconnect()
+	}
+	if mw.connectAborted(waitCtx, gen) {
+		return errConnectAborted
 	}
 
 	mw.config.VideoUDPPort = getFreeVideoUDPPort()
@@ -441,12 +730,16 @@ func (mw *MainWindow) doConnect(ctx context.Context, host, masterKey string) err
 		// tsnet.Up() blocks until Running state (~4s on first launch).
 		if usesTsnetTransport() && isLikelyTailscaleHost(host) && mw.tailscaleService != nil {
 			logrus.Info("🛰️ [SYNC] Waiting for Tailscale to be ready...")
-			// Own budget, not ctx (see the identical rationale above) — otherwise
+			// Own budget, not apiCtx (see the identical rationale above) — otherwise
 			// this wait alone can exhaust the API timeout, leaving the sync
 			// request below to fail immediately with a deadline-exceeded error.
-			waitCtx, waitCancel := context.WithTimeout(context.Background(), 25*time.Second)
-			waitErr := mw.tailscaleService.WaitUntilReady(waitCtx)
+			// Parent is waitCtx so the toast X still unblocks this wait.
+			waitReadyCtx, waitCancel := context.WithTimeout(waitCtx, 25*time.Second)
+			waitErr := mw.tailscaleService.WaitUntilReady(waitReadyCtx)
 			waitCancel()
+			if mw.connectAborted(waitCtx, gen) {
+				return errConnectAborted
+			}
 			if waitErr != nil {
 				logrus.Warnf("🛰️ [SYNC] Tailscale not ready: %v (proceeding anyway)", waitErr)
 			} else {
@@ -454,7 +747,7 @@ func (mw *MainWindow) doConnect(ctx context.Context, host, masterKey string) err
 			}
 		}
 
-		if tsReady, err := mw.syncWithBridgeV2(ctx, host, key); err == nil {
+		if tsReady, err := mw.syncWithBridgeV2(apiCtx, host, key); err == nil {
 			// When the user wants Tailscale registration but the bridge is not yet
 			// in the tailnet (no auth key was sent), fall back to Auto or Direct
 			// so that registration can proceed over the current connection.
@@ -468,6 +761,9 @@ func (mw *MainWindow) doConnect(ctx context.Context, host, masterKey string) err
 				}
 			}
 		} else {
+			if mw.connectAborted(apiCtx, gen) {
+				return errConnectAborted
+			}
 			logrus.Warnf("⚠️ [SYNC] Sync failed: %v", err)
 			// For direct and auto protocols, sync failure is not fatal —
 			// mw.activeAPISecret was already set at the start of
@@ -483,6 +779,10 @@ func (mw *MainWindow) doConnect(ctx context.Context, host, masterKey string) err
 		logrus.Warn("⚠️ [CONNECT] No master key provided")
 	}
 
+	if mw.connectAborted(waitCtx, gen) {
+		return errConnectAborted
+	}
+
 	logrus.Infof("🔗 [CONNECT] start host=%s protocol=%s timeout=%ds",
 		strings.TrimSpace(host), protocol, mw.config.APITimeout)
 
@@ -490,7 +790,7 @@ func (mw *MainWindow) doConnect(ctx context.Context, host, masterKey string) err
 		mw.pollTailscaleRegistration(host, masterKey, protocol)
 	}
 
-	return mw.doConnectWithProtocol(ctx, host, protocol)
+	return mw.doConnectWithProtocol(apiCtx, host, protocol, gen)
 }
 
 func (mw *MainWindow) pollTailscaleRegistration(host, masterKey, protocol string) {
@@ -576,7 +876,7 @@ func (mw *MainWindow) reconnectViaTailscaleAfterRegistration(host, masterKey str
 	})
 }
 
-func (mw *MainWindow) doConnectWithProtocol(ctx context.Context, host, protocol string) error {
+func (mw *MainWindow) doConnectWithProtocol(ctx context.Context, host, protocol string, gen uint64) error {
 	connectTailscale := func(ctx context.Context) error {
 		resolvedHost := strings.TrimSpace(host)
 
@@ -616,17 +916,27 @@ func (mw *MainWindow) doConnectWithProtocol(ctx context.Context, host, protocol 
 	}
 
 	logrus.Infof("🔗 [CONNECT] protocol=%s host=%s", protocol, host)
+	mw.seedAgentIdentityFromSaved(host)
 
 	switch protocol {
 	case models.ConnectionProtocolTailscale:
 		if err := connectTailscale(ctx); err != nil {
+			if mw.connectAborted(ctx, gen) {
+				return errConnectAborted
+			}
 			return err
 		}
 	case models.ConnectionProtocolAuto:
 		if err := connectTailscale(ctx); err != nil {
+			if mw.connectAborted(ctx, gen) {
+				return errConnectAborted
+			}
 			logrus.Warnf("⚠️ Tailscale auto-connect failed, falling back to direct: %v", err)
-			tempClient := api.NewDirectUSBClient(host, mw.config.USBPort, mw.config.APITimeout)
+			tempClient := api.NewDirectUSBClient(host, mw.config.USBPort, mw.config.USBTLSPort, mw.config.APITimeout)
 			if err2 := testConnectionWithRetry(ctx, tempClient, host); err2 != nil {
+				if mw.connectAborted(ctx, gen) {
+					return errConnectAborted
+				}
 				return fmt.Errorf("failed to establish connection in auto mode: %w", err2)
 			}
 			mw.usbClient = mw.attachUSBClient(tempClient)
@@ -635,8 +945,11 @@ func (mw *MainWindow) doConnectWithProtocol(ctx context.Context, host, protocol 
 			mw.videoWidget.SetTailscaleVideoEnabled(false)
 		}
 	case models.ConnectionProtocolDirect:
-		tempClient := api.NewDirectUSBClient(host, mw.config.USBPort, mw.config.APITimeout)
+		tempClient := api.NewDirectUSBClient(host, mw.config.USBPort, mw.config.USBTLSPort, mw.config.APITimeout)
 		if err := testConnectionWithRetry(ctx, tempClient, host); err != nil {
+			if mw.connectAborted(ctx, gen) {
+				return errConnectAborted
+			}
 			return err
 		}
 		mw.usbClient = mw.attachUSBClient(tempClient)
@@ -646,6 +959,9 @@ func (mw *MainWindow) doConnectWithProtocol(ctx context.Context, host, protocol 
 	default:
 		tempClient := api.NewUSBClient(host, mw.config.USBPort, mw.config.APITimeout)
 		if err := tempClient.TestConnectionWithContext(ctx); err != nil {
+			if mw.connectAborted(ctx, gen) {
+				return errConnectAborted
+			}
 			return err
 		}
 		mw.usbClient = mw.attachUSBClient(tempClient)
@@ -658,9 +974,20 @@ func (mw *MainWindow) doConnectWithProtocol(ctx context.Context, host, protocol 
 		}
 	}
 
-	if err := mw.verifyActiveConnectionWithContext(ctx); err != nil {
+	if mw.connectAborted(ctx, gen) {
+		return errConnectAborted
+	}
+
+	info, err := mw.verifyActiveConnectionWithContext(ctx)
+	if err != nil {
 		logrus.Errorf("❌ Connection verification failed: %v", err)
+		if client := mw.usbClient; client != nil {
+			client.Disconnect()
+		}
 		mw.usbClient = nil
+		if mw.connectAborted(ctx, gen) {
+			return errConnectAborted
+		}
 		fyne.Do(func() {
 			mw.clearConnectionPending()
 			mw.isConnected = false
@@ -672,6 +999,14 @@ func (mw *MainWindow) doConnectWithProtocol(ctx context.Context, host, protocol 
 		})
 		return fmt.Errorf("connection verification failed: %w", err)
 	}
+
+	if mw.connectAborted(ctx, gen) {
+		return errConnectAborted
+	}
+
+	// /api/device/info already ran for HMAC verification — reuse it so
+	// Devices/Control don't paint a KVM/RustShine default for one frame.
+	mw.applyConnectedAgentIdentity(info, host)
 
 	mw.diskWidget.UpdateClient(mw.usbClient)
 	mw.videoWidget.UpdateClient(mw.usbClient)
@@ -685,6 +1020,9 @@ func (mw *MainWindow) doConnectWithProtocol(ctx context.Context, host, protocol 
 	mw.connectionLossInProgress.Store(false)
 
 	fyne.Do(func() {
+		if !mw.connectAttemptLive(gen) && gen != 0 {
+			return
+		}
 		mw.clearConnectionPending()
 		mw.refreshConnectionControls()
 		if mw.pcpanelWidget != nil {
@@ -718,36 +1056,170 @@ func (mw *MainWindow) doConnectWithProtocol(ctx context.Context, host, protocol 
 
 	logrus.Infof("✅ Connected to USBridge via %s", mw.connectedProtocol)
 
-	if mw.usbClient != nil && mw.connectionManager != nil {
+	if mw.usbClient != nil && mw.connectionManager != nil && (gen == 0 || mw.connectAttemptLive(gen)) {
 		client := mw.usbClient
 		connMgr := mw.connectionManager
 		connHost := strings.TrimSpace(host)
-		go func() {
-			deviceInfo, err := client.GetDeviceInfo()
-			if err == nil && deviceInfo != nil {
-				osName := strings.TrimSpace(deviceInfo.AgentOS)
-				if osName != "" {
-					connMgr.UpdateConnectionOS(connHost, osName)
-					return
-				}
+		liveGen := gen
+		probeCtx := ctx
+		if gen != 0 {
+			mw.connectCancelMu.Lock()
+			if mw.connectCtx != nil {
+				probeCtx = mw.connectCtx
 			}
-			status, err := client.GetStatus()
-			if err != nil || status == nil || status.Data == nil {
-				return
-			}
-			osName := strings.TrimSpace(status.Data.OS)
-			if osName != "" {
-				connMgr.UpdateConnectionOS(connHost, osName)
-			}
-		}()
+			mw.connectCancelMu.Unlock()
+		}
+		go mw.refreshConnectionAgentIdentity(probeCtx, client, connMgr, connHost, liveGen)
 	}
 
 	return nil
 }
 
-func (mw *MainWindow) verifyActiveConnectionWithContext(ctx context.Context) error {
+func (mw *MainWindow) applyConnectedAgentIdentity(info *models.DeviceInfoResponse, host string) {
+	liveOS, liveProtocol, liveDisplay := "", "", ""
+	if info != nil {
+		liveOS = strings.TrimSpace(info.AgentOS)
+		liveProtocol = strings.TrimSpace(info.AgentProtocol)
+		liveDisplay = strings.TrimSpace(info.AgentDisplay)
+	}
+	savedOS, savedProtocol := "", ""
+	if mw.connectionManager != nil {
+		savedOS, savedProtocol = mw.connectionManager.LookupAgentIdentity(host)
+	}
+	osName, protocol := controller.MergeAgentIdentity(liveOS, liveProtocol, savedOS, savedProtocol)
+	logrus.Infof("🪪 [CONNECT] agent identity os=%q protocol=%q (live os=%q protocol=%q saved os=%q)", osName, protocol, liveOS, liveProtocol, savedOS)
+
+	mw.applyAgentIdentityToWidgets(osName, protocol, liveDisplay, true)
+}
+
+func (mw *MainWindow) seedAgentIdentityFromSaved(host string) {
+	if mw.connectionManager == nil {
+		return
+	}
+	savedOS, savedProtocol := mw.connectionManager.LookupAgentIdentity(host)
+	if strings.TrimSpace(savedOS) == "" && strings.TrimSpace(savedProtocol) == "" {
+		return
+	}
+	mw.applyConnectedAgentIdentity(nil, host)
+}
+
+func (mw *MainWindow) applyAgentIdentityToWidgets(osName, protocol, liveDisplay string, applyEnv bool) {
+	if mw.diskWidget != nil {
+		mw.diskWidget.SetAgentIdentity(osName, protocol)
+	}
+	if mw.videoWidget != nil {
+		if applyEnv {
+			mw.videoWidget.SetAgentEnvironment(osName, liveDisplay)
+		}
+		if protocol != "" {
+			mw.videoWidget.SetAgentProtocol(protocol)
+		}
+	}
+	if osName != "" {
+		if mw.backupWidget != nil {
+			mw.backupWidget.SetAgentOS(osName)
+		}
+		if mw.pcpanelWidget != nil {
+			mw.pcpanelWidget.SetAgentOS(osName)
+		}
+		if mw.scriptsWidget != nil {
+			mw.scriptsWidget.SetAgentOS(osName)
+		}
+	}
+}
+
+func (mw *MainWindow) persistAgentProtocol(protocol string) {
+	protocol = strings.TrimSpace(protocol)
+	if protocol == "" || mw.connectionManager == nil {
+		return
+	}
+	host := ""
+	if mw.hostEntry != nil {
+		host = strings.TrimSpace(mw.hostEntry.Text)
+	}
+	mw.connectionManager.UpdateConnectionOS(host, "", protocol)
+}
+
+func (mw *MainWindow) refreshConnectionAgentIdentity(ctx context.Context, client *api.USBClient, connMgr *controller.ConnectionManager, host string, liveGen uint64) {
+	if client == nil || connMgr == nil {
+		return
+	}
+	store := func(osName, protocol string) {
+		if osName == "" && protocol == "" {
+			return
+		}
+		connMgr.UpdateConnectionOS(host, osName, protocol)
+		fyne.Do(func() {
+			mw.applyAgentIdentityToWidgets(osName, protocol, "", false)
+			if mw.diskWidget != nil && view.NavVideoHidden() {
+				mw.diskWidget.FlushPendingCombine()
+			}
+		})
+	}
+	probe := func() (osName, protocol string) {
+		if ctx != nil && ctx.Err() != nil {
+			return "", ""
+		}
+		if liveGen != 0 && !mw.connectAttemptLive(liveGen) {
+			return "", ""
+		}
+		deviceInfo, err := client.GetDeviceInfoWithContext(ctx)
+		if ctx != nil && ctx.Err() != nil {
+			return "", ""
+		}
+		if liveGen != 0 && !mw.connectAttemptLive(liveGen) {
+			return "", ""
+		}
+		if err == nil && deviceInfo != nil {
+			osName = strings.TrimSpace(deviceInfo.AgentOS)
+			protocol = strings.TrimSpace(deviceInfo.AgentProtocol)
+		}
+		if osName != "" && protocol != "" {
+			return osName, protocol
+		}
+		status, statusErr := client.GetStatus()
+		if statusErr == nil && status != nil && status.Data != nil {
+			if osName == "" {
+				osName = strings.TrimSpace(status.Data.OS)
+			}
+			if protocol == "" {
+				protocol = strings.TrimSpace(status.Data.AgentProtocol)
+			}
+		}
+		return osName, protocol
+	}
+
+	store(probe())
+	// Agent backend switches (Sunshine ↔ RustShine) often finish after the
+	// HTTPS listener is already up. Re-probe so the Connections plaque
+	// follows the live tariff instead of sticking on the value from first
+	// connect.
+	for _, wait := range []time.Duration{time.Second, 2 * time.Second, 4 * time.Second} {
+		if ctx != nil && ctx.Err() != nil {
+			return
+		}
+		if liveGen != 0 && !mw.connectAttemptLive(liveGen) {
+			return
+		}
+		timer := time.NewTimer(wait)
+		if ctx == nil {
+			<-timer.C
+			store(probe())
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		store(probe())
+	}
+}
+
+func (mw *MainWindow) verifyActiveConnectionWithContext(ctx context.Context) (*models.DeviceInfoResponse, error) {
 	if mw.usbClient == nil {
-		return fmt.Errorf("usb client is not initialized")
+		return nil, fmt.Errorf("usb client is not initialized")
 	}
 
 	// Deliberately NOT TestConnectionWithContext: that hits /api/healthz,
@@ -764,17 +1236,32 @@ func (mw *MainWindow) verifyActiveConnectionWithContext(ctx context.Context) err
 	// every actually-authenticated call (screen, PC panel, disk, scripts)
 	// kept silently failing with 401. GetDeviceInfo requires a valid HMAC
 	// signature, so a wrong key fails right here instead.
-	_, err := mw.usbClient.GetDeviceInfoWithContext(ctx)
-	return err
+	//
+	// The payload is reused immediately: agent_os / agent_protocol used to
+	// be discarded, so the first Devices paint treated empty OS as KVM and
+	// mouse mapping treated empty protocol as RustShine.
+	return mw.usbClient.GetDeviceInfoWithContext(ctx)
 }
 
 func (mw *MainWindow) verifyActiveConnection() error {
-	return mw.verifyActiveConnectionWithContext(context.Background())
+	_, err := mw.verifyActiveConnectionWithContext(context.Background())
+	return err
 }
 
 func (mw *MainWindow) handleConnectFailure(message string, err error) {
 	logrus.Errorf("%s: %v", message, err)
 	fyne.Do(func() {
+		// If the "Connecting to X…" toast is up for this attempt, keep it
+		// open through clearConnectionPending (which would otherwise close
+		// it via handleConnectingStateChange) so the error below can
+		// transform that same toast in place instead of closing it and
+		// popping a separate dialog on top. Not when the app is closing --
+		// there's no error to show then, so let the toast close normally
+		// instead of leaving it open with nothing left to transform it.
+		closing := mw.isClosing.Load()
+		toast := mw.connectingToast
+		mw.suppressConnectingToastClose = !closing && toast != nil
+
 		mw.clearConnectionPending()
 		mw.isConnected = false
 		mw.connectedProtocol = ""
@@ -782,8 +1269,15 @@ func (mw *MainWindow) handleConnectFailure(message string, err error) {
 		mw.hostEntry.Enable()
 		mw.tokenEntry.Enable()
 		mw.protocolSelect.Enable()
-		if !mw.isClosing.Load() {
-			view.ShowErrorDialog(fmt.Errorf("%s: %w", message, err), mw.window)
+		if closing {
+			return
+		}
+
+		fullErr := fmt.Errorf("%s: %w", message, err)
+		if toast != nil {
+			toast.ShowError(fullErr.Error())
+		} else {
+			view.ShowConnectionErrorDialog(fullErr, mw.window)
 		}
 	})
 }
@@ -798,6 +1292,13 @@ func (mw *MainWindow) handleDisconnect() {
 	backup := mw.backupWidget
 	nbd := mw.nbdServer
 	diskWidget := mw.diskWidget
+	connHost := ""
+	if mw.hostEntry != nil {
+		connHost = strings.TrimSpace(mw.hostEntry.Text)
+	}
+	if video != nil {
+		mw.persistAgentProtocol(video.AgentProtocol())
+	}
 
 	// Must happen synchronously, before anything else: a pending
 	// scheduleControlBootstrap timer (main_window_lifecycle.go, fires on a
@@ -831,61 +1332,74 @@ func (mw *MainWindow) handleDisconnect() {
 	mw.connectionLossInProgress.Store(false)
 	mw.appState.LastDisconnected = time.Now()
 
-	// 2. Immediately update the UI (go back to the login screen)
-	fyne.Do(func() {
-		mw.showConnectionManager()
-		if mw.mainExitBtn != nil {
-			mw.mainExitBtn.ApplySpec(view.HeaderActionButtonSpec{
-				Fill:        design.ColorSurfaceLight,
-				Foreground:  design.ColorTextLight,
-				Stroke:      color.NRGBA{R: 0xd6, G: 0x6d, B: 0x6d, A: 0xff},
-				StrokeWidth: 1.2,
-				Icon:        assets.ExitIcon,
-				IconSize:    fyne.NewSize(24, 24),
-			})
-		}
+	closing := mw.isClosing.Load()
 
-		if mw.diskWidget != nil {
-			mw.diskWidget.UpdateClient(nil)
-		}
-		if video != nil {
-			video.UpdateClient(nil)
-		}
-		if backup != nil {
-			backup.UpdateClient(nil)
-		}
+	// 2. Immediately update the UI (go back to the login screen).
+	// Skip this on app shutdown -- rebuilding the connection manager
+	// queues fyne.Do work into a main loop that is about to Quit, which
+	// can freeze the process after "quitting app".
+	if !closing {
+		fyne.Do(func() {
+			mw.showConnectionManager()
+			if mw.mainExitBtn != nil {
+				mw.mainExitBtn.ApplySpec(view.HeaderActionButtonSpec{
+					Fill:            design.ColorExitButtonFill,
+					Foreground:      design.ColorExitButtonText,
+					Stroke:          design.ColorExitButtonBorder,
+					StrokeWidth:     1.2,
+					Icon:            assets.ExitIcon,
+					IconSize:        fyne.NewSize(12, 12),
+					HoverFill:       design.ColorExitButtonHoverFill,
+					HoverStroke:     design.ColorExitButtonHoverBorder,
+					HoverForeground: design.ColorExitButtonHoverText,
+					HoverIcon:       assets.ExitIconHover,
+				})
+			}
 
-		mw.usbClient = nil
+			if mw.diskWidget != nil {
+				mw.diskWidget.UpdateClient(nil)
+			}
+			if video != nil {
+				video.UpdateClient(nil)
+			}
+			if backup != nil {
+				backup.UpdateClient(nil)
+			}
 
-		mw.clearConnectionPending()
-		mw.refreshConnectionControls()
+			mw.usbClient = nil
 
-		if mw.pcpanelWidget != nil {
-			mw.pcpanelWidget.SetClient(nil)
-		}
-		if mw.scriptsWidget != nil {
-			mw.scriptsWidget.SetClient(nil)
-		}
+			mw.clearConnectionPending()
+			mw.refreshConnectionControls()
 
-		mw.updateStatus()
-		mw.config.VideoBindHost = "127.0.0.1"
+			if mw.pcpanelWidget != nil {
+				mw.pcpanelWidget.SetClient(nil)
+			}
+			if mw.scriptsWidget != nil {
+				mw.scriptsWidget.SetClient(nil)
+			}
 
-		if !mw.isClosing.Load() {
+			mw.updateStatus()
+			mw.config.VideoBindHost = "127.0.0.1"
+
 			mw.hostEntry.Enable()
 			mw.tokenEntry.Enable()
 			mw.protocolSelect.Enable()
-		}
 
-		mw.updateStatusBar()
-	})
+			mw.updateStatusBar()
+		})
+	} else {
+		mw.usbClient = nil
+	}
 
 	// 3. Do the heavy lifting in the BACKGROUND
+	done := make(chan struct{})
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				logrus.Errorf("🔥 PANIC in background disconnect cleanup: %v", r)
 			}
 			logrus.Info("✅ [shutdown] Background disconnect cleanup complete")
+			close(done)
 		}()
 
 		logrus.Info("⏳ [shutdown] Background cleanup starting...")
@@ -901,6 +1415,13 @@ func (mw *MainWindow) handleDisconnect() {
 		}
 
 		if client != nil {
+			if mw.connectionManager != nil && connHost != "" {
+				probeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				if info, err := client.GetDeviceInfoWithContext(probeCtx); err == nil && info != nil {
+					mw.connectionManager.UpdateConnectionOS(connHost, info.AgentOS, info.AgentProtocol)
+				}
+				cancel()
+			}
 			// Never call StopAllDevicesWithContext here, on any disconnect
 			// path (plain Disconnect, reconnect cycle, or the app actually
 			// closing) -- it tears down the *device's* whole USB gadget:
@@ -931,6 +1452,14 @@ func (mw *MainWindow) handleDisconnect() {
 			diskWidget.StopUSBPassthrough()
 		}
 	}()
+
+	if closing {
+		select {
+		case <-done:
+		case <-time.After(8 * time.Second):
+			logrus.Warn("[shutdown] background disconnect cleanup timed out")
+		}
+	}
 }
 
 // handleRefresh handles a refresh

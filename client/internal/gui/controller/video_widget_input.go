@@ -5,10 +5,12 @@ import (
 	"image/color"
 	"math"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"usbridge-client/internal/api/moonlight"
 	"usbridge-client/internal/input"
 	"usbridge-client/internal/models"
 	"usbridge-client/internal/service"
@@ -29,6 +31,7 @@ const desktopPrintableRuneSuppressWindow = 75 * time.Millisecond
 
 // absLogAt throttles PositionToAbsolute diagnostic output to once per 2 seconds.
 var absLogAt time.Time
+var inStreamLogAt time.Time
 
 func modifierMaskForKeyName(keyName fyne.KeyName) int32 {
 	switch keyName {
@@ -134,7 +137,19 @@ func (vw *VideoWidget) handlePhysicalKeyDown(event *fyne.KeyEvent) {
 	if event == nil {
 		return
 	}
-	
+	// Soft IME: characters come only via TypedRune → UTF-8. KeyDown from
+	// keyboardTyped's Latin Code would double-insert (VK + rune).
+	if vw.IsSystemIMESticky() {
+		switch event.Name {
+		case fyne.KeyBackspace, fyne.KeyDelete, fyne.KeyReturn, fyne.KeyEnter,
+			fyne.KeyTab, fyne.KeyEscape,
+			fyne.KeyUp, fyne.KeyDown, fyne.KeyLeft, fyne.KeyRight:
+			// keep editing / nav keys; everything else is TypedRune UTF-8
+		default:
+			return
+		}
+	}
+
 	logrus.Debugf("⌨️ [INPUT][DOWN] key=%q physical=%+v", event.Name, event.Physical)
 	if mask := modifierMaskForKeyName(event.Name); mask != 0 {
 		for {
@@ -146,14 +161,17 @@ func (vw *VideoWidget) handlePhysicalKeyDown(event *fyne.KeyEvent) {
 			}
 		}
 	}
-	if isTextRoutedKeystroke(event, vw.currentHIDModifiers()) {
+	if vw.handleHotkeyDown(event) {
+		return
+	}
+	if vw.routesKeystrokeAsText(event) {
 		// Fyne's TypedRune (handlePhysicalRunePress) will deliver this
 		// keystroke's actual character; sending the raw VK here too would
 		// double it up (once garbled through a layout guess, once correct).
 		return
 	}
 	if mi := vw.moonlightInput(); mi != nil {
-		if vkCode := moonlightVKCode(event); vkCode != 0 {
+		if vkCode := vw.keystrokeVKCode(event); vkCode != 0 {
 			if vkCode == 0x0D {
 				logrus.Infof("⌨️ [INPUT][ENTER] sending VK_RETURN (0x0D) to Moonlight (key=%q, scan=%d)", event.Name, event.Physical.ScanCode)
 			}
@@ -173,6 +191,15 @@ func (vw *VideoWidget) handlePhysicalKeyUp(event *fyne.KeyEvent) {
 	if event == nil {
 		return
 	}
+	if vw.IsSystemIMESticky() {
+		switch event.Name {
+		case fyne.KeyBackspace, fyne.KeyDelete, fyne.KeyReturn, fyne.KeyEnter,
+			fyne.KeyTab, fyne.KeyEscape,
+			fyne.KeyUp, fyne.KeyDown, fyne.KeyLeft, fyne.KeyRight:
+		default:
+			return
+		}
+	}
 	logrus.Debugf("⌨️ [INPUT][UP] key=%q physical=%+v", event.Name, event.Physical)
 	if mask := modifierMaskForKeyName(event.Name); mask != 0 {
 		for {
@@ -184,7 +211,10 @@ func (vw *VideoWidget) handlePhysicalKeyUp(event *fyne.KeyEvent) {
 			}
 		}
 	}
-	if isTextRoutedKeystroke(event, vw.currentHIDModifiers()) {
+	if vw.consumeHotkeyUp(event) {
+		return
+	}
+	if vw.routesKeystrokeAsText(event) {
 		return
 	}
 	mi := vw.moonlightInput()
@@ -192,7 +222,7 @@ func (vw *VideoWidget) handlePhysicalKeyUp(event *fyne.KeyEvent) {
 		logrus.Warnf("⌨️ [INPUT][UP] MoonlightInputSender is nil! Not sending key.")
 		return
 	}
-	vkCode := moonlightVKCode(event)
+	vkCode := vw.keystrokeVKCode(event)
 	if vkCode == 0 {
 		logrus.Warnf("⌨️ [INPUT][UP] vkCode resolved to 0 for key=%q! Not sending.", event.Name)
 		return
@@ -203,6 +233,70 @@ func (vw *VideoWidget) handlePhysicalKeyUp(event *fyne.KeyEvent) {
 
 	vw.moonlightTrackKeyUp(vkCode)
 	vw.enqueueSend(func() { mi.SendMoonlightKey(vkCode, service.LiKeyActionUp, mods) })
+}
+
+// Keyboard input modes for the physical keyboard (desktop only; soft IMEs
+// and the virtual keyboard keep their own paths):
+//
+//   - KeyboardInputModeText ("Characters"): printable keys are resolved to a
+//     character with the CLIENT's layout (Fyne TypedRune) and typed on the
+//     host as that character, whatever the host's layout is. Default.
+//   - KeyboardInputModeKeys ("Keys"): every key goes as a raw key press by
+//     physical position; the HOST's active layout decides the character,
+//     like a USB keyboard plugged into it. Needed for games, hotkeys and
+//     anything reading key state rather than text.
+const (
+	KeyboardInputModeText = "text"
+	KeyboardInputModeKeys = "keys"
+)
+
+// SetKeyboardInputMode switches between KeyboardInputModeText and
+// KeyboardInputModeKeys. Keys held across the switch would otherwise be
+// released through the other path (or not at all), so they are released
+// first.
+func (vw *VideoWidget) SetKeyboardInputMode(mode string) {
+	keys := mode == KeyboardInputModeKeys
+	if vw.keyboardKeysMode.Swap(keys) != keys {
+		logrus.Infof("⌨️ [INPUT] keyboard input mode -> %s", mode)
+		vw.releaseAllMoonlightKeys()
+	}
+}
+
+// GetKeyboardInputMode returns the current keyboard input mode.
+func (vw *VideoWidget) GetKeyboardInputMode() string {
+	if vw.keyboardKeysMode.Load() {
+		return KeyboardInputModeKeys
+	}
+	return KeyboardInputModeText
+}
+
+// keysModeActive reports whether physical keystrokes go as raw keys. Only on
+// desktop: mobile hardware keyboards share Fyne paths with soft IMEs.
+func (vw *VideoWidget) keysModeActive() bool {
+	return vw.keyboardKeysMode.Load() && isDesktopPrintableKeyFallbackEnabled()
+}
+
+// routesKeystrokeAsText reports whether KeyDown/KeyUp must leave this
+// keystroke to TypedRune. Never in keys mode: there TypedRune is dropped
+// and the key itself is sent.
+func (vw *VideoWidget) routesKeystrokeAsText(event *fyne.KeyEvent) bool {
+	if vw.keysModeActive() {
+		return false
+	}
+	return isTextRoutedKeystroke(event, vw.currentHIDModifiers())
+}
+
+// keystrokeVKCode resolves the VK to send for a physical key. In keys mode a
+// character key is looked up by scan code (physical position) first, so an
+// AZERTY or JCUKEN client layout still presses the same key position on the
+// host; event.Name follows the client layout and would move keys around.
+func (vw *VideoWidget) keystrokeVKCode(event *fyne.KeyEvent) int16 {
+	if vw.keysModeActive() && isCharacterScanCode(event.Physical.ScanCode) {
+		if vk := input.GetVKCodeFromScanCode(event.Physical.ScanCode); vk != 0 {
+			return vk
+		}
+	}
+	return moonlightVKCode(event)
 }
 
 // isTextRoutedKeystroke reports whether this keystroke should be left to
@@ -233,44 +327,25 @@ func isTextRoutedKeystroke(event *fyne.KeyEvent, hidModifiers int) bool {
 // correctly by GLFW for the physical key position pressed. Mirrors the same
 // scan-code rows input.GetVKCodeFromScanCode maps.
 //
-// GLFW's scan code is NOT a single universal number space: on Windows it's
-// the raw hardware (PS/2 Set-1) scancode from the WM_KEYDOWN message; on
-// Linux (X11 and Wayland alike) it's the platform keycode, which is the
-// evdev keycode + 8. The two disagree for exactly the letters this function
-// cares about -- e.g. T is 0x14 on Windows but 0x1C on Linux, which
-// coincides with the *Windows* PS/2 code for Enter, so treating Linux
-// scancodes with the Windows ranges silently reclassified T (and Y/U/I/O/P)
-// as non-character keys. Confirmed live: physical T on a Linux client sent
-// VK_RETURN to the remote host instead of the letter t (see moonlightVKCode's
-// scanCode==0x1C special case below, which then took over).
+// GLFW's scan code is NOT a single universal number space (Windows PS/2,
+// Linux xkb = evdev+8, macOS kVK_*), so it goes through
+// input.NormalizeScanCode first. Reading Linux codes as PS/2 once turned
+// physical T into VK_RETURN; reading macOS codes as PS/2 made 0/8/A/S/E/R
+// fall outside these ranges, so each was sent twice (raw VK + TypedRune).
 func isCharacterScanCode(scanCode int) bool {
-	if runtime.GOOS == "linux" {
-		switch {
-		case scanCode >= 0x0A && scanCode <= 0x15: // number row + - =
-			return true
-		case scanCode >= 0x18 && scanCode <= 0x23: // Q..P [ ]
-			return true
-		case scanCode >= 0x26 && scanCode <= 0x33: // A..L ; ' ` \
-			return true
-		case scanCode >= 0x34 && scanCode <= 0x3D: // Z..M , . /
-			return true
-		case scanCode == 0x41: // Space
-			return true
-		default:
-			return false
-		}
-	}
-	// Windows (and, as before, everything else -- unconfirmed but unchanged).
+	ps2 := input.NormalizeScanCode(scanCode)
 	switch {
-	case scanCode >= 0x02 && scanCode <= 0x0D: // number row + - =
+	case ps2 >= 0x02 && ps2 <= 0x0D: // number row + - =
 		return true
-	case scanCode >= 0x10 && scanCode <= 0x1B: // Q..P [ ]
+	case ps2 >= 0x10 && ps2 <= 0x1B: // Q..P [ ]
 		return true
-	case scanCode >= 0x1E && scanCode <= 0x2B: // A..L ; ' ` \
+	case ps2 >= 0x1E && ps2 <= 0x29: // A..L ; ' `
 		return true
-	case scanCode >= 0x2C && scanCode <= 0x35: // Z..M , . /
+	case ps2 >= 0x2B && ps2 <= 0x35: // \ Z..M , . /
 		return true
-	case scanCode == 0x39: // Space
+	case ps2 == 0x39: // Space
+		return true
+	case ps2 == 0x56: // ISO key between left Shift and Z
 		return true
 	default:
 		return false
@@ -278,16 +353,13 @@ func isCharacterScanCode(scanCode int) bool {
 }
 
 // isEnterScanCode reports whether a scan code is the physical Return/Enter
-// key position, in whichever scan-code space GLFW reports for the current
-// OS (see isCharacterScanCode's doc comment). Used only as a fallback for
-// when event.Name fails to resolve to "Return"/"Enter" -- e.g. numpad Enter
-// on some layouts. Must stay platform-gated: the Windows PS/2 code for
-// Enter (0x1C) is the Linux X11/xkb keycode for the letter T.
+// key position (main or numpad). Used only as a fallback for when event.Name
+// fails to resolve to "Return"/"Enter" -- e.g. numpad Enter on some layouts.
+// Normalized first: the Windows PS/2 code for Enter (0x1C) is the Linux xkb
+// keycode for T and the macOS keycode for 8.
 func isEnterScanCode(scanCode int) bool {
-	if runtime.GOOS == "linux" {
-		return scanCode == 0x24 || scanCode == 0x68 // Return / KP_Enter (X11 keycodes)
-	}
-	return scanCode == 0x1C || scanCode == 0x11C // Windows PS/2 Return / extended (numpad) Return
+	ps2 := input.NormalizeScanCode(scanCode)
+	return ps2 == 0x1C || ps2 == 0x11C
 }
 
 // moonlightVKCode resolves the Windows Virtual Key code for a physical key event.
@@ -358,6 +430,43 @@ func (vw *VideoWidget) handlePhysicalRunePress(r rune) {
 	if mi == nil {
 		return
 	}
+	// Sticky soft IME is owned by KeyboardBridge.onIMETextInput — ignore
+	// Fyne keyboardTyped runes (Press/Release doubles + composition junk).
+	if vw.IsSystemIMESticky() {
+		return
+	}
+	// Keys mode: KeyDown/KeyUp already sent this keystroke as a raw key.
+	if vw.keysModeActive() {
+		return
+	}
+	vw.sendRune(r, true)
+}
+
+// typeRune types one character into the host the way text mode does,
+// regardless of the keyboard mode (used by the paste hotkey).
+func (vw *VideoWidget) typeRune(r rune) {
+	vw.sendRune(r, false)
+}
+
+// sendRune is text-mode typing of one character. dedupe collapses the
+// duplicate TypedRune Fyne delivers for soft-keyboard input; a paste must
+// keep repeated characters.
+func (vw *VideoWidget) sendRune(r rune, dedupe bool) {
+	mi := vw.moonlightInput()
+	if mi == nil {
+		return
+	}
+	if vw.typesViaHostLayout() && vw.sendRuneViaHostLayout(r) {
+		return
+	}
+	if r > 127 {
+		if dedupe {
+			vw.sendSoftIMERune(r)
+		} else {
+			vw.enqueueSend(func() { mi.SendMoonlightUtf8Text(string(r)) })
+		}
+		return
+	}
 	if !vw.isWindowsAgent() {
 		if hidCode, hidMods := input.GetRuneKeyCodeWithModifiers(r); hidCode != 0 {
 			vk := hidKeyToVK(hidCode)
@@ -366,6 +475,29 @@ func (vw *VideoWidget) handlePhysicalRunePress(r rune) {
 			vw.enqueueSend(func() { mi.SendMoonlightKey(vk, service.LiKeyActionUp, mods) })
 			return
 		}
+	}
+	vw.enqueueSend(func() { mi.SendMoonlightUtf8Text(string(r)) })
+}
+
+// sendSoftIMERune sends one Unicode character to the host, collapsing the
+// duplicate TypedRune that Fyne delivers for keyboardTyped Press+Release.
+func (vw *VideoWidget) sendSoftIMERune(r rune) {
+	if r == 0 {
+		return
+	}
+	now := time.Now()
+	vw.softIMEMu.Lock()
+	if r == vw.softIMELastRune && now.Sub(vw.softIMELastAt) < 45*time.Millisecond {
+		vw.softIMEMu.Unlock()
+		return
+	}
+	vw.softIMELastRune = r
+	vw.softIMELastAt = now
+	vw.softIMEMu.Unlock()
+
+	mi := vw.moonlightInput()
+	if mi == nil {
+		return
 	}
 	vw.enqueueSend(func() { mi.SendMoonlightUtf8Text(string(r)) })
 }
@@ -599,19 +731,10 @@ func (vw *VideoWidget) IsAbsoluteLikeInputMode() bool {
 // within the actual video content area, accounting for letterbox/pillarbox black bars.
 // Returns true when the content rect is not yet established (allows clicks through).
 func (vw *VideoWidget) isPositionInContentRect(px, py float32) bool {
-	x, y, w, h := vw.contentRectX, vw.contentRectY, vw.contentRectW, vw.contentRectH
+	x, y, w, h := vw.absolutePictureRect()
 	if w <= 0 || h <= 0 {
 		return true
 	}
-
-	frameX, frameY, frameW, frameH := vw.getFrameContentRect()
-	if frameW > 0 && frameH > 0 {
-		x += w * frameX
-		y += h * frameY
-		w *= frameW
-		h *= frameH
-	}
-
 	return px >= x && px <= x+w && py >= y && py <= y+h
 }
 
@@ -660,10 +783,14 @@ func (vw *VideoWidget) GetShowMouseCursor() bool {
 
 // SetShowMouseCursor sets the flag for showing the cursor in the captured video.
 func (vw *VideoWidget) SetShowMouseCursor(show bool) {
+	// Always recorded, even unchanged: the default (false) must still
+	// reach /launch explicitly, or the host keeps its own default (drawn).
+	moonlight.SetDisplayCursor(show)
 	if vw.showMouseCursor == show {
 		return
 	}
 	vw.showMouseCursor = show
+	vw.syncHostCursor()
 	vw.refreshCursorOverlay()
 }
 
@@ -682,6 +809,12 @@ func (vw *VideoWidget) UsesWaylandCursorOverlay() bool {
 }
 
 func (vw *VideoWidget) ShouldRenderCursorOverlay() bool {
+	// Over a Moonlight stream the host draws its own cursor into the video
+	// when Show Mouse is on (usbridgeDisplayCursor / Ctrl+Alt+Shift+N), so
+	// a local overlay on top would show it twice.
+	if vw.moonlightInput() != nil {
+		return false
+	}
 	return vw.showMouseCursor && vw.isMouseConnected && vw.UsesWaylandCursorOverlay()
 }
 
@@ -1007,42 +1140,23 @@ func (vw *VideoWidget) UpdateTouchpadAndContentRect(w, h float32, frame image.Im
 	vw.contentRectW = w
 	vw.contentRectH = h
 
-	// Determine the pixel dimensions of the video stream.
-	// When frame != nil (Fyne canvas path), read directly from the image.
-	// When frame == nil (Metal active — canvas cleared), reuse the last known dimensions
-	// so that aspect-ratio correction and black-bar detection remain accurate after resize.
-	imgW, imgH := vw.lastVideoImgW, vw.lastVideoImgH
-	if frame != nil {
-		b := frame.Bounds()
-		fw, fh := float32(b.Dx()), float32(b.Dy())
-		if fw > 0 && fh > 0 {
-			imgW, imgH = fw, fh
-			vw.lastVideoImgW = fw
-			vw.lastVideoImgH = fh
-		}
-	}
-	// Fall back to configured dimensions if we have never seen a frame.
-	if imgW <= 0 || imgH <= 0 {
-		if vw.videoClient != nil {
-			if cfg := vw.videoClient.GetConfig(); cfg != nil && cfg.VideoWidth > 0 {
-				imgW = float32(cfg.VideoWidth)
-				imgH = float32(cfg.VideoHeight)
-			}
-		}
+	availableH := h - vw.bottomInset
+	if availableH < 0 {
+		availableH = 0
 	}
 
+	imgW, imgH := vw.resolveStreamPixelSize(frame)
 	if imgW > 0 && imgH > 0 {
-		scale := w / imgW
-		if h/imgH < scale {
-			scale = h / imgH
-		}
-		vw.baseContentRectW = imgW * scale
-		vw.baseContentRectH = imgH * scale
+		baseW, baseH := aspectFitSize(w, availableH, imgW, imgH)
+		vw.baseContentRectW = baseW
+		vw.baseContentRectH = baseH
 	} else {
 		vw.baseContentRectW = w
-		vw.baseContentRectH = h
+		vw.baseContentRectH = availableH
 	}
 	vw.recalculateViewport()
+	vw.applyNativeDestToContentRect()
+	vw.updateInStreamContentRect()
 	// This runs on the UI goroutine on every widget Refresh/Layout — i.e. once
 	// per rendered video frame (see touchpadRenderer.Refresh in
 	// video_mouse_handler.go) — so an unconditional Info-level log here was a
@@ -1063,20 +1177,7 @@ func (vw *VideoWidget) PositionToAbsolute(px, py float32) (x, y int) {
 		return 16383, 16383
 	}
 
-	rectX := vw.contentRectX
-	rectY := vw.contentRectY
-	rectW := vw.contentRectW
-	rectH := vw.contentRectH
-
-	// Apply the offset from the detected letterbox/pillarbox bars inside the frame.
-	// Only symmetric bars (±2px) are applied, which guards against false detections.
-	frameX, frameY, frameW, frameH := vw.getFrameContentRect()
-	if rectW > 0 && rectH > 0 && frameW > 0 && frameH > 0 {
-		rectX += rectW * frameX
-		rectY += rectH * frameY
-		rectW *= frameW
-		rectH *= frameH
-	}
+	rectX, rectY, rectW, rectH := vw.absolutePictureRect()
 
 	var u, v float32
 	if rectW > 0 && rectH > 0 {
@@ -1109,14 +1210,344 @@ func (vw *VideoWidget) PositionToAbsolute(px, py float32) (x, y int) {
 	// Log at most once per 2 seconds to diagnose coordinate mapping without spamming.
 	if now := time.Now(); now.Sub(absLogAt) >= 2*time.Second {
 		absLogAt = now
-		logrus.Infof("[ABS] PositionToAbsolute: in=(%.1f,%.1f) touchpad=(%.0f,%.0f) contentRect=(%.1f,%.1f,%.1f,%.1f) frameRect=(%.3f,%.3f,%.3f,%.3f) u=%.3f v=%.3f → out=(%d,%d)",
+		frameX, frameY, frameW, frameH := vw.getFrameContentRect()
+		hostW, hostH := vw.hostDesktopSize()
+		logrus.Infof("[ABS] PositionToAbsolute: in=(%.1f,%.1f) touchpad=(%.0f,%.0f) picture=(%.1f,%.1f,%.1f,%.1f) contentRect=(%.1f,%.1f,%.1f,%.1f) host=%.0fx%.0f stream=%.0fx%.0f frameRect=(%.3f,%.3f,%.3f,%.3f) u=%.3f v=%.3f → out=(%d,%d)",
 			px, py,
 			vw.touchpadSizeW, vw.touchpadSizeH,
+			rectX, rectY, rectW, rectH,
 			vw.contentRectX, vw.contentRectY, vw.contentRectW, vw.contentRectH,
+			hostW, hostH, vw.lastVideoImgW, vw.lastVideoImgH,
 			frameX, frameY, frameW, frameH,
 			u, v, x, y)
 	}
 	return x, y
+}
+
+// absolutePictureRect is the on-screen desktop picture in the same dp space as
+// pointer events. Starts from the native overlay dest (client letterbox of the
+// encoded frame), then applies frameContent (in-stream contain-fit of the host
+// monitor into the encode — RustShine only; Sunshine already maps stream space).
+func (vw *VideoWidget) absolutePictureRect() (rectX, rectY, rectW, rectH float32) {
+	if dx, dy, dw, dh, ok := vw.nativeDestRectDp(); ok {
+		rectX, rectY, rectW, rectH = dx, dy, dw, dh
+	} else {
+		rectX = vw.contentRectX
+		rectY = vw.contentRectY
+		rectW = vw.contentRectW
+		rectH = vw.contentRectH
+	}
+
+	frameX, frameY, frameW, frameH := vw.getFrameContentRect()
+	if rectW > 0 && rectH > 0 && frameW > 0 && frameH > 0 {
+		rectX += rectW * frameX
+		rectY += rectH * frameY
+		rectW *= frameW
+		rectH *= frameH
+	}
+	return rectX, rectY, rectW, rectH
+}
+
+func (vw *VideoWidget) nativeDestRectDp() (x, y, w, h float32, ok bool) {
+	dest, ok := service.NativeVideoDestRect()
+	if !ok || dest.DW <= 0 || dest.DH <= 0 {
+		return 0, 0, 0, 0, false
+	}
+	scale := vw.nativeOverlayScale()
+	if scale <= 0 {
+		scale = 1
+	}
+	ox, oy := vw.nativePointerOriginDp()
+	return ox + float32(dest.DX)/scale, oy + float32(dest.DY)/scale, float32(dest.DW) / scale, float32(dest.DH) / scale, true
+}
+
+func (vw *VideoWidget) nativeOverlayScale() float32 {
+	if vw.parentWindow != nil && vw.parentWindow.Canvas() != nil {
+		if s := vw.parentWindow.Canvas().Scale(); s > 0 {
+			return s
+		}
+	}
+	return 1
+}
+
+// aspectFitSize is ImageFillContain: the largest srcW×srcH rect that fits in
+// viewW×viewH without cropping. Matches Vulkan vk_layout_zoomed_dest at zoom=1
+// (letterbox when the stream is wider than the widget, pillarbox when taller).
+func aspectFitSize(viewW, viewH, srcW, srcH float32) (baseW, baseH float32) {
+	if srcW <= 0 || srcH <= 0 || viewW <= 0 || viewH <= 0 {
+		return viewW, viewH
+	}
+	scale := viewW / srcW
+	if viewH/srcH < scale {
+		scale = viewH / srcH
+	}
+	return srcW * scale, srcH * scale
+}
+
+// containFitNorm is the normalized inner rect of innerW×innerH contain-fitted
+// into containerW×containerH. Used for in-stream letterbox on RustShine: the
+// host desktop is fitted into the encode, and 0..32767 maps onto that inner
+// rect. Sunshine applies the same contain-fit on the host (touch_port) and
+// must receive stream-space coordinates instead.
+func containFitNorm(containerW, containerH, innerW, innerH float32) (x, y, w, h float32) {
+	if containerW <= 0 || containerH <= 0 || innerW <= 0 || innerH <= 0 {
+		return 0, 0, 1, 1
+	}
+	cAspect := containerW / containerH
+	iAspect := innerW / innerH
+	const eps = 0.004
+	if math.Abs(float64(iAspect-cAspect)) <= float64(cAspect)*eps {
+		return 0, 0, 1, 1
+	}
+	if iAspect > cAspect {
+		w = 1
+		h = cAspect / iAspect
+		y = (1 - h) / 2
+		return 0, y, w, h
+	}
+	h = 1
+	w = iAspect / cAspect
+	x = (1 - w) / 2
+	return x, 0, w, h
+}
+
+func parseWxH(s string) (w, h float32, ok bool) {
+	inner := strings.TrimSpace(s)
+	if open, close := strings.LastIndex(inner, "("), strings.LastIndex(inner, ")"); open >= 0 && close > open {
+		inner = strings.TrimSpace(inner[open+1 : close])
+	}
+	x := strings.IndexByte(inner, 'x')
+	if x <= 0 {
+		x = strings.IndexByte(inner, 'X')
+	}
+	if x <= 0 || x >= len(inner)-1 {
+		return 0, 0, false
+	}
+	wi, err1 := strconv.Atoi(strings.TrimSpace(inner[:x]))
+	hi, err2 := strconv.Atoi(strings.TrimSpace(inner[x+1:]))
+	if err1 != nil || err2 != nil || wi <= 0 || hi <= 0 {
+		return 0, 0, false
+	}
+	return float32(wi), float32(hi), true
+}
+
+func hostDesktopSizeFromModes(modes []models.VideoCaptureMode) (w, h float32) {
+	best := int64(0)
+	for _, m := range modes {
+		area := int64(m.Width) * int64(m.Height)
+		if area > best {
+			best = area
+			w, h = float32(m.Width), float32(m.Height)
+		}
+	}
+	return w, h
+}
+
+func (vw *VideoWidget) setHostDesktopSize(w, h float32) {
+	if w <= 0 || h <= 0 {
+		return
+	}
+	vw.frameMutex.Lock()
+	vw.hostDesktopW, vw.hostDesktopH = w, h
+	vw.frameMutex.Unlock()
+	vw.updateInStreamContentRect()
+}
+
+func (vw *VideoWidget) hostDesktopSize() (float32, float32) {
+	vw.frameMutex.RLock()
+	defer vw.frameMutex.RUnlock()
+	return vw.hostDesktopW, vw.hostDesktopH
+}
+
+func (vw *VideoWidget) rememberHostDesktopFromInfo(info *models.VideoInfoData) {
+	if info == nil {
+		return
+	}
+	w, h := hostDesktopSizeFromModes(info.CaptureModes)
+	if info.Width > 0 && info.Height > 0 {
+		if area := float32(info.Width) * float32(info.Height); area > w*h {
+			w, h = float32(info.Width), float32(info.Height)
+		}
+	}
+	if nw, nh, ok := parseWxH(info.Device); ok && nw*nh > w*h {
+		w, h = nw, nh
+	}
+	vw.setHostDesktopSize(w, h)
+}
+
+func (vw *VideoWidget) rememberHostDesktopFromConfig(cfg models.VideoDeviceConfig) {
+	if w, h, ok := parseWxH(cfg.DeviceName); ok {
+		vw.setHostDesktopSize(w, h)
+	}
+	if info, ok := cachedCaptureInfo(cfg.DevicePath); ok {
+		vw.rememberHostDesktopFromInfo(info)
+	}
+}
+
+func (vw *VideoWidget) ensureHostDesktopSize() {
+	if w, h := vw.hostDesktopSize(); w > 0 && h > 0 {
+		return
+	}
+	captureModesCacheMu.Lock()
+	cw, ch := captureHostDesktopW, captureHostDesktopH
+	captureModesCacheMu.Unlock()
+	if cw > 0 && ch > 0 {
+		vw.setHostDesktopSize(cw, ch)
+	}
+}
+
+func (vw *VideoWidget) applyNativeDestToContentRect() {
+	x, y, w, h, ok := vw.nativeDestRectDp()
+	if !ok {
+		return
+	}
+	vw.contentRectX, vw.contentRectY, vw.contentRectW, vw.contentRectH = x, y, w, h
+}
+
+func (vw *VideoWidget) updateInStreamContentRect() {
+	vw.updateInStreamContentRectWith(vw.lastVideoImgW, vw.lastVideoImgH)
+}
+
+func (vw *VideoWidget) updateInStreamContentRectWith(streamW, streamH float32) {
+	vw.ensureHostDesktopSize()
+	var x, y, w, h float32
+	if vw.hostMapsMouseInStreamSpace() {
+		// Sunshine's touch_port already contain-fits the desktop into the
+		// encode (client_offset / scalar_inv). 0..32767 must stay in stream
+		// space — the same mapping Moonlight-qt sends. Cropping to the inner
+		// desktop here double-applies that letterbox: the host cursor lags
+		// and never reaches the physical edge.
+		x, y, w, h = 0, 0, 1, 1
+	} else {
+		hostW, hostH := vw.hostDesktopSize()
+		x, y, w, h = containFitNorm(streamW, streamH, hostW, hostH)
+	}
+	vw.frameMutex.Lock()
+	vw.frameContentX, vw.frameContentY, vw.frameContentW, vw.frameContentH = x, y, w, h
+	vw.frameMutex.Unlock()
+	if w < 0.999 || h < 0.999 {
+		if now := time.Now(); now.Sub(inStreamLogAt) >= 2*time.Second {
+			inStreamLogAt = now
+			hostW, hostH := vw.hostDesktopSize()
+			logrus.Infof("[ABS] in-stream crop: host=%.0fx%.0f stream=%.0fx%.0f frameRect=(%.3f,%.3f,%.3f,%.3f)",
+				hostW, hostH, streamW, streamH, x, y, w, h)
+		}
+	}
+}
+
+// SetOnAgentProtocolChanged is notified when the live agent tariff changes
+// (opensource / free / pro / enterprise), so the Connections plaque can
+// follow a mid-session backend switch.
+func (vw *VideoWidget) SetOnAgentProtocolChanged(fn func(string)) {
+	vw.onAgentProtocolChanged = fn
+}
+
+// AgentProtocol is the last tariff reported by the connected agent.
+func (vw *VideoWidget) AgentProtocol() string {
+	if vw == nil {
+		return ""
+	}
+	return strings.TrimSpace(vw.agentProtocol)
+}
+
+// SetAgentProtocol records the connected agent's streamer (opensource =
+// Sunshine, otherwise RustShine). Absolute mouse mapping differs: Sunshine
+// consumes stream-space coordinates, RustShine consumes desktop-space.
+func (vw *VideoWidget) SetAgentProtocol(protocol string) {
+	p := strings.TrimSpace(protocol)
+	if vw.agentProtocol == p {
+		return
+	}
+	vw.agentProtocol = p
+	vw.resetHostLayout()
+	vw.updateInStreamContentRect()
+	logrus.Infof("[ABS] agent protocol=%q stream-space mouse=%v", p, vw.hostMapsMouseInStreamSpace())
+	if p != "" && vw.onAgentProtocolChanged != nil {
+		vw.onAgentProtocolChanged(p)
+	}
+}
+
+func (vw *VideoWidget) hostMapsMouseInStreamSpace() bool {
+	switch strings.ToLower(strings.TrimSpace(vw.agentProtocol)) {
+	case "opensource", "open source", "sunshine":
+		return true
+	case "pro", "free", "enterprise":
+		return false
+	default:
+		// Unknown tariff must not assume RustShine crop: that made Sunshine
+		// sessions subtract letterbox bars until reconnect. Software agents
+		// default to stream-space; empty OS still follows the KVM default.
+		return IsSoftwareAgentOS(vw.agentOS)
+	}
+}
+
+func (vw *VideoWidget) refreshAgentProtocol() {
+	if vw == nil || vw.usbClient == nil {
+		return
+	}
+	if info, err := vw.usbClient.GetDeviceInfo(); err == nil && info != nil {
+		if p := strings.TrimSpace(info.AgentProtocol); p != "" {
+			vw.SetAgentProtocol(p)
+			return
+		}
+	}
+	if status, err := vw.usbClient.GetStatus(); err == nil && status != nil && status.Data != nil {
+		if p := strings.TrimSpace(status.Data.AgentProtocol); p != "" {
+			vw.SetAgentProtocol(p)
+		}
+	}
+}
+
+func (vw *VideoWidget) resolveStreamPixelSize(frame image.Image) (imgW, imgH float32) {
+	if frame != nil {
+		b := frame.Bounds()
+		fw, fh := float32(b.Dx()), float32(b.Dy())
+		if fw > 0 && fh > 0 {
+			vw.lastVideoImgW = fw
+			vw.lastVideoImgH = fh
+			return fw, fh
+		}
+	}
+	if vw.lastVideoImgW > 0 && vw.lastVideoImgH > 0 {
+		return vw.lastVideoImgW, vw.lastVideoImgH
+	}
+	if nw, nh := service.NativeFrameSize(); nw > 0 && nh > 0 {
+		vw.lastVideoImgW = float32(nw)
+		vw.lastVideoImgH = float32(nh)
+		return vw.lastVideoImgW, vw.lastVideoImgH
+	}
+	if ms, ok := vw.videoClient.(*service.MoonlightService); ok {
+		if sw, sh := ms.StreamPixelSize(); sw > 0 && sh > 0 {
+			vw.lastVideoImgW = float32(sw)
+			vw.lastVideoImgH = float32(sh)
+			return vw.lastVideoImgW, vw.lastVideoImgH
+		}
+	}
+	return 0, 0
+}
+
+func (vw *VideoWidget) refreshContentRectFromTouchpad() {
+	w, h := vw.touchpadSizeW, vw.touchpadSizeH
+	if tw := vw.activeViewportWrapper(); tw != nil {
+		if sz := tw.Size(); sz.Width > 0 && sz.Height > 0 {
+			w, h = sz.Width, sz.Height
+		}
+	}
+	if w > 0 && h > 0 {
+		vw.UpdateTouchpadAndContentRect(w, h, nil)
+	}
+}
+
+func (vw *VideoWidget) noteStreamPixelSize(w, h float32) {
+	if w <= 0 || h <= 0 {
+		return
+	}
+	if vw.lastVideoImgW == w && vw.lastVideoImgH == h {
+		return
+	}
+	vw.lastVideoImgW = w
+	vw.lastVideoImgH = h
+	vw.refreshContentRectFromTouchpad()
 }
 
 func (vw *VideoWidget) getFrameContentRect() (float32, float32, float32, float32) {
@@ -1173,22 +1604,12 @@ func (vw *VideoWidget) updateFrameContentRect(frame image.Image) {
 	})
 
 	if vw.moonlightInput() != nil {
-		// A Moonlight stream is pure desktop capture (DXGI Desktop
-		// Duplication / DRM / X11 / ScreenCaptureKit on the host) -- unlike the
-		// legacy hardware-KVM HID path below (a physical HDMI capture card can
-		// genuinely receive a signal at a different aspect ratio than its
-		// capture mode, producing real letterbox/pillarbox bars), a desktop
-		// capture can never contain one: the frame IS the monitor, 1:1.
-		// Running the dark-bar heuristic anyway is actively harmful here --
-		// confirmed live: an ordinary dark application window (just a black
-		// terminal covering most of one edge, no letterboxing involved at all)
-		// was read as a letterbox bar, shrinking the absolute-mouse content
-		// rect down to whatever brighter region was left and turning mouse
-		// movement into what looked like a joystick centered on a tiny patch
-		// of the screen. Skip straight to "no crop" instead.
-		vw.frameMutex.Lock()
-		vw.frameContentX, vw.frameContentY, vw.frameContentW, vw.frameContentH = 0, 0, 1, 1
-		vw.frameMutex.Unlock()
+		// Do not run the dark-pixel heuristic on desktop capture: a black
+		// terminal at the edge looks like a letterbox bar and collapses the
+		// mouse rect. Both hosts contain-fit the monitor into the encode when
+		// aspects differ. RustShine maps 0..32767 onto the desktop (crop
+		// here); Sunshine's touch_port already subtracts those bars.
+		vw.updateInStreamContentRectWith(float32(frameW), float32(frameH))
 		return
 	}
 
@@ -1344,68 +1765,67 @@ func (vw *VideoWidget) recalculateViewport() {
 	if scale < 1 {
 		scale = 1
 	}
+	// Soft-snap near 1x without wiping an explicit pan.
+	if scale <= 1.001 {
+		scale = 1
+		vw.zoomScale = 1
+	}
 
 	contentW := baseW * scale
 	contentH := baseH * scale
 
-	// Center horizontally relative to the whole screen
-	contentX := (vw.touchpadSizeW - contentW) / 2
+	// panOffset is a delta from the centered position.
+	//
+	// Overflow (content > view): hard clamp so edges never reveal empty/black.
+	// Fit (content ≤ view), including zoomed-but-still-letterboxed: free pan with
+	// a min-visible floor. Previously we forced pan=0 on fitting axes whenever
+	// zoom>1 — that snapped zoom-after-pan back to center and made post-zoom
+	// drag feel broken on portrait (height often still fits after moderate zoom).
+	const minVisible = float32(0.3)
 
-	// Vertical positioning logic:
-	var contentY float32
-	if contentH > availableH {
-		// Video is larger than the available area. Default (panOffsetY ==
-		// 0): center it vertically -- the same reference point used when
-		// the video fits (the "else" branch below), and matching the X
-		// axis a few lines down, which already centers by default
-		// (contentX starts at (touchpadSizeW-contentW)/2, panOffsetX
-		// clamped symmetrically to ±maxPanX). panOffsetY is a delta from
-		// that centered position, only pushed toward the top or bottom
-		// edge by an explicit user pan or an off-center pinch-zoom anchor
-		// (applyViewportGesture) -- and even then, clamped so it never
-		// reveals empty space past the video's own top/bottom edge.
-		//
-		// Previously this defaulted to bottom-anchored (contentY =
-		// availableH-contentH, panOffsetY clamped to [0, maxPanY]) --
-		// confirmed live as the cause of a jarring jump the instant a
-		// pinch-zoom pushed contentH past availableH: the video would
-		// snap from centered straight to "see the bottom of the source
-		// picture" with no user-initiated pan to justify it.
-		maxPanY := (contentH - availableH) / 2
-		vw.panOffsetY = clampFloat(vw.panOffsetY, -maxPanY, maxPanY)
-		contentY = (availableH-contentH)/2 + vw.panOffsetY
-	} else if vw.bottomAnchorContentVertically {
-		// wasm only (see the field's own doc comment): anchor flush
-		// against the bottom of the available area, right above the
-		// keyboard panel, instead of centering -- keeps the video's own
-		// position stable as availableH changes (IME open/close), so any
-		// extra/freed height only ever reveals or hides space *above* the
-		// video, never moves the video itself.
-		contentY = availableH - contentH
-		vw.panOffsetY = 0
-	} else {
-		// Video is smaller than the available area - center it within it
-		contentY = (availableH - contentH) / 2
-		vw.panOffsetY = 0
-	}
-
+	centerX := (vw.touchpadSizeW - contentW) / 2
 	if contentW > vw.touchpadSizeW {
 		maxPanX := (contentW - vw.touchpadSizeW) / 2
 		vw.panOffsetX = clampFloat(vw.panOffsetX, -maxPanX, maxPanX)
-		contentX += vw.panOffsetX
 	} else {
-		vw.panOffsetX = 0
+		minX := -contentW * (1 - minVisible)
+		maxX := vw.touchpadSizeW - contentW*minVisible
+		contentX := clampFloat(centerX+vw.panOffsetX, minX, maxX)
+		vw.panOffsetX = contentX - centerX
 	}
+	contentX := centerX + vw.panOffsetX
 
-	if scale <= 1.001 && vw.bottomInset == 0 {
-		scale = 1
-		vw.zoomScale = 1
-		vw.panOffsetX = 0
+	var contentY float32
+	centerY := (availableH - contentH) / 2
+	// While the keyboard stack is open, allow extra upward pan so a caret at
+	// the remote bottom edge can sit well above the system IME (black gap
+	// under the picture is OK — better than typing under the keyboard).
+	extraUp := float32(0)
+	extraDown := float32(0)
+	if vw.keyboardViewportLift {
+		// Do not add extraUp lift. The user complained that this creates a
+		// huge black gap at the bottom of the screen when zooming/panning
+		// near the edge. The picture should stop exactly at the keyboard edge.
+		extraUp = float32(0)
+		// Do not add symmetric extraDown. The top of the remote screen can be
+		// clicked even if it stops at the physical top edge. Adding extraDown
+		// causes the picture to scroll down to the center, creating a huge black
+		// gap above it which feels broken (picture does not stop at edge).
+		extraDown = float32(0)
+	}
+	if vw.bottomAnchorContentVertically && contentH <= availableH {
+		// wasm only: keep flush above the IME panel; no free letterbox pan.
+		contentY = availableH - contentH
 		vw.panOffsetY = 0
-		contentW = baseW
-		contentH = baseH
-		contentX = (vw.touchpadSizeW - contentW) / 2
-		contentY = (vw.touchpadSizeH - contentH) / 2
+	} else if contentH > availableH {
+		maxPanY := (contentH - availableH) / 2
+		vw.panOffsetY = clampFloat(vw.panOffsetY, -maxPanY-extraUp, maxPanY+extraDown)
+		contentY = centerY + vw.panOffsetY
+	} else {
+		minY := -contentH*(1-minVisible) - extraUp
+		maxY := availableH - contentH*minVisible + extraDown
+		contentY = clampFloat(centerY+vw.panOffsetY, minY, maxY)
+		vw.panOffsetY = contentY - centerY
 	}
 
 	vw.contentRectX = contentX
@@ -1414,6 +1834,88 @@ func (vw *VideoWidget) recalculateViewport() {
 	vw.contentRectH = contentH
 
 	vw.debugLogViewport("recalc")
+}
+
+// snapViewportThresholdFrac is how close (fraction of view width) the release
+// pan must be to a left/right flush target before we magnetize.
+const snapViewportThresholdFrac = float32(0.03) // 3%
+
+// snapViewportAlignment squares up horizontal edges after a two-finger gesture
+// ends — only at 1x zoom, only left/right, never vertical or "center between
+// the pillarbox". Zoomed pan must not be touched (cursor-follow / old center
+// snap was fighting drag and pulling toward the right edge).
+func (vw *VideoWidget) snapViewportAlignment() bool {
+	if vw.touchpadSizeW <= 0 || vw.touchpadSizeH <= 0 {
+		return false
+	}
+	if vw.zoomScale > 1.001 {
+		return false
+	}
+	vw.recalculateViewport()
+
+	contentW := vw.contentRectW
+	if contentW <= 0 {
+		return false
+	}
+	targets := viewportHorizontalEdgeTargets(vw.touchpadSizeW, contentW)
+	if len(targets) == 0 {
+		return false
+	}
+	thresh := vw.touchpadSizeW * snapViewportThresholdFrac
+	snapped, ok := snapToNearestOffset(vw.panOffsetX, targets, thresh)
+	if !ok {
+		return false
+	}
+	vw.panOffsetX = snapped
+	vw.recalculateViewport()
+	return true
+}
+
+// viewportHorizontalEdgeTargets returns panOffset values that flush the
+// content to the left or right of the view. panOffset is relative to center
+// (see recalculateViewport). Center-between-edges is intentionally omitted.
+func viewportHorizontalEdgeTargets(viewW, contentW float32) []float32 {
+	if viewW <= 0 || contentW <= 0 {
+		return nil
+	}
+	// Zoomed overflow is handled by refusing snap when zoom>1; at 1x content
+	// should fit. If it somehow overflows, edge flush is ±maxPan — skip to
+	// avoid the old "always magnetize to an edge" feel while zoomed.
+	if contentW > viewW+0.5 {
+		return nil
+	}
+	center := (viewW - contentW) / 2
+	left := -center                    // contentX = 0
+	right := viewW - contentW - center // contentX = viewW - contentW
+	if almostEqual(left, right) {
+		// Full-bleed width: both edges are the same pose (pan = 0).
+		return []float32{0}
+	}
+	return []float32{left, right}
+}
+
+func snapToNearestOffset(val float32, targets []float32, thresh float32) (float32, bool) {
+	if thresh < 0 {
+		thresh = 0
+	}
+	best := val
+	bestDist := thresh + 1
+	found := false
+	for _, t := range targets {
+		d := float32(math.Abs(float64(val - t)))
+		if d <= thresh && (!found || d < bestDist) {
+			best = t
+			bestDist = d
+			found = true
+		}
+	}
+	if !found {
+		return val, false
+	}
+	if almostEqual(val, best) {
+		return val, false
+	}
+	return best, true
 }
 
 func (vw *VideoWidget) GetViewportRect() (float32, float32, float32, float32) {
@@ -1427,7 +1929,7 @@ func (vw *VideoWidget) applyViewportGesture(scaleFactor, focusX, focusY, panDx, 
 		return
 	}
 
-	oldX, _, oldW, oldH := vw.GetViewportRect()
+	oldX, oldY, oldW, oldH := vw.GetViewportRect()
 	if oldW <= 0 || oldH <= 0 {
 		return
 	}
@@ -1436,10 +1938,28 @@ func (vw *VideoWidget) applyViewportGesture(scaleFactor, focusX, focusY, panDx, 
 	if nextZoom < 1 {
 		nextZoom = 1
 	}
-	// On 60fps gesture updates (like iOS), per-frame scale is very close to 1.0.
-	// Lower the deadzone threshold so we don't swallow smooth pinch gestures.
-	if scaleFactor <= 0 || math.Abs(float64(scaleFactor-1)) < 0.001 {
+	// Two-finger is pinch-only now, but per-frame scale is often ~1.005–1.015
+	// during a slow pinch. Dropping those under a hard 2% deadzone made zoom
+	// stall mid-gesture and then jump. Accumulate sub-threshold factors and
+	// apply when the product crosses a small threshold.
+	if scaleFactor <= 0 {
 		scaleFactor = 1
+	}
+	const zoomDeadzone = float32(0.01) // 1%
+	if vw.zoomScaleResidual <= 0 {
+		vw.zoomScaleResidual = 1
+	}
+	if math.Abs(float64(scaleFactor-1)) < float64(zoomDeadzone) {
+		vw.zoomScaleResidual *= scaleFactor
+		if math.Abs(float64(vw.zoomScaleResidual-1)) < float64(zoomDeadzone) {
+			scaleFactor = 1
+		} else {
+			scaleFactor = vw.zoomScaleResidual
+			vw.zoomScaleResidual = 1
+		}
+	} else if vw.zoomScaleResidual != 1 {
+		scaleFactor *= vw.zoomScaleResidual
+		vw.zoomScaleResidual = 1
 	}
 	if scaleFactor > 0 && scaleFactor != 1 {
 		nextZoom *= scaleFactor
@@ -1448,44 +1968,53 @@ func (vw *VideoWidget) applyViewportGesture(scaleFactor, focusX, focusY, panDx, 
 	vw.zoomScale = nextZoom
 	vw.recalculateViewport()
 
-	if scaleFactor > 0 && !almostEqual(scaleFactor, 1) {
-		localFocusX := clampFloat(focusX, 0, vw.touchpadSizeW)
-		u := clampFloat((localFocusX-oldX)/oldW, 0, 1)
-
-		newW := vw.contentRectW
-		if newW > vw.touchpadSizeW {
-			baseX := (vw.touchpadSizeW - newW) / 2
-			vw.panOffsetX = localFocusX - u*newW - baseX
+	zoomed := scaleFactor > 0 && !almostEqual(scaleFactor, 1)
+	if zoomed {
+		availableH := vw.touchpadSizeH - vw.bottomInset
+		if availableH < 0 {
+			availableH = 0
 		}
-		// Deliberately NOT anchoring vertically to the pinch focus point
-		// the way the X axis (and an earlier version of this function)
-		// does. Two-finger pinches naturally land wherever the user's
-		// hands happen to rest -- often well below screen center on a
-		// phone -- and anchoring to that point on every scale step made
-		// the picture visibly crawl toward whatever's under the fingers
-		// as zoom increased, reported live as the video "jumping down".
-		// recalculateViewport's own default (centered, panOffsetY == 0)
-		// already is the desired behavior here: zoom always stays
-		// centered, and the only way to look at the video's top/bottom
-		// edge is an explicit two-finger drag (panDy below), which
-		// recalculateViewport's symmetric clamp keeps from ever revealing
-		// empty space past either edge. So: no panOffsetY assignment here
-		// at all -- leave it exactly as recalculateViewport already set
-		// it a few lines up (0, unless a previous drag pushed it off
-		// center).
+		// Zoom about the view centre — not the finger focus. Pinch focus Y
+		// from Android (activity px → Fyne dp) sits systematically low vs the
+		// Vulkan surface (header clearance / chrome), so focus-anchored zoom
+		// walked the picture downward as scale grew. Anchoring the point that
+		// is currently under the view centre keeps prior pan and avoids the
+		// downward drift.
+		anchorX := vw.touchpadSizeW / 2
+		anchorY := availableH / 2
+		u := clampFloat((anchorX-oldX)/oldW, 0, 1)
+		v := clampFloat((anchorY-oldY)/oldH, 0, 1)
+		newW := vw.contentRectW
+		newH := vw.contentRectH
+		baseX := (vw.touchpadSizeW - newW) / 2
+		baseY := (availableH - newH) / 2
+		vw.panOffsetX = anchorX - u*newW - baseX
+		vw.panOffsetY = anchorY - v*newH - baseY
 	}
 
 	vw.panOffsetX += panDx
 	vw.panOffsetY += panDy
+	// Any two-finger viewport gesture owns pan/zoom until the user moves the
+	// virtual cursor again (blocks cursor-follow from snapping back to center).
+	vw.viewportManualControl = true
 	vw.recalculateViewport()
 }
 
 func (vw *VideoWidget) resetViewport() {
 	vw.zoomScale = 1
+	vw.zoomScaleResidual = 1
 	vw.panOffsetX = 0
 	vw.panOffsetY = 0
+	vw.viewportManualControl = false
 	vw.recalculateViewport()
 	vw.updateNativeViewportAndCursor()
+}
+
+// resetZoomScaleResidual clears pending sub-deadzone pinch accumulation.
+func (vw *VideoWidget) resetZoomScaleResidual() {
+	if vw != nil {
+		vw.zoomScaleResidual = 1
+	}
 }
 
 func clampFloat(value, minValue, maxValue float32) float32 {
@@ -1494,4 +2023,172 @@ func clampFloat(value, minValue, maxValue float32) float32 {
 
 func almostEqual(a, b float32) bool {
 	return math.Abs(float64(a-b)) < 0.001
+}
+
+// placeVirtualCursorAtViewCenterLocked writes virtualCursorU/V so the cursor
+// sits on whatever remote point is currently under the centre of the view.
+// Used when resuming from two-finger pan/zoom (RustDesk-style): move the
+// mouse to us, do not yank the picture back to the old mouse side.
+// Caller must hold vcMu.
+func (vw *VideoWidget) placeVirtualCursorAtViewCenterLocked(minU, maxU, minV, maxV float32) {
+	vw.recalculateViewport()
+	cw, ch := vw.contentRectW, vw.contentRectH
+	if cw <= 0 || ch <= 0 {
+		vw.virtualCursorU = clampFloat(0.5, minU, maxU)
+		vw.virtualCursorV = clampFloat(0.5, minV, maxV)
+		return
+	}
+	availableH := vw.touchpadSizeH - vw.bottomInset
+	if availableH < 0 {
+		availableH = 0
+	}
+	sx := vw.touchpadSizeW / 2
+	sy := availableH / 2
+	u := (sx - vw.contentRectX) / cw
+	v := (sy - vw.contentRectY) / ch
+	vw.virtualCursorU = clampFloat(u, minU, maxU)
+	vw.virtualCursorV = clampFloat(v, minV, maxV)
+}
+
+const (
+	keyboardFocusZoom = float32(2)
+	// Centre of the visible strip above the IME (not the old upper-third
+	// 0.28), so the caret is pushed toward the middle of the remaining screen.
+	keyboardFocusYFrac          = float32(0.5)
+	keyboardFocusClearanceDp    = float32(24)
+	keyboardFocusMinAvailH      = float32(120)
+	keyboardFocusExtraLiftFrac  = float32(0.7)
+	keyboardFocusExtraLiftMinDp = float32(120)
+)
+
+// syncKeyboardBottomInsetFromIME sets bottomInset to the overlap between the
+// video container and the system IME so pan/zoom math uses the visible area
+// above the keyboard (not the full touchpad, which still extends under the IME).
+// Landscape skips this: the soft keyboard is a floating widget and must not
+// shrink the Vulkan/Metal band — only the Control footer does.
+func (vw *VideoWidget) syncKeyboardBottomInsetFromIME(imeHeightDp float32) {
+	const minRealIMEDp = 100
+	if vw == nil || imeHeightDp < minRealIMEDp || !imeCropsVideoOverlay() {
+		if vw != nil {
+			vw.bottomInset = 0
+		}
+		return
+	}
+	overlap := imeHeightDp
+	if vw.parentWindow != nil && vw.container != nil {
+		cs := vw.parentWindow.Canvas().Size()
+		pos := vw.videoContainerOrigin()
+		sz := vw.container.Size()
+		imeTop := cs.Height - imeHeightDp
+		videoBottom := pos.Y + sz.Height
+		if videoBottom > imeTop {
+			overlap = videoBottom - imeTop
+		} else {
+			overlap = 0
+		}
+	}
+	if overlap < 0 {
+		overlap = 0
+	}
+	// Extra clearance so the caret focus band sits clearly above the IME,
+	// not flush against its top edge.
+	inset := overlap + keyboardFocusClearanceDp
+	maxInset := vw.touchpadSizeH - keyboardFocusMinAvailH
+	if vw.touchpadSizeH > 0 && maxInset > 0 && inset > maxInset {
+		inset = maxInset
+	}
+	vw.bottomInset = inset
+}
+
+// focusViewportOnVirtualCursorForKeyboard zooms 2× and pans so the virtual
+// caret sits in the centre of the visible video area above the IME.
+func (vw *VideoWidget) focusViewportOnVirtualCursorForKeyboard() {
+	if vw == nil {
+		return
+	}
+	vw.keyboardViewportLift = true
+	if tw := vw.activeViewportWrapper(); tw != nil {
+		if sz := tw.Size(); sz.Width > 0 && sz.Height > 0 {
+			vw.touchpadSizeW = sz.Width
+			vw.touchpadSizeH = sz.Height
+		}
+	}
+	vw.viewportManualControl = false
+
+	vw.vcMu.Lock()
+	u, v := vw.virtualCursorU, vw.virtualCursorV
+	vw.vcMu.Unlock()
+	if u <= 0 && v <= 0 {
+		u, v = 0.5, 0.5
+	}
+	u = clampFloat(u, 0, 1)
+	v = clampFloat(v, 0, 1)
+
+	availH := vw.touchpadSizeH - vw.bottomInset
+	if availH < keyboardFocusMinAvailH {
+		availH = vw.touchpadSizeH
+		if availH > keyboardFocusMinAvailH*2 {
+			vw.bottomInset = availH * 0.35
+			availH = vw.touchpadSizeH - vw.bottomInset
+		}
+	}
+	if vw.touchpadSizeW <= 0 || availH <= 0 {
+		return
+	}
+
+	baseW := vw.baseContentRectW
+	baseH := vw.baseContentRectH
+	if baseW <= 0 || baseH <= 0 {
+		baseW = vw.touchpadSizeW
+		baseH = availH
+	}
+
+	vw.zoomScale = keyboardFocusZoom
+	vw.zoomScaleResidual = 1
+
+	cw := baseW * vw.zoomScale
+	ch := baseH * vw.zoomScale
+	centerY := (availH - ch) / 2
+	idealPanX := cw * (0.5 - u)
+	idealPanY := availH*(keyboardFocusYFrac-0.5) + ch*(0.5-v)
+
+	extraUp := float32(0)
+	extraDown := float32(0)
+
+	if cw > vw.touchpadSizeW {
+		maxPanX := (cw - vw.touchpadSizeW) / 2
+		vw.panOffsetX = clampFloat(idealPanX, -maxPanX, maxPanX)
+	} else {
+		vw.panOffsetX = idealPanX
+	}
+	if ch > availH {
+		maxPanY := (ch - availH) / 2
+		vw.panOffsetY = clampFloat(idealPanY, -maxPanY-extraUp, maxPanY+extraDown)
+	} else {
+		minY := -ch*0.7 - extraUp
+		maxY := availH - ch*0.3 + extraDown
+		contentY := clampFloat(centerY+idealPanY, minY, maxY)
+		vw.panOffsetY = contentY - centerY
+	}
+
+	vw.recalculateViewport()
+	vw.updateNativeViewportAndCursor()
+	vw.forceCanvasRefresh.Store(true)
+	logrus.Infof("⌨️ Keyboard caret focus: uv=(%.2f,%.2f) zoom=%.2f pan=(%.0f,%.0f) inset=%.0f focusY=%.2f",
+		u, v, vw.zoomScale, vw.panOffsetX, vw.panOffsetY, vw.bottomInset, keyboardFocusYFrac)
+}
+
+func (vw *VideoWidget) scheduleKeyboardViewportSettle() {
+	vw.applyImmediateKeyboardViewport()
+}
+
+func (vw *VideoWidget) freezeKeyboardLayout() {}
+
+func (vw *VideoWidget) applyKeyboardViewportSettle() {
+	vw.applyImmediateKeyboardViewport()
+}
+
+// scheduleKeyboardCaretFocus re-runs hard focus after layout/IME settle.
+func (vw *VideoWidget) scheduleKeyboardCaretFocus() {
+	vw.applyImmediateKeyboardViewport()
 }

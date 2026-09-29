@@ -118,6 +118,7 @@ func (b *sunshineBackend) ListCaptureDevices() []CaptureDevice {
 		out = append(out, CaptureDevice{
 			OutputName:  d.DeviceID,
 			DisplayName: name,
+			GDIName:     d.DisplayName,
 			Primary:     d.Info.Primary,
 			Width:       d.Info.Resolution.Width,
 			Height:      d.Info.Resolution.Height,

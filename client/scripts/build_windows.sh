@@ -150,6 +150,7 @@ build_cache_fingerprint() {
 
     printf "BUILD_VARIANT=%s\n" "$BUILD_VARIANT"
     printf "BUILD_LDFLAGS=%s\n" "$BUILD_LDFLAGS"
+    printf "BUILD_TAGS=%s\n" "${BUILD_TAGS:-}"
     printf "GOOS=%s\n" "$GOOS"
     printf "GOARCH=%s\n" "$GOARCH"
     printf "CGO_ENABLED=%s\n" "${CGO_ENABLED:-}"
@@ -280,6 +281,22 @@ else
     echo "   Moonlight will fall back to software decode using bundled opus/openssl only"
 fi
 
+# USB passthrough claim path (backend_gousb.go, see docs/USB_PASSTHROUGH.md):
+# libusb-1.0 talks to whatever interface Zadig bound to WinUSB. Same
+# -tags usbpass_gousb build_linux.sh has always used; Windows just never
+# passed it, so the shipped client silently fell back to
+# backend_nogousb.go's disabled stub ("gousb claim disabled") regardless of
+# how a target device's driver was bound.
+echo -e "\n${YELLOW}🔌 Check libusb-1.0 (USB passthrough claim path)...${NC}"
+HAS_LIBUSB=0
+if "$PKG_CONFIG" --exists libusb-1.0 2>/dev/null; then
+    HAS_LIBUSB=1
+    echo -e "${GREEN}✓${NC} libusb-1.0 found (USB passthrough claim enabled)"
+else
+    echo -e "${YELLOW}⚠${NC} libusb-1.0 not found via pkg-config — USB passthrough claim will stay disabled in this build"
+    echo "   Install: pacman -S mingw-w64-ucrt-x86_64-libusb"
+fi
+
 # 3. Check fyne
 echo -e "\n${YELLOW}📦 Check fyne...${NC}"
 FYNE_BIN=""
@@ -315,9 +332,10 @@ if [ -z "$FYNE_BIN" ]; then
 fi
 echo -e "${GREEN}✓${NC} fyne: $FYNE_BIN"
 
-ICON_PATH="$REPO_ROOT/Icon.png"
+ICON_PATH="$REPO_ROOT/internal/gui/assets/Icon-windows.png"
 if [ ! -f "$ICON_PATH" ]; then
-    echo -e "${RED}❌ Icon not found: $ICON_PATH${NC}"
+    echo -e "${RED}❌ Windows icon not found: $ICON_PATH${NC}"
+    echo "    Replace that 256x256 rounded PNG, then rebuild."
     exit 1
 fi
 echo -e "${GREEN}✓${NC} Icon: $ICON_PATH"
@@ -341,6 +359,10 @@ if [ "${DEBUG_CONSOLE:-0}" = "1" ]; then
     BUILD_LDFLAGS="-H=console -X main.version=$VERSION"
     BUILD_VARIANT="console"
     echo -e "${YELLOW}⚠${NC} DEBUG_CONSOLE=1: building console version"
+fi
+BUILD_TAGS=""
+if [ "$HAS_LIBUSB" = "1" ]; then
+    BUILD_TAGS="usbpass_gousb"
 fi
 BUILD_CACHE_DIR="$BUILD_CACHE_ROOT/$BUILD_VARIANT"
 BUILD_CACHE_APP_EXE="$BUILD_CACHE_DIR/$APP_EXE_NAME"
@@ -415,7 +437,9 @@ if [ "$REBUILD_WINDOWS_EXE" = "1" ]; then
     else
         echo -e "${YELLOW}⚠${NC} go-winres unavailable - main app will be without icon"
     fi
-    go build -trimpath -ldflags="$BUILD_LDFLAGS" -o "$BUILD_CACHE_APP_EXE" "$REPO_ROOT/cmd"
+    GOBUILD_TAGS_ARGS=()
+    [ -n "$BUILD_TAGS" ] && GOBUILD_TAGS_ARGS=(-tags "$BUILD_TAGS")
+    go build -trimpath "${GOBUILD_TAGS_ARGS[@]}" -ldflags="$BUILD_LDFLAGS" -o "$BUILD_CACHE_APP_EXE" "$REPO_ROOT/cmd"
     rm -f "$APP_SYSO"
     mv "$BUILD_CACHE_FINGERPRINT_TMP" "$BUILD_CACHE_FINGERPRINT"
 else
@@ -511,14 +535,13 @@ for _dll in msvcp140.dll msvcp140_1.dll vcruntime140.dll vcruntime140_1.dll; do
         echo -e "${YELLOW}⚠${NC} Could not fetch $_dll -- onnxruntime.dll may fail to load on a machine without the VC++ redistributable"
     fi
 done
-LOCALUI_MODELS_SRC="$REPO_ROOT/internal/localui/models"
-if [ -f "$LOCALUI_MODELS_SRC/icon_detect.onnx" ]; then
-    mkdir -p "$DIST_WIN_BIN/localui/models"
-    cp "$LOCALUI_MODELS_SRC"/*.onnx "$DIST_WIN_BIN/localui/models/"
-    echo -e "${GREEN}✓${NC} bin/localui/models/ ($(du -sh "$DIST_WIN_BIN/localui/models" | cut -f1))"
-else
-    echo -e "${YELLOW}⚠${NC} $LOCALUI_MODELS_SRC has no .onnx files -- local ui.parse/AI Vision will stay unavailable in this build"
-fi
+# ONNX MODEL files (~88MB combined) are deliberately NOT copied into the
+# install anymore -- fetched on demand instead, the moment the user clicks
+# "Download models" in the Scripts&AI tab (or already had "Local models" on
+# from a previous session and just connected). See
+# internal/localui/download.go's own doc comment, and build_macos.sh's
+# matching comment for the full reasoning. Only the ONNX runtime DLLs above
+# still ship by default.
 
 # Create a relative shortcut using explorer.exe
 echo "Creating shortcut..."

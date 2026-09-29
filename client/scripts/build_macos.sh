@@ -338,19 +338,24 @@ else
     :
 fi
 
-# 5d. Bundle the local ui.parse ONNX offload (internal/localui, AI Vision's
-# detector): the runtime lib comes from fetch_onnxruntime.sh's redistributable
-# PyPI build (self-contained -- no Homebrew, no protobuf-version footgun, see
-# that script's doc comment for the incident that motivated it) instead of
-# whatever happens to be `brew install`ed on the build machine; the three
-# ONNX models are already committed under internal/localui/models/ (see that
-# directory's README), just copied in. Together with local_ui_init.go's
-# bundle-relative path resolution (Contents/Frameworks + Contents/Resources),
-# this means a machine with local_ui_parse_enabled turned on works the
-# instant it launches the .app -- no scripts/setup_localui.sh, no Homebrew,
-# no manual config -- while staying an optional accelerator: any failure here
-# only warns, it never fails the build, matching ffmpeg/tailscale/qemu above.
-echo -e "\n${YELLOW}🔎 Bundling local ui.parse (ONNX Runtime + models) for AI Vision...${NC}"
+# 5d. Bundle the local ui.parse ONNX offload's RUNTIME LIB only (internal/
+# localui, AI Vision's detector) -- the runtime comes from
+# fetch_onnxruntime.sh's redistributable PyPI build (self-contained -- no
+# Homebrew, no protobuf-version footgun, see that script's doc comment for
+# the incident that motivated it) instead of whatever happens to be `brew
+# install`ed on the build machine. The three ONNX MODEL files (~88MB
+# combined) are deliberately NOT copied into the bundle anymore: they're
+# fetched on demand instead, straight from GitHub, the moment the user
+# actually clicks "Download models" in the Scripts&AI tab (or already had
+# "Local models" on from a previous session and just connected -- see
+# scripts_tab_widget.go's startModelsDownload / maybeLazyInitLocalUIParse,
+# and internal/localui/download.go's own doc comment for the full
+# reasoning). Bundling them unconditionally into EVERY install cost real
+# download size and disk space for users who never turn the feature on --
+# this way only the runtime lib (a few MB) ships by default, matching
+# ffmpeg/tailscale/qemu above in staying an optional accelerator: any
+# failure here only warns, it never fails the build.
+echo -e "\n${YELLOW}🔎 Bundling local ui.parse (ONNX Runtime) for AI Vision...${NC}"
 ORT_CACHE_DIR="$REPO_ROOT/.build-cache/onnxruntime-macos"
 if [ ! -f "$ORT_CACHE_DIR/libonnxruntime.dylib" ]; then
     "$SCRIPTS_DIR/fetch_onnxruntime.sh" "$ORT_CACHE_DIR" || true
@@ -361,14 +366,6 @@ if [ -f "$ORT_CACHE_DIR/libonnxruntime.dylib" ]; then
     echo -e "   ${GREEN}✓${NC} Frameworks/libonnxruntime.dylib"
 else
     echo -e "   ${YELLOW}⚠${NC} Could not fetch libonnxruntime.dylib -- local ui.parse/AI Vision will stay unavailable in this build"
-fi
-LOCALUI_MODELS_SRC="$REPO_ROOT/internal/localui/models"
-if [ -f "$LOCALUI_MODELS_SRC/icon_detect.onnx" ]; then
-    mkdir -p "$APP_RESOURCES_DIR/localui/models"
-    cp "$LOCALUI_MODELS_SRC"/*.onnx "$APP_RESOURCES_DIR/localui/models/"
-    echo -e "   ${GREEN}✓${NC} Resources/localui/models/ ($(du -sh "$APP_RESOURCES_DIR/localui/models" | cut -f1))"
-else
-    echo -e "   ${YELLOW}⚠${NC} $LOCALUI_MODELS_SRC has no .onnx files -- local ui.parse/AI Vision will stay unavailable in this build"
 fi
 
 # 6. Info.plist (written after bundling so icons/plist don't interfere with lib walk)

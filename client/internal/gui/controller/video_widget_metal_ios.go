@@ -147,6 +147,25 @@ var (
 	lastMetalCursorX, lastMetalCursorY float32
 )
 
+// metalVideoTop is the window-absolute Y of the touchpad's top edge, shared
+// by the clip (videoWidgetFrame) and the content rect (videoCanvasFrame).
+// Both must use the same origin: contentRectY is touchpad-relative, so if the
+// clip starts at safeTop+keysH but content at safeTop+pos.Y, content shifts by
+// the difference. AbsolutePositionForObject reports ~0 on iOS while the
+// keyboard stack is open, which slid the picture up under the special keys
+// and left a keysH-tall black strip above the IME.
+func (vw *VideoWidget) metalVideoTop() float32 {
+	// Metal is on UIWindow (absolute). Fyne canvas Y is InteractiveArea-
+	// relative; add safe-top so we do not paint under the notch / over keys.
+	safeTop := canvasInteractiveOrigin(vw.parentWindow.Canvas()).Y
+	// Mobile keyboard stack: keys live in mainHeaderHost, directly above the
+	// touchpad, so their height is the reliable offset.
+	if keysH := vw.specialKeysTopInsetDp(); keysH > 0 {
+		return safeTop + keysH
+	}
+	return safeTop + vw.videoContainerOrigin().Y
+}
+
 // videoWidgetFrame returns the touchpad widget bounds in window-local dp coordinates.
 // This is the visible area the Metal overlay must not overflow.
 func (vw *VideoWidget) videoWidgetFrame() (x, y, w, h float32) {
@@ -155,29 +174,22 @@ func (vw *VideoWidget) videoWidgetFrame() (x, y, w, h float32) {
 	}
 	szMain := vw.container.Size()
 	canvasH := vw.parentWindow.Canvas().Size().Height
-	// AbsolutePositionForObject is unreliable on iOS (may return wrong positive values
-	// before layout settles). Use canvasH - szMain.Height directly — it equals the
-	// combined height of the tab bar + safe area and is always correct.
-	topOffset := canvasH - szMain.Height
-	service.Syslog(fmt.Sprintf("M:cH=%.0f,sH=%.0f,tO=%.0f", canvasH, szMain.Height, topOffset))
-
-	if ime := getImeExpandHeightDp(); ime > 0 {
-		// Clip = area above the button panel (ESC/Tab/etc.), which sits between the
-		// video and the system keyboard. canvasH - ime = full area above keyboard;
-		// subtract the button panel height so the overlay doesn't cover it.
-		videoH := canvasH - ime
-		if vw.contentContainer != nil && vw.contentContainer.Visible() {
-			if kh := vw.contentContainer.Size().Height; kh > 0 {
-				videoH -= kh
-			}
-		}
-		if videoH > 0 {
-			return 0, 0, szMain.Width, videoH
-		}
-	}
+	topOffset := vw.metalVideoTop()
+	service.Syslog(fmt.Sprintf("M:cH=%.0f,sH=%.0f,tO=%.0f,ch=%.0f", canvasH, szMain.Height, topOffset, videoChromeBelow()))
 
 	szVideo := vw.touchpadWrapper.Size()
-	return 0, topOffset, szVideo.Width, szVideo.Height
+	width := szVideo.Width
+	if width <= 0 {
+		width = szMain.Width
+	}
+
+	if szVideo.Height > 0 {
+		return 0, topOffset, width, szVideo.Height
+	}
+
+	// Fallback if layout hasn't settled
+	clipH := videoClipHeightFromCanvas(topOffset, szVideo.Height, canvasH)
+	return 0, topOffset, width, clipH
 }
 
 // updateMetalVideoFrame repositions the Metal overlay:
@@ -228,6 +240,17 @@ func (vw *VideoWidget) updateMetalVideoFrame() {
 		}
 	}
 
+	// DIAGNOSTIC (temporary): exact rects handed to Metal, every call (not
+	// gated by the change-detection cache below) -- clipBottom vs
+	// contentBottom is the direct test for the black-strip-above-keyboard
+	// bug: a gap means contentBottom < clipBottom while the keyboard is up.
+	service.Syslog(fmt.Sprintf("GEO:clip=(%.0f,%.0f,%.0f,%.0f)b=%.0f content=(%.0f,%.0f,%.0f,%.0f)b=%.0f zoom=%.2f pan=(%.0f,%.0f) anchor=%v lift=%v base=(%.0f,%.0f)",
+		clipX, clipY, clipW, clipH, clipY+clipH,
+		contentX, contentY, contentW, contentH, contentY+contentH,
+		vw.zoomScale, vw.panOffsetX, vw.panOffsetY,
+		vw.bottomAnchorContentVertically, vw.keyboardViewportLift,
+		vw.baseContentRectW, vw.baseContentRectH))
+
 	// Cursor position: use virtualCursorU/V (persistent across touch events) so
 	// the arrow stays where the user left it rather than jumping to the finger tip.
 	cursorVisible := isVirtualCursorLikeMode(vw.GetMouseInputMode())
@@ -270,16 +293,18 @@ func (vw *VideoWidget) updateMetalVideoFrame() {
 // to keep the cursor centred on screen, then repositions the Metal overlay.
 func (vw *VideoWidget) updateNativeViewportAndCursor() {
 	if isVirtualCursorLikeMode(vw.GetMouseInputMode()) {
-		vw.vcMu.Lock()
-		targetU := vw.virtualCursorU
-		targetV := vw.virtualCursorV
-		vw.vcMu.Unlock()
+		if !vw.multiTouchActive && !vw.viewportManualControl {
+			vw.vcMu.Lock()
+			targetU := vw.virtualCursorU
+			targetV := vw.virtualCursorV
+			vw.vcMu.Unlock()
 
-		vw.centerViewportOnVirtualCursor(targetU, targetV)
+			vw.centerViewportOnVirtualCursor(targetU, targetV)
 
-		// Recompute contentRect after the pan change.
-		if tw := vw.activeViewportWrapper(); tw != nil {
-			vw.UpdateTouchpadAndContentRect(vw.touchpadSizeW, vw.touchpadSizeH, nil)
+			// Recompute contentRect after the pan change.
+			if tw := vw.activeViewportWrapper(); tw != nil {
+				vw.UpdateTouchpadAndContentRect(vw.touchpadSizeW, vw.touchpadSizeH, nil)
+			}
 		}
 	}
 	vw.updateMetalVideoFrame()
@@ -310,10 +335,17 @@ func (vw *VideoWidget) centerViewportOnVirtualCursor(u, v float32) {
 	// [0, maxPanY] range biased toward the bottom edge.
 	availH := vw.touchpadSizeH - vw.bottomInset
 	if ch > availH {
-		idealPanY := ch * (0.5 - v)
+		focusY := float32(0.5)
+		extraUp := float32(0)
+		if vw.keyboardViewportLift {
+			focusY = keyboardFocusYFrac
+			extraUp = float32(0)
+		}
+		idealPanY := availH*(focusY-0.5) + ch*(0.5-v)
 		maxPanY := (ch - availH) / 2
 		zoneY := availH * 0.15
-		vw.panOffsetY = iosSoftClamp(idealPanY, -maxPanY, maxPanY, zoneY)
+		extraDown := float32(0)
+		vw.panOffsetY = iosSoftClamp(idealPanY, -maxPanY-extraUp, maxPanY+extraDown, zoneY)
 	} else {
 		vw.panOffsetY = 0
 	}
@@ -375,16 +407,8 @@ func (vw *VideoWidget) videoCanvasFrame() (x, y, w, h float32) {
 	}
 	szMain := vw.container.Size()
 	canvasH := vw.parentWindow.Canvas().Size().Height
-	topOffset := canvasH - szMain.Height
-	// When the keyboard is open, Fyne shrinks szMain by ~keyboardHeight, so topOffset
-	// grows to tabBarH + keyboardH. Subtract the IME height to recover the real tab bar Y.
-	if ime := getImeExpandHeightDp(); ime > 0 {
-		topOffset -= ime
-		if topOffset < 0 {
-			topOffset = 0
-		}
-	}
-	service.Syslog(fmt.Sprintf("MC:cH=%.0f,sH=%.0f,ime=%.0f,tO=%.0f", canvasH, szMain.Height, getImeExpandHeightDp(), topOffset))
+	topOffset := vw.metalVideoTop()
+	service.Syslog(fmt.Sprintf("MC:cH=%.0f,sH=%.0f,ime=%.0f,tO=%.0f,ch=%.0f", canvasH, szMain.Height, getImeExpandHeightDp(), topOffset, videoChromeBelow()))
 
 	// Apply zoom and pan coordinates directly to the native overlay frame!
 	// This naturally zooms and crops the CALayer.
@@ -392,10 +416,12 @@ func (vw *VideoWidget) videoCanvasFrame() (x, y, w, h float32) {
 		return vw.contentRectX, topOffset + vw.contentRectY, vw.contentRectW, vw.contentRectH
 	}
 
-	// The video container (touchpadWrapper) size dynamically shrinks when the virtual
-	// keyboard panel appears at the bottom.
 	szVideo := vw.touchpadWrapper.Size()
-	return 0, topOffset, szVideo.Width, szVideo.Height
+	if szVideo.Height > 0 {
+		return 0, topOffset, szVideo.Width, szVideo.Height
+	}
+	clipH := videoClipHeightFromCanvas(topOffset, szVideo.Height, canvasH)
+	return 0, topOffset, szVideo.Width, clipH
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -414,13 +440,32 @@ func triggerRmbHaptic()                              {}
 func (vw *VideoWidget) onIMEHeightChanged(imeHeightDp float32) {
 	const minRealIMEDp = 100
 	imeOpen := imeHeightDp > minRealIMEDp
-	if imeOpen {
+	if imeOpen && imeCropsVideoOverlay() {
 		setImeExpandHeightDp(imeHeightDp)
 	} else {
 		setImeExpandHeightDp(0)
 	}
+	// Fyne already shrinks the iOS canvas for the soft keyboard — do not also
+	// inflate bottomInset (that double-counted the IME and made pan/zoom jump).
+	vw.bottomInset = 0
+	vw.keyboardViewportLift = false
 	lastMetalClipH = 0 // force cache miss → immediate layout update
 	vw.forceCanvasRefresh.Store(true)
+	if imeOpen && imeCropsVideoOverlay() && (vw.IsVirtualKeyboardVisible() || vw.IsSystemIMESticky()) {
+		vw.focusViewportOnVirtualCursorForKeyboard()
+		// keyboard_ime_ios.m now delivers this after Fyne's own canvas
+		// resize for the keyboard, but that resize can still straddle a
+		// render tick under load. Re-run once more shortly after so the
+		// content rect catches up with whatever size Fyne actually
+		// settled on, instead of leaving a stale gap above the keyboard.
+		time.AfterFunc(80*time.Millisecond, func() {
+			fyne.Do(func() {
+				if vw.IsVirtualKeyboardVisible() || vw.IsSystemIMESticky() {
+					vw.focusViewportOnVirtualCursorForKeyboard()
+				}
+			})
+		})
+	}
 }
 
 // iosCursorImagePixels rasterizes cursor-pointer.svg at 3× (54×72 px) —

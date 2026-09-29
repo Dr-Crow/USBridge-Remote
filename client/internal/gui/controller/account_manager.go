@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"usbridge-client/internal/account"
+	"usbridge-client/internal/gui/i18n"
 	"usbridge-client/internal/syncconn"
 
 	"fyne.io/fyne/v2"
@@ -51,10 +52,25 @@ type AccountManager struct {
 	pollCancel      context.CancelFunc
 	lastError       string
 
+	// licensesCache/licensesCached/licensesErr: the last successful (or
+	// failed) Licenses() fetch for the CURRENT login, kept here rather than
+	// only inside the Account dialog's own closure -- so a re-open of the
+	// dialog within the same login session renders the real license list
+	// immediately, with no "Loading your licenses…" placeholder and no
+	// resulting resize once the fetch resolves (see showAccountDialog,
+	// which used to always start from an empty cache on every open).
+	// Cleared on Logout since it belongs to that login, not the device.
+	licensesCached bool
+	licensesCache  []account.License
+	licensesErr    error
+
 	// onChange notifies the GUI (the top-bar button's icon/badge, an open
 	// account dialog) that something worth re-rendering changed --
 	// deliberately fire-and-forget, called with the lock released.
 	onChange func()
+	// beforeLogout runs while credentials are still valid so a pending
+	// connections-sync push can flush before Logout clears the sync key.
+	beforeLogout func()
 }
 
 type accountFileState struct {
@@ -73,6 +89,15 @@ func (am *AccountManager) notify() {
 	if am.onChange != nil {
 		am.onChange()
 	}
+}
+
+func (am *AccountManager) SetBeforeLogout(fn func()) {
+	if am == nil {
+		return
+	}
+	am.mu.Lock()
+	am.beforeLogout = fn
+	am.mu.Unlock()
 }
 
 func (am *AccountManager) getStorageURI() fyne.URI {
@@ -262,7 +287,11 @@ func (am *AccountManager) pollLogin(ctx context.Context, code string) {
 		case <-ticker.C:
 		}
 		if time.Now().After(deadline) {
-			am.setError("Didn't detect a completed login yet — try \"Log in\" again.")
+			msg := "Didn't detect a completed login yet — try \"Log in\" again."
+			if i18n.Current != nil && i18n.Current.AccountLoginTimeout != "" {
+				msg = i18n.Current.AccountLoginTimeout
+			}
+			am.setError(msg)
 			return
 		}
 		result, err := account.Poll(ctx, code)
@@ -270,7 +299,11 @@ func (am *AccountManager) pollLogin(ctx context.Context, code string) {
 			continue // transient network hiccup -- keep polling until the deadline or ctx cancellation
 		}
 		if result.Status == "expired" {
-			am.setError("Login link expired — click \"Log in\" again.")
+			msg := "Login link expired — click \"Log in\" again."
+			if i18n.Current != nil && i18n.Current.AccountLoginExpired != "" {
+				msg = i18n.Current.AccountLoginExpired
+			}
+			am.setError(msg)
 			return
 		}
 		if result.Status != "complete" {
@@ -327,7 +360,23 @@ func (am *AccountManager) Licenses(ctx context.Context) ([]account.License, erro
 	if token == "" {
 		return nil, fmt.Errorf("not logged in")
 	}
-	return account.ListLicenses(ctx, token)
+	licenses, err := account.ListLicenses(ctx, token)
+	am.mu.Lock()
+	am.licensesCached = true
+	am.licensesCache = licenses
+	am.licensesErr = err
+	am.mu.Unlock()
+	return licenses, err
+}
+
+// CachedLicenses returns the last successful-or-failed Licenses() result
+// for the current login, if there's been one yet -- lets the Account
+// dialog skip its "Loading…" placeholder (and the resize that follows once
+// a fresh fetch actually resolves) on every open after the first.
+func (am *AccountManager) CachedLicenses() (licenses []account.License, err error, ok bool) {
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	return am.licensesCache, am.licensesErr, am.licensesCached
 }
 
 // Logout forgets the locally-stored login AND sync key -- purely local
@@ -336,11 +385,39 @@ func (am *AccountManager) Licenses(ctx context.Context) ([]account.License, erro
 // there is no server-side session to invalidate).
 func (am *AccountManager) Logout() {
 	am.mu.Lock()
+	before := am.beforeLogout
+	am.mu.Unlock()
+	if before != nil {
+		before()
+	}
+
+	am.mu.Lock()
 	am.email = ""
 	am.accountToken = ""
 	am.syncKey = nil
 	am.lastError = ""
+	am.licensesCached = false
+	am.licensesCache = nil
+	am.licensesErr = nil
 	am.save()
 	am.mu.Unlock()
 	am.notify()
+}
+
+// DeleteAccount requests permanent deletion of the account from the entitlement backend,
+// then clears local credentials and state upon success.
+func (am *AccountManager) DeleteAccount(ctx context.Context) error {
+	am.mu.Lock()
+	token := am.accountToken
+	am.mu.Unlock()
+	if token == "" {
+		return fmt.Errorf("not logged in")
+	}
+
+	if err := account.DeleteAccount(ctx, token); err != nil {
+		return err
+	}
+
+	am.Logout()
+	return nil
 }

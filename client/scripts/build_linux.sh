@@ -11,6 +11,10 @@
 #
 # Build deps (install before running this script):
 #   Moonlight HW decode:  libavcodec-dev libavutil-dev libswscale-dev libpulse-dev
+#   Zero-copy VAAPI/QSV->Vulkan render path (vk_video_impl_linux.c's
+#   dma-buf import): libva-dev libva-drm2 or equivalent -- if missing, the
+#   build fails outright (pkg-config libva/libva-drm are required, not
+#   optional) rather than silently losing the feature.
 #   Moonlight core:       opus openssl pkg-config cmake
 #   USB passthrough:      libusb-1.0-0-dev (enables -tags usbpass_gousb claim path)
 #   Optional:             python3 (pip) -- fetches the local ui.parse/AI
@@ -18,7 +22,15 @@
 #                          its absence only disables that one feature.
 #
 # One-liner: sudo apt-get install -y libavcodec-dev libavutil-dev libswscale-dev libpulse-dev \
-#              libopus-dev libssl-dev libusb-1.0-0-dev pkg-config cmake
+#              libva-dev libopus-dev libssl-dev libusb-1.0-0-dev pkg-config cmake
+#
+# Zero-copy hw decode at RUNTIME also needs (target machine, not just build):
+#   - Intel: intel-media-va-driver (or -non-free) for VAAPI, plus
+#     libmfx-gen1.2 (Intel oneVPL GPU runtime) for QSV -- without the
+#     latter, h264_qsv/hevc_qsv/av1_qsv decoders exist in ffmpeg but MFX
+#     session creation fails and decode falls back to software.
+#   - NVIDIA: the proprietary driver (libcuda + libnvcuvid) -- NVDEC decode,
+#     frames go to Vulkan via the NV12 upload path (no dma-buf zero-copy).
 
 set -euo pipefail
 
@@ -60,6 +72,13 @@ for pkg in libavcodec libavutil libswscale libpulse-simple; do
         exit 1
     fi
 done
+for pkg in libva libva-drm; do
+    if ! pkg-config --exists "$pkg" 2>/dev/null; then
+        echo -e "${RED}❌ Missing build dep: $pkg${NC}"
+        echo "   Install: sudo apt-get install -y libva-dev"
+        exit 1
+    fi
+done
 if ! pkg-config --exists libusb-1.0 2>/dev/null; then
     echo -e "${RED}❌ Missing build dep: libusb-1.0${NC}"
     echo "   Install: sudo apt-get install -y libusb-1.0-0-dev"
@@ -77,29 +96,6 @@ rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/256x256/apps"
 
 cp "$OUTPUT_PATH" "$APPDIR/usr/bin/$EXE_NAME"
-
-# Closed rust-shine USB passthrough AES helper (bin/usb-broker → usbridge-usb-broker).
-# Go client launches this with --role client on mount; export itself is in-process Go.
-# Prefer an explicit path, else a sibling rust-shine release build.
-USB_BROKER_SRC="${USBRIDGE_USB_BROKER:-}"
-if [[ -z "$USB_BROKER_SRC" || ! -f "$USB_BROKER_SRC" ]]; then
-    for cand in \
-        "$REPO_ROOT/../rust-shine/target/release/usbridge-usb-broker" \
-        "$HOME/Projects/rust-shine/target/release/usbridge-usb-broker"
-    do
-        if [[ -f "$cand" ]]; then
-            USB_BROKER_SRC="$cand"
-            break
-        fi
-    done
-fi
-if [[ -n "$USB_BROKER_SRC" && -f "$USB_BROKER_SRC" ]]; then
-    cp "$USB_BROKER_SRC" "$APPDIR/usr/bin/usbridge-usb-broker"
-    chmod 755 "$APPDIR/usr/bin/usbridge-usb-broker"
-    echo -e "${GREEN}✓${NC} usr/bin/usbridge-usb-broker (from $USB_BROKER_SRC)"
-else
-    echo -e "${YELLOW}⚠${NC} usbridge-usb-broker not found — USB passthrough attach will fail until you build rust-shine -p usb-broker and rebuild, or set USBRIDGE_USB_BROKER"
-fi
 
 # local ui.parse ONNX offload (internal/localui, AI Vision's detector): the
 # runtime lib is dlopen'd at runtime (via onnxruntime_go), not link-time
@@ -156,14 +152,13 @@ if [ -f "$ORT_CACHE_DIR/libonnxruntime.so" ]; then
 else
     echo -e "${YELLOW}⚠${NC} Could not fetch libonnxruntime.so -- local ui.parse/AI Vision will stay unavailable in this build"
 fi
-LOCALUI_MODELS_SRC="$REPO_ROOT/internal/localui/models"
-if [ -f "$LOCALUI_MODELS_SRC/icon_detect.onnx" ]; then
-    mkdir -p "$APPDIR/usr/bin/localui/models"
-    cp "$LOCALUI_MODELS_SRC"/*.onnx "$APPDIR/usr/bin/localui/models/"
-    echo -e "${GREEN}✓${NC} usr/bin/localui/models/ ($(du -sh "$APPDIR/usr/bin/localui/models" | cut -f1))"
-else
-    echo -e "${YELLOW}⚠${NC} $LOCALUI_MODELS_SRC has no .onnx files -- local ui.parse/AI Vision will stay unavailable in this build"
-fi
+# ONNX MODEL files (~88MB combined) are deliberately NOT copied into the
+# AppImage anymore -- fetched on demand instead, the moment the user clicks
+# "Download models" in the Scripts&AI tab (or already had "Local models" on
+# from a previous session and just connected). See
+# internal/localui/download.go's own doc comment, and build_macos.sh's
+# matching comment for the full reasoning. Only the ONNX runtime .so files
+# above still ship by default.
 
 # Icon
 ICON_SRC="$REPO_ROOT/Icon.png"
@@ -208,8 +203,13 @@ ARCH=x86_64 "$LINUXDEPLOY" \
 # libusb-1.0 is on linuxdeploy's blacklist (treated as "system"), so the
 # deploy step above skips it even though we link it for usbpass_gousb.
 # Bundle it explicitly so AppImage hosts without a distro libusb still claim.
-if ldd "$APPDIR/usr/bin/$EXE_NAME" 2>/dev/null | grep -q 'libusb-1.0.so'; then
-    USB_SO="$(ldd "$APPDIR/usr/bin/$EXE_NAME" | awk '/libusb-1.0.so/{print $3; exit}')"
+# ldd's output is captured first rather than piped into awk/grep -q: both
+# exit on the first match, SIGPIPE-ing ldd, and under pipefail that 141
+# aborts the whole script via set -e with no message (same race as the
+# version check below) -- confirmed live, the build silently stopped here.
+EXE_LDD="$(ldd "$APPDIR/usr/bin/$EXE_NAME" 2>/dev/null || true)"
+if grep -q 'libusb-1.0.so' <<<"$EXE_LDD"; then
+    USB_SO="$(awk '/libusb-1.0.so/{print $3; exit}' <<<"$EXE_LDD")"
     if [[ -n "$USB_SO" && -f "$USB_SO" ]]; then
         cp -L "$USB_SO" "$APPDIR/usr/lib/libusb-1.0.so.0"
         chmod 755 "$APPDIR/usr/lib/libusb-1.0.so.0"
@@ -282,7 +282,15 @@ chmod +x "$OUTPUT_APPIMAGE"
 # linuxdeploy embedded into the AppImage -- not $OUTPUT_APPIMAGE itself:
 # the AppImage is a compressed (zstd) squashfs image, so `strings` on the
 # whole file finds nothing at all, compressed data isn't printable text.
-if ! strings "$APPDIR/usr/bin/$EXE_NAME" | grep -qx "$VERSION"; then
+# Piping straight into `grep -qx` is unsafe under `set -o pipefail`: grep -q
+# exits the instant it finds a match, which can SIGPIPE `strings` before it
+# finishes writing, and pipefail then reports that 141 as the pipeline's
+# exit status regardless of grep's own (matching) result -- confirmed live,
+# this made the check fail nondeterministically even on a binary that DOES
+# contain the version string. Capturing strings' output into a variable
+# first removes the pipe (and the SIGPIPE race) entirely.
+BINARY_STRINGS="$(strings "$APPDIR/usr/bin/$EXE_NAME")"
+if ! grep -qx "$VERSION" <<<"$BINARY_STRINGS"; then
     echo -e "${RED}❌ $APPDIR/usr/bin/$EXE_NAME does not contain version string '$VERSION' -- packaging picked up a stale binary${NC}"
     exit 1
 fi

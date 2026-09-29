@@ -1,5 +1,9 @@
 //go:build windows && cgo
 
+// Cache-bust (rev 10): go build's cache doesn't see changes to libmoonlight-common-c.a
+// (only referenced via CGO_LDFLAGS -l, not a tracked Go source dependency), so
+// a C-only submodule edit silently relinks against a stale .a unless some .go
+// file in this package also changes. Bump this comment whenever that happens.
 package service
 
 /*
@@ -11,18 +15,25 @@ package service
 
 #define COBJMACROS
 #define INITGUID
+#define VK_USE_PLATFORM_WIN32_KHR
 #include <stdarg.h>
 #include <windows.h>
 #include <mfapi.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
+#include <vulkan/vulkan.h>
+#include <vulkan/vulkan_win32.h>
 #include <libavcodec/avcodec.h>
+#include <libavutil/error.h>
+#include <libavutil/dict.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_d3d11va.h>
+#include <libavutil/hwcontext_vulkan.h>
 #include <libavutil/frame.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
 #include <Limelight.h>
+#include <Platform.h>
 #include <opus_multistream.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,15 +42,34 @@ package service
 extern void goMoonlightStage(int stage, int result, int errCode);
 extern void goMoonlightConnected(void);
 extern void goMoonlightTerminated(int errCode);
+extern void goMoonlightRumble(unsigned short controllerNumber, unsigned short lowFreq, unsigned short highFreq);
 extern void goVTLog(char *msg);
 extern void goVTFrame(uint8_t *rgba, int width, int height, int stride);
 extern void goVideoFormatNegotiated(int videoFormat);
 extern void goAIVisionOverlay(uint8_t *rgba, int width, int height, int stride);
+extern void goNetGraphOverlay(uint8_t *rgba, int width, int height, int stride, int bgr);
+
+// g_last_decode_ms: written from win_deliver_frame/win_deliver_frame_vulkan
+// below on every frame (their existing t_start/t_end timing, previously only
+// used for the "SLOW win_deliver_frame" diagnostic log). Defined (not
+// declared) in net_graph_stats_windows.c, same reasoning as
+// g_last_host_latency_tenths_ms further down; read there by
+// win_get_last_decode_ms for net_graph_windows.go's GetDecodeMs.
+extern volatile double g_last_decode_ms;
 
 // Native overlay fast paths.
 // Vulkan (vk_video_impl_windows.c) — preferred, RGBA format.
 extern int vk_video_is_active(void);
+extern int vk_video_is_device_lost(void);
+extern void vk_video_mark_device_lost(void);
 extern int vk_video_try_submit(uint8_t *rgba, int width, int height, int stride);
+// Zero-copy path: hand a decoded AVVkFrame's VkImage straight to the renderer
+// for GPU-side YCbCr sampling (see win_deliver_frame's AV_PIX_FMT_VULKAN
+// branch below). release_ctx/release_fn let the renderer free the AVFrame
+// ref that keeps the VkImage's memory alive once its own GPU work retires.
+extern int vk_video_try_submit_vkframe(void *vk_image, int vk_format, int vk_layout, int width, int height,
+                                        int narrow_range, void *release_ctx,
+                                        void (*release_fn)(void *));
 // GDI fallback (gl_video_impl_windows.c) — BGRA format.
 extern int gl_video_is_active(void);
 extern int gl_video_try_submit(uint8_t *bgra, int width, int height, int stride);
@@ -61,6 +91,7 @@ static void cl_stage_complete(int s)       { goMoonlightStage(s,  1, 0); }
 static void cl_stage_failed(int s, int ec) { goMoonlightStage(s, -1, ec); }
 static void cl_connected(void)             { goMoonlightConnected(); }
 static void cl_terminated(int ec)          { goMoonlightTerminated(ec); }
+static void cl_rumble(unsigned short n, unsigned short low, unsigned short high) { goMoonlightRumble(n, low, high); }
 static void cl_log(const char *fmt, ...) {
     char buf[256];
     va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
@@ -241,6 +272,33 @@ static void ar_decode(char *data, int len) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// Shared Vulkan hwaccel device — decode (this file) + presentation
+// (vk_video_impl_windows.c) on the SAME VkDevice, validated standalone before
+// this integration: ffmpeg's own auto-created Vulkan device already comes
+// with a GRAPHICS-capable queue family and VK_KHR_external_memory_win32/
+// external_semaphore_win32 enabled by default, and (with the extra
+// instance/device_extensions opts) VK_KHR_swapchain + the Win32 surface
+// extensions too — so decode and presentation can share one VkImage directly
+// with zero cross-device export/import, zero D3D11, and no per-frame CPU
+// readback. A from-scratch manually-created VkDevice handed TO ffmpeg (the
+// reverse direction) reliably crashed deep in libavcodec's Vulkan decode
+// internals even after matching every extension/feature ffmpeg's own
+// auto-create enables -- letting ffmpeg create the device and adopting it
+// (here, and in vk_video_impl_windows.c) is the only path proven to work.
+//
+// The actual device creation/lookup lives in vk_hwdev_bridge_windows.c, its
+// own translation unit — NOT inline in this preamble comment, because cgo
+// duplicates any non-static function body written directly in a preamble
+// into the generated _cgo_export.c (needed there for //export type info),
+// which fails to link with "multiple definition" for anything not `static`.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+extern int  goAIVisionShouldSample(void);
+extern void goAIVisionSample(uint8_t *rgba, int width, int height, int stride);
+extern AVBufferRef *win_vk_hwdev_ctx_ref(void);
+extern void vk_frame_release_avframe(void *ctx);
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // libavcodec H.264 decoder with D3D11VA hardware acceleration
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -248,6 +306,7 @@ static AVCodecContext    *g_avctx       = NULL;
 static struct SwsContext *g_sws         = NULL;
 static AVBufferRef       *g_hw_dev_ctx  = NULL;
 static enum AVPixelFormat g_hw_pix_fmt  = AV_PIX_FMT_NONE;
+static int                g_using_vulkan_decode = 0; // set once the Vulkan zero-copy tier is committed for this session
 static enum AVPixelFormat g_av_dst_fmt  = AV_PIX_FMT_NONE;
 static int                g_av_w        = 0;
 static int                g_av_h        = 0;
@@ -273,7 +332,38 @@ static enum AVPixelFormat win_get_hw_format(AVCodecContext *ctx,
     return AV_PIX_FMT_NONE;
 }
 
+// win_av_log_callback: installed once (win_av_init, below) to catch
+// "Unable to submit command buffer: VK_ERROR_DEVICE_LOST" from ffmpeg's
+// H264/HEVC Vulkan-hwaccel decoder (libavcodec's own vulkan_decode.c --
+// vendored as a prebuilt DLL here, not vendored source we can patch
+// directly) the instant it's logged, rather than only finding out about it
+// indirectly whenever vk_render_thread's own next Vulkan call happens to
+// fail too. That decoder shares vk_video_impl_windows.c's VkDevice/VkQueue
+// for the zero-copy path: once it's lost, ffmpeg's own decode retries every
+// subsequent frame on the same dead device regardless of anything the
+// render thread does, and live debugging (gdb, 2026-09-19) showed that
+// retry storm alone -- even after the render thread stopped touching the
+// device via g_device_lost -- was still enough to trip the NVIDIA driver's
+// internal fail-fast (0xc0000409) a few calls later. Marking the device
+// lost right here, synchronously inside the same av_log() call that first
+// reports it, closes that race: dr_submit's vk_video_is_device_lost() check
+// (before the next avcodec_send_packet) sees it in time.
+static void win_av_log_callback(void *avcl, int level, const char *fmt, va_list vl) {
+    if (level <= AV_LOG_ERROR) {
+        va_list vl2;
+        va_copy(vl2, vl);
+        char buf[512];
+        vsnprintf(buf, sizeof(buf), fmt, vl2);
+        va_end(vl2);
+        if (strstr(buf, "DEVICE_LOST")) {
+            vk_video_mark_device_lost();
+        }
+    }
+    av_log_default_callback(avcl, level, fmt, vl);
+}
+
 static void win_av_init(void) {
+    av_log_set_callback(win_av_log_callback);
     if (!g_av_cs_init) { InitializeCriticalSection(&g_av_cs); g_av_cs_init = 1; }
     if (g_avctx) return;
 
@@ -281,54 +371,128 @@ static void win_av_init(void) {
     // session (g_video_format, set by dr_setup) -- previously this always
     // picked H264 unconditionally, so an HEVC/AV1 session fed HEVC/AV1
     // bitstream into an H264 decoder and silently failed to produce frames.
-    const char *hw_name;
     enum AVCodecID sw_id;
     const char *codec_label;
     if (g_video_format & 0x0F00) { // VIDEO_FORMAT_MASK_H265
-        hw_name = "hevc_d3d11va"; sw_id = AV_CODEC_ID_HEVC; codec_label = "hevc";
+        sw_id = AV_CODEC_ID_HEVC; codec_label = "hevc";
     } else if (g_video_format & 0xF000) { // VIDEO_FORMAT_MASK_AV1
-        hw_name = "av1_d3d11va"; sw_id = AV_CODEC_ID_AV1; codec_label = "av1";
+        sw_id = AV_CODEC_ID_AV1; codec_label = "av1";
     } else {
-        hw_name = "h264_d3d11va"; sw_id = AV_CODEC_ID_H264; codec_label = "h264";
+        sw_id = AV_CODEC_ID_H264; codec_label = "h264";
     }
 
-    const AVCodec *codec = NULL;
-
-    // Try D3D11VA hardware decoder.
-    const AVCodec *hw_codec = avcodec_find_decoder_by_name(hw_name);
-    if (hw_codec) {
-        AVBufferRef *hw_ctx = NULL;
-        if (av_hwdevice_ctx_create(&hw_ctx, AV_HWDEVICE_TYPE_D3D11VA, NULL, NULL, 0) == 0) {
-            AVCodecContext *test = avcodec_alloc_context3(hw_codec);
-            g_hw_pix_fmt = AV_PIX_FMT_D3D11;
-            test->hw_device_ctx = av_buffer_ref(hw_ctx);
-            test->get_format = win_get_hw_format;
-            if (avcodec_open2(test, hw_codec, NULL) == 0) {
-                codec = hw_codec;
-                if (g_hw_dev_ctx) av_buffer_unref(&g_hw_dev_ctx);
-                g_hw_dev_ctx = hw_ctx;
-                char msg[96];
-                snprintf(msg, sizeof(msg), "libavcodec/win: using %s (hardware)", hw_name);
-                goVTLog(msg);
-            } else {
-                av_buffer_unref(&hw_ctx);
-                g_hw_pix_fmt = AV_PIX_FMT_NONE;
-            }
-            avcodec_free_context(&test);
-        }
-    }
-    if (!codec) {
-        codec = avcodec_find_decoder(sw_id);
-        g_hw_pix_fmt = AV_PIX_FMT_NONE;
-        char msg[96];
-        snprintf(msg, sizeof(msg), "libavcodec/win: using %s software fallback", codec_label);
-        goVTLog(msg);
-    }
+    // Unlike VAAPI (Linux) or NVDEC, D3D11VA has no separately-named decoder
+    // in ffmpeg's registry -- there is no "h264_d3d11va" entry to look up by
+    // name (avcodec_find_decoder_by_name() for it always returns NULL, no
+    // matter how ffmpeg was built). D3D11VA, like DXVA2 and VideoToolbox, is a
+    // "generic hwaccel": you open the *regular* software decoder (same one
+    // used for the fallback path below) with hw_device_ctx + get_format set on
+    // its AVCodecContext, and ffmpeg negotiates hardware decode transparently
+    // through get_format. The previous by-name lookup silently failed every
+    // single time regardless of GPU/driver, forcing 100% of Windows sessions
+    // onto the software decoder -- confirmed live via the SLOW receive-loop/
+    // direct-submit timing logs: submitDecodeUnit cost 8-250ms/frame
+    // (well over the 8.3ms budget at 120fps), which is what was actually
+    // driving the RFI/IDR storms this instrumentation was added to chase down,
+    // not real network loss.
+    const AVCodec *codec = avcodec_find_decoder(sw_id);
     if (!codec) {
         char msg[96];
         snprintf(msg, sizeof(msg), "libavcodec/win: no decoder available for %s", codec_label);
         goVTLog(msg);
         return;
+    }
+
+    // Tier 0: real Vulkan Video Decode (VK_KHR_video_decode_h264/h265),
+    // zero-copy -- decode and presentation share one VkDevice/VkImage, no
+    // CPU readback, no sws_scale. Validated standalone (decode, same-device
+    // plane readback, and a real VkSamplerYcbcrConversion render pass all
+    // confirmed correct on this GPU/driver) before wiring in here. AV1 has no
+    // Vulkan decode extension on this driver, so only try for H264/HEVC --
+    // AV1 falls straight through to the D3D11VA tier below as before.
+    //
+    // USBRIDGE_DISABLE_VK_DECODE (debug/diagnostic only, 2026-09-19): forces
+    // straight to the D3D11VA tier below, skipping this one entirely. Added
+    // to A/B-test a live VK_ERROR_DEVICE_LOST -> NVIDIA driver fail-fast
+    // (0xc0000409 in nvoglv64!DrvPresentBuffers, caught under gdb) against
+    // this specific decode tier -- see the crash writeup for why app-level
+    // guards (vk_video_is_device_lost/vk_video_mark_device_lost) alone
+    // couldn't stop it: the driver's own TDR recovery appears to fail-fast
+    // internally, before/regardless of anything this process does afterward.
+    if (sw_id != AV_CODEC_ID_AV1 && getenv("USBRIDGE_DISABLE_VK_DECODE")) {
+        goVTLog((char*)"libavcodec/win: USBRIDGE_DISABLE_VK_DECODE set -- skipping Vulkan Video Decode tier");
+    } else if (sw_id == AV_CODEC_ID_H264 || sw_id == AV_CODEC_ID_HEVC) {
+        AVBufferRef *vk_ref = win_vk_hwdev_ctx_ref();
+        if (vk_ref) {
+            AVCodecContext *test = avcodec_alloc_context3(codec);
+            test->hw_device_ctx = av_buffer_ref(vk_ref);
+            test->get_format = win_get_hw_format;
+            g_hw_pix_fmt = AV_PIX_FMT_VULKAN;
+            int openErr = avcodec_open2(test, codec, NULL);
+            avcodec_free_context(&test);
+            if (openErr == 0) {
+                g_avctx = avcodec_alloc_context3(codec);
+                g_avctx->hw_device_ctx = vk_ref; // ownership transferred
+                g_avctx->get_format = win_get_hw_format;
+                if (avcodec_open2(g_avctx, codec, NULL) == 0) {
+                    g_using_vulkan_decode = 1;
+                    char msg[96];
+                    snprintf(msg, sizeof(msg), "libavcodec/win: using %s (hardware Vulkan Video Decode, zero-copy)", codec_label);
+                    goVTLog(msg);
+                    return;
+                }
+                avcodec_free_context(&g_avctx); // also unrefs vk_ref via hw_device_ctx
+                goVTLog((char*)"libavcodec/win: Vulkan decode avcodec_open2 (real ctx) failed unexpectedly after a successful probe -- trying D3D11VA");
+            } else {
+                av_buffer_unref(&vk_ref);
+                char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+                av_strerror(openErr, errbuf, sizeof(errbuf));
+                char msg[192];
+                snprintf(msg, sizeof(msg), "libavcodec/win: Vulkan decode unavailable for %s: %d (%s) -- trying D3D11VA", codec_label, openErr, errbuf);
+                goVTLog(msg);
+            }
+            g_hw_pix_fmt = AV_PIX_FMT_NONE;
+        }
+    }
+
+    // Probe D3D11VA on a throwaway context first so a failure here never
+    // touches g_avctx -- same reason the old by-name lookup used a `test`
+    // context before committing to it.
+    AVBufferRef *hw_ctx = NULL;
+    int hwErr = av_hwdevice_ctx_create(&hw_ctx, AV_HWDEVICE_TYPE_D3D11VA, NULL, NULL, 0);
+    if (hwErr != 0) {
+        char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+        av_strerror(hwErr, errbuf, sizeof(errbuf));
+        char msg[192];
+        snprintf(msg, sizeof(msg), "libavcodec/win: av_hwdevice_ctx_create(D3D11VA) failed: %d (%s) -- GPU/driver has no usable D3D11 video decode device, using software", hwErr, errbuf);
+        goVTLog(msg);
+    } else {
+        AVCodecContext *test = avcodec_alloc_context3(codec);
+        test->hw_device_ctx = av_buffer_ref(hw_ctx);
+        test->get_format = win_get_hw_format;
+        g_hw_pix_fmt = AV_PIX_FMT_D3D11;
+        int openErr = avcodec_open2(test, codec, NULL);
+        avcodec_free_context(&test);
+        if (openErr == 0) {
+            if (g_hw_dev_ctx) av_buffer_unref(&g_hw_dev_ctx);
+            g_hw_dev_ctx = hw_ctx;
+            char msg[96];
+            snprintf(msg, sizeof(msg), "libavcodec/win: using %s (hardware D3D11VA)", codec_label);
+            goVTLog(msg);
+        } else {
+            char errbuf[AV_ERROR_MAX_STRING_SIZE] = {0};
+            av_strerror(openErr, errbuf, sizeof(errbuf));
+            char msg[192];
+            snprintf(msg, sizeof(msg), "libavcodec/win: avcodec_open2(%s, D3D11VA) failed: %d (%s) -- GPU/driver rejected this codec/profile, using software", codec_label, openErr, errbuf);
+            goVTLog(msg);
+            av_buffer_unref(&hw_ctx);
+            g_hw_pix_fmt = AV_PIX_FMT_NONE;
+        }
+    }
+    if (!g_hw_dev_ctx) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "libavcodec/win: using %s software fallback", codec_label);
+        goVTLog(msg);
     }
 
     g_avctx = avcodec_alloc_context3(codec);
@@ -342,7 +506,143 @@ static void win_av_init(void) {
     }
 }
 
+// win_mono_ms: monotonic milliseconds via QueryPerformanceCounter, used only
+// for the stage timing below -- deliberately independent of moonlight-common-c's
+// own PltGetMicroseconds() so this can't be skewed by anything going on in that
+// clock's init/threading.
+static double win_mono_ms(void) {
+    static LARGE_INTEGER freq;
+    static int freq_init = 0;
+    if (!freq_init) { QueryPerformanceFrequency(&freq); freq_init = 1; }
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    return (double)now.QuadPart * 1000.0 / (double)freq.QuadPart;
+}
+
+// win_deliver_frame runs synchronously on the RTP video-receive thread (see
+// dr_submit's call site -- CAPABILITY_DIRECT_SUBMIT means there is no separate
+// decode thread on this path). Anything slow in here delays draining the video
+// UDP socket, not just presentation: a stall long enough can overflow the
+// kernel receive buffer and look identical to real network packet loss in the
+// Moonlight/RFI logs (many frames "unrecoverable" in the same instant, then a
+// full IDR resync) even though nothing was actually lost on the wire. The
+// per-stage timing below exists to tell those two cases apart -- log a
+// breakdown whenever one call takes longer than a frame's own budget would
+// allow at the negotiated frame rate, so a slow D3D11VA readback or sws_scale
+// hitch shows up directly instead of being misdiagnosed as network loss.
+#define WIN_DELIVER_SLOW_MS 20.0
+
+// win_deliver_frame_vulkan: zero-copy path for AV_PIX_FMT_VULKAN frames. Hands
+// the decoded VkImage straight to the Vulkan renderer for GPU-side YCbCr
+// sampling -- no av_hwframe_transfer_data readback, no sws_scale, on the RTP
+// receive thread. av_frame_clone bumps the AVFrame's refcount so the decoded
+// VkImage's backing memory (owned by ffmpeg's internal Vulkan frame pool)
+// stays valid until the renderer's own GPU work reading it has retired;
+// vk_frame_release_avframe (passed as the release callback) drops that ref
+// at that point. If the renderer rejects the frame (not active / not yet
+// initialized), the ref is dropped immediately instead of leaking.
+static void win_deliver_frame_vulkan(AVFrame *frame) {
+    double t_start = win_mono_ms();
+    AVVkFrame *vkf = (AVVkFrame*)frame->data[0];
+    AVHWFramesContext *fctx = (AVHWFramesContext*)frame->hw_frames_ctx->data;
+    AVVulkanFramesContext *vkfctx = (AVVulkanFramesContext*)fctx->hwctx;
+
+    // AI Vision's detector needs real CPU-readable RGBA pixels every so
+    // often (icon_detect ~2Hz, OCR ~0.5Hz -- see ai_vision.go's package doc
+    // comment), NOT every frame -- goAIVisionShouldSample() is a cheap
+    // (atomics + time comparisons only) pre-check that says whether this
+    // particular frame is actually due, mirroring
+    // moonlight_cgo_wrapper.go's identically-named macOS Metal fast-path
+    // mechanism exactly (see its own doc comment) so the overwhelming
+    // majority of frames skip the GPU->CPU readback + sws_scale entirely and
+    // this zero-copy decode path stays zero-copy. goAIVisionSample (unlike
+    // goAIVisionOverlay) only feeds the detector -- it must NOT draw into
+    // pixels, since this buffer is a throwaway conversion scratch space,
+    // never the one actually displayed (see below). This also keeps
+    // goVTFrame's FPS/first-frame stats tracking working in the common case
+    // via its nil-pixels stats-only branch -- EXCEPT that branch relies on
+    // the Go side's NativeVideoOverlayIsActive() already being true (it
+    // dereferences the pixel pointer otherwise), which is NOT guaranteed on
+    // the very first frames: this zero-copy decode path can now activate
+    // fast enough that frames start arriving before the GUI thread has
+    // finished creating the Vulkan/GDI overlay window. Only take the
+    // nil-pixels fast path once a native overlay is confirmed active;
+    // otherwise fall back to a real (if wasted) CPU readback so goVTFrame
+    // never gets called with a null pointer and a real width/height.
+    //
+    // Neither AI Vision's detection boxes nor the Net Graph HUD are drawn
+    // into a CPU buffer here: this whole zero-copy path exists specifically
+    // so hardware Vulkan Video Decode frames go straight to the renderer's
+    // VkImage with no GPU->CPU readback of the actual displayed picture at
+    // all -- forcing one just to burn in an overlay would defeat that. Both
+    // are composited natively instead, straight in vk_video_impl_windows.c's
+    // own present path (vk_hud_record_draw / vk_aivision_record_draw,
+    // alpha-blended draw calls in the same render pass as the video -- same
+    // idea as metal_video_impl_darwin.m's g_hud_layer/g_overlay_layer on
+    // macOS), fed by pushNetGraphOverlayToVulkan/pushAIVisionOverlayToVulkan
+    // via vk_hud_set_pixels/vk_aivision_set_pixels, independent of this
+    // function entirely.
+    int native_overlay_active = vk_video_is_active() || gl_video_is_active();
+    if (goAIVisionShouldSample() || !native_overlay_active) {
+        AVFrame *sw = av_frame_alloc();
+        if (sw && av_hwframe_transfer_data(sw, frame, 0) == 0) {
+            sw->width = frame->width; sw->height = frame->height;
+            int w = sw->width, h = sw->height;
+            if (!g_sws || w != g_av_w || h != g_av_h || g_av_dst_fmt != AV_PIX_FMT_RGBA) {
+                if (g_sws) sws_freeContext(g_sws);
+                g_sws = sws_getContext(w, h, (enum AVPixelFormat)sw->format, w, h, AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL);
+                g_av_w = w; g_av_h = h; g_av_dst_fmt = AV_PIX_FMT_RGBA;
+            }
+            if (g_sws) {
+                uint8_t *pixels = (uint8_t*)malloc((size_t)w * (size_t)h * 4);
+                if (pixels) {
+                    uint8_t *dst[4]   = { pixels, NULL, NULL, NULL };
+                    int dst_stride[4] = { w * 4, 0, 0, 0 };
+                    sws_scale(g_sws, (const uint8_t *const *)sw->data, sw->linesize, 0, h, dst, dst_stride);
+                    goAIVisionSample(pixels, w, h, w * 4);
+                    goVTFrame(pixels, w, h, w * 4);
+                    free(pixels);
+                }
+            }
+        }
+        if (sw) av_frame_free(&sw);
+    } else {
+        // Stats-only notification (first-frame log, FPS counter) -- matches
+        // goVTFrame's own NativeVideoOverlayIsActive() nil-pixels branch.
+        goVTFrame(NULL, frame->width, frame->height, 0);
+    }
+
+    // narrow_range=1: Moonlight/H264/HEVC streams are limited-range BT.601/709.
+    AVFrame *ref = av_frame_clone(frame);
+    if (ref) {
+        if (!vk_video_try_submit_vkframe((void*)vkf->img[0], (int)vkfctx->format[0], (int)vkf->layout[0],
+                                          frame->width, frame->height,
+                                          1, (void*)ref, vk_frame_release_avframe)) {
+            av_frame_free(&ref);
+        }
+    }
+
+    if (++g_av_frame_cnt == 1) {
+        char msg[192];
+        snprintf(msg, sizeof(msg), "libavcodec/win: first video frame decoded (Vulkan zero-copy) vk_format=0x%x layout=%d %dx%d",
+                 (unsigned)vkfctx->format[0], (int)vkf->layout[0], frame->width, frame->height);
+        goVTLog(msg);
+    }
+    double t_end = win_mono_ms();
+    g_last_decode_ms = t_end - t_start;
+    if (t_end - t_start > WIN_DELIVER_SLOW_MS) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "SLOW win_deliver_frame(vulkan) %.0fms", t_end - t_start);
+        goVTLog(msg);
+    }
+}
+
 static void win_deliver_frame(AVFrame *frame) {
+    if (frame->format == AV_PIX_FMT_VULKAN) {
+        win_deliver_frame_vulkan(frame);
+        return;
+    }
+    double t_start = win_mono_ms();
     AVFrame *sw = NULL;
     if (frame->format == AV_PIX_FMT_D3D11) {
         sw = av_frame_alloc();
@@ -350,6 +650,7 @@ static void win_deliver_frame(AVFrame *frame) {
         sw->width = frame->width; sw->height = frame->height;
         frame = sw;
     }
+    double t_readback = win_mono_ms();
     int w = frame->width, h = frame->height;
     // Vulkan and Fyne canvas both want RGBA; only GDI fallback needs BGRA.
     enum AVPixelFormat dst_fmt = (!vk_video_is_active() && gl_video_is_active())
@@ -363,10 +664,12 @@ static void win_deliver_frame(AVFrame *frame) {
     if (g_sws) {
         uint8_t *pixels = (uint8_t *)malloc((size_t)w * (size_t)h * 4);
         if (pixels) {
+            double t_alloc = win_mono_ms();
             uint8_t *dst[4]   = { pixels, NULL, NULL, NULL };
             int dst_stride[4] = { w * 4, 0, 0, 0 };
             sws_scale(g_sws, (const uint8_t *const *)frame->data, frame->linesize,
                       0, h, dst, dst_stride);
+            double t_scale = win_mono_ms();
             if (++g_av_frame_cnt == 1) goVTLog((char*)"libavcodec/win: first video frame decoded");
             // AI Vision overlay: no-op unless the checkbox in the video
             // settings popup is on (checked internally, single atomic load
@@ -377,13 +680,32 @@ static void win_deliver_frame(AVFrame *frame) {
             // fallback path, where ApplyAIVisionOverlay's box colors and
             // downstream PNG-encode-as-RGBA would both come out wrong
             // (R/B channels swapped).
-            if (dst_fmt == AV_PIX_FMT_RGBA)
+            if (dst_fmt == AV_PIX_FMT_RGBA) {
                 goAIVisionOverlay(pixels, w, h, w * 4);
+            }
+            // Net Graph HUD: unlike AI Vision above, this one handles BGRA
+            // too (goNetGraphOverlay's bgr param swaps R/B on the way in --
+            // see net_graph_windows.go/net_graph.go) instead of skipping the
+            // GDI/BGRA fallback path outright -- skipping it here meant the
+            // HUD simply never appeared whenever Vulkan wasn't active.
+            goNetGraphOverlay(pixels, w, h, w * 4, dst_fmt == AV_PIX_FMT_BGRA ? 1 : 0);
+            double t_aivision = win_mono_ms();
             // Submit to native overlay (Vulkan preferred, GDI fallback); no-op if inactive.
             if (!vk_video_try_submit(pixels, w, h, w * 4))
                 gl_video_try_submit(pixels, w, h, w * 4);
+            double t_submit = win_mono_ms();
             goVTFrame(pixels, w, h, w * 4);
             free(pixels);
+            double t_end = win_mono_ms();
+            g_last_decode_ms = t_end - t_start;
+            if (t_end - t_start > WIN_DELIVER_SLOW_MS) {
+                char msg[192];
+                snprintf(msg, sizeof(msg),
+                    "SLOW win_deliver_frame %.0fms (readback=%.0f alloc=%.0f scale=%.0f aivision=%.0f submit=%.0f vtframe=%.0f)",
+                    t_end - t_start, t_readback - t_start, t_alloc - t_readback,
+                    t_scale - t_alloc, t_aivision - t_scale, t_submit - t_aivision, t_end - t_submit);
+                goVTLog(msg);
+            }
         }
     }
     if (sw) av_frame_free(&sw);
@@ -401,7 +723,76 @@ static void dr_start(void)   {}
 static void dr_stop(void)    {}
 static void dr_cleanup(void) {}
 
+// Latency breakdown, logged periodically so the ~500ms of perceived glass-to-
+// glass lag reported live ("джиттер в пол секунды") can be attributed to a
+// stage instead of guessed at: PlayoutBuffer's own "SLOW direct-submit" log
+// (VideoDepacketizer.c) already accounts for everything from reassembleFrame()
+// (~= enqueueTimeUs) through submitDecodeUnit() returning, and that's been
+// confirmed fast (submitDecodeUnit ~0.4-0.6ms, Vulkan zero-copy). What's NOT
+// instrumented anywhere is receiveTimeUs -> enqueueTimeUs (time this frame's
+// packets actually took to arrive+reassemble over the network -- large values
+// here mean real network/host delay, not anything this client controls) and
+// frameHostProcessingLatency (the host's own self-reported capture+encode
+// time). PltGetMicroseconds() (Platform.h) shares its epoch with
+// du->receiveTimeUs/enqueueTimeUs (both are moonlight-common-c timestamps),
+// unlike win_mono_ms() above which is deliberately on a separate clock.
+static unsigned int g_latency_log_ctr;
+#define LATENCY_LOG_FRAMES 120 // ~2s at 60fps, matches PlayoutBuffer's own status cadence
+
+// g_last_host_latency_tenths_ms: Windows counterpart to
+// moonlight_cgo_shared.h's identically-named static -- captured here
+// instead of in a shared dr_submit trampoline because Windows's do_li_start/
+// dr_submit setup is a fully separate, self-contained implementation (see
+// this file's own comments), not built on moonlight_cgo_shared.h. Read by
+// do_get_last_host_latency_tenths_ms (net_graph_windows.go's
+// GetLastHostLatencyMs, body in net_graph_stats_windows.c -- see that file's
+// header comment for why it isn't inline here). Defined (not just declared)
+// in net_graph_stats_windows.c instead of here: a non-static variable
+// *definition* in this preamble comment gets duplicated into the generated
+// _cgo_export.c the same way a non-static function body would (this file
+// has //export directives), causing "multiple definition" at link time.
+extern volatile uint16_t g_last_host_latency_tenths_ms;
+
+// g_total_video_bytes: Windows counterpart to moonlight_cgo_shared.h's
+// identically-named static -- same "defined in net_graph_stats_windows.c,
+// extern-declared here" split as g_last_host_latency_tenths_ms above, for
+// the same multiple-definition reason. Read by do_get_total_video_bytes
+// (net_graph_windows.go's GetTotalVideoBytes).
+extern volatile uint64_t g_total_video_bytes;
+
+#include "bench_frames.h"
+
 static int dr_submit(PDECODE_UNIT du) {
+    g_last_host_latency_tenths_ms = du->frameHostProcessingLatency;
+    g_total_video_bytes += (uint64_t)du->fullLength;
+    bench_frames_note(du);
+    if (++g_latency_log_ctr >= LATENCY_LOG_FRAMES) {
+        g_latency_log_ctr = 0;
+        uint64_t nowUs = PltGetMicroseconds();
+        uint64_t recvToEnqueueUs = du->enqueueTimeUs - du->receiveTimeUs;
+        uint64_t enqueueToNowUs = nowUs - du->enqueueTimeUs;
+        char msg[192];
+        snprintf(msg, sizeof(msg),
+                 "Latency: hostProc=%.1fms recvToEnqueue=%lluus (network+reassembly) enqueueToSubmit=%lluus frame=%d",
+                 du->frameHostProcessingLatency / 10.0,
+                 (unsigned long long)recvToEnqueueUs,
+                 (unsigned long long)enqueueToNowUs,
+                 du->frameNumber);
+        goVTLog(msg);
+    }
+
+    // The zero-copy H.264 Vulkan-hwaccel decoder shares vk_video_impl_windows.c's
+    // VkDevice/VkQueue. Once that device has reported VK_ERROR_DEVICE_LOST
+    // (unrecoverable without a full teardown/recreate, not implemented), stop
+    // feeding it any more data -- ffmpeg's own internal decode submission
+    // keeps retrying (and re-hitting VK_ERROR_DEVICE_LOST) on every packet
+    // otherwise, and that retry storm is what was crashing the NVIDIA driver
+    // (0xc0000409 fail-fast) even after vk_render_thread itself stopped
+    // touching the device (2026-09-19 live debugging). DR_OK (not
+    // DR_NEED_IDR): the problem is local/GPU-side, not a network loss the
+    // host can fix by resending an IDR frame.
+    if (vk_video_is_device_lost()) return DR_OK;
+
     if (!g_av_cs_init) { InitializeCriticalSection(&g_av_cs); g_av_cs_init = 1; }
     EnterCriticalSection(&g_av_cs);
     if (!g_avctx) win_av_init();
@@ -423,12 +814,19 @@ static int dr_submit(PDECODE_UNIT du) {
 
     AVPacket *pkt = av_packet_alloc();
     pkt->data = data; pkt->size = total;
+    double t_decode0 = win_mono_ms();
     int ret = avcodec_send_packet(ctx, pkt);
     av_packet_free(&pkt);
     av_free(data);
     if (ret < 0 && ret != AVERROR(EAGAIN)) return DR_NEED_IDR;
 
     AVFrame *frame = av_frame_alloc();
+    double t_decode1 = win_mono_ms();
+    if (t_decode1 - t_decode0 > WIN_DELIVER_SLOW_MS) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "SLOW avcodec_send_packet %.0fms", t_decode1 - t_decode0);
+        goVTLog(msg);
+    }
     while (avcodec_receive_frame(ctx, frame) == 0) {
         win_deliver_frame(frame);
         av_frame_unref(frame);
@@ -436,6 +834,25 @@ static int dr_submit(PDECODE_UNIT du) {
     av_frame_free(&frame);
     return DR_OK;
 }
+
+// do_get_rtp_video_stats / do_get_estimated_rtt_info /
+// do_get_last_host_latency_tenths_ms / do_get_playout_jitter_us /
+// do_get_playout_applied_delay_us: Windows counterparts to
+// moonlight_cgo_shared.h's identically-named functions (that header can't
+// be #include-d here -- see this file's own comments on why Windows's
+// do_li_start is fully self-contained -- so these are duplicated verbatim
+// rather than shared). Called from net_graph_windows.go's Go wrappers.
+// Bodies live in net_graph_stats_windows.c, not inline here -- see
+// vk_hwdev_bridge_windows.c's header comment: this file has //export
+// directives, so a non-static function *body* in this preamble comment
+// would get duplicated into the generated _cgo_export.c and fail to link
+// with "multiple definition".
+void do_get_rtp_video_stats(uint32_t *out);
+int do_get_estimated_rtt_info(uint32_t *out);
+uint16_t do_get_last_host_latency_tenths_ms(void);
+uint64_t do_get_playout_jitter_us(void);
+uint64_t do_get_playout_applied_delay_us(void);
+uint64_t do_get_total_video_bytes(void);
 
 // ── LiStartConnection entrypoint ─────────────────────────────────────────────
 
@@ -495,11 +912,16 @@ static int do_li_start(
     AUDIO_RENDERER_CALLBACKS ar; LiInitializeAudioCallbacks(&ar);
     ar.init = ar_init; ar.start = ar_start; ar.stop = ar_stop;
     ar.cleanup = ar_cleanup; ar.decodeAndPlaySample = ar_decode;
+    // See moonlight_cgo_shared.h's identical assignment for why -- requests
+    // AudioPacketDuration=10ms (protocol-native branch) so a host's Opus
+    // inband FEC (5ms is CELT-only, can never carry it) actually works.
+    ar.capabilities = CAPABILITY_SLOW_OPUS_DECODER;
 
     CONNECTION_LISTENER_CALLBACKS cl; LiInitializeConnectionCallbacks(&cl);
     cl.stageStarting = cl_stage_starting; cl.stageComplete = cl_stage_complete;
     cl.stageFailed = cl_stage_failed; cl.connectionStarted = cl_connected;
     cl.connectionTerminated = cl_terminated; cl.logMessage = cl_log;
+    cl.rumble = cl_rumble;
 
     int ret = LiStartConnection(&srv, &cfg, &cl, &dr, &ar, NULL, 0, NULL, 0);
     if (ret != 0) return ret;
@@ -514,6 +936,12 @@ static void do_li_stop(void) {
     if (g_sws) { sws_freeContext(g_sws); g_sws = NULL; }
     if (g_avctx) avcodec_free_context(&g_avctx);
     if (g_hw_dev_ctx) av_buffer_unref(&g_hw_dev_ctx);
+    // The shared Vulkan hwaccel device (vk_hwdev_bridge_windows.c) deliberately
+    // survives past this stream -- it's also adopted by vk_video_impl_windows.c's
+    // overlay for presentation, and expensive to recreate. g_using_vulkan_decode
+    // resets so the next session's win_av_init() re-probes cleanly (e.g. if
+    // the codec changed to AV1, which has no Vulkan decode extension here).
+    g_using_vulkan_decode = 0;
 }
 
 static void do_li_interrupt(void) {
@@ -539,6 +967,12 @@ static void do_send_multi_controller(
     LiSendMultiControllerEvent(cn, am, b, lt, rt, lx, ly, rx, ry);
 }
 static void do_send_utf8_text(const char *text, unsigned int len) { LiSendUtf8TextEvent(text, len); }
+static void do_send_pen(unsigned char eventType, unsigned char toolType, unsigned char penButtons,
+                         float x, float y, float pressureOrDistance,
+                         unsigned short rotation, unsigned char tilt)
+{
+    LiSendPenEvent(eventType, toolType, penButtons, x, y, pressureOrDistance, 0.0f, 0.0f, rotation, tilt);
+}
 */
 import "C"
 
@@ -548,10 +982,12 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 
 	"github.com/sirupsen/logrus"
 
+	usbapi "usbridge-client/internal/api"
 	"usbridge-client/internal/models"
 )
 
@@ -811,12 +1247,35 @@ func (w *MoonlightCgoWrapper) SendMoonlightControllerEvent(
 		C.short(rightStickX), C.short(rightStickY),
 	)
 }
+func (w *MoonlightCgoWrapper) SendMoonlightPenEvent(
+	eventType, toolType, penButtons uint8,
+	x, y, pressureOrDistance float32,
+	rotation uint16, tilt uint8,
+) {
+	if !liStartConnectionActive.Load() {
+		return
+	}
+	C.do_send_pen(
+		C.uchar(eventType), C.uchar(toolType), C.uchar(penButtons),
+		C.float(x), C.float(y), C.float(pressureOrDistance),
+		C.ushort(rotation), C.uchar(tilt),
+	)
+}
+
 func (w *MoonlightCgoWrapper) IsInputActive() bool { return liStartConnectionActive.Load() }
 
 // NegotiatedVideoCodecName returns the codec moonlight-common-c actually
 // negotiated with the server for the current session (from dr_setup's
 // NegotiatedVideoFormat), matching the macOS/Linux implementation.
 func (w *MoonlightCgoWrapper) NegotiatedVideoCodecName() (string, bool) {
+	return windowsNegotiatedVideoCodecNameNow()
+}
+
+// windowsNegotiatedVideoCodecNameNow is NegotiatedVideoCodecName's
+// package-level body, split out so net_graph_windows.go's netGraphCodecFn
+// hook (no MoonlightCgoWrapper instance to call a method on) can wire it
+// directly -- matches moonlight_cgo_wrapper.go's negotiatedVideoCodecNameNow.
+func windowsNegotiatedVideoCodecNameNow() (string, bool) {
 	if !liStartConnectionActive.Load() {
 		return "", false
 	}
@@ -869,7 +1328,18 @@ func goMoonlightStage(stage, result, errCode C.int) {
 }
 
 //export goMoonlightConnected
-func goMoonlightConnected() { logrus.Info("🌕 [Moonlight] stream connected ✅") }
+func goMoonlightConnected() {
+	logrus.Info("🌕 [Moonlight] stream connected ✅")
+	notifyMoonlightStreamReady()
+}
+
+// goMoonlightRumble receives the host's gamepad rumble (moonlight-common-c
+// ConnListenerRumble) and hands it to the handler set with SetRumbleHandler.
+//
+//export goMoonlightRumble
+func goMoonlightRumble(controller, lowFreq, highFreq C.ushort) {
+	dispatchRumble(uint16(controller), uint16(lowFreq), uint16(highFreq))
+}
 
 //export goMoonlightTerminated
 func goMoonlightTerminated(errCode C.int) {
@@ -893,6 +1363,7 @@ var vtFrameCount int64
 
 //export goVTFrame
 func goVTFrame(rgba *C.uint8_t, width, height, stride C.int) {
+	noteNativeFrameSize(int(width), int(height))
 	vtFrameCallbackMu.Lock()
 	cb := vtFrameCallback
 	vtFrameCallbackMu.Unlock()
@@ -905,9 +1376,18 @@ func goVTFrame(rgba *C.uint8_t, width, height, stride C.int) {
 		logrus.Infof("🎬 [Moonlight/HW/Win] ✅ first video frame — %dx%d", int(width), int(height))
 	}
 
-	// When GL overlay is active, the frame was already submitted at C level.
-	// Skip the 3.5 MB Go image allocation; deliver nil for stats-only tracking.
-	if NativeVideoOverlayIsActive() {
+	// When the native overlay was active at the C call site, the frame was
+	// already submitted at C level and this call carries rgba=NULL purely
+	// for stats tracking (see win_deliver_frame_vulkan's native_overlay_active
+	// branch in moonlight_cgo_windows.go's C preamble). Trust that pointer
+	// directly instead of re-checking NativeVideoOverlayIsActive() here: that
+	// re-check reads the same live atomic the C side already sampled, and if
+	// it flips between the two reads (e.g. the Vulkan render thread tearing
+	// down mid-frame), this would take the "real pixels" branch below with a
+	// NULL rgba and segfault -- which is exactly what happened (SIGSEGV in
+	// goVTFrame, rgba=0x0, stride=0, caught live under gdb on the VideoRecv
+	// thread).
+	if rgba == nil {
 		cb(nil)
 		return
 	}
@@ -928,12 +1408,19 @@ func goVTFrame(rgba *C.uint8_t, width, height, stride C.int) {
 
 // goAIVisionOverlay is the Windows counterpart to moonlight_cgo_wrapper.go's
 // export of the same name (that file is built only for darwin/ios/linux --
-// see its own doc comment for why Windows needs a separate definition, and
-// win_deliver_frame's call site in this file for why Windows actually has a
-// genuine CPU-readable RGBA buffer to overlay into on every frame, unlike
-// the true zero-copy GPU-texture paths that comment also describes).
-// Identical body: no-op unless the checkbox is on, draws detection boxes
-// into rgba in place.
+// see its own doc comment for why Windows needs a separate definition), used
+// by win_deliver_frame's non-zero-copy branches: those already run every
+// decoded frame through a CPU-readable RGBA buffer, so drawing straight into
+// it in place is fine there. Identical body: no-op unless the checkbox is
+// on, draws detection boxes into rgba in place.
+//
+// NOT called from win_deliver_frame_vulkan (hardware Vulkan Video Decode's
+// zero-copy path) -- that path uses goAIVisionShouldSample/goAIVisionSample
+// below instead, same split moonlight_cgo_wrapper.go's macOS Metal fast path
+// uses (see that file's doc comments), so the rare CPU readback it still
+// needs for detection never draws into (and never displays) that throwaway
+// buffer -- the boxes reach the screen via pushAIVisionOverlayToVulkan's
+// native compositor-layer draw call instead (vk_aivision_record_draw).
 //
 //export goAIVisionOverlay
 func goAIVisionOverlay(rgba *C.uint8_t, width, height, stride C.int) {
@@ -946,4 +1433,52 @@ func goAIVisionOverlay(rgba *C.uint8_t, width, height, stride C.int) {
 	w, h, s := int(width), int(height), int(stride)
 	buf := unsafe.Slice((*byte)(unsafe.Pointer(rgba)), s*h)
 	ApplyAIVisionOverlay(buf, w, h, s)
+}
+
+// goAIVisionShouldSample is the Windows counterpart to
+// moonlight_cgo_wrapper.go's identically-named macOS export -- see its doc
+// comment for the full reasoning. Cheap (atomics + time comparisons only,
+// no pixel access) pre-check called every frame from
+// win_deliver_frame_vulkan: lets that zero-copy path skip the GPU->CPU
+// readback + sws_scale entirely on the overwhelming majority of frames,
+// where neither the icon nor the OCR loop is actually due yet.
+//
+//export goAIVisionShouldSample
+func goAIVisionShouldSample() C.int {
+	if usbapi.LiveFrameWanted() {
+		return 1
+	}
+	if !aiVisionEnabled.Load() {
+		return 0
+	}
+	now := time.Now().UnixNano()
+	iconDue := !aiVisionIconBusy.Load() && now-aiVisionIconLastRun.Load() >= int64(aiVisionIconInterval)
+	ocrDue := !aiVisionOCRBusy.Load() && now-aiVisionOCRLastRun.Load() >= int64(aiVisionOCRInterval)
+	if iconDue || ocrDue {
+		return 1
+	}
+	return 0
+}
+
+// goAIVisionSample is win_deliver_frame_vulkan's counterpart to
+// goAIVisionOverlay: called only on the rare frame goAIVisionShouldSample
+// green-lit, with a CPU readback of that one frame. It only feeds the
+// detector (maybeKickIconDetection/maybeKickOCR/maybeServeLiveFrame) -- it
+// must NOT draw into buf, unlike goAIVisionOverlay's ApplyAIVisionOverlay,
+// because this buffer is a throwaway conversion scratch space, never the one
+// actually displayed (the zero-copy VkImage is, straight in the renderer).
+//
+//export goAIVisionSample
+func goAIVisionSample(rgba *C.uint8_t, width, height, stride C.int) {
+	if rgba == nil || width <= 0 || height <= 0 || stride <= 0 {
+		return
+	}
+	w, h, s := int(width), int(height), int(stride)
+	buf := unsafe.Slice((*byte)(unsafe.Pointer(rgba)), s*h)
+	maybeServeLiveFrame(buf, w, h, s)
+	if !aiVisionEnabled.Load() {
+		return
+	}
+	maybeKickIconDetection(buf, w, h, s)
+	maybeKickOCR(buf, w, h, s)
 }

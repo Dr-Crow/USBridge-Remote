@@ -116,6 +116,7 @@ func (s *stubApp) Screen() interface {
 	return stubScreen{}
 }
 func (s *stubApp) VideoDevices() []VideoDeviceInfo       { return nil }
+func (s *stubApp) VirtualDisplaySupported() bool         { return false }
 func (s *stubApp) SunshineOutputName() string            { return "" }
 func (s *stubApp) SetSunshineOutputName(string) error    { return nil }
 func (s *stubApp) SunshineStreamHost() string            { return "" }
@@ -124,6 +125,7 @@ func (s *stubApp) SubmitMoonlightPIN(string) error       { return nil }
 func (s *stubApp) CurrentVideoCodec() string             { return "" }
 func (s *stubApp) SupportedVideoCodecs() []string        { return []string{"h264"} }
 func (s *stubApp) Color444Status() (bool, bool)          { return false, false }
+func (s *stubApp) HdrStatus() (bool, bool)               { return false, false }
 func (s *stubApp) AudioSinks() ([]AudioSink, error)      { return nil, nil }
 func (s *stubApp) CurrentAudioSink() (string, error)     { return "", nil }
 func (s *stubApp) SetAudioSink(string) error             { return nil }
@@ -400,5 +402,31 @@ func TestClipboardBlob_InvalidID_Rejected(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest && resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("expected rejection for invalid blob id, got status %d", resp.StatusCode)
+	}
+}
+
+// A ClipboardRequestKind event is the client's manual "get clipboard": the
+// agent must answer with its current content even though nothing changed.
+func TestClipboardWS_RequestRepliesWithCurrentClipboard(t *testing.T) {
+	ts, backend, secret := newTestClipboardServer(t)
+	backend.simulateLocalChange(clipboard.Content{Kind: clipboard.KindText, Text: "on-agent"})
+	// Let the poll loop consume this change while no client is connected, so
+	// the only unsolicited event is the connect-time resync below and the
+	// second event can only be the reply to the request.
+	time.Sleep(1200 * time.Millisecond)
+	client := dialTestClipboardClient(t, ts.URL, secret)
+	defer client.close()
+
+	if first := client.recv(3 * time.Second); first.Text != "on-agent" {
+		t.Fatalf("unexpected initial event: %+v", first)
+	}
+
+	client.send(ClipboardEvent{Kind: ClipboardRequestKind})
+	reply := client.recv(3 * time.Second)
+	if reply.Kind != string(clipboard.KindText) || reply.Text != "on-agent" {
+		t.Fatalf("unexpected reply to request: %+v", reply)
+	}
+	if got := backend.snapshot(); got.Text != "on-agent" {
+		t.Fatalf("request must not change the agent clipboard, got %+v", got)
 	}
 }

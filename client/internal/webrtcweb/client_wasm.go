@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall/js"
 	"time"
 )
@@ -40,11 +41,49 @@ type WebRTCClient struct {
 	// produces headers, they just won't match anything rustshine expects,
 	// same as any other wrong/missing key.
 	masterKey string
+	// hwID is the agent's hw_id (from the pairing QR/deep link, "" if none
+	// was carried -- see SavedConnection.HwID's doc comment), used only to
+	// address usbridge-entitlement's WebRTC signaling relay in postOffer's
+	// fallback path when a direct fetch to baseURL fails outright. Never
+	// sent to the agent itself.
+	hwID string
+
+	// bitrateKbps: this session's requested bitrate ceiling, sent as
+	// OfferRequest.bitrate_kbps in postOffer's body -- see
+	// SetBitrateKbps's own doc comment. 0 (the zero value, and this
+	// struct's default before anyone calls SetBitrateKbps) means "don't
+	// send one", same as never having sent the field at all.
+	bitrateKbps int
+	// videoCodec: the codec picked in the client's video settings
+	// (models.VideoModeH264/H265), sent as OfferRequest.codec -- rustshine
+	// streams exactly that when the browser and host can both do it, H.264
+	// otherwise (see signaling.rs's resolve_use_h265). "" sends nothing,
+	// which rustshine treats as H.264.
+	videoCodec string
+	// displayCursor: the client's Show Mouse setting, sent as
+	// OfferRequest.display_cursor (the WebRTC counterpart of /launch's
+	// usbridgeDisplayCursor). nil sends nothing and rustshine keeps its
+	// current value.
+	displayCursor *bool
+	// negotiatedCodec: what rustshine's answer actually put on the video
+	// m-line ("h264"/"h265"), "" until an answer arrives.
+	negotiatedCodec string
 
 	pc      *js.Value
 	dc      *js.Value
 	videoEl js.Value // hidden <video>, srcObject set from the video ontrack event
 	audioEl js.Value // <audio>, srcObject set from the audio ontrack event -- see Close()'s doc comment on why this must be torn down alongside videoEl
+
+	// pcConnStateFunc/pcTrackFunc/dcOpenFunc/dcMessageFunc are the
+	// js.Func wrappers behind Connect's pc/dc addEventListener calls --
+	// stored here (rather than left as anonymous inline js.FuncOf values,
+	// as they used to be) so Close can remove them and release the Go
+	// side. Every reconnect (see this file's own "chasing the capture-kms
+	// bug and ICE flapping" comment on Close's audioEl handling for how
+	// often that's been in practice) constructs a brand new WebRTCClient,
+	// so never releasing these leaked four Go-side function slots per
+	// reconnect for the life of the page.
+	pcConnStateFunc, pcTrackFunc, dcOpenFunc, dcMessageFunc js.Func
 
 	mu           sync.Mutex
 	onOpen       func()
@@ -65,8 +104,8 @@ type WebRTCClient struct {
 // this reimplements the same HMAC-SHA256 signature scheme the desktop
 // client uses, byte for byte, so it authenticates against the exact same
 // agent API without any protocol changes on the agent side.
-func NewWebRTCClient(baseURL, masterKey string) *WebRTCClient {
-	return &WebRTCClient{baseURL: baseURL, masterKey: masterKey}
+func NewWebRTCClient(baseURL, masterKey, hwID string) *WebRTCClient {
+	return &WebRTCClient{baseURL: baseURL, masterKey: masterKey, hwID: hwID}
 }
 
 // signHMAC reproduces agent/internal/api/security.go's CalculateHMAC:
@@ -80,6 +119,40 @@ func (c *WebRTCClient) signHMAC(method, path, body string) (ts, sig string) {
 	mac.Write([]byte(method + path + ts + body))
 	sig = hex.EncodeToString(mac.Sum(nil))
 	return
+}
+
+// SetBitrateKbps sets the bitrate ceiling this session will request from
+// rustshine in its /webrtc/offer body -- previously a no-op on this path
+// (WebRTCVideoClient.SetBitrate was an empty stub; only the classic
+// Moonlight/GameStream path's real ANNOUNCE negotiation honored the
+// video-settings bitrate slider). rustshine treats this as a request, not
+// a command: it's clamped to the operator's own --webrtc-bitrate-kbps
+// ceiling server-side (see rust-shine's signaling.rs,
+// resolve_session_bitrate_bps) -- a client can only ever ask for *less*
+// than what the server permits, never more. Must be called before
+// Connect(); 0 (never called, or called with 0) sends no bitrate_kbps
+// field at all, falling back to today's behavior (the server's own
+// ceiling, unchanged).
+func (c *WebRTCClient) SetBitrateKbps(kbps int) { c.mu.Lock(); c.bitrateKbps = kbps; c.mu.Unlock() }
+
+// SetVideoCodec stores the codec to request in the next Connect's offer --
+// see the videoCodec field.
+func (c *WebRTCClient) SetVideoCodec(codec string) { c.mu.Lock(); c.videoCodec = codec; c.mu.Unlock() }
+
+// SetDisplayCursor stores the Show Mouse setting to send in the next
+// Connect's offer -- see the displayCursor field.
+func (c *WebRTCClient) SetDisplayCursor(show bool) {
+	c.mu.Lock()
+	c.displayCursor = &show
+	c.mu.Unlock()
+}
+
+// NegotiatedVideoCodec reports the codec rustshine's answer selected, and
+// whether an answer has arrived yet.
+func (c *WebRTCClient) NegotiatedVideoCodec() (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.negotiatedCodec, c.negotiatedCodec != ""
 }
 
 // OnOpen registers a callback fired when the "input" DataChannel opens.
@@ -136,7 +209,7 @@ func (c *WebRTCClient) Connect(sessionID string) error {
 	})
 	c.pc = &pc
 
-	pc.Call("addEventListener", "connectionstatechange", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	c.pcConnStateFunc = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		state := pc.Get("connectionState").String()
 		c.mu.Lock()
 		cb := c.onStateChg
@@ -145,7 +218,8 @@ func (c *WebRTCClient) Connect(sessionID string) error {
 			cb(state)
 		}
 		return nil
-	}))
+	})
+	pc.Call("addEventListener", "connectionstatechange", c.pcConnStateFunc)
 
 	// recvonly video+audio transceivers: this client only ever receives
 	// media from the agent (Sunshine's own capture), never sends any --
@@ -193,7 +267,7 @@ func (c *WebRTCClient) Connect(sessionID string) error {
 	doc.Get("body").Call("appendChild", audioEl)
 	c.audioEl = audioEl
 
-	pc.Call("addEventListener", "track", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	c.pcTrackFunc = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		event := args[0]
 		track := event.Get("track")
 		streams := event.Get("streams")
@@ -223,11 +297,12 @@ func (c *WebRTCClient) Connect(sessionID string) error {
 			}
 		}
 		return nil
-	}))
+	})
+	pc.Call("addEventListener", "track", c.pcTrackFunc)
 
 	dc := pc.Call("createDataChannel", "input")
 	c.dc = &dc
-	dc.Call("addEventListener", "open", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	c.dcOpenFunc = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		c.mu.Lock()
 		cb := c.onOpen
 		c.mu.Unlock()
@@ -235,8 +310,9 @@ func (c *WebRTCClient) Connect(sessionID string) error {
 			cb()
 		}
 		return nil
-	}))
-	dc.Call("addEventListener", "message", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+	})
+	dc.Call("addEventListener", "open", c.dcOpenFunc)
+	c.dcMessageFunc = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		event := args[0]
 		data := event.Get("data")
 		c.mu.Lock()
@@ -256,7 +332,8 @@ func (c *WebRTCClient) Connect(sessionID string) error {
 			cb(jsArrayBufferToBytes(data))
 		}
 		return nil
-	}))
+	})
+	dc.Call("addEventListener", "message", c.dcMessageFunc)
 
 	offerPromise := pc.Call("createOffer")
 	offerVal, err := awaitPromise(offerPromise)
@@ -276,6 +353,10 @@ func (c *WebRTCClient) Connect(sessionID string) error {
 	if err != nil {
 		return err
 	}
+
+	c.mu.Lock()
+	c.negotiatedCodec = answerVideoCodec(answerSDP)
+	c.mu.Unlock()
 
 	answerDesc := js.Global().Get("Object").New()
 	answerDesc.Set("type", "answer")
@@ -348,52 +429,106 @@ func (c *WebRTCClient) waitForICEGatheringComplete(pc js.Value) {
 // {"sdp"}}), which silently failed against rustshine's flat response
 // (parsed.Success stayed false, masking a perfectly good SDP answer as a
 // rejected offer) once the client was pointed at rustshine directly.
+// postOffer's fallback path, when a direct fetch() to the agent fails
+// outright (connection refused, DNS failure, mixed content or Chrome's
+// Local Network Access blocking a fetch to a private-network agent from a
+// public-network page -- see this session's earlier "api-tunnel" fix for
+// exactly this class of failure): retries the identical offer against
+// usbridge-entitlement's WebRTC signaling relay (see
+// usbridge-entitlement-backend's webrtcSignalRelay.ts), which forwards it
+// to the agent over its own persistent outbound WebSocket
+// (agent/internal/app/webrtc_signal_relay.go) instead of requiring the
+// browser to reach it directly. Pro/enterprise tier only -- a free-tier
+// hwID gets a clean, distinct error from the relay itself (403 not_pro)
+// rather than the generic network failure that triggered this fallback in
+// the first place. See shouldFallbackToRelay's doc comment for exactly
+// when this fires, and signal_relay.go for the platform-independent parts
+// (URL/body construction, the fallback decision itself) that are unit-
+// tested there -- this function is wasm-only (syscall/js fetch) glue
+// around them.
 func (c *WebRTCClient) postOffer(sessionID, offerSDP string) (string, error) {
 	_ = sessionID // rustshine's endpoint doesn't take a session id -- one PeerConnection per POST, matching its own signaling.rs
-	reqBody, err := json.Marshal(map[string]string{
-		"sdp": offerSDP,
-	})
+	c.mu.Lock()
+	bitrateKbps := c.bitrateKbps
+	videoCodec := c.videoCodec
+	displayCursor := c.displayCursor
+	hwID := c.hwID
+	c.mu.Unlock()
+	// bitrate_kbps omitted entirely (not sent as 0) when unset -- matches
+	// rust-shine's OfferRequest.bitrate_kbps, an Option<u32> on the wire
+	// (#[serde(default)]), and its own "0 means absent" fallback in
+	// resolve_session_bitrate_bps; sending a literal 0 would ask the
+	// server to freeze the picture rather than just "use your ceiling".
+	reqFields := map[string]any{"sdp": offerSDP}
+	if bitrateKbps > 0 {
+		reqFields["bitrate_kbps"] = bitrateKbps
+	}
+	if videoCodec != "" {
+		reqFields["codec"] = videoCodec
+	}
+	if displayCursor != nil {
+		reqFields["display_cursor"] = *displayCursor
+	}
+	reqBody, err := json.Marshal(reqFields)
 	if err != nil {
 		return "", err
 	}
 	path := "/webrtc/offer"
-
 	ts, sig := c.signHMAC("POST", path, string(reqBody))
+	authHeaders := map[string]string{"X-Auth-Timestamp": ts, "X-Auth-Signature": sig}
 
-	headers := js.Global().Get("Object").New()
-	headers.Set("Content-Type", "application/json")
-	headers.Set("X-Auth-Timestamp", ts)
-	headers.Set("X-Auth-Signature", sig)
+	respBody, err := doOfferFetch(c.baseURL+path, reqBody, authHeaders)
+	if err != nil {
+		if !shouldFallbackToRelay(err, hwID) {
+			return "", fmt.Errorf("webrtc: fetch /webrtc/offer: %w", err)
+		}
+		relayBody, relayErr := buildRelayOfferBody(hwID, offerSDP, bitrateKbps, videoCodec)
+		if relayErr != nil {
+			return "", fmt.Errorf("webrtc: fetch /webrtc/offer: %w", err)
+		}
+		respBody, err = doOfferFetch(signalRelayOfferURL(), relayBody, authHeaders)
+		if err != nil {
+			if httpErr, ok := err.(*offerHTTPError); ok && httpErr.Status == 403 {
+				return "", fmt.Errorf("webrtc: remote connect requires RustShine Pro (signaling relay refused: %s)", httpErr.Body)
+			}
+			return "", fmt.Errorf("webrtc: fetch signal relay offer: %w", err)
+		}
+	}
+
+	return parseOfferAnswer(respBody)
+}
+
+// doOfferFetch performs one fetch() POST and returns the raw response body
+// on a 2xx status, or an *offerHTTPError wrapping the status/body on any
+// other status -- the browser/wasm-only half of the fetch, kept minimal so
+// the decision logic around it (shouldFallbackToRelay et al., signal_relay.go)
+// stays platform-independent and unit-testable.
+func doOfferFetch(url string, body []byte, headers map[string]string) ([]byte, error) {
+	jsHeaders := js.Global().Get("Object").New()
+	jsHeaders.Set("Content-Type", "application/json")
+	for k, v := range headers {
+		jsHeaders.Set(k, v)
+	}
 
 	opts := js.Global().Get("Object").New()
 	opts.Set("method", "POST")
-	opts.Set("headers", headers)
-	opts.Set("body", string(reqBody))
+	opts.Set("headers", jsHeaders)
+	opts.Set("body", string(body))
 
-	fetchPromise := js.Global().Call("fetch", c.baseURL+path, opts)
+	fetchPromise := js.Global().Call("fetch", url, opts)
 	respVal, err := awaitPromise(fetchPromise)
 	if err != nil {
-		return "", fmt.Errorf("webrtc: fetch /webrtc/offer: %w", err)
+		return nil, err
 	}
 	textPromise := respVal.Call("text")
 	textVal, err := awaitPromise(textPromise)
 	if err != nil {
-		return "", fmt.Errorf("webrtc: reading response body: %w", err)
+		return nil, fmt.Errorf("reading response body: %w", err)
 	}
 	if !respVal.Get("ok").Bool() {
-		return "", fmt.Errorf("webrtc: rustshine returned HTTP %d: %s", respVal.Get("status").Int(), textVal.String())
+		return nil, &offerHTTPError{Status: respVal.Get("status").Int(), Body: textVal.String()}
 	}
-
-	var parsed struct {
-		SDP string `json:"sdp"`
-	}
-	if err := json.Unmarshal([]byte(textVal.String()), &parsed); err != nil {
-		return "", fmt.Errorf("webrtc: decoding rustshine response: %w", err)
-	}
-	if parsed.SDP == "" {
-		return "", fmt.Errorf("webrtc: rustshine response had no sdp")
-	}
-	return parsed.SDP, nil
+	return []byte(textVal.String()), nil
 }
 
 // StartStatsLogging polls RTCPeerConnection.getStats() every interval and
@@ -475,6 +610,152 @@ func (c *WebRTCClient) StartStatsLogging(interval time.Duration, logFn func(msg 
 	}
 }
 
+// NetGraphSnapshot is a point-in-time read of this session's WebRTC video
+// stats -- all counters cumulative (session lifetime), mirroring getStats()'s
+// own RTCStats convention. Consumed by service.NetGraph's
+// netGraphNetworkStatsFn hook (net_graph_wasm.go), which diffs consecutive
+// snapshots into per-tick deltas exactly like it already does for
+// moonlight-common-c's own cumulative RTPVideoStats on every other
+// platform -- see that file's doc comment for why this is cumulative, not
+// pre-diffed, here too.
+type NetGraphSnapshot struct {
+	Valid             bool
+	PacketsReceived   uint32
+	FramesDecoded     uint32
+	FramesDropped     uint32
+	PacketsLost       uint32
+	JitterMs          float64
+	TotalDecodeTimeMs float64
+	RTTMs             float64
+	RTTValid          bool
+	// BytesReceived is the inbound-rtp video track's cumulative
+	// bytesReceived -- net_graph_wasm.go diffs successive snapshots into a
+	// live bitrate, same convention as native platforms' BytesVideo (see
+	// net_graph.go's own doc comment on that field).
+	BytesReceived uint64
+	// Codec is NegotiatedVideoCodecName's result at the time this snapshot
+	// was polled -- piggybacked on the stats snapshot rather than its own
+	// hook since it rarely changes and this file has no package-level
+	// "active client" singleton to call a method on from net_graph_wasm.go.
+	Codec string
+	// At is when this snapshot's getStats() resolved. Consumers sampling
+	// faster than netGraphStatsPollInterval use it to tell a fresh snapshot
+	// from the one they already saw.
+	At time.Time
+}
+
+var netGraphSnapshotAtomic atomic.Pointer[NetGraphSnapshot]
+
+// LatestNetGraphSnapshot returns the most recently polled stats snapshot
+// from StartNetGraphStatsPolling, or ok=false before the first poll lands
+// (or with no session ever connected).
+func LatestNetGraphSnapshot() (NetGraphSnapshot, bool) {
+	p := netGraphSnapshotAtomic.Load()
+	if p == nil {
+		return NetGraphSnapshot{}, false
+	}
+	return *p, true
+}
+
+// netGraphStatsPollInterval is deliberately much tighter than
+// StartStatsLogging's own 2s diagnostic cadence -- net_graph.go's HUD ticks
+// at 10Hz (netGraphInterval) and wants reasonably fresh counters to plot a
+// live-looking graph, not just an occasional stall warning. getStats() at
+// 4Hz is the same order of magnitude browsers themselves poll it at
+// (chrome://webrtc-internals), cheap enough to run for a whole session.
+const netGraphStatsPollInterval = 250 * time.Millisecond
+
+// StartNetGraphStatsPolling polls getStats() at netGraphStatsPollInterval
+// and stores a NetGraphSnapshot for LatestNetGraphSnapshot to read --
+// decoupled from net_graph.go's own 100ms HUD tick so that loop never blocks
+// on a JS promise itself (see netGraphNetworkStatsFn's doc comment). Safe to
+// call once per session alongside StartStatsLogging; returns a stop func.
+func (c *WebRTCClient) StartNetGraphStatsPolling() func() {
+	if c.pc == nil {
+		return func() {}
+	}
+	pc := *c.pc
+	stopped := false
+	var stopMu sync.Mutex
+	isStopped := func() bool {
+		stopMu.Lock()
+		defer stopMu.Unlock()
+		return stopped
+	}
+
+	go func() {
+		ticker := time.NewTicker(netGraphStatsPollInterval)
+		defer ticker.Stop()
+		for !isStopped() {
+			<-ticker.C
+			if isStopped() {
+				return
+			}
+			statsVal, err := awaitPromise(pc.Call("getStats"))
+			if err != nil {
+				continue
+			}
+			var snap NetGraphSnapshot
+			forEach := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+				report := args[0]
+				switch report.Get("type").String() {
+				case "inbound-rtp":
+					if report.Get("kind").String() != "video" {
+						return nil
+					}
+					snap.Valid = true
+					snap.PacketsReceived = uint32(report.Get("packetsReceived").Float())
+					snap.FramesDecoded = uint32(report.Get("framesDecoded").Float())
+					snap.FramesDropped = uint32(report.Get("framesDropped").Float())
+					snap.PacketsLost = uint32(jsFloatOr(report, "packetsLost", 0))
+					snap.JitterMs = jsFloatOr(report, "jitter", 0) * 1000
+					snap.TotalDecodeTimeMs = jsFloatOr(report, "totalDecodeTime", 0) * 1000
+					snap.BytesReceived = uint64(jsFloatOr(report, "bytesReceived", 0))
+					if name, ok := c.NegotiatedVideoCodec(); ok {
+						snap.Codec = name
+					}
+				case "candidate-pair":
+					rtt := report.Get("currentRoundTripTime")
+					if rtt.IsUndefined() || rtt.IsNull() {
+						return nil
+					}
+					// Prefer the nominated (actually selected) pair if this
+					// session reports more than one candidate-pair --
+					// harmless to overwrite with a non-nominated one first
+					// and let a later nominated report win.
+					if !snap.RTTValid || report.Get("nominated").Truthy() {
+						snap.RTTMs = rtt.Float() * 1000
+						snap.RTTValid = true
+					}
+				}
+				return nil
+			})
+			statsVal.Call("forEach", forEach)
+			forEach.Release()
+			snap.At = time.Now()
+			netGraphSnapshotAtomic.Store(&snap)
+		}
+	}()
+
+	return func() {
+		stopMu.Lock()
+		stopped = true
+		stopMu.Unlock()
+	}
+}
+
+// jsFloatOr reads a numeric field that isn't guaranteed present on every
+// browser's RTCStats report (e.g. totalDecodeTime, packetsLost on some
+// report types) -- returns fallback instead of panicking/NaN-ing on an
+// undefined property.
+func jsFloatOr(v js.Value, key string, fallback float64) float64 {
+	f := v.Get(key)
+	if f.IsUndefined() || f.IsNull() {
+		return fallback
+	}
+	return f.Float()
+}
+
 // VideoElement returns the underlying <video> DOM element, so the gui
 // controller layer (video_widget_dom_overlay_wasm.go) can position/size it
 // directly as a CSS overlay and read its videoWidth/videoHeight -- both
@@ -517,55 +798,74 @@ func (c *WebRTCClient) WatchVideoFrames(onFrame func()) func() {
 	// DevTools with nothing else involved and it fired zero times over
 	// 6+ seconds on a video that was demonstrably still playing
 	// (currentTime advancing, visibly rendering).
+	// Both paths go through reportIfAdvanced, so a frame is counted once
+	// no matter which of them notices it first. Calling onFrame() from both
+	// independently counted every frame twice wherever rVFC works (desktop
+	// Chrome): a 30 fps stream showed as 50-60 fps in VideoWidget.
+	//
+	// Neither path may call onFrame() blindly on a schedule -- confirmed live
+	// that doing so masks a genuinely stalled stream from VideoWidget's
+	// mid-stream-silence watchdog: an interval poll firing onFrame() every
+	// 33ms regardless of whether the video was still receiving frames meant
+	// a real freeze (currentTime provably stuck across repeated checks,
+	// confirmed via CDP) never tripped the watchdog and the client sat on a
+	// frozen frame forever instead of reconnecting. A frame is reported only
+	// when getVideoPlaybackQuality().totalVideoFrames has genuinely increased
+	// -- a real signal of decoded output, independent of whether rVFC itself
+	// ever fires. Falls back to comparing currentTime if
+	// getVideoPlaybackQuality isn't available at all (older engines) --
+	// coarser (misses a same-frame currentTime tick), but still tied to real
+	// playback progress rather than a blind timer.
+	lastFrameCount := -1.0
+	lastCurrentTime := -1.0
+	hasPlaybackQuality := !c.videoEl.Get("getVideoPlaybackQuality").IsUndefined()
+	reportIfAdvanced := func() {
+		if hasPlaybackQuality {
+			total := c.videoEl.Call("getVideoPlaybackQuality").Get("totalVideoFrames").Float()
+			if total <= lastFrameCount {
+				return
+			}
+			// One onFrame per new frame, not per call: at 60 fps two frames
+			// often land between 33ms polls (or rVFC ticks), and reporting
+			// one per call capped the counter at 30. The first reading and
+			// a long gap (hidden tab) count as one frame / at most 8.
+			n := 1
+			if lastFrameCount >= 0 {
+				n = min(int(total-lastFrameCount), 8)
+			}
+			lastFrameCount = total
+			for i := 0; i < n; i++ {
+				onFrame()
+			}
+			return
+		} else {
+			ct := c.videoEl.Get("currentTime").Float()
+			if ct <= lastCurrentTime {
+				return
+			}
+			lastCurrentTime = ct
+		}
+		onFrame()
+	}
+
 	if rvfc := c.videoEl.Get("requestVideoFrameCallback"); !rvfc.IsUndefined() {
 		var tick js.Func
 		tick = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 			if isStopped() {
 				return nil
 			}
-			onFrame()
+			reportIfAdvanced()
 			c.videoEl.Call("requestVideoFrameCallback", tick)
 			return nil
 		})
 		c.videoEl.Call("requestVideoFrameCallback", tick)
 	}
 
-	// The interval fallback must NOT call onFrame() blindly on a fixed
-	// schedule -- confirmed live that doing so masks a genuinely stalled
-	// stream from VideoWidget's mid-stream-silence watchdog: the poll kept
-	// firing onFrame() every 33ms regardless of whether the video was
-	// actually still receiving frames, so a real freeze (currentTime
-	// provably stuck across repeated checks, confirmed via CDP) never
-	// tripped the watchdog and the client just sat on a frozen frame
-	// forever instead of reconnecting. Only report a frame when
-	// getVideoPlaybackQuality().totalVideoFrames has genuinely increased
-	// since the last tick -- a real signal of decoded output, independent
-	// of whether rVFC itself ever fires. Falls back to comparing
-	// currentTime if getVideoPlaybackQuality isn't available at all
-	// (older engines) -- coarser (misses a same-frame currentTime tick),
-	// but still tied to real playback progress rather than a blind timer.
-	lastFrameCount := -1.0
-	lastCurrentTime := -1.0
-	hasPlaybackQuality := !c.videoEl.Get("getVideoPlaybackQuality").IsUndefined()
 	handle := js.Global().Call("setInterval", js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		if isStopped() {
 			return nil
 		}
-		if hasPlaybackQuality {
-			quality := c.videoEl.Call("getVideoPlaybackQuality")
-			total := quality.Get("totalVideoFrames").Float()
-			if total <= lastFrameCount {
-				return nil
-			}
-			lastFrameCount = total
-		} else {
-			ct := c.videoEl.Get("currentTime").Float()
-			if ct <= lastCurrentTime {
-				return nil
-			}
-			lastCurrentTime = ct
-		}
-		onFrame()
+		reportIfAdvanced()
 		return nil
 	}), 1000/30)
 	return func() {
@@ -692,11 +992,32 @@ func (c *WebRTCClient) Close() {
 	}
 	c.closeCalled = true
 	c.mu.Unlock()
+	// Detach listeners before close(): both pc.close() and dc.close() can
+	// still fire their own state-change events (connectionstatechange ->
+	// "closed", etc.) asynchronously afterward, same as dcConn's identical
+	// close/release-ordering bug (see webrtcweb/dcconn_wasm.go's release
+	// doc comment) -- removing the listener first means that later event
+	// finds nothing to call. Release only after both are actually closed
+	// and detached, so nothing can still be pending against these funcs.
+	// c.pc/c.dc are only ever non-nil after Connect has set them, which (see
+	// Connect's own flow) always also means c.pcConnStateFunc/pcTrackFunc/
+	// dcOpenFunc/dcMessageFunc were already assigned real js.Func values by
+	// that point -- guarding the Release() calls on the same c.pc/c.dc nil
+	// checks avoids releasing an unset zero-value js.Func on a WebRTCClient
+	// whose Connect never got this far (or was never called at all).
 	if c.dc != nil {
+		c.dc.Call("removeEventListener", "open", c.dcOpenFunc)
+		c.dc.Call("removeEventListener", "message", c.dcMessageFunc)
 		c.dc.Call("close")
+		c.dcOpenFunc.Release()
+		c.dcMessageFunc.Release()
 	}
 	if c.pc != nil {
+		c.pc.Call("removeEventListener", "connectionstatechange", c.pcConnStateFunc)
+		c.pc.Call("removeEventListener", "track", c.pcTrackFunc)
 		c.pc.Call("close")
+		c.pcConnStateFunc.Release()
+		c.pcTrackFunc.Release()
 	}
 	if !c.videoEl.IsUndefined() && !c.videoEl.IsNull() {
 		c.videoEl.Set("srcObject", js.Null())

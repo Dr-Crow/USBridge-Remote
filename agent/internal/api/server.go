@@ -9,15 +9,21 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
+	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
 
 	"usbridge_agent/internal/clipboard"
 	"usbridge_agent/internal/display"
+	"usbridge_agent/internal/hostload"
 	"usbridge_agent/internal/usbpass"
+	"usbridge_agent/internal/vdisplay"
 )
 
 type Application interface {
@@ -61,6 +67,12 @@ type Application interface {
 	// chroma, available is whether this host could offer it right now
 	// (hardware AND license tier). Always (false, false) on Sunshine.
 	Color444Status() (active bool, available bool)
+	// HdrStatus mirrors Color444Status exactly, for the RustShine HDR color
+	// upgrade.
+	HdrStatus() (active bool, available bool)
+	// VirtualDisplaySupported reports whether the current stream backend
+	// supports native virtual displays.
+	VirtualDisplaySupported() bool
 	AudioSinks() ([]AudioSink, error)
 	CurrentAudioSink() (string, error)
 	SetAudioSink(sink string) error
@@ -77,6 +89,8 @@ type Application interface {
 type Server struct {
 	app      Application
 	upgrader websocket.Upgrader
+	// benchLoad samples host CPU/GPU load during a benchmark run.
+	benchLoad hostload.Sampler
 
 	// keyMu guards masterKey — see SetMasterKey.
 	keyMu        sync.RWMutex
@@ -86,7 +100,25 @@ type Server struct {
 
 	usb *usbpass.Service
 
+	// selfHTTPPort is this agent's own plain-HTTP listen port (cfg.HTTPPort,
+	// wired via SetSelfHTTPPort) -- StartUSBPassBridge's "API" preamble
+	// dials 127.0.0.1:<selfHTTPPort> to relay the browser web client's
+	// WebRTC-tunneled /api/*+/v1/sync/* traffic back into this same
+	// process's own Routes() handler, the same way usbPassBridgeAttach
+	// dials the USB broker's port. Always the plain-HTTP listener, never
+	// TLSPort: the DataChannel this arrived over is already
+	// DTLS-encrypted end to end, so a second TLS handshake for a
+	// loopback-only hop would just add a self-signed-cert dance for no
+	// security benefit.
+	selfHTTPPort int
+
 	clipboardBlobs *clipboardBlobStore
+
+	virtMu          sync.Mutex
+	virtualDisplays []VideoDeviceInfo
+
+	// mouseHold -- see mouse_hold.go.
+	mouseHold mouseHold
 }
 
 type loggingResponseWriter struct {
@@ -172,6 +204,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/auth/tailscale/status", sec.LimitPolling(s.tailscaleStatus))
 	mux.HandleFunc("/api/auth/tailscale/register", sec.LimitPolling(s.tailscaleRegister))
 	mux.HandleFunc("/api/keyboard", sec.LimitRealtime(s.keyboard))
+	mux.HandleFunc("/api/keyboard/layout", sec.LimitRealtime(s.keyboardLayout))
 	mux.HandleFunc("/api/mouse", sec.LimitRealtime(s.mouse))
 	mux.HandleFunc("/api/mouse/ws", sec.LimitRealtime(s.mouseWS))
 	mux.HandleFunc("/api/clipboard/ws", sec.LimitRealtime(s.clipboardWS))
@@ -180,7 +213,17 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/video/info", sec.LimitPolling(s.videoInfo))
 	mux.HandleFunc("/api/video/devices", sec.LimitPolling(s.videoDevices))
 	mux.HandleFunc("/api/video/set_device", sec.LimitPolling(s.videoSetDevice))
+	mux.HandleFunc("POST /api/video/virtual_displays", sec.LimitPolling(s.virtualDisplayCreate))
+	mux.HandleFunc("DELETE /api/video/virtual_displays/{id}", sec.LimitPolling(s.virtualDisplayDelete))
 	mux.HandleFunc("/api/screen", sec.LimitPolling(s.screen))
+	mux.HandleFunc("GET /api/bench/status", sec.LimitPolling(s.benchStatus))
+	mux.HandleFunc("POST /api/bench/backend", sec.LimitPolling(s.benchBackend))
+	mux.HandleFunc("POST /api/bench/monitor", sec.LimitPolling(s.benchMonitor))
+	mux.HandleFunc("POST /api/bench/prepare", sec.LimitPolling(s.benchPrepare))
+	mux.HandleFunc("POST /api/bench/video/start", sec.LimitPolling(s.benchVideoStart))
+	mux.HandleFunc("POST /api/bench/video/stop", sec.LimitPolling(s.benchVideoStop))
+	mux.HandleFunc("POST /api/bench/load/start", sec.LimitPolling(s.benchLoadStart))
+	mux.HandleFunc("POST /api/bench/load/stop", sec.LimitPolling(s.benchLoadStop))
 	mux.HandleFunc("/api/devices", sec.LimitPolling(s.devicesLegacy))
 	mux.HandleFunc("/api/pcpanel/leds", sec.LimitPolling(s.leds))
 	mux.HandleFunc("/api/pcpanel/button", sec.LimitPolling(s.button))
@@ -192,8 +235,50 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/usb/passthrough/status", sec.LimitPolling(s.usbPassthroughStatus))
 	mux.HandleFunc("/api/usb/passthrough/install", sec.LimitPolling(s.usbPassthroughInstall))
 	mux.HandleFunc("/api/usb/passthrough/session", sec.LimitPolling(s.usbPassthroughSession))
+	mux.HandleFunc("/api/usb/passthrough/browser-session", sec.LimitPolling(s.usbPassthroughBrowserSession))
+	mux.HandleFunc("/api/usb/passthrough/browser-pen-session", sec.LimitPolling(s.usbPassthroughBrowserPenSession))
+	// browser-attach/browser-gamepad/browser-pen: LEGACY plain-WebSocket
+	// transport for browser USB/IP passthrough, opened directly by browser
+	// JS (`new WebSocket(url)`), which cannot set the custom
+	// X-Auth-Signature/X-Auth-Timestamp headers sec.LimitRealtime/
+	// LimitPolling verify -- these check the same HMAC via ?ts=&sig= query
+	// params themselves (see verifyWSAuth in usb_passthrough_browser.go)
+	// instead of going through the shared header-based middleware.
+	// browser-attach is shared by both the gamepad and pen paths (it's a
+	// plain, device-agnostic relay to the broker's AES port -- see its own
+	// doc comment).
+	//
+	// Superseded by StartUSBPassBridge (usb_passthrough_browser.go), which
+	// carries the same traffic over a WebRTC DataChannel on the
+	// video/control PeerConnection instead of a separate ws:// connection --
+	// see that function's doc comment for why. Kept registered until the
+	// DataChannel path is confirmed working end to end live; remove these
+	// three lines (and their handlers/verifyWSAuth) once it is.
+	mux.HandleFunc("/api/usb/passthrough/browser-attach", s.usbPassthroughBrowserAttach)
+	mux.HandleFunc("/api/usb/passthrough/browser-gamepad", s.usbPassthroughBrowserGamepad)
+	mux.HandleFunc("/api/usb/passthrough/browser-pen", s.usbPassthroughBrowserPen)
+
+	// Proxy /webrtc/* requests to rustshine's native WebRTC signaling listener (port 8444)
+	mux.HandleFunc("/webrtc/", s.webrtcProxy)
 
 	return s.withCORS(s.withLogging(s.withRecovery(mux)))
+}
+
+func (s *Server) webrtcProxy(w http.ResponseWriter, r *http.Request) {
+	target, err := url.Parse("http://127.0.0.1:8444")
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		resp.Header.Del("Access-Control-Allow-Origin")
+		resp.Header.Del("Access-Control-Allow-Methods")
+		resp.Header.Del("Access-Control-Allow-Headers")
+		resp.Header.Del("Access-Control-Max-Age")
+		return nil
+	}
+	proxy.ServeHTTP(w, r)
 }
 
 // withCORS lets the browser/WASM web client (served from its own origin —
@@ -219,6 +304,13 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Auth-Signature, X-Auth-Timestamp, X-USBridge-Video-Trace")
 		w.Header().Set("Access-Control-Max-Age", "600")
+
+		// Private Network Access (PNA) requirement for Chrome:
+		// If the browser preflights a private network request, it sends this header.
+		if r.Header.Get("Access-Control-Request-Private-Network") == "true" {
+			w.Header().Set("Access-Control-Allow-Private-Network", "true")
+		}
+
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -539,6 +631,10 @@ func (s *Server) mouse(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[api] mouse action=%s", req.Action)
 
+	owner := nextMouseOwner()
+	if s.noteMouse(owner, req) {
+		s.releaseHTTPMouseLater(owner)
+	}
 	if err := s.applyMouse(req); err != nil {
 		log.Printf("[api] mouse failed: %v", err)
 		s.fail(w, http.StatusInternalServerError, "mouse_failed", err)
@@ -562,9 +658,20 @@ func (s *Server) mouseWS(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[api] mouse_ws upgraded successfully for %s", r.RemoteAddr)
 	defer conn.Close()
 
+	// A new mouse connection is a (re)connect: nothing held by a previous
+	// one may carry over. Released on close only if still ours.
+	owner := nextMouseOwner()
+	s.releaseHeldMouse(0, "new mouse_ws connection")
+	defer s.releaseHeldMouse(owner, "mouse_ws closed")
+
+	// lastSeen: any message or pong from the client (unix nanos).
+	var lastSeen atomic.Int64
+	lastSeen.Store(time.Now().UnixNano())
+
 	// Refresh read deadline on every pong so idle connections survive NAT/Tailscale
 	conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
 	conn.SetPongHandler(func(string) error {
+		lastSeen.Store(time.Now().UnixNano())
 		conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
 		return nil
 	})
@@ -585,15 +692,31 @@ func (s *Server) mouseWS(w http.ResponseWriter, r *http.Request) {
 	stopPush := make(chan struct{})
 	defer close(stopPush)
 
+	// Keepalive pings every wsPingInterval; while this connection holds a
+	// button, ping every mouseWSHeldPing instead and treat mouseWSHeldStale
+	// of total silence as a dead client: release and close, rather than
+	// leaving the host mouse held until wsReadTimeout (90s) expires.
 	go func() {
-		pingTicker := time.NewTicker(wsPingInterval)
-		defer pingTicker.Stop()
+		tick := time.NewTicker(mouseWSHeldPing)
+		defer tick.Stop()
+		lastPing := time.Now()
 
 		for {
 			select {
 			case <-stopPush:
 				return
-			case <-pingTicker.C:
+			case now := <-tick.C:
+				held := s.mouseHeldBy(owner)
+				if held && now.Sub(time.Unix(0, lastSeen.Load())) > mouseWSHeldStale {
+					log.Printf("[api] mouse_ws silent for >%s with buttons held, releasing and closing", mouseWSHeldStale)
+					s.releaseHeldMouse(owner, "mouse_ws went silent")
+					conn.Close()
+					return
+				}
+				if !held && now.Sub(lastPing) < wsPingInterval {
+					continue
+				}
+				lastPing = now
 				if err := safePing(); err != nil {
 					log.Printf("[api] mouse_ws ping failed, closing: %v", err)
 					conn.Close()
@@ -611,6 +734,8 @@ func (s *Server) mouseWS(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		lastSeen.Store(time.Now().UnixNano())
+		s.noteMouse(owner, req)
 		if err := s.applyMouse(req); err != nil {
 			log.Printf("[api] mouse_ws failed action=%s: %v", req.Action, err)
 			_ = safeWriteJSON(APIResponse{Success: false, Error: "mouse_failed", Details: err.Error()})
@@ -704,6 +829,10 @@ func (s *Server) videoInfo(w http.ResponseWriter, r *http.Request) {
 	moonlightHost := s.app.SunshineStreamHost()
 	sunshinePort := s.app.SunshineAdminPort()
 	color444Active, color444Available := s.app.Color444Status()
+	hdrActive, hdrAvailable := s.app.HdrStatus()
+	currentCodec := s.app.CurrentVideoCodec()
+	supportedCodecs := s.app.SupportedVideoCodecs()
+	log.Printf("🎯 [CODEC-TRACE] GET /api/video/info device=%q -> encoding=%q supported=%v", devicePath, currentCodec, supportedCodecs)
 	s.ok(w, "video_info", map[string]any{
 		"device":            devicePath,
 		"width":             width,
@@ -711,10 +840,10 @@ func (s *Server) videoInfo(w http.ResponseWriter, r *http.Request) {
 		"fps":               fps,
 		"mode":              "moonlight",
 		"transport":         "moonlight",
-		"encoding":          s.app.CurrentVideoCodec(),
+		"encoding":          currentCodec,
 		"streaming":         false,
 		"capture_modes":     modes,
-		"supported_modes":   videoCodecModes(s.app.SupportedVideoCodecs()),
+		"supported_modes":   videoCodecModes(supportedCodecs),
 		"available_devices": devices,
 		"moonlight_host":    moonlightHost,
 		"sunshine_port":     sunshinePort,
@@ -726,6 +855,12 @@ func (s *Server) videoInfo(w http.ResponseWriter, r *http.Request) {
 		// streaming at all.
 		"color_444_active":    color444Active,
 		"color_444_available": color444Available,
+		// RustShine's HDR color upgrade -- mirrors color_444_active/
+		// color_444_available exactly, see Application.HdrStatus's doc
+		// comment.
+		"hdr_active":                hdrActive,
+		"hdr_available":             hdrAvailable,
+		"virtual_display_supported": s.app.VirtualDisplaySupported(),
 	})
 }
 
@@ -878,8 +1013,176 @@ func filterDevices(devices []DeviceRequest) []DeviceRequest {
 }
 
 func (s *Server) videoDevices(w http.ResponseWriter, r *http.Request) {
-	devices := s.app.VideoDevices()
+	devices := markVkmsConnectors(s.app.VideoDevices())
+
+	if s.app.VirtualDisplaySupported() {
+		s.virtMu.Lock()
+		// The pinned virtual output survives an agent restart in the config
+		// only; rebuild its entry from there so it stays listed (and
+		// deletable) instead of surfacing as a raw vkms connector.
+		if cur := s.app.SunshineOutputName(); strings.HasPrefix(cur, "virtual:") {
+			s.addVirtualEntryLocked(cur)
+		}
+		devices = append(devices, s.virtualDisplays...)
+		s.virtMu.Unlock()
+	}
+
 	s.ok(w, "video devices list", map[string]any{"devices": devices, "count": len(devices)})
+}
+
+func (s *Server) virtualDisplayCreate(w http.ResponseWriter, r *http.Request) {
+	if !s.app.VirtualDisplaySupported() {
+		s.fail(w, http.StatusBadRequest, "virtual_displays_unsupported", nil)
+		return
+	}
+	var req struct {
+		Width  int `json:"width"`
+		Height int `json:"height"`
+		FPS    int `json:"fps"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.fail(w, http.StatusBadRequest, "invalid_json", err)
+		return
+	}
+	if req.Width <= 0 || req.Height <= 0 || req.FPS <= 0 {
+		s.fail(w, http.StatusBadRequest, "invalid_resolution", nil)
+		return
+	}
+
+	path := fmt.Sprintf("virtual:%dx%d@%d", req.Width, req.Height, req.FPS)
+
+	s.virtMu.Lock()
+	vd := s.addVirtualEntryLocked(path)
+	s.virtMu.Unlock()
+
+	s.ok(w, "virtual_display_created", vd)
+}
+
+func (s *Server) virtualDisplayDelete(w http.ResponseWriter, r *http.Request) {
+	id, err := url.PathUnescape(r.PathValue("id"))
+	if err != nil {
+		id = r.PathValue("id")
+	}
+
+	cur := s.app.SunshineOutputName()
+	curVirtual := strings.HasPrefix(cur, "virtual:")
+
+	// id is either one of the "virtual:WxH@FPS" entries or the row of the live
+	// vkms connector. Only the display that is actually running is torn down;
+	// other listed virtual displays are just saved specs and stay untouched.
+	isConnector := false
+	for _, d := range s.app.VideoDevices() {
+		if d.Path == id && isVkmsConnector(d) {
+			isConnector = true
+			break
+		}
+	}
+	teardown := isConnector || (curVirtual && cur == id)
+
+	s.virtMu.Lock()
+	drop := map[string]bool{id: true}
+	if isConnector && curVirtual {
+		drop[cur] = true
+	}
+	filtered := make([]VideoDeviceInfo, 0, len(s.virtualDisplays))
+	for _, vd := range s.virtualDisplays {
+		if !drop[vd.Path] {
+			filtered = append(filtered, vd)
+		}
+	}
+	s.virtualDisplays = filtered
+	s.virtMu.Unlock()
+
+	if teardown {
+		// Back to a physical output (restarts the stream host) whenever the
+		// pin points at the virtual display, either as the "virtual:" spec or
+		// as the vkms connector picked from the DRM list ("cardN|Virtual-M").
+		if curVirtual || strings.Contains(cur, "Virtual-") {
+			// Always pin an explicit physical output: clearing only the
+			// virtual_display key leaves adapter_name/kms_connector on the
+			// vkms connector picked earlier, so the stream host would come
+			// straight back to it.
+			back := s.firstPhysicalOutput(curVirtual || strings.Contains(cur, "|"))
+			if err := s.app.SetSunshineOutputName(back); err != nil {
+				log.Printf("[api] virtual display delete: unpin failed: %v", err)
+				s.fail(w, http.StatusInternalServerError, "virtual_display_unpin_failed", err)
+				return
+			}
+		}
+		if err := vdisplay.Unload(); err != nil {
+			log.Printf("[api] virtual display delete: %v", err)
+		}
+	}
+
+	s.ok(w, "virtual_display_deleted", nil)
+}
+
+var drmConnectorNameRe = regexp.MustCompile(`^(card\d+)-(.+)$`)
+
+// firstPhysicalOutput returns the output_name value of the first non-virtual
+// DRM device, or "" when none is listed. compound selects RustShine's
+// "/dev/dri/cardN|CONNECTOR" form (by name, so it does not depend on index
+// order once the vkms connector disappears) instead of the numeric index.
+func (s *Server) firstPhysicalOutput(compound bool) string {
+	for _, d := range s.app.VideoDevices() {
+		if d.Bus == "virtual" || isVkmsConnector(d) {
+			continue
+		}
+		if compound {
+			if m := drmConnectorNameRe.FindStringSubmatch(d.Name); m != nil {
+				return "/dev/dri/" + m[1] + "|" + m[2]
+			}
+		}
+		return stripDevicePrefix(d.Path)
+	}
+	return ""
+}
+
+// stripDevicePrefix turns a VideoDeviceInfo.Path ("drm:1", "raw:...",
+// "winid:...", "display:0") into the bare value SetSunshineOutputName wants.
+func stripDevicePrefix(p string) string {
+	for _, prefix := range []string{"drm:", "winid:", "display:", "raw:"} {
+		if strings.HasPrefix(p, prefix) {
+			return strings.TrimPrefix(p, prefix)
+		}
+	}
+	return p
+}
+
+// addVirtualEntryLocked adds the "virtual:WxH@FPS" entry if missing and
+// returns it. Caller holds virtMu.
+func (s *Server) addVirtualEntryLocked(path string) VideoDeviceInfo {
+	for _, existing := range s.virtualDisplays {
+		if existing.Path == path {
+			return existing
+		}
+	}
+	vd := VideoDeviceInfo{
+		Name:      "Virtual Display (" + strings.TrimPrefix(path, "virtual:") + ")",
+		Path:      path,
+		Bus:       "virtual",
+		Connected: true,
+	}
+	s.virtualDisplays = append(s.virtualDisplays, vd)
+	return vd
+}
+
+func isVkmsConnector(d VideoDeviceInfo) bool {
+	return strings.Contains(d.Name, "-Virtual-") && !strings.Contains(d.Name, "Writeback")
+}
+
+// markVkmsConnectors labels the kernel vkms connector ("cardN-Virtual-M") as a
+// virtual display (Bus "virtual") instead of a physical DRM output, so clients
+// offer the delete action on it.
+func markVkmsConnectors(in []VideoDeviceInfo) []VideoDeviceInfo {
+	out := make([]VideoDeviceInfo, len(in))
+	copy(out, in)
+	for i := range out {
+		if out[i].Bus == "drm" && isVkmsConnector(out[i]) {
+			out[i].Bus = "virtual"
+		}
+	}
+	return out
 }
 
 // videoSetDevice pins Sunshine's capture to the monitor identified by
@@ -911,11 +1214,12 @@ func (s *Server) videoSetDevice(w http.ResponseWriter, r *http.Request) {
 	// literal string "display:0" (or "winid:{...}") was written to
 	// output_name verbatim, which Sunshine can't parse and silently falls
 	// back to auto-pick — monitor switching had no effect.
-	outputName := req.Device
-	for _, prefix := range []string{"drm:", "winid:", "display:", "raw:"} {
-		if strings.HasPrefix(outputName, prefix) {
-			outputName = strings.TrimPrefix(outputName, prefix)
-			break
+	outputName := stripDevicePrefix(req.Device)
+	// A vkms connector forced off by an earlier delete must be brought back
+	// before the stream host looks for it.
+	if strings.HasPrefix(outputName, "virtual:") || strings.Contains(outputName, "Virtual-") {
+		if err := vdisplay.Revive(); err != nil {
+			log.Printf("[api] video_set_device: reviving virtual display: %v", err)
 		}
 	}
 	log.Printf("[api] video_set_device device=%s", req.Device)

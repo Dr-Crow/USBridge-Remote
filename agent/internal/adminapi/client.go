@@ -16,6 +16,8 @@ import (
 	"usbridge_agent/internal/entitlement"
 	"usbridge_agent/internal/streamhost"
 	"usbridge_agent/internal/tailscale"
+	"usbridge_agent/internal/tlshost"
+	"usbridge_agent/internal/usbpass"
 )
 
 // Client is a thin RPC client for Server. A single Client value satisfies
@@ -164,7 +166,7 @@ func (c *Client) RequestKMSCapture() bool {
 	return body.Value
 }
 
-func (c *Client) SunshineCapExecPath() string {
+func (c *Client) KMSCaptureTargetPath() string {
 	var body stringBody
 	_ = c.do(http.MethodGet, "/token/kms-capexec-path", nil, &body)
 	return body.Value
@@ -192,12 +194,70 @@ func (c *Client) SetLockGPUClocksEnabled(enabled bool) error {
 	return c.do(http.MethodPost, "/token/gpu-clock-lock-enabled", boolBody{Value: enabled}, nil)
 }
 
+func (c *Client) NvencTwoPassEnabled() bool {
+	body := boolBody{Value: true}
+	_ = c.do(http.MethodGet, "/token/nvenc-two-pass", nil, &body)
+	return body.Value
+}
+
+func (c *Client) SetNvencTwoPass(enabled bool) error {
+	return c.do(http.MethodPost, "/token/nvenc-two-pass", boolBody{Value: enabled}, nil)
+}
+
+func (c *Client) GPUs() []config.GPUInfo {
+	var gpus []config.GPUInfo
+	_ = c.do(http.MethodGet, "/token/gpus", nil, &gpus)
+	return gpus
+}
+
+func (c *Client) NvidiaPowerMode() string {
+	body := stringBody{Value: "max"}
+	_ = c.do(http.MethodGet, "/token/nvidia-power-mode", nil, &body)
+	return body.Value
+}
+
+func (c *Client) SetNvidiaPowerMode(mode string) error {
+	return c.do(http.MethodPost, "/token/nvidia-power-mode", stringBody{Value: mode}, nil)
+}
+
+func (c *Client) StreamerAutoUpdateEnabled() bool {
+	var body boolBody
+	_ = c.do(http.MethodGet, "/token/streamer-auto-update", nil, &body)
+	return body.Value
+}
+
+func (c *Client) SetStreamerAutoUpdate(enabled bool) error {
+	return c.do(http.MethodPost, "/token/streamer-auto-update", boolBody{Value: enabled}, nil)
+}
+
+func (c *Client) SnoozeStreamerUpdate(version string) error {
+	return c.do(http.MethodPost, "/token/snooze-streamer-update", stringBody{Value: version}, nil)
+}
+
+func (c *Client) RemoteWindowLockEnabled() bool {
+	var body boolBody
+	_ = c.do(http.MethodGet, "/token/remote-window-lock", nil, &body)
+	return body.Value
+}
+
+func (c *Client) SetRemoteWindowLock(enabled bool) error {
+	return c.do(http.MethodPost, "/token/remote-window-lock", boolBody{Value: enabled}, nil)
+}
+
 func (c *Client) RestartSunshine() error {
 	return c.do(http.MethodPost, "/token/restart-sunshine", nil, nil)
 }
 
 func (c *Client) SendSAS() error {
 	return c.do(http.MethodPost, "/token/send-sas", nil, nil)
+}
+
+// RelinquishEngine asks the instance on the other end of this socket to
+// gracefully step down from owning the engine -- see
+// app.App.RelinquishEngine's doc comment and enginelock.go's
+// evictEngineLockHolder, the only caller.
+func (c *Client) RelinquishEngine() error {
+	return c.do(http.MethodPost, "/engine/relinquish", nil, nil)
 }
 
 func (c *Client) ListSunshineClients() ([]streamhost.Client, error) {
@@ -217,6 +277,12 @@ func (c *Client) SubmitMoonlightPIN(pin string) error {
 func (c *Client) UpdateListenAddr(host string, port int) (config.Config, error) {
 	var cfg config.Config
 	err := c.do(http.MethodPost, "/token/listen-addr", listenAddrBody{Host: host, Port: port}, &cfg)
+	return cfg, err
+}
+
+func (c *Client) UpdateTLSAddr(port int, enabled bool) (config.Config, error) {
+	var cfg config.Config
+	err := c.do(http.MethodPost, "/token/tls-addr", tlsAddrBody{Port: port, Enabled: enabled}, &cfg)
 	return cfg, err
 }
 
@@ -254,6 +320,24 @@ func (c *Client) SunshineStreamHost() string {
 func (c *Client) StreamerName() string {
 	var body stringBody
 	_ = c.do(http.MethodGet, "/token/streamer-name", nil, &body)
+	return body.Value
+}
+
+func (c *Client) DeviceHostname() string {
+	var body stringBody
+	_ = c.do(http.MethodGet, "/token/device-hostname", nil, &body)
+	return body.Value
+}
+
+func (c *Client) CertStatus() tlshost.CertStatus {
+	var status tlshost.CertStatus
+	_ = c.do(http.MethodGet, "/token/cert-status", nil, &status)
+	return status
+}
+
+func (c *Client) StreamerRunning() bool {
+	var body boolBody
+	_ = c.do(http.MethodGet, "/token/streamer-running", nil, &body)
 	return body.Value
 }
 
@@ -309,6 +393,33 @@ func (c *Client) SetStreamBackend(kind string) error {
 
 func (c *Client) SetRustShineWebRTCEnabled(enabled bool) error {
 	return c.do(http.MethodPost, "/token/set-rustshine-webrtc-enabled", map[string]bool{"enabled": enabled}, nil)
+}
+
+func (c *Client) USBPassthroughStatus() usbpass.Status {
+	var st usbpass.Status
+	_ = c.do(http.MethodGet, "/token/usb-driver-status", nil, &st)
+	return st
+}
+
+// EnableUSBBroker mirrors DownloadRustShine's own thin-client shape
+// (fire-and-forget; the GUI polls USBPassthroughStatus for ConsentGiven/
+// BrokerAlive instead of waiting on this response) -- see
+// handleEnableUSBBroker's doc comment. onProgress is ignored over this path
+// for the same reason DownloadRustShine's is.
+func (c *Client) EnableUSBBroker(onProgress entitlement.ProgressFunc) error {
+	return c.do(http.MethodPost, "/token/enable-usb-broker", nil, nil)
+}
+
+// InstallUSBDriver mirrors DownloadRustShine's own thin-client shape
+// (fire-and-forget; the GUI polls USBPassthroughStatus for VhciDriver
+// instead of waiting on this response) -- see
+// handleInstallUSBDriver's doc comment.
+func (c *Client) InstallUSBDriver() error {
+	return c.do(http.MethodPost, "/token/install-usb-driver", nil, nil)
+}
+
+func (c *Client) GrantUSBAttach() error {
+	return c.do(http.MethodPost, "/token/grant-usb-attach", nil, nil)
 }
 
 func (c *Client) AccountStatus() account.Status {

@@ -76,8 +76,8 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Tag/name for the combined release (e.g. release-2026.07.15)"
-        required: true
+        description: "Tag/name for the combined release (e.g. release-2026.07.15) -- leave blank to use release-v<agent/VERSION>"
+        required: false
       prerelease:
         description: "Mark as a pre-release and skip setting it as /releases/latest (used for test builds)"
         required: false
@@ -337,6 +337,7 @@ jobs:
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-binutils
             mingw-w64-ucrt-x86_64-python
+            git
             zip
             python
       - name: Build (Windows, MSYS2 UCRT64)
@@ -369,6 +370,7 @@ jobs:
           sudo apt-get install -y \
             libgl1-mesa-dev xorg-dev libxkbcommon-dev \
             libavcodec-dev libavutil-dev libswscale-dev libpulse-dev \
+            libva-dev libva-drm2 \
             libopus-dev libssl-dev libusb-1.0-0-dev pkg-config cmake libvulkan-dev
       - name: Build (Linux)
         # build_linux.sh packages an AppImage directly (client/dist/USBridgeClient-Linux-x86_64-<VERSION>.AppImage),
@@ -414,6 +416,7 @@ jobs:
             mingw-w64-ucrt-x86_64-vulkan-headers
             mingw-w64-ucrt-x86_64-vulkan-loader
             mingw-w64-ucrt-x86_64-python
+            git
             zip
             unzip
       - name: Shim cross-compiler binary names
@@ -1029,12 +1032,24 @@ jobs:
             -app agent -version "$AGENT_VERSION" -dir out \
             -manifest-out out/manifest-agent.json -sig-out out/manifest-agent.json.sig
 
+      - name: Derive release tag
+        id: tag
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.release_tag }}" ]; then
+            tag="${{ inputs.release_tag }}"
+          else
+            agent_ver="$(tr -d ' \t\n\r' < agent/VERSION)"
+            tag="release-v${agent_ver}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
       - name: Create combined GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.release_tag }}
+          tag_name: ${{ steps.tag.outputs.tag }}
           files: out/*
-          name: USBridge ${{ inputs.release_tag }}
+          name: USBridge ${{ steps.tag.outputs.tag }}
           generate_release_notes: true
           draft: false
           prerelease: ${{ inputs.prerelease }}

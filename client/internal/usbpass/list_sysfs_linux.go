@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux && !android
 
 package usbpass
 
@@ -13,9 +13,8 @@ import (
 
 const sysfsUSB = "/sys/bus/usb/devices"
 
-// listSysfs enumerates local USB devices from sysfs so a Linux client can
-// show the Passthrough section without the closed usbridge-usb-broker --list
-// helper (Windows SetupAPI path). Attach still needs the broker binary.
+// listSysfs enumerates local USB devices from sysfs for the Linux client's
+// Passthrough section.
 func listSysfs() ([]models.USBPassthroughDevice, error) {
 	entries, err := os.ReadDir(sysfsUSB)
 	if err != nil {
@@ -48,13 +47,19 @@ func listSysfs() ([]models.USBPassthroughDevice, error) {
 		if desc == "" {
 			desc = vidHex + ":" + pidHex
 		}
+		interfaces := readInterfaceClasses(dir)
+		usagePage, usage := readSysfsHIDUsage(dir)
 		devices = append(devices, models.USBPassthroughDevice{
 			BusID:       name,
 			InstanceID:  name,
 			VID:         strings.ToLower(vidHex),
 			PID:         strings.ToLower(pidHex),
 			Description: desc,
-			Protected:   isProtectedSysfsDevice(dir),
+			Protected:   isProtectedInterfaces(interfaces),
+			Interfaces:  interfaces,
+
+			HIDUsagePage: usagePage,
+			HIDUsage:     usage,
 		})
 	}
 	return devices, nil
@@ -68,19 +73,52 @@ func readSysfsTrim(path string) (string, error) {
 	return strings.TrimSpace(string(b)), nil
 }
 
-// Boot HID keyboards/mice stay local so the user cannot detach the only
-// input device driving the client UI (matches Windows broker "protected").
-func isProtectedSysfsDevice(dir string) bool {
+// readInterfaceClasses reads every interface's real (bInterfaceClass,
+// bInterfaceSubClass, bInterfaceProtocol) triple for the device at dir --
+// the same sysfs walk isProtectedInterfaces below classifies, and also
+// surfaced on models.USBPassthroughDevice.Interfaces for the dashboard's
+// display-only "Pro" badge (see that field's own doc comment for why it's
+// display-only, never an enforcement decision).
+func readInterfaceClasses(dir string) [][3]uint8 {
 	matches, _ := filepath.Glob(filepath.Join(dir + ":*"))
+	var out [][3]uint8
 	for _, iface := range matches {
 		class, _ := readSysfsTrim(filepath.Join(iface, "bInterfaceClass"))
 		sub, _ := readSysfsTrim(filepath.Join(iface, "bInterfaceSubClass"))
 		proto, _ := readSysfsTrim(filepath.Join(iface, "bInterfaceProtocol"))
-		if class != "03" || sub != "01" {
+		if triple, ok := parseHexTriple(class, sub, proto); ok {
+			out = append(out, triple)
+		}
+	}
+	return out
+}
+
+// readSysfsHIDUsage reads the top-level HID usage of the device at dir from
+// the report descriptor the kernel's HID core exposes for each bound HID
+// interface (<dev>:<cfg>.<if>/<bus>:<vid>:<pid>.<n>/report_descriptor).
+// 0/0 when no HID driver is bound (e.g. already detached for export) --
+// probeHIDUsage then fills it from the claimed backend at export time.
+func readSysfsHIDUsage(dir string) (uint16, uint16) {
+	matches, _ := filepath.Glob(filepath.Join(dir+":*", "*:*:*.*", "report_descriptor"))
+	var usages [][2]uint16
+	for _, m := range matches {
+		if desc, err := os.ReadFile(m); err == nil {
+			usages = append(usages, parseHIDTopLevelUsages(desc)...)
+		}
+	}
+	return pickHIDUsage(usages)
+}
+
+// isProtectedInterfaces: boot HID keyboards/mice stay local so the user
+// cannot detach the only input device driving the client UI (matches
+// Windows broker "protected").
+func isProtectedInterfaces(interfaces [][3]uint8) bool {
+	for _, iface := range interfaces {
+		if iface[0] != 0x03 || iface[1] != 0x01 {
 			continue
 		}
 		// 01 = keyboard, 02 = mouse (HID boot protocol)
-		if proto == "01" || proto == "02" {
+		if iface[2] == 0x01 || iface[2] == 0x02 {
 			return true
 		}
 	}

@@ -215,7 +215,8 @@ To trigger a quick WASM web build:
 - [`docs/api_endpoints.md`](docs/api_endpoints.md) — The secure API and Master QR sync protocol specification.
 - [`docs/MOUSE_TOUCHPAD.md`](docs/MOUSE_TOUCHPAD.md) — Mathematical specifics of relative/absolute pointer translation.
 - [`docs/NATIVE_VIDEO_AUDIO.md`](docs/NATIVE_VIDEO_AUDIO.md) — Comprehensive details on the Vulkan, Metal, and Moonlight integration stack.
+- [`docs/STREAMER_BENCHMARK.md`](docs/STREAMER_BENCHMARK.md) — Sunshine vs RustShine benchmark: what it measures and how stalls are attributed.
 
 ## 📜 License
 
-This project is licensed under **GPLv3** (see `LICENSE`). The client incorporates code from `moonlight-common-c` (also GPLv3).
+This project is licensed under **GPLv3** (see `LICENSE`). The client incorporates code from `moonlight-common-c` (also GPLv3). The Windows client embeds an excerpt of SDL_GameControllerDB (zlib license, see `third_party/SDL_GameControllerDB/`).

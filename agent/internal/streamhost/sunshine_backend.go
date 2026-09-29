@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -47,6 +48,121 @@ type sunshineExecCmdProcess struct{ cmd *exec.Cmd }
 func (p sunshineExecCmdProcess) Pid() int    { return p.cmd.Process.Pid }
 func (p sunshineExecCmdProcess) Kill() error { return p.cmd.Process.Kill() }
 func (p sunshineExecCmdProcess) Wait() error { return p.cmd.Wait() }
+
+// trackedSunshineProc wraps a sunshineProcess with a channel closed once
+// Wait() has returned, so Start()/Stop() can tell "the kernel finished
+// reaping this process" apart from "Kill() was sent but the process is
+// still stuck" without blocking on Wait() themselves.
+type trackedSunshineProc struct {
+	sunshineProcess
+	done chan struct{}
+	once sync.Once
+}
+
+func newTrackedSunshineProc(p sunshineProcess) *trackedSunshineProc {
+	return &trackedSunshineProc{sunshineProcess: p, done: make(chan struct{})}
+}
+
+func (t *trackedSunshineProc) Wait() error {
+	err := t.sunshineProcess.Wait()
+	t.once.Do(func() { close(t.done) })
+	return err
+}
+
+// terminate asks the process to exit cleanly (SIGTERM) and reports whether
+// the request was delivered. Windows has no SIGTERM for another process
+// (Signal fails), so there it returns false and callers kill right away
+// instead of waiting out sunshineStopGrace for nothing -- that wait added
+// 3 s to every stop, every benchmark switch included. Sunshine restores
+// its NVIDIA profile changes from its undo file on the next start.
+func (t *trackedSunshineProc) terminate() bool {
+	if p, ok := t.sunshineProcess.(sunshineExecCmdProcess); ok {
+		return p.cmd.Process.Signal(syscall.SIGTERM) == nil
+	}
+	return false
+}
+
+func (t *trackedSunshineProc) exited(d time.Duration) bool {
+	select {
+	case <-t.done:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
+var (
+	// sunshineHangGrace is how long the admin port may stay unreachable
+	// while the process is still "running" before Start() declares it hung.
+	// Generous: a legitimate cold start (encoder probing, KMS setup) can
+	// take a while and must never be mistaken for a hang.
+	sunshineHangGrace = 60 * time.Second
+	// sunshineStopGrace is how long Stop()/hang recovery waits after
+	// SIGTERM (and again after SIGKILL) before giving up on the process.
+	sunshineStopGrace = 3 * time.Second
+)
+
+// errSunshineStuck means the old Sunshine process survived SIGKILL (its
+// threads are in uninterruptible kernel sleep, e.g. a uinput gamepad
+// teardown deadlocked against a game holding force-feedback state). It
+// cannot be killed from userspace, and launching a second instance would
+// only fight the first over its ports, so Start() reports this and retries
+// on the next watchdog tick instead.
+var errSunshineStuck = errors.New("sunshine: previous process is stuck in the kernel and cannot be killed (reboot may be required)")
+
+// recoverHungLocked is called by Start() with b.mu held while b.proc != nil.
+// It returns (true, nil) when the process looks healthy (or is still within
+// its grace period) and Start() should no-op, (false, nil) when the hung
+// process was killed and reaped and Start() should launch a fresh one, and
+// (true, err) when the process could not be killed.
+func (b *sunshineBackend) recoverHungLocked(adminPort int) (bool, error) {
+	if adminPort <= 0 || portReachable(adminPort, 300*time.Millisecond) {
+		b.unhealthySince = time.Time{}
+		return true, nil
+	}
+	now := time.Now()
+	if b.unhealthySince.IsZero() {
+		b.unhealthySince = now
+		return true, nil
+	}
+	if now.Sub(b.unhealthySince) < sunshineHangGrace {
+		return true, nil
+	}
+	tp, ok := b.proc.(*trackedSunshineProc)
+	if !ok {
+		return true, nil
+	}
+	log.Printf("[sunshine] pid=%d alive but admin port %d unreachable for %s -- treating as hung, killing it",
+		tp.Pid(), adminPort, now.Sub(b.unhealthySince).Round(time.Second))
+	_ = tp.Kill()
+	if !tp.exited(sunshineStopGrace) {
+		return true, errSunshineStuck
+	}
+	b.proc = nil
+	b.unhealthySince = time.Time{}
+	return false, nil
+}
+
+// stopProcLocked stops proc gracefully (SIGTERM, bounded wait) before
+// falling back to SIGKILL, so Sunshine gets to tear down its virtual
+// uinput devices itself instead of being killed mid-teardown.
+func stopProcLocked(proc sunshineProcess) error {
+	tp, tracked := proc.(*trackedSunshineProc)
+	if tracked && tp.terminate() {
+		if tp.exited(sunshineStopGrace) {
+			return nil
+		}
+		log.Printf("[sunshine] pid=%d ignored SIGTERM for %s, sending SIGKILL", tp.Pid(), sunshineStopGrace)
+	}
+	if err := proc.Kill(); err != nil {
+		return err
+	}
+	// Return once it is really gone, not just signalled.
+	if tracked && !tp.exited(sunshineStopGrace) {
+		log.Printf("[sunshine] pid=%d still running %s after SIGKILL", tp.Pid(), sunshineStopGrace)
+	}
+	return nil
+}
 
 // useSunshineSessionBroker reports whether Start should launch Sunshine via
 // sunshineSessionBrokerLaunch (re-homing it into the active console
@@ -99,6 +215,9 @@ type sunshineBackend struct {
 	// (Pdeathsig / a Job Object) enforces the same guarantee.
 	watchdog *exec.Cmd
 	onExit   func() // see SetOnExit
+	// unhealthySince is when the admin port was first seen unreachable
+	// while proc was still tracked; zero while healthy. See recoverHungLocked.
+	unhealthySince time.Time
 
 	// activeAdminPassword holds the per-session randomly generated admin
 	// password. Set in Start() via --creds before Sunshine launches.
@@ -113,6 +232,7 @@ type sunshineBackend struct {
 	supportedCodecsCache struct {
 		mu        sync.Mutex
 		codecs    []string
+		flags     int // raw ServerCodecModeSupport behind codecs
 		fetchedAt time.Time
 	}
 }
@@ -238,47 +358,6 @@ func (b *sunshineBackend) binaryPath() string {
 	}
 }
 
-// capExecPathFor returns the path to the bundled sunshine_capexec launcher
-// (cmd/sunshine_capexec), or "" if not bundled (non-Linux, or a dev build
-// without the AppImage layout). This is what actually carries the
-// CAP_SYS_ADMIN file capability for KMS screen capture — never sunshine
-// itself, since a file capability on sunshine would break its RPATH-based
-// dependency resolution. See RequestKMSCapture in internal/permissions.
-func (b *sunshineBackend) capExecPathFor() string {
-	if runtime.GOOS != "linux" {
-		return ""
-	}
-	p := filepath.Join(b.exeDir, "sunshine-capexec")
-	if info, err := os.Stat(p); err == nil && !info.IsDir() {
-		return p
-	}
-	return ""
-}
-
-// runtimeCapExecPath returns the path sunshine_capexec should actually be
-// setcap'd and launched from, mirroring runtimeBinaryPath: inside an
-// AppImage the bundled copy lives on the read-only squashfs mount, so
-// pkexec setcap needs the writable staged copy instead. Shares the same
-// staging pass as runtimeBinaryPath — both binaries are copied together by
-// stageSunshineRuntime — so the two are consistent as long as both are
-// called while stageSunshineRuntime's staleness check (keyed off the
-// sunshine binary) still holds.
-func (b *sunshineBackend) runtimeCapExecPath() string {
-	capexecSrc := b.capExecPathFor()
-	sunshineSrc := b.binaryPath()
-	if runtime.GOOS != "linux" || capexecSrc == "" || sunshineSrc == "" || b.stateDir == "" {
-		return capexecSrc
-	}
-	if os.Getenv("APPIMAGE") == "" {
-		return capexecSrc
-	}
-	if _, err := stageSunshineRuntime(sunshineSrc, b.stateDir); err != nil {
-		log.Printf("[sunshine] failed to stage writable copy for KMS setcap: %v", err)
-		return capexecSrc
-	}
-	return filepath.Join(b.stateDir, "sunshine-runtime", "usr", "bin", "sunshine-capexec")
-}
-
 // runtimeBinaryPath returns the path Sunshine should actually be launched
 // from, and the path `setcap` should target for KMS capture. On Linux, when
 // running from inside an AppImage, the bundled binary lives on the
@@ -370,16 +449,6 @@ func stageSunshineRuntime(src, stateDir string) (string, error) {
 		}
 	}
 
-	// sunshine_capexec (cmd/sunshine_capexec) sits alongside sunshine in
-	// usr/bin — stage it too so runtimeCapExecPath's writable copy exists
-	// for pkexec setcap.
-	srcCapExec := filepath.Join(appDir, "usr", "bin", "sunshine-capexec")
-	if info, err := os.Stat(srcCapExec); err == nil && !info.IsDir() {
-		if err := copyFile(srcCapExec, filepath.Join(tmpRoot, "usr", "bin", "sunshine-capexec"), info.Mode()); err != nil {
-			return "", err
-		}
-	}
-
 	// Swap the fully-built tree into place. os.Rename is atomic when both
 	// paths are on the same filesystem (guaranteed: both under stateDir),
 	// but can't replace a non-empty directory, so the old tree has to be
@@ -439,15 +508,29 @@ func (b *sunshineBackend) DisplayName() string { return "Sunshine (Open Source)"
 // BinaryPath returns the (staged-if-needed) path Sunshine is launched from.
 func (b *sunshineBackend) BinaryPath() string { return b.launchPath }
 
-// CapExecPath returns the (staged-if-needed) path to the bundled
-// sunshine_capexec launcher, or "" if not present.
-func (b *sunshineBackend) CapExecPath() string { return b.runtimeCapExecPath() }
+// CapExecPath returns what the Linux KMS grant targets for Sunshine: the
+// root of the bundled (staged-if-needed) Sunshine install tree, which
+// permissions copies into the root-owned streamerlaunch.SunshineDir. ""
+// off Linux or when no bundled Sunshine is found.
+//
+// This used to be a user-writable sunshine_capexec with cap_sys_admin that
+// exec'd whatever path it was given -- i.e. CAP_SYS_ADMIN for any process
+// running as this user, no password needed. See internal/streamerlaunch.
+func (b *sunshineBackend) CapExecPath() string {
+	if runtime.GOOS != "linux" {
+		return ""
+	}
+	bin := b.runtimeBinaryPath()
+	if bin == "" || filepath.Base(filepath.Dir(bin)) != "bin" {
+		return ""
+	}
+	return filepath.Dir(filepath.Dir(filepath.Dir(bin)))
+}
 
-// SetCapExecPath sets the sunshine_capexec launcher path (see
-// runtimeCapExecPath) that Start uses to launch Sunshine with CAP_SYS_ADMIN
-// when the configured capture mode is "kms". A no-op path (empty, or the
-// launcher lacking the capability) just means Start launches Sunshine
-// directly, same as before KMS capture was requested/granted.
+// SetCapExecPath sets the installed usbridge-streamer-launch path Start
+// uses (`<launcher> --run-sunshine -- <args>`, which execs the root-owned
+// Sunshine tree with CAP_SYS_ADMIN) when the capture mode is "kms". ""
+// means Start launches the bundled Sunshine directly.
 func (b *sunshineBackend) SetCapExecPath(capExecPath string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -478,7 +561,9 @@ func (b *sunshineBackend) Start(adminPort int) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.proc != nil {
-		return nil
+		if handled, err := b.recoverHungLocked(adminPort); handled {
+			return err
+		}
 	}
 	if b.launchPath == "" {
 		return nil
@@ -488,22 +573,32 @@ func (b *sunshineBackend) Start(adminPort int) error {
 		return nil
 	}
 	if adminPort > 0 && portReachable(adminPort, 300*time.Millisecond) {
-		log.Printf("[sunshine] admin port %d already reachable, assuming Sunshine is already running", adminPort)
-		// This backend never ran --creds this session, so activeAdminPassword
-		// is still empty. The already-running Sunshine still has whatever
-		// password was baked in via --creds the last time IT was launched
-		// fresh, which is exactly what's persisted in adminPassFile — load it
-		// so SubmitPIN/ListClients/UnpairClient (which read adminPass()
-		// directly, not the file-fallback AdminPass()) don't send an empty
-		// password and get every request rejected with 401.
-		if pf := b.adminPassFile(); pf != "" {
-			if data, err := os.ReadFile(pf); err == nil {
-				if pass := strings.TrimSpace(string(data)); pass != "" {
-					b.activeAdminPassword = pass
-				}
-			}
+		// Something is answering on adminPort, but b.proc == nil (checked
+		// above) means it's definitely not a process THIS backend object
+		// spawned and is tracking. It used to be tempting to assume "must be
+		// Sunshine, already running from a previous life of this same
+		// backend" and just adopt whatever password was last persisted to
+		// adminPassFile -- but nothing actually verifies that assumption,
+		// and when it's wrong (a leftover RustShine gamestream-server, or a
+		// Sunshine/RustShine instance owned by a *different* agent process
+		// entirely) every SubmitPIN/ListClients/UnpairClient call sends a
+		// password that has nothing to do with whatever's actually
+		// listening, and gets rejected with 401 on every single request --
+		// confirmed live, this exact bug. Kill it by name instead (covers
+		// both backends' known process names) and fall through to a normal
+		// fresh launch below: deterministic and always ends with a Sunshine
+		// this backend actually knows the credentials for, at the cost of a
+		// brief stream interruption in the rare case where it really was our
+		// own still-healthy Sunshine surviving an agent restart.
+		log.Printf("[sunshine] admin port %d is reachable but not tracked by this process -- clearing it instead of adopting unverified credentials", adminPort)
+		killOrphanStreamerProcesses()
+		deadline := time.Now().Add(3 * time.Second)
+		for portReachable(adminPort, 200*time.Millisecond) && time.Now().Before(deadline) {
+			time.Sleep(100 * time.Millisecond)
 		}
-		return nil
+		if portReachable(adminPort, 200*time.Millisecond) {
+			return fmt.Errorf("sunshine: admin port %d still occupied by an unrecognized process after attempting to clear it", adminPort)
+		}
 	}
 
 	// One-time, copy-only migration from Sunshine's own default config
@@ -563,18 +658,16 @@ func (b *sunshineBackend) Start(adminPort int) error {
 		log.Printf("[sunshine] admin password set (user=%s)", sunshineAdminUser)
 	}
 
-	// If a capability-granted sunshine_capexec launcher is set (Linux KMS
-	// capture only — see SetCapExecPath), launch Sunshine through it so it
-	// inherits CAP_SYS_ADMIN via ambient capabilities instead of carrying a
-	// file capability itself, which would break its RPATH-based library
-	// resolution. b.capExecPath is only ever set once the capability has
-	// actually been granted (internal/app), so this exec is expected to
-	// succeed whenever it's used.
+	// With the launcher set (Linux KMS capture only — see SetCapExecPath),
+	// run the root-owned Sunshine tree through it: CAP_SYS_ADMIN arrives
+	// via the ambient set, so Sunshine never carries a file capability
+	// (which would break its RPATH-based library resolution). The launcher
+	// chdirs into that tree itself.
 	var launchExe string
 	var launchArgs []string
 	if b.capExecPath != "" {
 		launchExe = b.capExecPath
-		launchArgs = append([]string{b.launchPath}, b.sunshineConfigArgs()...)
+		launchArgs = append([]string{"--run-sunshine", "--"}, b.sunshineConfigArgs()...)
 	} else {
 		launchExe = b.launchPath
 		launchArgs = b.sunshineConfigArgs()
@@ -642,8 +735,10 @@ func (b *sunshineBackend) Start(adminPort int) error {
 		proc = sunshineExecCmdProcess{cmd}
 	}
 
-	b.proc = proc
-	go b.watchProcessExit(proc)
+	tracked := newTrackedSunshineProc(proc)
+	b.proc = tracked
+	b.unhealthySince = time.Time{}
+	go b.watchProcessExit(tracked)
 
 	return nil
 }
@@ -691,15 +786,25 @@ func (b *sunshineBackend) SetOnExit(fn func()) {
 	b.onExit = fn
 }
 
-// Stop terminates a Sunshine instance started by this backend. No-op if not
-// running or if Sunshine wasn't launched by us (e.g. system service).
+// Stop terminates a Sunshine instance started by this backend. If this
+// backend never actually spawned it (b.proc is nil -- e.g. Start() never
+// ran on this object, or this is a fresh Backend value constructed just to
+// switch away from Sunshine), it still kills any orphaned sunshine/
+// gamestream-server/usbridge-streamer process by name so a caller that
+// expects Stop() to leave the ports free (SetStreamBackend, in particular)
+// can actually rely on that -- mirrors rustshineBackend.Stop()'s identical
+// fallback, added for the same reason: a blank b.proc used to mean Stop()
+// silently did nothing, which is exactly what let a stale Sunshine or
+// RustShine instance survive a backend switch and keep answering PIN
+// submissions with credentials that no longer matched what the new backend
+// was sending.
 func (b *sunshineBackend) Stop() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	var err error
 	if b.proc != nil {
 		log.Printf("[sunshine] stopping pid=%d", b.proc.Pid())
-		err = b.proc.Kill()
+		err = stopProcLocked(b.proc)
 		if err != nil && isAccessDenied(err) {
 			// See rustshine_backend.go's Stop() for why: our handle lacks
 			// PROCESS_TERMINATE, most likely because sunshine.exe is
@@ -713,6 +818,9 @@ func (b *sunshineBackend) Stop() error {
 			}
 		}
 		b.proc = nil
+	} else {
+		log.Printf("[sunshine] stopping orphaned process by name")
+		killOrphanStreamerProcesses()
 	}
 	if b.watchdog != nil && b.watchdog.Process != nil {
 		// Stop the watchdog too: we're already terminating Sunshine

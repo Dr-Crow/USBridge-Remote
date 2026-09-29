@@ -6,21 +6,69 @@ import (
 	"time"
 
 	"fyne.io/fyne/v2"
+
+	"usbridge-client/internal/gui/view"
 )
 
 // scheduleCombine debounces concurrent loader completions into a single
 // combineDrives + refresh cycle. Multiple calls within the 80 ms window
 // collapse into one. Must be called on the Fyne event-loop thread.
+//
+// Deferred entirely while the video overlay is the visible nav destination
+// (Control tab, actively streaming): combineDrives' list rebuild +
+// refreshDashboard() cascade measured 150-220ms of main-thread time on real
+// hardware -- even with zero drives, since the cost is in the Devices
+// dashboard's widget tree (footers/buttons/list) invalidating, not the
+// drive count -- and every one of those ms blocks AppKit's run loop, which
+// stalls the Metal CADisplayLink tied to it (confirmed live: this ticket's
+// benchmark caught a stall logged by [Metal]'s own "AppKit/DisplayLink
+// stalled" profiler at the exact same timestamp as this widget's periodic
+// 10s refresh, repeating every 10s for the whole run). The Devices tab
+// isn't even visible then, so the rebuild is deferred: combineDeferred
+// stays set until FlushPendingCombine (Devices tab select) or the next
+// scheduleCombine that runs off Control.
 func (dw *DiskWidget) scheduleCombine() {
 	if dw.pendingCombine.Swap(true) {
 		return // already scheduled
 	}
 	time.AfterFunc(80*time.Millisecond, func() {
-		fyne.Do(func() {
+		if !view.NavVideoHidden() {
+			dw.combineDeferred.Store(true)
 			dw.pendingCombine.Store(false)
+			return
+		}
+		fyne.Do(func() {
+			dw.combineDeferred.Store(false)
+			// pendingCombine only clears once combineDrives itself has
+			// finished, not merely once this closure started -- clearing it
+			// first (as this used to) let a second scheduleCombine call
+			// land while combineDrives (150-220ms on real hardware per
+			// this func's own doc comment) was still running, queuing a
+			// second, overlapping combineDrives whose steps interleaved
+			// with the first's. Confirmed live: two locally-driven
+			// dw.allDrives writes with no agent round-trip to
+			// self-correct them (a pen tablet toggle's IsMounted, see
+			// disk_widget_pen.go) raced exactly this way -- one
+			// combineDrives' fresh rebuild was immediately clobbered by
+			// the other's still-in-flight one using pre-click data,
+			// undoing the toggle within about a second, every time.
 			dw.combineDrives()
+			dw.pendingCombine.Store(false)
 		})
 	})
+}
+
+// FlushPendingCombine rebuilds Devices immediately from the current seed
+// and any loaders that already finished. Call on the Fyne thread when the
+// Devices tab is selected so a reconnect does not wait for the 10s poll.
+func (dw *DiskWidget) FlushPendingCombine() {
+	if dw == nil {
+		return
+	}
+	dw.combineDeferred.Store(false)
+	dw.pendingCombine.Store(true)
+	dw.combineDrives()
+	dw.pendingCombine.Store(false)
 }
 
 func (dw *DiskWidget) requestDevicesRefresh() {
@@ -49,6 +97,7 @@ func (dw *DiskWidget) requestDevicesRefresh() {
 				dw.lastDrivesTraceSig = currentSig
 				dw.markDevicesRefresh()
 				dw.devicesList.Refresh()
+				dw.refreshDashboard()
 			}
 		})
 	}
@@ -116,10 +165,27 @@ func (dw *DiskWidget) startPeriodicRefresh() {
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			dw.loadLocalDrives()
-			dw.loadMountedDevices()
-			dw.loadUSBPassthroughDevices()
+		for {
+			select {
+			case <-dw.refreshStop:
+				return
+			case <-ticker.C:
+				if dw.isClosing.Load() {
+					continue
+				}
+				dw.loadLocalDrives()
+				dw.loadMountedDevices()
+				dw.loadUSBPassthroughDevices()
+			}
 		}
 	}()
+}
+
+func (dw *DiskWidget) Shutdown() {
+	dw.isClosing.Store(true)
+	dw.stopRefreshOnce.Do(func() {
+		if dw.refreshStop != nil {
+			close(dw.refreshStop)
+		}
+	})
 }

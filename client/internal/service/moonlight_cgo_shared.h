@@ -14,6 +14,7 @@
  *   extern void goMoonlightStage(int stage, int result, int errCode);
  *   extern void goMoonlightConnected(void);
  *   extern void goMoonlightTerminated(int errCode);
+ *   extern void goMoonlightRumble(unsigned short controllerNumber, unsigned short lowFreq, unsigned short highFreq);
  *   extern void goVideoFormatNegotiated(int videoFormat);
  */
 
@@ -39,6 +40,28 @@ static volatile uint64_t g_ar_plc_count   = 0; // Opus PLC frames (network packe
 static volatile uint64_t g_ar_err_count   = 0; // opus_multistream_decode errors
 static volatile uint64_t g_ar_muted_count = 0; // frames silenced because muted
 
+// Most recently received DECODE_UNIT.frameHostProcessingLatency (1/10 ms
+// units, 0 = host doesn't provide it -- see Limelight.h's own doc comment
+// on that field). Captured once here in the shared dr_submit trampoline
+// rather than duplicated in every platform's own platform_dr_submit, so
+// net_graph.go's "how fast is the host capturing+encoding" number works
+// identically on every platform once the host (rust-shine) actually fills
+// this in -- it's a standard Sunshine-protocol field, not something we
+// invented, and stock Sunshine/Apollo builds that populate it get the same
+// treatment for free.
+static volatile uint16_t g_last_host_latency_tenths_ms = 0;
+
+// Cumulative compressed video bytes handed to the decoder (sum of every
+// DECODE_UNIT.fullLength seen by dr_submit below) -- read by
+// do_get_total_video_bytes for net_graph.go's live bitrate readout. uint64
+// so a long session never wraps it (see net_graph.go's BytesVideo doc
+// comment). Same "one cheap always-on global" approach as
+// g_last_host_latency_tenths_ms above, not the heavier opt-in per-frame
+// bench_frames_note recorder below.
+static volatile uint64_t g_total_video_bytes = 0;
+
+#include "bench_frames.h"
+
 // These functions are called from moonlight_cgo_wrapper.go's TU via extern declarations.
 // They must have external (non-static) linkage so the linker can resolve them
 // from the platform CGO file's object. Build tags ensure only one platform file
@@ -61,6 +84,7 @@ static void cl_stage_complete(int s)       { goMoonlightStage(s,  1, 0); }
 static void cl_stage_failed(int s, int ec) { goMoonlightStage(s, -1, ec); }
 static void cl_connected(void)             { goMoonlightConnected(); }
 static void cl_terminated(int ec)          { goMoonlightTerminated(ec); }
+static void cl_rumble(unsigned short n, unsigned short low, unsigned short high) { goMoonlightRumble(n, low, high); }
 static void cl_log(const char *fmt, ...) {
     char buf[256];
     va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof(buf), fmt, ap); va_end(ap);
@@ -149,7 +173,12 @@ static void dr_start(void)   {}
 static void dr_stop(void)    {}
 static void dr_cleanup(void) {}
 
-static int dr_submit(PDECODE_UNIT du) { return platform_dr_submit(du); }
+static int dr_submit(PDECODE_UNIT du) {
+    g_last_host_latency_tenths_ms = du->frameHostProcessingLatency;
+    g_total_video_bytes += (uint64_t)du->fullLength;
+    bench_frames_note(du);
+    return platform_dr_submit(du);
+}
 
 // ── LiStartConnection entrypoint ──────────────────────────────────────────────
 //
@@ -231,6 +260,22 @@ int do_li_start(
     // change at all client-side until this was added) -- silently, with no
     // error, since ReferenceFrameInvalidationSupported alone was never
     // enough on its own.
+    // CAPABILITY_DIRECT_SUBMIT: an attempt to remove this (to activate
+    // moonlight-common-c's own queue+decoder-thread machinery in
+    // VideoDepacketizer.c/VideoStream.c, where an adaptive playout jitter
+    // buffer was added -- see that file's playoutDelayForFrame) was tried
+    // live and reverted. It fixed the buffer (confirmed working: applied
+    // delay tracked jitter correctly, stalls dropped sharply), but moving
+    // decode/render off the network receive thread onto a separate thread
+    // caused a *different*, worse regression: real render throughput to the
+    // screen collapsed to ~10-15fps while decode itself kept running at the
+    // full ~60fps (confirmed via the VT-decode-fps vs Metal-rendered-fps
+    // counters diverging live) -- something about this Metal/CVDisplayLink
+    // path doesn't tolerate decode happening off its accustomed thread, and
+    // it wasn't safe to leave running while diagnosing further. Keep
+    // CAPABILITY_DIRECT_SUBMIT set until that's understood; the jitter
+    // buffer code is left in place (harmless, unreachable while this flag
+    // is set) for whoever picks this back up.
     dr.capabilities = CAPABILITY_DIRECT_SUBMIT | CAPABILITY_REFERENCE_FRAME_INVALIDATION_AVC | CAPABILITY_REFERENCE_FRAME_INVALIDATION_HEVC | CAPABILITY_REFERENCE_FRAME_INVALIDATION_AV1;
 
     AUDIO_RENDERER_CALLBACKS ar;
@@ -240,6 +285,21 @@ int do_li_start(
     ar.stop               = ar_stop;
     ar.cleanup            = ar_cleanup;
     ar.decodeAndPlaySample = ar_decode;
+    // Requests AudioPacketDuration=10ms instead of the 5ms
+    // lowest-latency default (SdpGenerator.c) -- the official protocol's
+    // own branch for this, not a wire-format deviation: 5ms frames are
+    // CELT-only by the Opus spec and can never carry Opus's own inband FEC
+    // no matter what the host does, only the fixed-33%/20ms-block outer
+    // Reed-Solomon FEC (RtpAudioQueue's 4+2 scheme) protects them. 10ms
+    // frames are SILK/Hybrid-eligible, letting a host that enables inband
+    // FEC (see rust-shine's OpusEncoder::set_inband_fec) actually recover
+    // a single lost packet from the very next one, no RS block wait
+    // needed. This client doesn't have a genuinely slow decoder -- the
+    // capability bit is repurposed here purely to opt into the duration
+    // it happens to gate, matching what the user explicitly chose over
+    // the alternative (a custom >10ms duration outside what the real
+    // protocol's own SdpGenerator.c logic ever produces).
+    ar.capabilities = CAPABILITY_SLOW_OPUS_DECODER;
 
     CONNECTION_LISTENER_CALLBACKS cl;
     LiInitializeConnectionCallbacks(&cl);
@@ -248,6 +308,7 @@ int do_li_start(
     cl.stageFailed          = cl_stage_failed;
     cl.connectionStarted    = cl_connected;
     cl.connectionTerminated = cl_terminated;
+    cl.rumble               = cl_rumble;
     cl.logMessage           = cl_log;
 
     int ret = LiStartConnection(&srv, &cfg, &cl, &dr, &ar, NULL, 0, NULL, 0);
@@ -270,6 +331,47 @@ void do_get_rtp_video_stats(uint32_t *out) {
     out[4] = stats->packetCountOOS;
     out[5] = stats->packetCountInvalid;
     out[6] = stats->packetCountFecInvalid;
+}
+
+// do_get_estimated_rtt_info copies LiGetEstimatedRttInfo()'s two uint32
+// outputs into `out` (estimatedRtt, estimatedRttVariance, both ms) and
+// returns 1 if moonlight-common-c had a real RTT estimate to report, 0
+// otherwise (e.g. no active session yet) -- mirrors do_get_rtp_video_stats's
+// no-cgo-binding-per-field approach.
+int do_get_estimated_rtt_info(uint32_t *out) {
+    uint32_t rtt = 0, rttVariance = 0;
+    int ok = LiGetEstimatedRttInfo(&rtt, &rttVariance) ? 1 : 0;
+    out[0] = rtt;
+    out[1] = rttVariance;
+    return ok;
+}
+
+// do_get_last_host_latency_tenths_ms returns the most recent frame's
+// DECODE_UNIT.frameHostProcessingLatency (see g_last_host_latency_tenths_ms's
+// doc comment) -- 0 means the host hasn't provided this for the current/most
+// recent frame (either an older/non-Sunshine-protocol host, or the host
+// simply not filling it in).
+uint16_t do_get_last_host_latency_tenths_ms(void) {
+    return g_last_host_latency_tenths_ms;
+}
+
+// do_get_total_video_bytes returns g_total_video_bytes -- see that global's
+// own doc comment. net_graph.go diffs successive calls into a per-tick
+// delta the same way it already does for the RTP packet counters.
+uint64_t do_get_total_video_bytes(void) {
+    return g_total_video_bytes;
+}
+
+// do_get_playout_jitter_us/do_get_playout_applied_delay_us expose
+// LiGetPlayoutJitterUs/LiGetPlayoutAppliedDelayUs (VideoDepacketizer.c) --
+// client-side arrival-jitter numbers, distinct from the network RTT
+// variance do_get_estimated_rtt_info reports.
+uint64_t do_get_playout_jitter_us(void) {
+    return LiGetPlayoutJitterUs();
+}
+
+uint64_t do_get_playout_applied_delay_us(void) {
+    return LiGetPlayoutAppliedDelayUs();
 }
 
 void do_li_stop(void) {
@@ -316,4 +418,10 @@ void do_send_multi_controller(
 }
 void do_send_utf8_text(const char *text, unsigned int len) {
     LiSendUtf8TextEvent(text, len);
+}
+void do_send_pen(unsigned char eventType, unsigned char toolType, unsigned char penButtons,
+                  float x, float y, float pressureOrDistance,
+                  unsigned short rotation, unsigned char tilt) {
+    LiSendPenEvent(eventType, toolType, penButtons, x, y, pressureOrDistance,
+        0.0f, 0.0f, rotation, tilt);
 }

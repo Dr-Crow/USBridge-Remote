@@ -116,6 +116,15 @@ type CodecProbe interface {
 	// docs). Always (false, false) on a backend with no such concept
 	// (Sunshine).
 	Color444Status() (active bool, available bool)
+	// HdrStatus mirrors Color444Status exactly, for the RustShine HDR color
+	// upgrade (HEVC Main10, BT.2020 + PQ) instead of 4:4:4 chroma -- see
+	// gamestream-server's GameStreamConfig::hdr_supported/AppState::hdr_licensed
+	// docs, and rust-shine's docs/COLOR_MODES.md for why this is an
+	// independent axis (today: macOS-only, unlike 4:4:4 which is Linux-only).
+	HdrStatus() (active bool, available bool)
+	// VirtualDisplaySupported reports whether this backend supports native
+	// virtual displays (creation and streaming) without external physical monitors.
+	VirtualDisplaySupported() bool
 }
 
 // Client is a Moonlight client paired with the streaming host.
@@ -149,6 +158,16 @@ type CaptureDevice struct {
 	DisplayName   string
 	Primary       bool
 	Width, Height int
+	// GDIName is the monitor's Windows GDI device name (`\\.\DISPLAY1`),
+	// "" elsewhere. Both Windows backends report it, so it is what ties one
+	// physical monitor to each backend's own OutputName (Sunshine's
+	// device_id GUID, rustshine's DXGI index).
+	GDIName string
+	// Adapter and VendorID are the GPU driving the monitor ("NVIDIA GeForce
+	// RTX 3090", 0x10DE), where the backend reports them (rustshine on
+	// Windows); empty/0 elsewhere.
+	Adapter  string
+	VendorID uint32
 }
 
 // CaptureDeviceLister is the platform-specific device/monitor-correlation

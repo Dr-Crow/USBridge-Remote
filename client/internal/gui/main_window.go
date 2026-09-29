@@ -16,6 +16,7 @@ import (
 	"usbridge-client/internal/service"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
 	"github.com/sirupsen/logrus"
@@ -27,19 +28,83 @@ type MainWindow struct {
 	window fyne.Window
 
 	// Widgets
-	diskWidget          *controller.DiskWidget
-	videoWidget         *controller.VideoWidget
-	backupWidget        *controller.BackupWidget
-	connectionManager   *controller.ConnectionManager
-	mainContent         *fyne.Container
-	connectionContent   *fyne.Container
-	tabs                *container.AppTabs
-	deviceButtonsPanel  *fyne.Container
-	deviceFooterBar     *fyne.Container
-	deviceMountBtn      fyne.CanvasObject
-	deviceUnmountBtn    fyne.CanvasObject
-	mainExitBtn         *view.HeaderActionButton
-	connectionFooterBar *fyne.Container
+	diskWidget        *controller.DiskWidget
+	videoWidget       *controller.VideoWidget
+	backupWidget      *controller.BackupWidget
+	connectionManager *controller.ConnectionManager
+	mainContent       *fyne.Container
+	connectionContent *fyne.Container
+	// mainHeaderHost swaps the connected Control header between the normal
+	// status row and the special-keys strip (mobile: keys cannot draw over
+	// Vulkan, so they replace this header instead of floating on video).
+	mainHeaderHost   *fyne.Container
+	mainHeaderNormal fyne.CanvasObject
+	tabs             *container.AppTabs
+	// tabHeaderButtons is the Control/Devices/Snapshots/Scripts selector --
+	// desktop: left zone of createMainAddressBar; mobile: the bigger
+	// connected footer (see createMobileConnectedFooter).
+	tabHeaderButtons          [4]*headerTabButton
+	tabContentStack           *fyne.Container
+	mobileTabFooter           fyne.CanvasObject
+	mobileKeyboardBtn         fyne.CanvasObject
+	mobileKeyboardToggle      *headerStatusBadgeButton
+	mobileViewportPanBtn      fyne.CanvasObject
+	mobileViewportPanToggle   *headerStatusBadgeButton
+	mobileFullscreenBtn       fyne.CanvasObject
+	mobileFullscreenToggle    *headerStatusBadgeButton
+	mobileVideoSettingsBtn    fyne.CanvasObject
+	mobileVideoSettingsToggle *headerStatusBadgeButton
+	mobileControlBurgerBtn    *headerStatusBadgeButton
+	mobileControlBurgerWrap   fyne.CanvasObject
+	mobileMouseBtn            fyne.CanvasObject
+	mobileMouseToggle         *headerStatusBadgeButton
+	mobileNetGraphBtn         fyne.CanvasObject
+	mobileNetGraphSettingsBtn fyne.CanvasObject
+	mobileMonitorBtn          fyne.CanvasObject
+	mobileMonitorToggle       *headerStatusBadgeButton
+	mobileClipboardBtn        fyne.CanvasObject
+	mobileClipboardToggle     *headerStatusBadgeButton
+	mobileFooterGraphDivider  fyne.CanvasObject
+	mobileFooterHIDDivider    fyne.CanvasObject
+	mobileFooterActionsScroll *mobileFooterActionScroller
+	// connectedChromeHost holds portrait (tab bar + version) or landscape
+	// (single row) chrome under the connected tabs; swapped by
+	// applyConnectedChromeLayout without a full reloadUI.
+	connectedChromeHost    *fyne.Container
+	connectedVersionFooter fyne.CanvasObject
+	connectedFooterBusy    fyne.CanvasObject
+	connectedFooterScript  fyne.CanvasObject
+	mobileTabsRow          fyne.CanvasObject
+	connectedLandscape     bool
+	deviceButtonsPanel     *fyne.Container
+	deviceFooterBar        *fyne.Container
+	deviceMountBtn         fyne.CanvasObject
+	deviceUnmountBtn       fyne.CanvasObject
+	mainExitBtn            *view.HeaderActionButton
+	// statusBarStorageDivider is the status-indicator strip's own divider
+	// right before mw.sdStorageProgress (main_window_status_indicator_bar.go)
+	// -- shown/hidden together with it so an agent connection with no SD
+	// card doesn't leave a dangling divider with nothing after it.
+	statusBarStorageDivider fyne.CanvasObject
+	// statusBarPeripheralsDivider is that same strip's divider between the
+	// video group and the peripherals group -- see syncStatusBarDividers.
+	statusBarPeripheralsDivider fyne.CanvasObject
+	// statusIndicatorBar is the Control header's bordered fps/resolution
+	// strip. Hidden entirely while it has nothing to show -- otherwise the
+	// fill/border still paints as a tiny empty chip.
+	statusIndicatorBar fyne.CanvasObject
+	// statusBarIndicatorsDivider is the divider *inside* the peripherals
+	// group, between mw.statusBarButtonsGroup (audio/keyboard/mouse/rndis/
+	// script -- real actions) and mw.statusBarIndicatorsGroup (SD card, SD
+	// disk, gamepad, snapshots -- display-only, never react to clicks) --
+	// see syncStatusBarDividers.
+	statusBarIndicatorsDivider fyne.CanvasObject
+	statusBarButtonsGroup      *fyne.Container
+	statusBarIndicatorsGroup   *fyne.Container
+	controlFooterActions       fyne.CanvasObject
+	controlFooterKVMDivider    fyne.CanvasObject
+	controlFooterGraphDivider  fyne.CanvasObject
+	controlFooterHIDDivider    fyne.CanvasObject
 
 	// Services
 	nbdServer        *service.NBDServer
@@ -61,10 +126,41 @@ type MainWindow struct {
 	lastTailscaleAuthURL     string
 	tailscalePollCancel      context.CancelFunc
 	currentVideoFPS          float64
-	currentStorageDir        string
-	currentStorageTotal      int64
-	currentStorageAvailable  int64
-	storageStatus            *models.StorageStatusData
+	// currentVideoWidth/Height mirror the resolution actually applied via
+	// VideoWidget.SetOnResolutionChanged -- the header's own resolution
+	// label (updateVideoIconLabel) reads these instead of the static,
+	// never-updated mw.config.VideoWidth/Height.
+	currentVideoWidth       int
+	currentVideoHeight      int
+	currentStorageDir       string
+	currentStorageTotal     int64
+	currentStorageAvailable int64
+	storageStatus           *models.StorageStatusData
+
+	// connectingToast is the bottom "Connecting to X…" toast (see
+	// handleConnectingStateChange) -- nil whenever the toast isn't showing.
+	// Only ever set/read from handleConnectingStateChange, itself always
+	// hopped onto the Fyne goroutine via fyne.Do, so no separate lock.
+	connectingToast *view.ConnectingToastHandle
+
+	// suppressConnectingToastClose tells the next handleConnectingStateChange
+	// call (fired by clearConnectionPending -> SetConnectionPending(false))
+	// to leave connectingToast open instead of closing it -- set right
+	// before that call by a connect failure that wants to transform the
+	// toast into an inline error (view.ConnectingToastHandle.ShowError)
+	// rather than close it and pop a separate error dialog. Same
+	// Fyne-goroutine-only invariant as connectingToast.
+	suppressConnectingToastClose bool
+
+	// connectGen is the in-flight connect attempt's generation. beginConnectAttempt
+	// stores the new id in connectLiveGen; abortConnectAttempt increments
+	// connectGen so queued success UI (fyne.Do after doConnectWithProtocol)
+	// is a no-op and does not attach a session the user already cancelled.
+	connectGen      atomic.Uint64
+	connectLiveGen  atomic.Uint64
+	connectCancelMu sync.Mutex
+	connectCancel   context.CancelFunc
+	connectCtx      context.Context
 
 	// Connection/Disconnection button
 	connectionBtn    *view.HeaderActionButton
@@ -91,20 +187,55 @@ type MainWindow struct {
 	connectionIcon *widget.Button
 	nbdIcon        *widget.Button
 	videoIcon      *headerStatusBadgeButton
+	// footerVideoSettingsIcon is the Control footer duplicate of mw.videoIcon
+	// (header keeps the original, in front of fps).
+	footerVideoSettingsIcon *headerStatusBadgeButton
+	// videoFPSText/videoResolutionText/videoStatusGroup back the Control
+	// header's status-indicator strip (main_window_status_indicator_bar.go):
+	// the fps/resolution text next to videoIcon, and the container the three
+	// are grouped in -- shown/hidden together with videoIcon itself (see
+	// updateStatusBarUI).
+	videoFPSText        *canvas.Text
+	videoResolutionText *canvas.Text
+	videoStatusGroup    *fyne.Container
+	// videoMonitorText/Dot are the capture-device name after fps/resolution
+	// in the Control header; videoMonitorLabelBtn is the tappable wrapper
+	// around videoMonitorText that opens the same picker as the desktop
+	// footer's videoMonitorToggle/Btn (after fullscreen) -- both hidden when
+	// the agent only has one monitor.
+	videoMonitorText     *canvas.Text
+	videoMonitorDot      fyne.CanvasObject
+	videoMonitorLabelBtn *statusBarTextButton
+	videoMonitorToggle   *headerStatusBadgeButton
+	videoMonitorBtn      fyne.CanvasObject
+	// videoMonitorChipLoaded is true after the first device-list fetch for
+	// this stream so updateStatusBarUI does not hammer GetVideoDevices.
+	videoMonitorChipLoaded bool
+	// fullscreenIcon sits in the Control footer (after video settings).
+	fullscreenIcon *headerStatusBadgeButton
 	audioIcon      *headerStatusBadgeButton
 	captureIcon    *widget.Button
-	keyboardIcon   *widget.Button
-	mouseIcon      *widget.Button
-	rndisIcon      *widget.Button
-	gamepadIcon    *widget.Button
-	cdromIcon      *widget.Button
-	backupIcon          fyne.CanvasObject
-	snapshotIcon        *widget.Button
-	scriptIcon          *widget.Button
-	runningScriptPath   string
-	runningScriptName   string
-	statusPanel         *fyne.Container
-	protocolPanel       *fyne.Container
+	keyboardIcon   *headerStatusBadgeButton
+	mouseIcon      *headerStatusBadgeButton
+	// clipboardIcon/inputModeIcon are Control footer menus: clipboard
+	// send/get/auto-sync and keyboard keys/characters mode. Clipboard also
+	// appears on the mobile Control footer (mobileClipboardToggle).
+	clipboardIcon *headerStatusBadgeButton
+	inputModeIcon *headerStatusBadgeButton
+	rndisIcon     *headerStatusBadgeButton
+	// gamepadIcon/cdromIcon/backupIcon/snapshotIcon are that strip's own
+	// *passive* indicators (main_window_status_indicator_bar.go's
+	// "indicators" sub-group) -- bare newHeaderPassiveIndicator images, not
+	// widget.Button, so they never react to hover/click (they used to
+	// double as tab-switch shortcuts, which the header shouldn't do).
+	gamepadIcon       fyne.CanvasObject
+	cdromIcon         fyne.CanvasObject
+	backupIcon        fyne.CanvasObject
+	snapshotIcon      fyne.CanvasObject
+	scriptIcon        *widget.Button
+	runningScriptPath string
+	runningScriptName string
+	statusPanel       *fyne.Container
 
 	connectionLossInProgress atomic.Bool
 	shutdownInProgress       atomic.Bool
@@ -123,7 +254,30 @@ type MainWindow struct {
 	// never overrides an explicit user mute (toggleAudioMuted) set before
 	// or during that screen.
 	audioMutedByNav bool
-	onReadyCallback          func()
+	onReadyCallback func()
+
+	// lastGoodWindowSize/resizeGuardPending back the windowResizeGuard
+	// workaround (main_window_resize_guard.go) for a real Windows-only
+	// Fyne/GLFW bug: minimizing then restoring this window can snap it
+	// down to its content's bare MinSize instead of its actual prior size.
+	lastGoodWindowSize fyne.Size
+	resizeGuardPending bool
+	designModeChip     *view.FooterTintChip
+	// windowPlacementStop ends the periodic save of the window's last
+	// monitor/position so the next launch can reopen on the same display.
+	windowPlacementStop chan struct{}
+	// freezeWindowPlacement blocks placement autosave only while switching
+	// Size Desktop ↔ Compact so one mode cannot overwrite the other.
+	freezeWindowPlacement bool
+
+	// onMainContent tracks which screen is showing (true: mainContent,
+	// false: connectionContent) -- syncVideoOverlayForNav/syncAudioMuteForNav
+	// used to tell this apart via `mw.window.Content() == mw.mainContent`,
+	// which broke once SetContent started wrapping content in
+	// wrapWithResizeGuard (window.Content() then returns that wrapper, never
+	// mw.mainContent/mw.connectionContent themselves). Zero value (false)
+	// matches the real startup order: connectionContent is shown first.
+	onMainContent bool
 }
 
 func NewMainWindow(cfg *models.AppConfig) *MainWindow {
@@ -131,9 +285,11 @@ func NewMainWindow(cfg *models.AppConfig) *MainWindow {
 		i18n.Init("en")
 	}
 	a := newFyneApp()
+	i18n.Init(a.Preferences().StringWithFallback(i18n.LanguagePrefKey, "en"))
 	w := a.NewWindow("USBridge Client")
 	w.SetIcon(assets.AppIcon)
 	w.SetPadded(false)
+	view.SetWhatsNewHost(w)
 
 	mw := &MainWindow{
 		app:    a,
@@ -144,11 +300,18 @@ func NewMainWindow(cfg *models.AppConfig) *MainWindow {
 		},
 		lifecycleOps: make(chan func(), 32),
 	}
+	view.ForceMobileDesign = a.Preferences().BoolWithFallback(view.ForceMobileDesignPrefKey, false)
+	view.ForceMobilePresetID = view.CompactWindowPreset().ID
+	view.ForceMobileScale = view.ClampPhonePreviewScale(float32(a.Preferences().FloatWithFallback(view.ForceMobileScalePrefKey, float64(view.DefaultPhonePreviewScale))))
+	view.ApplyPreviewUserScale()
+	view.RestoreNetGraphPreferences()
 
 	mw.nbdServer = service.NewNBDServer("127.0.0.1")
 	mw.tailscaleService = service.NewTailscaleService()
 	vc := newPlatformVideoClient(cfg)
-	if ts, ok := vc.(interface{ SetTailscaleService(*service.TailscaleService) }); ok {
+	if ts, ok := vc.(interface {
+		SetTailscaleService(*service.TailscaleService)
+	}); ok {
 		ts.SetTailscaleService(mw.tailscaleService)
 	}
 	mw.videoClient = vc
@@ -159,9 +322,21 @@ func NewMainWindow(cfg *models.AppConfig) *MainWindow {
 	// Initialize widgets
 	mw.diskWidget = controller.NewDiskWidget(nil, mw.updateStatus, a, cfg)
 	mw.diskWidget.SetWindow(w)
+	mw.diskWidget.SetTailscaleService(mw.tailscaleService)
+	// Browser USB/IP passthrough (gamepad/pen, see disk_widget_gamepad_start_wasm.go
+	// / disk_widget_pen_start_wasm.go) rides a DataChannel on this same
+	// video/control PeerConnection instead of a separate ws:// WebSocket --
+	// only WebRTCVideoClient (wasm build) implements this; nil on every
+	// other platform, same optional-interface-probe pattern as
+	// SetTailscaleService above.
+	mw.diskWidget.SetPeerConnection(mw.videoClient)
 	mw.videoWidget = controller.NewVideoWidget(w, nil, mw.videoClient, mw.updateStatus)
 	mw.videoWidget.SetShowMouseCursor(a.Preferences().BoolWithFallback("show_mouse_cursor", false))
+	mw.wireVideoHotkeys()
+	mw.videoWidget.SetKeyboardInputMode(a.Preferences().StringWithFallback(keyboardInputModePref, controller.KeyboardInputModeText))
 	mw.videoWidget.SetTailscaleService(mw.tailscaleService)
+	mw.wireMobileKeyboardStackCallbacks()
+	mw.wireMobileViewportPanCallbacks()
 	// See VideoWidget.HandleAppBackgrounded's doc comment (video_widget_android.go):
 	// closes a real race where a stray frame from a connection attempt that
 	// went stale while backgrounded (Android Doze/App Standby, especially
@@ -186,6 +361,10 @@ func NewMainWindow(cfg *models.AppConfig) *MainWindow {
 	)
 
 	go mw.runLifecycleLoop()
+
+	// Stamp the configured size onto the window object before anyone
+	// calls Show, so GLFW's first HWND is not the driver's tiny default.
+	mw.applyInitialWindowSize()
 
 	return mw
 }
@@ -218,12 +397,39 @@ func (mw *MainWindow) attachUSBClient(client *api.USBClient) *api.USBClient {
 		}
 	})
 
+	// Same wiring as startClipboardSync's mw.clipboardSync.SetOpenDataChannel
+	// below -- rides the WebRTC PeerConnection's "api-tunnel" DataChannel
+	// when one's available (see USBClient.SetOpenDataChannel's doc comment),
+	// falling back to a direct fetch()/dial otherwise. attachUSBClient is the
+	// common chokepoint every connection path (direct, tailscale, ...) routes
+	// through, so every mw.usbClient ends up with this wired, not just
+	// whichever one happened to exist when a WebRTC session came up.
+	client.SetOpenDataChannel(mw.videoClient.OpenDataChannel)
+
 	if len(mw.activeAPISecret) > 0 {
 		client.SetAPISecretV2(mw.activeAPISecret)
 		// Keep Moonlight's PIN relay in sync so it uses the same HMAC key.
 		if ms, ok := mw.videoClient.(interface{ SetAPISecret([]byte) }); ok {
 			ms.SetAPISecret(mw.activeAPISecret)
 		}
+	}
+
+	// Same optional-interface-probe pattern as SetAPISecret above -- only
+	// WebRTCVideoClient (wasm build) implements this, nil on every other
+	// platform (desktop never calls /webrtc/offer at all, see
+	// MoonlightService's own doc comments). Sourced from whichever
+	// SavedConnection is currently selected in the connection list (empty
+	// for a manual entry or a QR/deep-link "Connect now" that was never
+	// saved -- see SelectedConnectionHwID's own doc comment for that scope
+	// boundary), so postOffer (client_wasm.go) can fall back to
+	// usbridge-entitlement's WebRTC signaling relay when this agent isn't
+	// directly reachable at all -- see SavedConnection.HwID's doc comment.
+	if setter, ok := mw.videoClient.(interface{ SetHwID(string) }); ok {
+		hwID := ""
+		if mw.connectionManager != nil {
+			hwID = mw.connectionManager.SelectedConnectionHwID()
+		}
+		setter.SetHwID(hwID)
 	}
 
 	mw.startClipboardSync(client)
@@ -250,5 +456,15 @@ func (mw *MainWindow) startClipboardSync(client *api.USBClient) {
 	manager := clipboard.NewManager(clipboard.NewBackend(mw.window), mw.config.ClipboardMaxBytes)
 	manager.SetEnabled(enabled)
 	mw.clipboardSync = api.NewClipboardSync(client, manager, mw.config.ClipboardMaxBytes)
+	// Rides the RustShine WebRTC PeerConnection's "clipboard-sync"
+	// DataChannel instead of a direct ws://+wss:// dial when one's
+	// available -- see api.ClipboardSync.dial's doc comment for why a
+	// direct dial can never work from an https-loaded page, and for why
+	// dial falls back to the direct dial on any OpenDataChannel error, not
+	// just when this is nil: on desktop-native mw.videoClient is always
+	// *service.MoonlightService, whose OpenDataChannel is a real method
+	// that always errors (see moonlight_datachannel.go) -- a bound Go
+	// method value is never nil regardless of what its body does.
+	mw.clipboardSync.SetOpenDataChannel(mw.videoClient.OpenDataChannel)
 	mw.clipboardSync.Start()
 }
