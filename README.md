@@ -1,41 +1,30 @@
-# USBridge Remote (Beta)
+# USBridge Remote
 
-![USBridge Remote](https://raw.githubusercontent.com/USBridge-Technologies/USBridge-Remote/main/assets/banner.png)
+<div align="center">
+  <img src="./assets/banner6.svg" width="1400" alt="USBridge Remote">
+</div>
 
 <div align="center">
 
 [English](README.md) | [Deutsch](docs/README_DE.md) | [Français](docs/README_FR.md) | [Italiano](docs/README_IT.md) | [Español](docs/README_ES.md) | [Português (Brasil)](docs/README_PT_BR.md) | [Українська](docs/README_UA.md) | [Polski](docs/README_PL.md) | [日本語](docs/README_JA.md) | [한국어](docs/README_KO.md) | [简体中文](docs/README_ZH.md)
 
-[![Beta](https://img.shields.io/badge/status-beta-orange)](https://github.com/USBridge-Technologies/USBridge-Remote/releases)
-[![Patreon](https://img.shields.io/badge/Patreon-Support_Us-F96854?logo=patreon&logoColor=white)](https://www.patreon.com/USBridge_Technologies)
 [![Windows](https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white)](#)
 [![macOS](https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white)](#)
 [![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)](#)
 [![Android](https://img.shields.io/badge/Android-3DDC84?logo=android&logoColor=white)](https://play.google.com/store/apps/details?id=io.usbridge.client)
-[![iOS](https://img.shields.io/badge/iOS-000000?logo=apple&logoColor=white)](#)
+[![iOS](https://img.shields.io/badge/iOS-000000?logo=apple&logoColor=white)](https://apps.apple.com/us/app/usbridge-remote-desktop/id6787665935)
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.com/invite/xqQ6ybkfWS)
-<a href="https://www.crowdsupply.com/usbridge-technologies/usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Crowd_Supply-USBridge--KVM_2.0-2da44e?logo=crowdsupply&logoColor=white" alt="Crowd Supply"></a>
 
 </div>
 
 ---
 
-**USBridge Remote** is a unified high-performance client for managing remote machines. I designed it to combine **hardware-level BIOS access** (via USBridge KVM devices) and **software-based remote desktop** in a single, streamlined interface.
+**USBridge Remote** is a unified high-performance client for managing remote machines. Engineered to combine **hardware-level BIOS access** (via USBridge KVM devices) and **software-based remote desktop** in a single, streamlined interface.
 
- 🖥️ **Need hardware-level BIOS control before the OS boots?**  
- USBridge Remote integrates natively with **USBridge-KVM 2.0** for out-of-band, metal-level management. 
+<div align="center">
+  <img src="./assets/Functions.svg" width="1400" alt="USBridge Remote">
+</div>
 
-[![Crowd Supply KVM 2.0](https://img.shields.io/badge/Crowd_Supply-USBridge--KVM_2.0-2da44e?style=for-the-badge&logo=crowdsupply&logoColor=white)](https://www.crowdsupply.com/usbridge-technologies/usbridge-kvm-2-0)
-
-> 
-🔥 **Build your own IP-KVM!**
-I have officially released the DIY firmware. You can now turn your own compatible SBC (like Radxa Zero 3W/3E or Cubie A7) and a USB capture card into a full-fledged USBridge KVM 2.0 device.
-
-[![Get the Firmware](https://img.shields.io/badge/DOWNLOAD-DIY_FIRMWARE-007ec6?style=for-the-badge)](https://www.usbridge.io/kvm-software)
-
-> ⚠️ **Beta Software** — This is an early release. Expect bugs. Please report issues via [GitHub Issues](https://github.com/USBridge-Technologies/USBridge-Remote/issues) or join our [Discord](https://discord.com/invite/xqQ6ybkfWS) for support.
-
----
 
 ## Download
 
@@ -55,51 +44,74 @@ Prefer a direct APK without a Play Store account? A self-updating build is also 
 
 The Agent runs on the target machine — the server or PC you want to access remotely. It handles screen capture, input injection, and Tailscale networking.
 
-| Architecture | Windows | macOS | Linux |
-| :--- | :---: | :---: | :---: |
-| **x86_64** | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeAgent-Windows-x86_64.zip) | — | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeAgent-Linux-x86_64.AppImage) |
-| **ARM64** | — | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeAgent-macOS-arm64.dmg) | — |
-
----
-
-## Demo
-
-<div align="center">
-  <a href="https://youtu.be/1pV9PJeBr7M">
-    <img src="https://img.youtube.com/vi/1pV9PJeBr7M/maxresdefault.jpg" alt="USBridge Remote Demo" style="max-width: 100%; border-radius: 8px;">
-  </a>
-</div>
-
----
+<table>
+  <tr>
+    <!-- Left Column: Downloads Table -->
+    <td valign="middle">
+      <table>
+        <tr>
+          <th>Architecture</th>
+          <th>Windows</th>
+          <th>macOS</th>
+          <th>Linux</th>
+        </tr>
+        <tr>
+          <td><b>x86_64</b></td>
+          <td><a href="https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeAgent-Windows-x86_64.zip">Download</a></td>
+          <td>—</td>
+          <td><a href="https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeAgent-Linux-x86_64.AppImage">Download</a></td>
+        </tr>
+        <tr>
+          <td><b>ARM64</b></td>
+          <td>—</td>
+          <td><a href="https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeAgent-macOS-arm64.dmg">Download</a></td>
+          <td>—</td>
+        </tr>
+      </table>
+    </td>
+    <!-- Right Column: Image -->
+    <td valign="middle" width="450">
+      <img src="./assets/agent-screenshot.svg" alt="USBridge Agent Interface" width="100%">
+    </td>
+  </tr>
+</table>
 
 ## Features
 
-<img width="2000" height="1046" alt="USBridge_ap4p" src="https://github.com/user-attachments/assets/2b4bfdf8-412f-4cd7-b4c4-3794d72475cc" />
-
-**One place for everything** — I've unified the workflow. Manage USBridge KVM hardware and software agents from a single dashboard. Add a machine, connect, and you're in.
-
-**No limits, no subscriptions** — Completely free. No session time limits, no connection caps, and no account required on the target machine.
-
-**Low-latency video & Moonlight Integration** — Enjoy up to 2K resolution with buttery-smooth 120 FPS and zero perceptible lag. My adaptive streaming engine leverages native Moonlight integration to deliver unmatched, ultra-low-latency remote desktop performance.
-
-**Tailscale integration** — Built-in encrypted P2P tunneling. Connect to any machine globally without messing with port forwarding or firewall rules. It works on LAN and over the internet automatically.
-
-**Shared Clipboard** — Copy and paste seamlessly between your local machine and remote targets. It fully supports text, images, and file transfers out-of-the-box.
-
-**Multi-Monitor Support** — I've added the ability to switch between multiple displays. If the target machine has several monitors, you can now easily select which one to view directly from the connection settings. 
-
-<img width="2080" height="1170" alt="Screenshot 2026-05-03 20112н0" src="https://github.com/user-attachments/assets/06dc3de0-2be9-42f7-a897-830a0a6f2bc7" />
-
-
----
-
-## Wayland Support (No Prompts)
-
-Most remote desktop agents on Linux struggle with Wayland or constantly spam you with permission prompts and confirmation popups every time a session starts. 
-
-I designed the USBridge Agent to support Wayland natively. It handles full screen capture and input injection out-of-the-box **without any annoying permission prompts** or manual confirmations. It just works.
-
----
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <code>BASIC FUNCTIONALITY</code><br><br>
+      <b>SUNSHINE OPEN-SOURCE</b><br>
+      <i>Standard Game Streaming</i><br><br>
+      ✓ Built-in open-source Sunshine streamer<br>
+      ✓ Low-latency desktop & gaming access<br>
+      ✓ Bi-directional file & text clipboard<br>
+      ✓ Multi-monitor display switching<br>
+      ✓ Integrated Tailscale P2P networking<br>
+      ✓ Native Wayland support (promptless capture)
+    </td>
+    <td width="33%" valign="top">
+      <code>+ BASIC FEATURES</code><br><br>
+      <b>USBRIDGE FREE</b><br>
+      <i>Custom Remote Engine</i><br><br>
+      ✓ Instant-connect custom remote protocol<br>
+      ✓ Adaptive streaming optimized for Wi-Fi stability<br>
+      ✓ Headless virtual display management<br>
+      ✓ Low-latency gamepad controller passthrough<br>
+      ✓ Web browser client access (no installation required)<br>
+      ✓ Windows pre-login access (secure credential entry)
+    </td>
+    <td width="33%" valign="top">
+      <code>+ BASIC FEATURES</code> <code>+ FREE FEATURES</code><br><br>
+      <b>USBRIDGE PRO</b><br>
+      <i>Professional Workflows</i><br><br>
+      ✓ Lossless 4:4:4 chroma color accuracy<br>
+      ✓ Raw USB peripheral device passthrough<br>
+      ✓ Graphic tablet support with pressure & tilt<br><br>
+    </td>
+  </tr>
+</table>
 
 ## Quick Start
 
@@ -109,33 +121,50 @@ I designed the USBridge Agent to support Wayland natively. It handles full scree
 
 3. **Add a connection** — enter the IP or Tailscale address shown in the Agent window. That's it.
 
----
+<div align="center">
+  <img src="./assets/QuickStart.svg" width="1400" alt="USBridge Remote">
+</div>
 
-##  Project Roadmap
+## Hardware Integration
 
-I manage software development plans and upcoming features in an open dashboard. If you want to see what is currently being developed, what is planned, or follow the status of upcoming features, check out the live roadmap:
+<table>
+  <tr>
+   <td width="50%" valign="top">
+      <b>Hardware-Level BIOS Control</b><br>
+      USBridge Remote integrates natively with the USBridge-KVM 2.0 appliance for out-of-band, bare-metal management before OS boot.<br><br>
+      <a href="https://www.usbridge.io/hardware-agent#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Buy USBridge-KVM 2.0"></a>
+    </td>
+    <td width="50%" valign="top">
+      <b>DIY IP-KVM Firmware</b><br>
+      Deploy the official firmware on a compatible SBC (e.g., Radxa Zero 3W/3E, Cubie A7) with a USB capture interface to provision a custom KVM node.<br><br>
+      <a href="https://www.usbridge.io/hardware-agent"><img src="https://img.shields.io/badge/DOWNLOAD-DIY_FIRMWARE-007ec6?style=for-the-badge" alt="Get the Firmware"></a>
+    </td>
+  </tr>
+</table>
 
- **[View USBridge Remote Roadmap](https://github.com/orgs/USBridge-Technologies/projects/3)**
+## Resources & License
 
----
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <b>Development & Roadmap</b><br>
+      I maintain a public dashboard to track all planned features, architectural updates, and release schedules.<br><br>
+      <a href="https://github.com/orgs/USBridge-Technologies/projects/3">View Live Roadmap</a>
+    </td>
+    <td width="33%" valign="top">
+      <b>Project Links</b><br>
+      <ul>
+        <li><a href="https://usbridge.io">Official Website</a></li>
+        <li><a href="https://discord.com/invite/xqQ6ybkfWS">Discord (Beta Testing & Bugs)</a></li>
+        <li><a href="https://www.patreon.com/USBridge_Technologies">Patreon Support</a></li>
+      </ul>
+    </td>
+    <td width="33%" valign="top">
+      <b>License (GPLv3)</b><br>
+      This project is licensed under the <b>GPLv3</b>. The multi-platform client incorporates codebase from <code>moonlight-common-c</code> (also GPLv3).<br><br>
+      <a href="LICENSE">View LICENSE File</a>
+    </td>
+  </tr>
+</table>
 
-## Community & Beta Testing
 
-Join our Discord to get the **Beta Tester** role, report bugs, and help me shape the roadmap:
-
-**[discord.com/invite/xqQ6ybkfWS](https://discord.com/invite/xqQ6ybkfWS)**
-
----
-
-## Links
-
-- 🌐 [Official Website](https://usbridge.io)
-- ❤️ [Patreon Page](https://www.patreon.com/USBridge_Technologies)
-- 🛒 [USBridge KVM 2.0 on Crowd Supply](https://crowdsupply.com/usbridge-technologies/usbridge-kvm-2-0)
-- 💬 [Discord](https://discord.com/invite/xqQ6ybkfWS)
-
----
-
-## 📜 License
-
-This project is licensed under **GPLv3** (see [`LICENSE`](LICENSE)). The Android/Windows/macOS/Linux client incorporates code from `moonlight-common-c` (also GPLv3).
