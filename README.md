@@ -109,7 +109,7 @@ The Agent runs on the target machine — the server or PC you want to access rem
       <i>Professional Workflows</i><br><br>
       ✓ Lossless 4:4:4 chroma color accuracy<br>
       ✓ Raw USB peripheral device passthrough<br>
-      ✓ Graphic tablet support with pressure & tilt<br><br>
+      ✓ Wacom tablet support with pressure & tilt<br><br>
     </td>
   </tr>
 </table>
