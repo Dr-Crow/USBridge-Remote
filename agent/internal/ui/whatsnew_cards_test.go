@@ -24,10 +24,10 @@ func TestWhatsNewCopyPicksLanguage(t *testing.T) {
 }
 
 func TestFormatWhatsNewVersion(t *testing.T) {
-	if got := formatWhatsNewVersion("2.4.45"); got != "v2.4.45" {
+	if got := formatWhatsNewVersion("3.0.45"); got != "v3.0.45" {
 		t.Fatalf("got %q", got)
 	}
-	if got := formatWhatsNewVersion("v2.4.45"); got != "v2.4.45" {
+	if got := formatWhatsNewVersion("v3.0.45"); got != "v3.0.45" {
 		t.Fatalf("got %q", got)
 	}
 }
