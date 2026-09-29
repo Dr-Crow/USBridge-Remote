@@ -274,6 +274,7 @@ type accountDialogDarkButton struct {
 	onTapped func()
 	hovered  bool
 	lime     bool
+	danger   bool
 
 	iconNormal fyne.Resource
 	iconHover  fyne.Resource
@@ -301,8 +302,14 @@ func newAccountDialogLimeButton(text string, onTapped func()) *accountDialogDark
 	return b
 }
 
+func newAccountDialogDangerButton(text string, iconNormal, iconHover fyne.Resource, onTapped func()) *accountDialogDarkButton {
+	b := newAccountDialogDarkButton(text, iconNormal, iconHover, onTapped)
+	b.danger = true
+	return b
+}
+
 func (b *accountDialogDarkButton) CreateRenderer() fyne.WidgetRenderer {
-	fill, border, label := accountDialogDarkButtonColors(b.lime, false)
+	fill, border, label := accountDialogDarkButtonColors(b.lime, b.danger, false)
 	b.bg = canvas.NewRectangle(fill)
 	b.bg.CornerRadius = 6
 
@@ -357,7 +364,7 @@ func (b *accountDialogDarkButton) MouseOut() {
 	b.refreshVisuals()
 }
 
-func accountDialogDarkButtonColors(lime, hovered bool) (fill, border, label color.Color) {
+func accountDialogDarkButtonColors(lime, danger, hovered bool) (fill, border, label color.Color) {
 	if lime {
 		fill = design.ColorConnectionAddFill
 		border = design.ColorConnectionAddFill
@@ -367,6 +374,16 @@ func accountDialogDarkButtonColors(lime, hovered bool) (fill, border, label colo
 			border = design.ColorConnectionAddFillHover
 		}
 		return fill, border, label
+	}
+	if danger {
+		if hovered {
+			return color.NRGBA{R: 0x4e, G: 0x13, B: 0x28, A: 0xff},
+				color.NRGBA{R: 0xed, G: 0x6b, B: 0x7f, A: 0xff},
+				color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+		}
+		return color.NRGBA{R: 0x2a, G: 0x15, B: 0x1b, A: 0xff},
+			color.NRGBA{R: 0x6e, G: 0x22, B: 0x33, A: 0xff},
+			color.NRGBA{R: 0xed, G: 0x6b, B: 0x7f, A: 0xff}
 	}
 	if hovered {
 		return color.NRGBA{R: 0x1d, G: 0x13, B: 0x1b, A: 0xff},
@@ -382,7 +399,7 @@ func (b *accountDialogDarkButton) refreshVisuals() {
 	if b.bg == nil {
 		return
 	}
-	fill, border, label := accountDialogDarkButtonColors(b.lime, b.hovered)
+	fill, border, label := accountDialogDarkButtonColors(b.lime, b.danger, b.hovered)
 	b.bg.FillColor = fill
 	b.bdr.StrokeColor = border
 	b.lbl.Color = label

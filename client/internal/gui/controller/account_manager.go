@@ -403,3 +403,21 @@ func (am *AccountManager) Logout() {
 	am.mu.Unlock()
 	am.notify()
 }
+
+// DeleteAccount requests permanent deletion of the account from the entitlement backend,
+// then clears local credentials and state upon success.
+func (am *AccountManager) DeleteAccount(ctx context.Context) error {
+	am.mu.Lock()
+	token := am.accountToken
+	am.mu.Unlock()
+	if token == "" {
+		return fmt.Errorf("not logged in")
+	}
+
+	if err := account.DeleteAccount(ctx, token); err != nil {
+		return err
+	}
+
+	am.Logout()
+	return nil
+}

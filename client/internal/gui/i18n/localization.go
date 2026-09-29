@@ -117,6 +117,11 @@ type LocalizedStrings struct {
 	AccountForgotPassphrase           string
 	AccountResetIt                    string
 	AccountLogOut                     string
+	AccountDelete                     string
+	AccountDeleteConfirmTitle         string
+	AccountDeleteConfirmMsg           string
+	AccountDeleting                   string
+	AccountDeleteFailed               string
 	AccountLicenseManager             string
 	AccountLicenseManagerShort        string
 	AccountLicenseManagerHint         string
@@ -756,6 +761,11 @@ func EN() *LocalizedStrings {
 		AccountForgotPassphrase:           "Forgot passphrase? ",
 		AccountResetIt:                    "Reset it",
 		AccountLogOut:                     "Log out",
+		AccountDelete:                     "Delete account",
+		AccountDeleteConfirmTitle:         "Delete Account?",
+		AccountDeleteConfirmMsg:           "Permanently delete your account, synced connections, and cloud profile data? This action cannot be undone.",
+		AccountDeleting:                   "Deleting...",
+		AccountDeleteFailed:               "Failed to delete account: %v",
 		AccountLicenseManager:             "License Manager",
 		AccountLicenseManagerShort:        "License",
 		AccountLicenseManagerHint:         "Rebind a license or check payment dates.",
@@ -1461,6 +1471,11 @@ func ES() *LocalizedStrings {
 	locale.AccountForgotPassphrase = "Olvidaste passphrase? "
 	locale.AccountResetIt = "Resetear"
 	locale.AccountLogOut = "Salir"
+	locale.AccountDelete = "Eliminar cuenta"
+	locale.AccountDeleteConfirmTitle = "Eliminar cuenta?"
+	locale.AccountDeleteConfirmMsg = "Eliminar permanentemente tu cuenta, conexiones sincronizadas y datos en la nube? Esta accion no se puede deshacer."
+	locale.AccountDeleting = "Eliminando..."
+	locale.AccountDeleteFailed = "Fallo al eliminar cuenta: %v"
 	locale.AccountLicenseManager = "Gestor de licencias"
 	locale.AccountLicenseManagerShort = "Licencia"
 	locale.AccountLicenseManagerHint = "Reasigna una licencia o consulta las fechas de pago."
@@ -1840,6 +1855,11 @@ func UKProper() *LocalizedStrings {
 	locale.AccountForgotPassphrase = "Забули passphrase? "
 	locale.AccountResetIt = "Скинути"
 	locale.AccountLogOut = "Вийти"
+	locale.AccountDelete = "Видалити акаунт"
+	locale.AccountDeleteConfirmTitle = "Видалити акаунт?"
+	locale.AccountDeleteConfirmMsg = "Назавжди видалити ваш акаунт, синхронізовані з'єднання та дані у хмарі? Цю дію неможливо скасувати."
+	locale.AccountDeleting = "Видалення..."
+	locale.AccountDeleteFailed = "Не вдалося видалити акаунт: %v"
 	locale.AccountLicenseManager = "Менеджер ліцензій"
 	locale.AccountLicenseManagerShort = "Ліцензія"
 	locale.AccountLicenseManagerHint = "Переприв’яжіть ліцензію або перевірте дати оплати."
