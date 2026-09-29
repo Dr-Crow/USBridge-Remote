@@ -145,6 +145,11 @@ static int metal_fsr_ensure_pipeline(void);
 // used by metal_spike_render above that definition.
 static void apply_dynamic_range(CALayer *layer, BOOL hdr);
 
+// Forward declaration -- mono_sec is defined further down (shared by the fps/
+// decode-latency counters), used by metal_spike_render's periodic
+// CVMetalTextureCacheFlush throttle above that definition.
+static double mono_sec(void);
+
 // metal_video_set_upscale_mode is called from Go (service.SetUpscaleMode,
 // wired to video_start_dialog.go's upscale-quality picker) as soon as the
 // user's choice is known/changed -- no codec-negotiation dependency, unlike
@@ -501,6 +506,25 @@ static int metal_spike_render(CVPixelBufferRef buf, CGRect container) {
     // CVMetalTextureCache sample code.
     CFRelease(cvTexA);
     if (cvTexB) CFRelease(cvTexB);
+
+    // CVMetalTextureCache does not free its internal per-source-CVPixelBuffer
+    // texture wrappers just because every CVMetalTextureRef handed out this
+    // frame was released above -- Apple's own AVFoundation/Metal camera
+    // sample code flushes the cache periodically for exactly this reason
+    // (see CVMetalTextureCacheFlush's header doc: "call ... periodically to
+    // allow released textures to be purged"). VT's decode pool recycles a
+    // bounded set of IOSurfaces (24, see vt_create_session's
+    // kCVPixelBufferPoolMinimumBufferCountKey), but each one is still a
+    // logically distinct CVPixelBuffer per decode, so without this the cache
+    // would otherwise accumulate one stale wrapper per unique buffer for as
+    // long as any non-bilinear UpscaleMode session runs. Throttled to once a
+    // second -- cheap either way, but no reason to pay it every frame.
+    static double sLastFlush = 0.0;
+    double nowFlush = mono_sec();
+    if (nowFlush - sLastFlush >= 1.0) {
+        CVMetalTextureCacheFlush(g_mtl_tex_cache, 0);
+        sLastFlush = nowFlush;
+    }
     return 1;
 }
 
@@ -562,6 +586,16 @@ static volatile atomic_int g_active           = 0;
 // CADisplayLink (macOS 14+) fires on the main thread directly; no extra dispatch needed.
 // Stored as id to avoid pulling in CoreVideo/CVDisplayLink headers here.
 static CADisplayLink *g_display_link = nil;
+
+// Test-only instrumentation: counts every CADisplayLink actually created vs.
+// invalidated, so a regression test (metal_video_leak_darwin_test.go) can prove
+// metal_video_create's "replace" path -- called back-to-back without an
+// intervening metal_video_destroy, e.g. video_widget_ui.go's frameNum==1
+// codec-restart bootstrap hitting an already-active overlay -- never leaves
+// a prior CADisplayLink running forever in the background. Always compiled
+// in: two int64 increments per session/replace is free.
+static _Atomic int64_t g_display_link_created_count     = 0;
+static _Atomic int64_t g_display_link_invalidated_count = 0;
 
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 static CVPixelBufferRef g_pendingBuf = NULL;
@@ -1118,6 +1152,27 @@ int metal_video_create(uintptr_t nsWinPtr, float x, float y, float w, float h) {
             g_metal_layer = nil;
         }
 
+        // Replace path: metal_video_create can be called again while a
+        // previous overlay is still active (see video_widget_ui.go's
+        // frameNum==1 bootstrap, which deliberately calls this as a
+        // "safe no-op/replace" when a codec-restart's new session starts
+        // before the old one's stopMetalVideo() ran). Without invalidating
+        // the OLD display link here, it keeps firing forever -- it's a
+        // strong ref held by NSRunLoop, not by g_display_link, so simply
+        // overwriting the global below drops our only handle to it while it
+        // keeps calling into g_dl_target's displayLinkFired: at full display
+        // refresh rate alongside the new one. Confirmed via
+        // TestMetalVideoCreateReplaceInvalidatesPriorDisplayLink: each
+        // leaked link doubles (triples, ...) the per-frame render/diagnostic
+        // work on the main thread, which is exactly the slow, compounding
+        // memory/CPU growth and stutter reported over a long session with
+        // multiple codec restarts.
+        if (g_display_link) {
+            [g_display_link invalidate];
+            g_display_link = nil;
+            atomic_fetch_add(&g_display_link_invalidated_count, 1);
+        }
+
         g_fullWindow = (w <= 0 || h <= 0);
         CGFloat cvH = cv.bounds.size.height;
         NSRect frame = g_fullWindow ? cv.bounds
@@ -1215,6 +1270,7 @@ int metal_video_create(uintptr_t nsWinPtr, float x, float y, float w, float h) {
         if (!g_dl_target) g_dl_target = [MetalDisplayLinkTarget new];
         g_display_link = [ov displayLinkWithTarget:g_dl_target
                                           selector:@selector(displayLinkFired:)];
+        atomic_fetch_add(&g_display_link_created_count, 1);
         [g_display_link addToRunLoop:[NSRunLoop mainRunLoop]
                              forMode:NSRunLoopCommonModes];
 
@@ -1376,6 +1432,7 @@ void metal_video_destroy(void) {
     if (g_display_link) {
         [g_display_link invalidate];
         g_display_link = nil;
+        atomic_fetch_add(&g_display_link_invalidated_count, 1);
     }
 
     dispatch_block_t blk = ^{
@@ -1410,6 +1467,15 @@ void metal_video_destroy(void) {
         goMetalLog(msg, 0);
     };
     if ([NSThread isMainThread]) blk(); else dispatch_sync(dispatch_get_main_queue(), blk);
+}
+
+// metal_video_debug_link_counts exposes g_display_link_created_count /
+// g_display_link_invalidated_count (see their own doc comment) for
+// metal_video_leak_darwin_test.go's leak regression test. Test-only in practice,
+// but harmless to leave callable in production builds -- two atomic loads.
+void metal_video_debug_link_counts(int64_t *created, int64_t *invalidated) {
+    if (created)     *created     = atomic_load(&g_display_link_created_count);
+    if (invalidated) *invalidated = atomic_load(&g_display_link_invalidated_count);
 }
 
 #endif // !TARGET_OS_IPHONE

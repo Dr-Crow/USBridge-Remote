@@ -29,6 +29,8 @@ extern void metal_video_clear_hud_overlay(void);
 extern void metal_video_set_hud_scale(float s);
 extern double metal_video_last_decode_ms(void);
 
+extern void metal_video_debug_link_counts(int64_t *created, int64_t *invalidated);
+
 // Forward declaration matching the CGO-generated export signature (char*, not const char*).
 extern void goMetalLog(char *msg, int level);
 */
@@ -225,6 +227,16 @@ func MetalVideoClearHudOverlay() {
 // the overlay is inactive or no sample has landed yet.
 func MetalVideoLastDecodeMs() float64 {
 	return float64(C.metal_video_last_decode_ms())
+}
+
+// MetalVideoDebugLinkCounts returns how many CADisplayLinks
+// metal_video_create has ever created vs. actually invalidated -- test-only
+// instrumentation for metal_video_leak_darwin_test.go's leak regression test (see
+// metal_video_impl_darwin.m's g_display_link_created_count doc comment).
+func MetalVideoDebugLinkCounts() (created, invalidated int64) {
+	var c, i C.int64_t
+	C.metal_video_debug_link_counts(&c, &i)
+	return int64(c), int64(i)
 }
 
 // MetalVideoSetHidden hides or shows the Metal overlay NSView without destroying it.
