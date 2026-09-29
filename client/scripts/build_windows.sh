@@ -535,14 +535,13 @@ for _dll in msvcp140.dll msvcp140_1.dll vcruntime140.dll vcruntime140_1.dll; do
         echo -e "${YELLOW}⚠${NC} Could not fetch $_dll -- onnxruntime.dll may fail to load on a machine without the VC++ redistributable"
     fi
 done
-LOCALUI_MODELS_SRC="$REPO_ROOT/internal/localui/models"
-if [ -f "$LOCALUI_MODELS_SRC/icon_detect.onnx" ]; then
-    mkdir -p "$DIST_WIN_BIN/localui/models"
-    cp "$LOCALUI_MODELS_SRC"/*.onnx "$DIST_WIN_BIN/localui/models/"
-    echo -e "${GREEN}✓${NC} bin/localui/models/ ($(du -sh "$DIST_WIN_BIN/localui/models" | cut -f1))"
-else
-    echo -e "${YELLOW}⚠${NC} $LOCALUI_MODELS_SRC has no .onnx files -- local ui.parse/AI Vision will stay unavailable in this build"
-fi
+# ONNX MODEL files (~88MB combined) are deliberately NOT copied into the
+# install anymore -- fetched on demand instead, the moment the user clicks
+# "Download models" in the Scripts&AI tab (or already had "Local models" on
+# from a previous session and just connected). See
+# internal/localui/download.go's own doc comment, and build_macos.sh's
+# matching comment for the full reasoning. Only the ONNX runtime DLLs above
+# still ship by default.
 
 # Create a relative shortcut using explorer.exe
 echo "Creating shortcut..."

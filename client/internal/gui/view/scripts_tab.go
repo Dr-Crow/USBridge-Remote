@@ -68,6 +68,19 @@ type ScriptsMCPData struct {
 	OnCopy    func()
 	OnLocalUI func(bool)
 
+	// ModelsPresent/ModelsDownloading/ModelsDownloadProgress/
+	// OnDownloadModels replace the plain LocalUI toggle with a "Download
+	// models" button (or an in-progress indicator) when the ~88MB ONNX
+	// models this feature needs aren't on disk yet -- see
+	// internal/localui/download.go's own doc comment for why these are no
+	// longer bundled into every install. ModelsPresent is only meaningful
+	// (and only checked) when LocalUI would otherwise render the toggle;
+	// ModelsDownloadProgress is 0..1.
+	ModelsPresent          bool
+	ModelsDownloading      bool
+	ModelsDownloadProgress float64
+	OnDownloadModels       func()
+
 	// WebBridge fields -- see the type doc comment. Unused/zero-valued
 	// whenever WebBridge is false.
 	WebBridge          bool
@@ -341,15 +354,7 @@ func NewScriptsMCPCard(data ScriptsMCPData) fyne.CanvasObject {
 	dividerLine.SetMinSize(fyne.NewSize(1, 1))
 	divider := NewInset(dividerLine, 0, 0, 4, 4)
 
-	localLabel := canvas.NewText(i18n.Current.ScriptsLocalModels, design.ColorConnectionsSectionSubtitle)
-	localLabel.TextSize = 10
-	localToggle := NewDeviceToggle(data.LocalUI, func(on bool) {
-		if data.OnLocalUI != nil {
-			data.OnLocalUI(on)
-		}
-	})
-	localToggle.ActiveFill = design.ColorConnectionBadgeText
-	localRow := container.New(&DeviceRowControlsLayout{Gap: 8}, localToggle, container.NewCenter(localLabel))
+	localRow, localToggle := newScriptsLocalUIRow(data)
 
 	startBtn := newScriptsMCPStartButton(data)
 	bottom := container.NewBorder(nil, nil, container.NewCenter(localRow), startBtn)
@@ -387,7 +392,9 @@ func NewScriptsMCPCard(data ScriptsMCPData) fyne.CanvasObject {
 			cardBg.Refresh()
 		})
 	}
-	localToggle.OnHover = setCardHovered
+	if localToggle != nil {
+		localToggle.OnHover = setCardHovered
+	}
 	startBtn.spec.OnHover = setCardHovered
 	overlay := newConnectionCardOverlay(nil, setCardHovered)
 
@@ -551,6 +558,58 @@ func newScriptsMCPStatsBox(url string, onCopy func()) fyne.CanvasObject {
 	bg.StrokeColor = design.ColorTailscaleChipBorder
 	bg.StrokeWidth = 1
 	return container.NewStack(bg, NewInset(rows, 12, 12, 8, 8))
+}
+
+// newScriptsLocalUIRow renders the "Local models" control -- either the
+// plain enable/disable toggle (models already on disk), a "Download
+// models" button (they aren't -- see ScriptsMCPData's own doc comment for
+// why these are no longer bundled into every install), or a progress bar
+// while a download is in flight. Plain widget.Button/ProgressBar rather
+// than this file's usual custom iconChromeButton chrome: this row only
+// ever appears for users opting into an optional feature, so reliability
+// (a widget guaranteed to render correctly with no icon) matters more here
+// than pixel-matching the rest of the card's bespoke styling.
+// newScriptsLocalUIRow's second return value is the toggle widget itself
+// (nil when a download button/progress bar is shown instead) so
+// NewScriptsMCPCard can still wire up the card-wide hover effect onto it.
+func newScriptsLocalUIRow(data ScriptsMCPData) (fyne.CanvasObject, *DeviceToggle) {
+	localLabel := canvas.NewText(i18n.Current.ScriptsLocalModels, design.ColorConnectionsSectionSubtitle)
+	localLabel.TextSize = 10
+
+	if data.ModelsDownloading {
+		pctLabel := canvas.NewText(
+			i18n.Current.ScriptsDownloadingModels+fmt.Sprintf(" %d%%", int(data.ModelsDownloadProgress*100+0.5)),
+			design.ColorConnectionsSectionSubtitle,
+		)
+		pctLabel.TextSize = 10
+		bar := widget.NewProgressBar()
+		bar.Min, bar.Max = 0, 1
+		bar.SetValue(data.ModelsDownloadProgress)
+		return container.NewVBox(pctLabel, bar), nil
+	}
+
+	if !data.ModelsPresent {
+		// Not on disk yet: show the download button regardless of whether
+		// the toggle itself is currently on or off in preferences -- the
+		// toggle is meaningless until there's actually something to
+		// enable. Once ModelsPresent flips true (download finished), the
+		// caller re-renders and this falls through to the normal toggle
+		// below.
+		btn := widget.NewButton(i18n.Current.ScriptsDownloadModels, func() {
+			if data.OnDownloadModels != nil {
+				data.OnDownloadModels()
+			}
+		})
+		return container.New(&DeviceRowControlsLayout{Gap: 8}, btn, container.NewCenter(localLabel)), nil
+	}
+
+	localToggle := NewDeviceToggle(data.LocalUI, func(on bool) {
+		if data.OnLocalUI != nil {
+			data.OnLocalUI(on)
+		}
+	})
+	localToggle.ActiveFill = design.ColorConnectionBadgeText
+	return container.New(&DeviceRowControlsLayout{Gap: 8}, localToggle, container.NewCenter(localLabel)), localToggle
 }
 
 func newScriptsMCPStartButton(data ScriptsMCPData) *iconChromeButton {

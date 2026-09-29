@@ -206,6 +206,8 @@ type LocalizedStrings struct {
 	ScriptsEmpty                      string
 	ScriptsLocalEndpoint              string
 	ScriptsLocalModels                string
+	ScriptsDownloadModels             string
+	ScriptsDownloadingModels          string
 	ScriptsStateIdle                  string
 	ScriptsStateStopped               string
 	ScriptsStateRunning               string
@@ -843,6 +845,8 @@ func EN() *LocalizedStrings {
 		ScriptsEmpty:                      "No scripts yet",
 		ScriptsLocalEndpoint:              "Local endpoint",
 		ScriptsLocalModels:                "Local models",
+		ScriptsDownloadModels:             "Download models (~88 MB)",
+		ScriptsDownloadingModels:          "Downloading models…",
 		ScriptsStateIdle:                  "Idle",
 		ScriptsStateStopped:               "Stopped",
 		ScriptsStateRunning:               "Running",
@@ -1573,6 +1577,8 @@ func ES() *LocalizedStrings {
 	locale.ScriptsEmpty = "Sin scripts"
 	locale.ScriptsLocalEndpoint = "Local endpoint"
 	locale.ScriptsLocalModels = "Modelos local"
+	locale.ScriptsDownloadModels = "Descargar modelos (~88 MB)"
+	locale.ScriptsDownloadingModels = "Descargando modelos…"
 	locale.ScriptsStateIdle = "Idle"
 	locale.ScriptsStateStopped = "Parado"
 	locale.ScriptsStateRunning = "Activo"
@@ -1949,6 +1955,8 @@ func UKProper() *LocalizedStrings {
 	locale.ScriptsEmpty = "Поки немає скриптів"
 	locale.ScriptsLocalEndpoint = "Local endpoint"
 	locale.ScriptsLocalModels = "Локальні моделі"
+	locale.ScriptsDownloadModels = "Завантажити моделі (~88 МБ)"
+	locale.ScriptsDownloadingModels = "Завантаження моделей…"
 	locale.ScriptsStateIdle = "Idle"
 	locale.ScriptsStateStopped = "Стоп"
 	locale.ScriptsStateRunning = "Онлайн"

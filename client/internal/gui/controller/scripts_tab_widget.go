@@ -1,8 +1,10 @@
 package controller
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"image/color"
 	"net/url"
@@ -17,6 +19,7 @@ import (
 	"usbridge-client/internal/gui/i18n"
 	"usbridge-client/internal/gui/taskbar"
 	"usbridge-client/internal/gui/view"
+	"usbridge-client/internal/localui"
 	"usbridge-client/internal/models"
 
 	"fyne.io/fyne/v2"
@@ -82,6 +85,15 @@ type ScriptsTabWidget struct {
 	// Stop channel for the background script-status polling goroutine.
 	stopPollCh chan struct{}
 	isClosing  atomic.Bool
+
+	// modelsDownloading/modelsDownloadProgress back the "Local models"
+	// card's download button/progress bar (see view.ScriptsMCPData) while
+	// downloadLocalUIModels runs. modelsDownloadCancel lets a second click
+	// on an in-flight download cancel it rather than starting a redundant
+	// concurrent one.
+	modelsDownloading       bool
+	modelsDownloadProgress  float64
+	modelsDownloadCancel    context.CancelFunc
 }
 
 // NewScriptsTabWidget creates the widget and builds the persistent UI tree.
@@ -468,6 +480,12 @@ func (w *ScriptsTabWidget) sectionData() view.ScriptsSectionData {
 	if app := fyne.CurrentApp(); app != nil {
 		localUI = app.Preferences().Bool(localUIParseEnabledPrefKey)
 	}
+	modelsPresent := api.LocalUIModelsPresent()
+
+	w.mu.Lock()
+	modelsDownloading := w.modelsDownloading
+	modelsDownloadProgress := w.modelsDownloadProgress
+	w.mu.Unlock()
 
 	url := fmt.Sprintf("http://127.0.0.1:%d/api/mcp", w.mcpPort)
 	if w.mcpProxy.Running() {
@@ -505,7 +523,10 @@ func (w *ScriptsTabWidget) sectionData() view.ScriptsSectionData {
 			URL:     url,
 			Running: w.mcpProxy.Running(),
 			Enabled: client != nil,
-			LocalUI: localUI,
+			LocalUI:                localUI,
+			ModelsPresent:          modelsPresent,
+			ModelsDownloading:      modelsDownloading,
+			ModelsDownloadProgress: modelsDownloadProgress,
 			OnToggle: func() {
 				w.toggleMCPProxy()
 			},
@@ -521,6 +542,7 @@ func (w *ScriptsTabWidget) sectionData() view.ScriptsSectionData {
 				w.applyLocalUIParseSetting(on)
 				w.rebuildSoon()
 			},
+			OnDownloadModels: w.startModelsDownload,
 
 			WebBridge:        isWebBuild,
 			BridgeConnected:  w.mcpBridge.Running(),
@@ -690,6 +712,78 @@ func (w *ScriptsTabWidget) maybeLazyInitLocalUIParse() {
 		return
 	}
 	api.LazyInitLocalUIParse()
+}
+
+// startModelsDownload is OnDownloadModels: fetches the ~88MB ONNX models
+// (see internal/localui/download.go) into the default model directory,
+// driving the "Local models" card's progress bar via rebuildSoon. No-op if
+// a download is already running -- a second click on the button while one
+// is in flight (the button disappears once ModelsDownloading is true, but
+// a queued double-tap could still land) must not start a redundant
+// concurrent fetch of the same files.
+//
+// On success, auto-enables the "Local models" preference and triggers the
+// real parser load (applyLocalUIParseSetting(true)) -- download-then-
+// immediately-usable in one click, rather than making the user download
+// and then separately flip a toggle that only just appeared.
+func (w *ScriptsTabWidget) startModelsDownload() {
+	w.mu.Lock()
+	if w.modelsDownloading {
+		w.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	w.modelsDownloading = true
+	w.modelsDownloadProgress = 0
+	w.modelsDownloadCancel = cancel
+	w.mu.Unlock()
+	w.rebuildSoon()
+
+	go func() {
+		var lastUIUpdate time.Time
+		err := api.DownloadLocalUIModelsToDefaultDir(ctx, func(p localui.DownloadProgress) {
+			fileTotal := p.FileTotal
+			if fileTotal <= 0 {
+				fileTotal = 1
+			}
+			filesTotal := p.FilesTotal
+			if filesTotal <= 0 {
+				filesTotal = 1
+			}
+			overall := (float64(p.FilesDone) + float64(p.FileDownloaded)/float64(fileTotal)) / float64(filesTotal)
+
+			w.mu.Lock()
+			w.modelsDownloadProgress = overall
+			w.mu.Unlock()
+
+			// Throttled: a 77MB file at 256KB/chunk is ~300 progress calls
+			// -- rebuildSoon on every single one would queue up hundreds of
+			// Fyne rebuilds in a few seconds for no visible benefit.
+			if now := time.Now(); now.Sub(lastUIUpdate) >= 150*time.Millisecond {
+				lastUIUpdate = now
+				w.rebuildSoon()
+			}
+		})
+
+		w.mu.Lock()
+		w.modelsDownloading = false
+		w.modelsDownloadCancel = nil
+		w.mu.Unlock()
+
+		if err != nil {
+			if !errors.Is(err, context.Canceled) {
+				fyne.Do(func() { view.ShowErrorDialog(fmt.Errorf("download models: %w", err), w.window) })
+			}
+			w.rebuildSoon()
+			return
+		}
+
+		if app := fyne.CurrentApp(); app != nil {
+			app.Preferences().SetBool(localUIParseEnabledPrefKey, true)
+		}
+		w.applyLocalUIParseSetting(true)
+		w.rebuildSoon()
+	}()
 }
 
 func (w *ScriptsTabWidget) toggleMCPProxy() {
@@ -902,6 +996,9 @@ func (w *ScriptsTabWidget) Shutdown() {
 	w.stopStatusPoll()
 	w.mu.Lock()
 	w.usbClient = nil
+	if w.modelsDownloadCancel != nil {
+		w.modelsDownloadCancel()
+	}
 	w.mu.Unlock()
 	w.mcpProxy.UpdateClient(nil)
 	w.mcpProxy.Stop()

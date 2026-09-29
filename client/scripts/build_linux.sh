@@ -152,14 +152,13 @@ if [ -f "$ORT_CACHE_DIR/libonnxruntime.so" ]; then
 else
     echo -e "${YELLOW}⚠${NC} Could not fetch libonnxruntime.so -- local ui.parse/AI Vision will stay unavailable in this build"
 fi
-LOCALUI_MODELS_SRC="$REPO_ROOT/internal/localui/models"
-if [ -f "$LOCALUI_MODELS_SRC/icon_detect.onnx" ]; then
-    mkdir -p "$APPDIR/usr/bin/localui/models"
-    cp "$LOCALUI_MODELS_SRC"/*.onnx "$APPDIR/usr/bin/localui/models/"
-    echo -e "${GREEN}✓${NC} usr/bin/localui/models/ ($(du -sh "$APPDIR/usr/bin/localui/models" | cut -f1))"
-else
-    echo -e "${YELLOW}⚠${NC} $LOCALUI_MODELS_SRC has no .onnx files -- local ui.parse/AI Vision will stay unavailable in this build"
-fi
+# ONNX MODEL files (~88MB combined) are deliberately NOT copied into the
+# AppImage anymore -- fetched on demand instead, the moment the user clicks
+# "Download models" in the Scripts&AI tab (or already had "Local models" on
+# from a previous session and just connected). See
+# internal/localui/download.go's own doc comment, and build_macos.sh's
+# matching comment for the full reasoning. Only the ONNX runtime .so files
+# above still ship by default.
 
 # Icon
 ICON_SRC="$REPO_ROOT/Icon.png"
