@@ -399,7 +399,12 @@ func (vw *VideoWidget) startMetalVideoOnWindow(window fyne.Window, fullscreen bo
 	// Wire overlay lifecycle hooks: hide the Vulkan overlay whenever a Fyne popup or
 	// menu is visible, exactly mirroring the macOS Metal pattern.
 	view.OnOverlayShow = func() { service.VKVideoSetHidden(true) }
-	view.OnOverlayHide = func() { service.VKVideoSetHidden(false) }
+	view.OnOverlayHide = func() {
+		if view.NavVideoHidden() || !service.VKVideoIsActive() {
+			return
+		}
+		service.VKVideoSetHidden(false)
+	}
 
 	if window == nil {
 		logrus.Warn("[Vulkan/Win] startMetalVideoOnWindow: window=nil — skipped")

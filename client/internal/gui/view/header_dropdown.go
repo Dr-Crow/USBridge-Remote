@@ -658,6 +658,10 @@ type dropdownItem struct {
 	iconRes   fyne.Resource
 	iconSide  float32
 	icon      *canvas.Image
+	// trailingIconRes is a right-side glyph (external-link on Hardware Agent).
+	trailingIconRes  fyne.Resource
+	trailingIconSide float32
+	trailingIcon     *canvas.Image
 }
 
 func newDropdownItem(text, secondary string, selected bool, onTap func()) *dropdownItem {
@@ -692,7 +696,14 @@ func (i *dropdownItem) CreateRenderer() fyne.WidgetRenderer {
 		i.icon = canvas.NewImageFromResource(i.iconRes)
 		i.icon.FillMode = canvas.ImageFillContain
 		i.icon.SetMinSize(fyne.NewSize(side, side))
-		parts = []fyne.CanvasObject{i.bg, i.icon, i.label, i.secondaryLabel}
+		parts = append(parts, i.icon)
+	}
+	if i.trailingIconRes != nil {
+		side := i.trailingGlyphSize()
+		i.trailingIcon = canvas.NewImageFromResource(i.trailingIconRes)
+		i.trailingIcon.FillMode = canvas.ImageFillContain
+		i.trailingIcon.SetMinSize(fyne.NewSize(side, side))
+		parts = append(parts, i.trailingIcon)
 	}
 	r := &dropdownItemRenderer{
 		item:    i,
@@ -716,6 +727,9 @@ func (i *dropdownItem) MinSize() fyne.Size {
 	width := label.MinSize().Width + padding
 	if i.iconRes != nil {
 		width += i.iconGlyphSize() + 8
+	}
+	if i.trailingIconRes != nil {
+		width += i.trailingGlyphSize() + 8
 	}
 
 	if i.secondary != "" {
@@ -759,6 +773,13 @@ func (i *dropdownItem) iconGlyphSize() float32 {
 		return i.iconSide
 	}
 	return 16
+}
+
+func (i *dropdownItem) trailingGlyphSize() float32 {
+	if i.trailingIconSide > 0 {
+		return i.trailingIconSide
+	}
+	return 12
 }
 
 func (i *dropdownItem) Tapped(*fyne.PointEvent) {
@@ -893,6 +914,7 @@ type StyledMenuItem struct {
 	Selected       bool
 	OnTap          func()
 	Icon           fyne.Resource
+	TrailingIcon   fyne.Resource
 }
 
 type StyledMenuOptions struct {
@@ -1060,6 +1082,9 @@ func showStyledMenu(anchor fyne.CanvasObject, items []StyledMenuItem, options St
 			if options.IconSize > 0 {
 				row.iconSide = options.IconSize
 			}
+		}
+		if menuItem.TrailingIcon != nil {
+			row.trailingIconRes = menuItem.TrailingIcon
 		}
 		if options.TextColor != nil {
 			row.textColor = options.TextColor
@@ -1438,12 +1463,17 @@ func (r *dropdownPopupRenderer) MinSize() fyne.Size {
 }
 
 func (r *dropdownPopupRenderer) Refresh() {
-	if r.popup.canvas.Size() != r.popup.Size() {
-		r.popup.BaseWidget.Resize(r.popup.canvas.Size())
+	if r.popup.canvas != nil {
+		cs := r.popup.canvas.Size()
+		ps := r.popup.Size()
+		if cs.Width != ps.Width || cs.Height != ps.Height {
+			r.popup.BaseWidget.Resize(cs)
+		}
 	}
 	r.Layout(r.popup.Size())
-	r.popup.content.Refresh()
-	canvas.Refresh(r.popup)
+	if r.popup.content != nil {
+		r.popup.content.Refresh()
+	}
 }
 
 func (r *dropdownPopupRenderer) BackgroundColor() color.Color {
@@ -1478,6 +1508,12 @@ func (r *dropdownItemRenderer) Layout(size fyne.Size) {
 	}
 	r.item.label.Move(fyne.NewPos(labelX, (size.Height-labelMin.Height)/2))
 	r.item.label.Resize(labelMin)
+
+	if r.item.trailingIcon != nil {
+		side := r.item.trailingGlyphSize()
+		r.item.trailingIcon.Resize(fyne.NewSize(side, side))
+		r.item.trailingIcon.Move(fyne.NewPos(size.Width-14-side, (size.Height-side)/2))
+	}
 
 	if r.item.secondary != "" {
 		rightMin := r.item.secondaryLabel.MinSize()

@@ -106,7 +106,11 @@ func overlayHide() {
 	logrus.Infof("📌 [OVERLAY] hide depth=%d", depth)
 	if depth <= 0 {
 		overlayDepth.Store(0)
-		if OnOverlayHide != nil && !overlayHoldNative.Load() {
+		// Never un-hide native video while navigation already wants it
+		// gone (Connections / non-Control tabs). A depth blip to 0 while
+		// a settings menu is open was flashing the overlay on Windows
+		// phone-preview with no stream running.
+		if OnOverlayHide != nil && !overlayHoldNative.Load() && !navVideoHidden.Load() {
 			OnOverlayHide()
 		}
 	}
