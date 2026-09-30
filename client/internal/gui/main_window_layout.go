@@ -578,6 +578,26 @@ func (mw *MainWindow) createMainAddressBar() *fyne.Container {
 			HoverIcon:       assets.ExitIconHover,
 		})
 	}
+	if mw.awdlGrantBtn == nil {
+		// A more visible duplicate of awdlIcon's own menu toggle (see
+		// awdl_status.go) -- sits right in the always-on-screen main
+		// header instead of buried in a footer icon's popup menu, and
+		// only while the one-time sudoers permission is still missing
+		// (refreshAWDLUI hides it once granted). Default HeaderActionButton
+		// styling (accent-green fill) -- no ApplySpec override -- since
+		// this is an inviting "turn on a nice-to-have" action, not an
+		// alarm; WarningTriangleIcon alone carries the "needs attention"
+		// signal.
+		mw.awdlGrantBtn = view.NewHeaderActionButton(mw.handleAWDLGrantTapped)
+		mw.awdlGrantBtn.ApplySpec(view.HeaderActionButtonSpec{
+			Fill:       design.ColorAccent,
+			Foreground: design.ColorBackground,
+			Icon:       assets.WarningTriangleIcon,
+			IconSize:   fyne.NewSize(12, 12),
+			Text:       i18n.Current.AWDLGrantAccess,
+		})
+		mw.awdlGrantBtn.Hide()
+	}
 	// Control's own reuse of the connections screen's header accessories
 	// (see connection_header.go's newHeaderSettingsMenuButton) -- same
 	// Info/Community/Language/Account actions as createConnectionAddressBar
@@ -626,6 +646,7 @@ func (mw *MainWindow) createMainAddressBar() *fyne.Container {
 	// content now (view.HeaderActionButton.MinSize), so it sits here
 	// directly instead of behind an overlay layout.
 	rightGroup := fyne.CanvasObject(container.NewHBox(
+		mw.awdlGrantBtn,
 		settingsBtn,
 		mw.mainExitBtn,
 	))
@@ -1348,6 +1369,16 @@ func (mw *MainWindow) createStatusBar() *fyne.Container {
 	mw.rndisIcon.SetIconSize(fyne.NewSize(14, 14))
 	mw.rndisIcon.SetBadgeText("")
 	mw.rndisIcon.Hide()
+	// awdlIcon: macOS-desktop-only (see awdl_support_darwin.go) -- starts
+	// hidden like every icon here, refreshAWDLUI (awdl_status.go) is what
+	// actually shows/hides and picks its icon resource, driven off
+	// updateStatus's per-tick refresh.
+	mw.awdlIcon = newHeaderStatusBadgeButton(assets.AWDLIcon, func() {
+		mw.showAWDLMenu()
+	})
+	mw.awdlIcon.SetIconSize(fyne.NewSize(14, 14))
+	mw.awdlIcon.SetBadgeText("")
+	mw.awdlIcon.Hide()
 	// gamepadIcon/cdromIcon/backupIcon/snapshotIcon are plain display-only
 	// indicators (newHeaderPassiveIndicator -- a bare canvas.Image, not a
 	// widget.Button) -- they used to be tappable shortcuts into the Devices/

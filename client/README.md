@@ -199,6 +199,12 @@ IOSurface layer instead (see `metal_video_impl_darwin.m`'s
 `g_overlay_layer`), at zero per-frame cost. Not yet wired into Android's
 or Windows' Vulkan zero-copy paths, or iOS.
 
+## 📶 Wi-Fi Streaming Optimization (macOS)
+
+The Control footer has a Wi-Fi status icon and — while connected, a more prominent header button — for **Disable AWDL While Streaming**: while a session is active, the client brings the host machine's `awdl0` interface down and restores it once the stream ends. AWDL (Apple Wireless Direct Link — the mesh protocol behind AirDrop, Handoff, Sidecar, and Instant Hotspot) shares the same Wi-Fi radio as your normal connection and periodically forces channel-hopping scans even when idle, which measurably hurts a concurrent stream's latency/stability.
+
+Off by default (opt-in). Turning it on (via the footer icon's menu, or the header button while ungranted) installs a narrow `sudoers.d` rule scoped to exactly `ifconfig awdl0 down`/`up` for your user — one admin-password prompt the first time, never again after. USBridge Agent has the same setting, and both apps share the same rule, so granting it once in either app covers the other too.
+
 ## 🛠️ Build & Dependencies
 
 Detailed compilation instructions and environment setup for all target platforms (Linux, macOS, Windows, Android, iOS, WASM) are located in the `scripts/` folder.

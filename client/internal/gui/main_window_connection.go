@@ -1493,8 +1493,13 @@ func (mw *MainWindow) updateStatus() {
 		mw.isStreaming = false
 	}
 
+	// awdlSupported() is false on every non-macOS-desktop build, so this is
+	// a no-op call everywhere else -- see awdl_status.go.
+	mw.syncAWDLStreamingState(mw.isStreaming)
+
 	fyne.Do(func() {
 		mw.updateStatusBar()
+		mw.refreshAWDLUI()
 	})
 }
 

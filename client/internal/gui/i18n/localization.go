@@ -548,6 +548,9 @@ type LocalizedStrings struct {
 	BackupFlashDisconnectSnapshotConfirm string // toast: mounting backup flash will unmount the snapshot
 	ShowMouseCursor                      string // "Show Mouse" (show cursor in captured video)
 	ClipboardSyncEnabled                 string // "Shared Clipboard" (toggle clipboard sync with the agent)
+	AWDLDisableDuringStreaming           string // "Disable AWDL While Streaming" (macOS footer icon menu toggle)
+	AWDLDisableDuringStreamingHint       string // subtitle under the AWDL toggle explaining what it does
+	AWDLGrantAccess                      string // prominent header button label: grant the one-time AWDL sudoers permission
 	ClipboardSend                        string // clipboard menu: push the local clipboard to the host now
 	ClipboardReceive                     string // clipboard menu: pull the host clipboard to this device now
 	ClipboardAutoSync                    string // clipboard menu: automatic two-way sync toggle
@@ -1189,6 +1192,9 @@ func EN() *LocalizedStrings {
 		BackupFlashDisconnectSnapshotConfirm: "A snapshot is mounted. Mounting the backup flash will unmount it.",
 		ShowMouseCursor:                      "Show Mouse",
 		ClipboardSyncEnabled:                 "Shared Clipboard",
+		AWDLDisableDuringStreaming:           "Disable AWDL While Streaming",
+		AWDLDisableDuringStreamingHint:       "Reduces Wi-Fi interference from AirDrop/Handoff during a stream",
+		AWDLGrantAccess:                      "Improve Wi-Fi Streaming",
 		ClipboardSend:                        "Send Clipboard",
 		ClipboardReceive:                     "Get Clipboard",
 		ClipboardAutoSync:                    "Auto Sync (Both Ways)",
