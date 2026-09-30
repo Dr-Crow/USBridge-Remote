@@ -3,7 +3,7 @@
 //   - a self-signed cert (default, works with zero external dependencies --
 //     LAN IP or plain hostname access) that a browser must manually accept
 //     a TOFU warning for once.
-//   - the shared *.device.usbridge.io wildcard cert (see
+//   - its own <label>.device.usbridge.io Let's Encrypt cert (see
 //     internal/devicecert), fetched from the usbridge-entitlement backend
 //     once this machine's own <label>.device.usbridge.io hostname is
 //     known -- publicly-CA-issued (Let's Encrypt), so a browser hitting
@@ -45,7 +45,7 @@ const (
 	deviceKeyFile  = "device-key.pem"
 	deviceHostFile = "device-hostname.txt"
 
-	// How long before expiry the device wildcard cert is considered due for
+	// How long before expiry the device cert is considered due for
 	// a re-fetch -- matches usbridge_service's identical tlsRenewBefore
 	// reasoning: the backend itself renews well ahead of this, so under
 	// normal operation this is just how promptly THIS process notices a
@@ -316,7 +316,7 @@ func (m *Manager) CertStatus() CertStatus {
 }
 
 // GetCertificate is a tls.Config.GetCertificate callback: picks the device
-// wildcard cert when the client's SNI name matches the hostname it was
+// cert when the client's SNI name matches the hostname it was
 // issued for, the self-signed cert otherwise (including when no SNI name
 // was sent at all, e.g. a bare-IP connection).
 func (m *Manager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {

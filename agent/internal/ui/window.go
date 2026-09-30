@@ -3059,7 +3059,7 @@ func buildQuickConnectLink(internalHost, tailscaleHost string, masterKey, protoc
 // app.App.DeviceHostname) over the bare LAN IP once one is registered -- it
 // re-resolves via DNS on every connect instead of pinning a LAN IP that
 // goes stale the moment this machine's address changes, and it's what lets
-// a browser web client select the trusted device wildcard cert via SNI
+// a browser web client select the trusted per-device cert via SNI
 // (never sent for a bare-IP connection). Falls back to the bare LAN IP
 // when no hostname is registered yet.
 func (w *Window) quickConnectTargets() (internalHost string, tailscaleHost string, protocol string, hwID string) {

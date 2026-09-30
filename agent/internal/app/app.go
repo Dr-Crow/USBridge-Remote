@@ -830,7 +830,7 @@ func (a *App) Run(headless, startHidden bool) error {
 	if a.cfg.TLSEnabledOK() {
 		// Self-signed baseline generated synchronously, before the TLS
 		// listener starts accepting -- deviceCertWatchdog's first tick
-		// (below) then upgrades to the shared device wildcard cert once the
+		// (below) then upgrades to its own per-device Let's Encrypt cert once the
 		// backend round trip completes, but a self-signed fallback must
 		// already exist so the very first TLS handshake (offline, or before
 		// that tick lands) doesn't hit tlshost.Manager's "no certificate
@@ -2540,7 +2540,7 @@ const deviceCertPendingRetry = time.Minute
 const deviceCertPollInterval = 3 * time.Second
 
 // deviceCertWatchdog keeps this machine's <label>.device.usbridge.io DNS
-// record and shared wildcard TLS cert (see internal/tlshost,
+// record and per-device TLS cert (see internal/tlshost,
 // internal/devicecert) up to date -- what lets the browser-based web
 // client (client/web, loaded from https://web.usbridge.io) reach this
 // agent's HTTPS listener (a.tlsServer) at all.
@@ -2564,6 +2564,13 @@ func (a *App) deviceCertWatchdog(ctx context.Context) {
 			// ~deviceCertPendingRetry instead of every deviceCertPollInterval.
 			lastRegisteredIP = ip
 			lastRegisterTime = time.Now().Add(deviceCertPendingRetry - deviceCertRegisterInterval)
+			return
+		}
+		if errors.Is(err, devicecert.ErrRateLimited) {
+			// Backend or Let's Encrypt quota hit: hammering every 3 s only
+			// makes it worse, wait out a full heartbeat interval.
+			lastRegisteredIP = ip
+			lastRegisterTime = time.Now()
 			return
 		}
 		if err == nil {
@@ -2603,7 +2610,7 @@ func (a *App) deviceCertWatchdog(ctx context.Context) {
 // the hostname changed or the installed device cert is missing/expiring
 // soon (tlshost.Manager.DeviceCertStatus, a cheap in-memory check) --
 // fetches and installs a fresh cert. The common case is register-only: no
-// cert fetch, since the shared wildcard cert changes far less often than
+// cert fetch, since the device cert changes far less often than
 // this ticks. Best-effort throughout: any failure here just leaves the
 // self-signed fallback (or whatever device cert is already installed) in
 // place until the next tick, never blocks or crashes the agent.
@@ -3699,7 +3706,7 @@ func (a *App) QRLink() (string, string) {
 	// network), and a browser web client needs this exact hostname anyway
 	// (SNI is never sent for an IP-literal connection, so
 	// tlshost.Manager.GetCertificate can never select the trusted device
-	// wildcard cert -- only the untrusted self-signed one -- for a bare-IP
+	// cert -- only the untrusted self-signed one -- for a bare-IP
 	// connection). Falls back to the bare IP when no hostname is registered
 	// yet, e.g. offline or still within the first tick.
 	if deviceHost := a.DeviceHostname(); deviceHost != "" {

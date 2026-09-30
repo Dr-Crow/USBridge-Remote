@@ -1,13 +1,13 @@
 // Package devicecert talks to the usbridge-entitlement backend's
-// per-device dynamic-DNS + shared wildcard TLS scheme (see
-// usbridge-entitlement-backend's README "Per-device dynamic DNS + wildcard
+// per-device dynamic-DNS + per-device TLS scheme (see
+// usbridge-entitlement-backend's README "Per-device dynamic DNS + per-device
 // TLS" section, and this repo's client/web mixed-content problem it
 // solves): a browser served from https://web.usbridge.io can't
 // fetch()/WebSocket to this agent's plain-HTTP or self-signed-HTTPS local
 // listener at all (mixed content / untrusted-cert rejection, neither of
 // which has a click-through for a background fetch the way top-level
 // navigation does). This package gets the agent a real, browser-trusted
-// hostname (`<label>.device.usbridge.io`) and the shared wildcard
+// hostname (`<label>.device.usbridge.io`) and a per-device
 // certificate to present for it -- see internal/tlshost for what actually
 // installs that cert into the agent's HTTPS listener.
 //
