@@ -962,6 +962,11 @@ func (vw *VideoWidget) ShowVideoDeviceSettings(devicePath string, restartOnApply
 			vw.ensureStartDialog()
 			vw.startDialog.Configure(info, cfg.VideoWidth, cfg.VideoHeight, cfg.VideoFPS, cfg.VideoBitrate)
 			vw.startDialog.SetUpscaleMode(cfg.UpscaleMode)
+			vsync := true
+			if hasSavedVideoDeviceConfig(device.Path) {
+				vsync = cfg.EnableVSync
+			}
+			vw.startDialog.SetAppliedToggles(vsync, cfg.Color444, cfg.Hdr)
 			vw.startDialog.SetDeviceLabel(device.Path)
 			vw.startDialog.SetPrimaryAction(i18n.Current.Apply)
 			_ = showFullscreen

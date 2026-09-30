@@ -574,12 +574,14 @@ type LocalizedStrings struct {
 	AIVisionBadge                        string // small badge next to the AI Vision title, e.g. "EXPERIMENTAL"
 	Color444                             string // "4:4:4 Color (RustShine)" checkbox -- always shown, grayed out when it doesn't currently apply. Doesn't say "Pro" itself -- that's Color444Badge's job, right next to it
 	Color444Hint                         string // hint under the checkbox when 4:4:4 is available (checked or not)
-	Color444UnavailableHint              string // hint under the (disabled, unchecked) checkbox when H.265 is selected but the agent doesn't currently offer 4:4:4
-	Color444RequiresH265Hint             string // hint under the (disabled, unchecked) checkbox when the selected codec isn't H.265
+	Color444UnavailableHint              string // hint when agent reports color_444_available=false (GPU/encoder cannot do HEVC 4:4:4)
+	Color444UnavailableMessage           string // info dialog body when tapping the 4:4:4 warning triangle
+	Color444RequiresH265Hint             string
 	Color444Badge                        string // badge next to the 4:4:4 title, always shown regardless of codec/availability, e.g. "PRO"
 	Hdr                                  string // "HDR Color (RustShine)" checkbox -- mirrors Color444 exactly, independent axis (see rust-shine's docs/COLOR_MODES.md)
 	HdrHint                              string // hint under the checkbox when HDR is available (checked or not)
-	HdrUnavailableHint                   string // hint under the (disabled, unchecked) checkbox when H.265 is selected but the agent doesn't currently offer HDR
+	HdrUnavailableHint                   string // hint when agent reports hdr_available=false
+	HdrUnavailableMessage                string // info dialog body when tapping the HDR warning triangle
 	HdrRequiresH265Hint                  string // hint under the (disabled, unchecked) checkbox when the selected codec isn't H.265
 	HdrBadge                             string // badge next to the HDR title, mirrors Color444Badge
 	NetGraph                             string // "Net Graph" checkbox title, video parameters dialog -- live network/render HUD, pure local overlay like AI Vision
@@ -1219,12 +1221,14 @@ func EN() *LocalizedStrings {
 		AIVisionBadge:                        "Experimental",
 		Color444:                             "4:4:4 Color (USBridge)",
 		Color444Hint:                         "Captures full-resolution chroma instead of the usual 4:2:0 subsampling -- sharper on-screen text and fine detail, at a higher bitrate cost.",
-		Color444UnavailableHint:              "Requires USBridge Pro and a GPU with HEVC 4:4:4 hardware encode.",
+		Color444UnavailableHint:              "The remote GPU cannot encode HEVC 4:4:4. Pro is unlocked — this hardware does not support the mode.",
+		Color444UnavailableMessage:           "4:4:4 Color is included with USBridge Pro, but this remote GPU cannot encode HEVC 4:4:4. That is a hardware limit, not a license issue.",
 		Color444RequiresH265Hint:             "Only available with the H.265 codec -- select it above to use 4:4:4 color.",
 		Color444Badge:                        "Pro",
 		Hdr:                                  "HDR Color (USBridge)",
 		HdrHint:                              "Captures and streams high dynamic range video (BT.2020 color, PQ curve) instead of standard SDR -- brighter highlights and a wider color range on an HDR-capable display, at a higher bitrate cost.",
-		HdrUnavailableHint:                   "Requires USBridge Pro and a Mac with HEVC Main10 hardware encode (Apple Silicon).",
+		HdrUnavailableHint:                   "HDR encode is not offered on this remote host. Pro is unlocked — HDR streaming is currently Mac-only (HEVC Main10), not a monitor or license check.",
+		HdrUnavailableMessage:                "Your USBridge Pro license is working. HDR is a separate encode path from 4:4:4: the remote host must report HDR encode (today that is a Mac with HEVC Main10). A Windows or Linux agent, or Sunshine, will not enable this checkbox.",
 		HdrRequiresH265Hint:                  "Only available with the H.265 codec -- select it above to use HDR.",
 		HdrBadge:                             "Pro",
 		NetGraph:                             "Net Graph",
@@ -1542,10 +1546,12 @@ func ES() *LocalizedStrings {
 	locale.AIVisionHint = "Deteccion en vivo (cajas + IDs hex) sobre el video, como ui.parse() del agent."
 	locale.AIVisionBadge = "Prueba"
 	locale.Color444Hint = "Croma 4:4:4 completa en vez de 4:2:0: texto mas nitido, mas bitrate."
-	locale.Color444UnavailableHint = "Requiere USBridge Pro y GPU con HEVC 4:4:4."
+	locale.Color444UnavailableHint = "La GPU remota no puede codificar HEVC 4:4:4. Pro esta desbloqueado — el hardware no soporta este modo."
+	locale.Color444UnavailableMessage = "4:4:4 Color viene con USBridge Pro, pero esta GPU remota no puede codificar HEVC 4:4:4. Es un limite de hardware, no de licencia."
 	locale.Color444RequiresH265Hint = "Solo con codec H.265 -- seleccionalo arriba."
 	locale.HdrHint = "Flujo HDR (BT.2020, PQ) en vez de SDR: luces mas brillantes en pantalla HDR."
-	locale.HdrUnavailableHint = "Requiere USBridge Pro y Mac con HEVC Main10 (Apple Silicon)."
+	locale.HdrUnavailableHint = "Este host remoto no ofrece encode HDR. Pro esta desbloqueado — HDR es solo Mac (HEVC Main10) por ahora, no un fallo de monitor ni de licencia."
+	locale.HdrUnavailableMessage = "La licencia USBridge Pro funciona. HDR es un camino de encode distinto de 4:4:4: el host remoto debe ofrecer HDR (hoy, un Mac con HEVC Main10). Un agente Windows/Linux o Sunshine no activara esta casilla."
 	locale.HdrRequiresH265Hint = "Solo con codec H.265 -- seleccionalo arriba."
 	locale.VideoJPEGRTPHint = "JPEG RTP: MJPEG se reenvia; YUYV se codifica a JPEG antes de enviar."
 	locale.VideoRawYUYVHint = "RAW YUYV: video sin comprimir por RTP. Solo en enlaces locales rapidos."
@@ -1927,10 +1933,12 @@ func UKProper() *LocalizedStrings {
 	locale.AIVisionHint = "Живе розпізнавання (рамки + hex ID) поверх відео, як ui.parse() агента."
 	locale.AIVisionBadge = "Тест"
 	locale.Color444Hint = "Повна хрома 4:4:4 замість 4:2:0 — чіткіший текст, вищий бітрейт."
-	locale.Color444UnavailableHint = "Потрібні USBridge Pro і GPU з HEVC 4:4:4."
+	locale.Color444UnavailableHint = "Віддалений GPU не вміє HEVC 4:4:4. Pro розблоковано — це обмеження заліза, не ліцензії."
+	locale.Color444UnavailableMessage = "4:4:4 Color входить у USBridge Pro, але цей віддалений GPU не кодує HEVC 4:4:4. Це обмеження обладнання, не підписки."
 	locale.Color444RequiresH265Hint = "Лише з кодеком H.265 — оберіть його вище."
 	locale.HdrHint = "HDR-потік (BT.2020, PQ) замість SDR — яскравіші світла на HDR-екрані."
-	locale.HdrUnavailableHint = "Потрібні USBridge Pro і Mac з HEVC Main10 (Apple Silicon)."
+	locale.HdrUnavailableHint = "Цей віддалений хост не пропонує HDR encode. Pro розблоковано — HDR зараз лише на Mac (HEVC Main10), не перевірка монітора чи ліцензії."
+	locale.HdrUnavailableMessage = "Ліцензія USBridge Pro працює. HDR — окремий шлях encode, не 4:4:4: хост має вміти HDR (зараз це Mac з HEVC Main10). Агент Windows/Linux або Sunshine цю галочку не ввімкне."
 	locale.HdrRequiresH265Hint = "Лише з кодеком H.265 — оберіть його вище."
 	locale.VideoJPEGRTPHint = "JPEG RTP: MJPEG іде напряму; YUYV кодується в JPEG перед відправкою."
 	locale.VideoRawYUYVHint = "RAW YUYV: без стиснення по RTP. Лише на швидкому LAN."

@@ -148,6 +148,9 @@ func (vw *VideoWidget) handleStartVideo() {
 			vw.startDialog.Configure(videoInfo, defaultWidth, defaultHeight, defaultFPS, defaultBitrate)
 			if preferredErr == nil {
 				vw.startDialog.SetUpscaleMode(preferredConfig.UpscaleMode)
+				vw.startDialog.SetAppliedToggles(preferredConfig.EnableVSync, preferredConfig.Color444, preferredConfig.Hdr)
+			} else {
+				vw.startDialog.SetAppliedToggles(true, false, false)
 			}
 			vw.startDialog.SetDeviceLabel("")
 			vw.startDialog.SetPrimaryAction(i18n.Current.StartVideo)

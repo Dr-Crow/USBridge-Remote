@@ -42,9 +42,7 @@ type VideoStartDialog struct {
 	modeButtonsRow   *fyne.Container
 	modeDescription  *canvas.Text
 	resolutionSelect *HeaderDropdown
-	resolutionMeta   *canvas.Text
 	fpsSelect        *HeaderDropdown
-	fpsMeta          *canvas.Text
 	bitrateSlider    *videoDialogBitrateSlider
 	bitrateBlock     *fyne.Container
 	modeDetailsSlot  *fyne.Container
@@ -78,6 +76,13 @@ type VideoStartDialog struct {
 	hdrHint      *videoDialogWrapText
 	hdrTitleText *canvas.Text
 	hdrAvailable bool
+
+	// Last applied/saved checkbox values. Drafts in this dialog must not
+	// stick after Cancel/X — Configure used to leave vsync/HDR/4:4:4 on
+	// the widget, unlike bitrate/codec which are reset from config.
+	appliedVSync    bool
+	appliedColor444 bool
+	appliedHdr      bool
 	// netGraphCheck/netGraphHint: the TF2 net_graph-style live HUD
 	// (client/internal/service/net_graph.go) -- draft until Apply/Start,
 	// same as AI Vision. Only built/shown when service.NetGraphSupported()
@@ -212,13 +217,13 @@ func (b *videoCodecButton) MinSize() fyne.Size {
 	// their own bordered card (see the codec card wrapper in
 	// createInterface) instead of directly in the body, which left them
 	// looking oversized for the tight padding around that card.
-	return fyne.NewSize(84, 30)
+	return fyne.NewSize(84, 28)
 }
 
 func (b *videoCodecButton) CreateRenderer() fyne.WidgetRenderer {
-	b.bg = canvas.NewRectangle(design.ColorSurfaceLight)
-	b.bg.CornerRadius = design.RadiusMD
-	b.bg.StrokeWidth = 1
+	b.bg = canvas.NewRectangle(color.Transparent)
+	b.bg.CornerRadius = 6
+	b.bg.StrokeWidth = 0
 
 	// Matches the Apply/Cancel footer buttons' own text size
 	// (videoDialogPillTextSize) -- was 13, which read oversized next to
@@ -238,22 +243,17 @@ func (b *videoCodecButton) refreshVisuals() {
 	}
 
 	if b.active {
-		// Selected codec reads like the dialog's own teal Apply button
-		// (design.ColorConnectionBadgeText fill, dark text) -- ties codec
-		// selection to the same accent color used elsewhere in this dialog.
 		b.bg.FillColor = design.ColorConnectionBadgeText
 		b.bg.StrokeColor = color.Transparent
 		b.label.Color = design.ColorGray950
 	} else {
-		// Unselected look matches the Add Connection dialog's Scan QR/Paste
-		// Link pills: transparent fill, muted border, hover fills dark gray
-		// and the border lights up teal.
+		// One shared track (codec card) — no per-button outline. Hover is
+		// a gray fill, matching the agent edition segmented control.
 		b.bg.FillColor = color.Transparent
-		b.bg.StrokeColor = design.ColorTailscaleChipBorder
+		b.bg.StrokeColor = color.Transparent
 		b.label.Color = design.ColorTextLight
 		if b.hovered {
-			b.bg.FillColor = color.NRGBA{R: 0x26, G: 0x2a, B: 0x2e, A: 0xff}
-			b.bg.StrokeColor = design.ColorConnectionBadgeText
+			b.bg.FillColor = design.ColorSurfaceLight
 		}
 	}
 
@@ -758,6 +758,11 @@ var videoDialogCheckmarkSVG = fyne.NewStaticResource("video_dialog_checkmark.svg
 // or just not rendered yet?") rather than clearly unavailable.
 var videoDialogCrossmarkSVG = fyne.NewStaticResource("video_dialog_crossmark.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#8f9381" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5L19 19M19 5L5 19"/></svg>`))
 
+// videoDialogBangmarkSVG is shown when a Pro feature is licensed but the
+// remote GPU/monitor cannot do it (4:4:4 / HDR hardware gate) — an
+// exclamation, not a hard X, so it doesn't look like "Pro is locked".
+var videoDialogBangmarkSVG = fyne.NewStaticResource("video_dialog_bangmark.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"><path d="M12 3.4L21.5 20.2H2.5L12 3.4Z" stroke="#c4e77a" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 9.2v6" stroke="#c4e77a" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="17.6" r="1.15" fill="#c4e77a"/></svg>`))
+
 const (
 	videoDialogCheckboxSize   = float32(16)
 	videoDialogCheckboxRadius = float32(4)
@@ -784,10 +789,12 @@ type videoDialogCheckbox struct {
 
 	disabled bool
 	hovered  bool
+	warn     bool
 
 	bg    *canvas.Rectangle
 	check *canvas.Image
 	cross *canvas.Image
+	bang  *canvas.Image
 }
 
 func newVideoDialogCheckbox(checked bool, onChanged func(bool)) *videoDialogCheckbox {
@@ -817,6 +824,14 @@ func (c *videoDialogCheckbox) Disable() {
 		return
 	}
 	c.disabled = true
+	c.Refresh()
+}
+
+func (c *videoDialogCheckbox) SetWarn(warn bool) {
+	if c.warn == warn {
+		return
+	}
+	c.warn = warn
 	c.Refresh()
 }
 
@@ -875,6 +890,9 @@ func (c *videoDialogCheckbox) CreateRenderer() fyne.WidgetRenderer {
 	c.cross = canvas.NewImageFromResource(videoDialogCrossmarkSVG)
 	c.cross.FillMode = canvas.ImageFillContain
 
+	c.bang = canvas.NewImageFromResource(videoDialogBangmarkSVG)
+	c.bang.FillMode = canvas.ImageFillContain
+
 	r := &videoDialogCheckboxRenderer{cb: c}
 	r.applyColors()
 	return r
@@ -895,32 +913,52 @@ func (r *videoDialogCheckboxRenderer) Layout(size fyne.Size) {
 	cb.check.Resize(fyne.NewSize(videoDialogCheckboxMark, videoDialogCheckboxMark))
 	cb.cross.Move(markPos)
 	cb.cross.Resize(fyne.NewSize(videoDialogCheckboxMark, videoDialogCheckboxMark))
+	if cb.bang != nil {
+		cb.bang.Move(boxPos)
+		cb.bang.Resize(fyne.NewSize(videoDialogCheckboxSize, videoDialogCheckboxSize))
+	}
 }
 
 func (r *videoDialogCheckboxRenderer) applyColors() {
 	cb := r.cb
+	if cb.bang == nil {
+		return
+	}
 	switch {
+	case cb.warn:
+		// Hardware can't do this Pro feature: no checkbox chrome, just a
+		// warning triangle. Tap opens an explanation (not a dead X).
+		cb.bg.Hidden = true
+		cb.check.Hidden = true
+		cb.cross.Hidden = true
+		cb.bang.Hidden = false
 	case cb.disabled:
+		cb.bg.Hidden = false
 		cb.bg.FillColor = color.NRGBA{R: 0x22, G: 0x26, B: 0x2a, A: 0xff}
 		cb.bg.StrokeColor = videoDialogBorderColor
 		cb.check.Translucency = 0.6
 		cb.check.Hidden = !cb.Checked
-		cb.cross.Hidden = cb.Checked
+		cb.cross.Hidden = true
+		cb.bang.Hidden = true
 	case cb.Checked:
+		cb.bg.Hidden = false
 		cb.bg.FillColor = design.ColorConnectionBadgeText
 		cb.bg.StrokeColor = color.Transparent
 		cb.check.Translucency = 0
 		cb.check.Hidden = false
 		cb.cross.Hidden = true
+		cb.bang.Hidden = true
 	default:
 		fill := color.Color(color.Transparent)
 		if cb.hovered {
 			fill = color.NRGBA{R: 0x22, G: 0x26, B: 0x2a, A: 0xff}
 		}
+		cb.bg.Hidden = false
 		cb.bg.FillColor = fill
 		cb.bg.StrokeColor = videoDialogBorderColor
 		cb.check.Hidden = true
 		cb.cross.Hidden = true
+		cb.bang.Hidden = true
 	}
 }
 
@@ -934,6 +972,9 @@ func (r *videoDialogCheckboxRenderer) Refresh() {
 	r.cb.bg.Refresh()
 	r.cb.check.Refresh()
 	r.cb.cross.Refresh()
+	if r.cb.bang != nil {
+		r.cb.bang.Refresh()
+	}
 }
 
 func (r *videoDialogCheckboxRenderer) BackgroundColor() color.Color {
@@ -941,7 +982,7 @@ func (r *videoDialogCheckboxRenderer) BackgroundColor() color.Color {
 }
 
 func (r *videoDialogCheckboxRenderer) Objects() []fyne.CanvasObject {
-	return []fyne.CanvasObject{r.cb.bg, r.cb.check, r.cb.cross}
+	return []fyne.CanvasObject{r.cb.bg, r.cb.check, r.cb.cross, r.cb.bang}
 }
 
 func (r *videoDialogCheckboxRenderer) Destroy() {}
@@ -1176,10 +1217,14 @@ func (t *videoDialogWrapText) layoutLines() {
 }
 
 func (t *videoDialogWrapText) MinSize() fyne.Size {
-	if len(t.lines) == 0 {
-		return fyne.NewSize(t.width, 0)
+	// Width 1 so a long desktop wrap width cannot stretch the parent
+	// (mobile other-settings scroll was panning sideways because MinSize
+	// reported the 408-wide wrap). Height still comes from wrapped lines.
+	h := float32(0)
+	if len(t.lines) > 0 {
+		h = float32(len(t.lines)) * t.lineHeight
 	}
-	return fyne.NewSize(t.width, float32(len(t.lines))*t.lineHeight)
+	return fyne.NewSize(1, h)
 }
 
 func (t *videoDialogWrapText) CreateRenderer() fyne.WidgetRenderer {
@@ -1374,13 +1419,11 @@ func (l *videoDialogToggleLayout) indentX(objs []fyne.CanvasObject) float32 {
 }
 
 func (l *videoDialogToggleLayout) MinSize(objs []fyne.CanvasObject) fyne.Size {
-	title, badge, desc := objs[1], objs[2], objs[3]
-	indent := l.indentX(objs)
-	titleRowWidth := indent + title.MinSize().Width + videoDialogToggleGap + badge.MinSize().Width
-	descSize := desc.MinSize()
-	width := maxFloat32(titleRowWidth, indent+descSize.Width)
-	height := l.titleRowHeight(objs) + videoDialogToggleDescGap + descSize.Height
-	return fyne.NewSize(width, height)
+	desc := objs[3]
+	// Width 1: parent (scroll) assigns the card width. Reporting title+badge
+	// + wrap width stretched the list past the card and let mobile pan X.
+	height := l.titleRowHeight(objs) + videoDialogToggleDescGap + desc.MinSize().Height
+	return fyne.NewSize(1, height)
 }
 
 func (l *videoDialogToggleLayout) Layout(objs []fyne.CanvasObject, size fyne.Size) {
@@ -1388,16 +1431,29 @@ func (l *videoDialogToggleLayout) Layout(objs []fyne.CanvasObject, size fyne.Siz
 	rowHeight := l.titleRowHeight(objs)
 
 	checkSize := check.MinSize()
-	check.Move(fyne.NewPos(0, (rowHeight-checkSize.Height)/2))
+	// Sit a couple of pixels lower than optical center so the box aligns
+	// with the title's cap-height instead of floating above it.
+	check.Move(fyne.NewPos(0, (rowHeight-checkSize.Height)/2+3))
 	check.Resize(checkSize)
 
 	indent := l.indentX(objs)
 	titleSize := title.MinSize()
-	title.Move(fyne.NewPos(indent, (rowHeight-titleSize.Height)/2))
-	title.Resize(titleSize)
-
 	badgeSize := badge.MinSize()
-	badgeX := indent + titleSize.Width + videoDialogToggleGap
+	badgeX := size.Width - badgeSize.Width
+	if badgeX < indent+videoDialogToggleGap {
+		badgeX = indent + videoDialogToggleGap
+	}
+	titleMaxW := badgeX - indent - videoDialogToggleGap
+	if titleMaxW < 0 {
+		titleMaxW = 0
+	}
+	titleW := titleSize.Width
+	if titleW > titleMaxW {
+		titleW = titleMaxW
+	}
+	title.Move(fyne.NewPos(indent, (rowHeight-titleSize.Height)/2))
+	title.Resize(fyne.NewSize(titleW, titleSize.Height))
+
 	badge.Move(fyne.NewPos(badgeX, (rowHeight-badgeSize.Height)/2))
 	badge.Resize(badgeSize)
 
@@ -1520,7 +1576,7 @@ func (l *videoDialogLabeledDividerLayout) Layout(objects []fyne.CanvasObject, si
 }
 
 func newVideoDialogOtherSettingsCard(rows ...fyne.CanvasObject) fyne.CanvasObject {
-	list := container.NewVBox(rows...)
+	list := container.New(&tightStatsVBoxLayout{Gap: 10}, rows...)
 	scrolled := container.NewScroll(NewInsetExact(list, 0, videoDialogOtherSettingsGutter, 0, 0))
 	scrolled.Direction = container.ScrollVerticalOnly
 	cardBG := canvas.NewRectangle(design.ColorGray950)
@@ -1546,21 +1602,15 @@ func NewVideoStartDialog(parent fyne.Window) *VideoStartDialog {
 func (vsd *VideoStartDialog) createInterface() {
 	vsd.modeDescription = canvas.NewText("", videoDialogHintColor)
 	vsd.modeDescription.TextSize = videoDialogHintTextSize
-	vsd.modeDescription.Alignment = fyne.TextAlignCenter
-	vsd.modeButtonsRow = container.New(&videoCodecButtonsLayout{gap: 10})
+	vsd.modeDescription.Alignment = fyne.TextAlignTrailing
+	vsd.modeButtonsRow = container.New(&videoCodecButtonsLayout{gap: 2})
 
 	vsd.resolutionSelect = newVideoDialogPicker(func(string) {
 		vsd.refreshAvailableModes()
 		vsd.refreshFPSOptions()
 	})
-	vsd.resolutionMeta = canvas.NewText("", videoDialogHintColor)
-	vsd.resolutionMeta.TextSize = videoDialogHintTextSize
-	vsd.resolutionMeta.Alignment = fyne.TextAlignCenter
 
 	vsd.fpsSelect = newVideoDialogPicker(nil)
-	vsd.fpsMeta = canvas.NewText(i18n.Current.FramesPerSecond, videoDialogHintColor)
-	vsd.fpsMeta.TextSize = videoDialogHintTextSize
-	vsd.fpsMeta.Alignment = fyne.TextAlignCenter
 
 	vsd.bitrateSlider = newVideoDialogBitrateSlider(1000, 150000, 1000)
 	vsd.bitrateSlider.Value = 20000
@@ -1626,14 +1676,17 @@ func (vsd *VideoStartDialog) createInterface() {
 	// VSync/AI Vision's static copy -- built with no spans yet here, since
 	// videoDialogWrapText.SetSpans is what actually fills it in, called by
 	// refreshModeUI before this dialog is ever shown.
-	vsd.color444Check = newVideoDialogCheckbox(false, nil)
+	vsd.color444Check = newVideoDialogCheckbox(false, func(on bool) {
+		if on && vsd.selectedModeID() != models.VideoModeH265 {
+			vsd.setSelectedModeID(models.VideoModeH265)
+		}
+	})
 	vsd.color444Check.OnTapWhileDisabled = func() {
-		// Tapping the checkbox while it's grayed out because H.265 isn't
-		// selected is treated as "turn this on": switch the codec for the
-		// user instead of making them hunt for the codec buttons above.
-		// Only when RustShine Pro/hardware actually supports it, though --
-		// if it's unavailable outright, switching codecs wouldn't help.
-		if !vsd.color444Available || vsd.selectedModeID() == models.VideoModeH265 {
+		if !vsd.color444Available {
+			ShowInfoDialog(i18n.Current.Color444, i18n.Current.Color444UnavailableMessage, vsd.parent)
+			return
+		}
+		if vsd.selectedModeID() == models.VideoModeH265 {
 			return
 		}
 		vsd.setSelectedModeID(models.VideoModeH265)
@@ -1653,9 +1706,17 @@ func (vsd *VideoStartDialog) createInterface() {
 	// independent axes) -- gated on hdrAvailable/models.VideoStatus.HdrAvailable
 	// instead of color444Available, otherwise identical construction and
 	// same H.265-only, tap-while-disabled-switches-codec behavior.
-	vsd.hdrCheck = newVideoDialogCheckbox(false, nil)
+	vsd.hdrCheck = newVideoDialogCheckbox(false, func(on bool) {
+		if on && vsd.selectedModeID() != models.VideoModeH265 {
+			vsd.setSelectedModeID(models.VideoModeH265)
+		}
+	})
 	vsd.hdrCheck.OnTapWhileDisabled = func() {
-		if !vsd.hdrAvailable || vsd.selectedModeID() == models.VideoModeH265 {
+		if !vsd.hdrAvailable {
+			ShowInfoDialog(i18n.Current.Hdr, i18n.Current.HdrUnavailableMessage, vsd.parent)
+			return
+		}
+		if vsd.selectedModeID() == models.VideoModeH265 {
 			return
 		}
 		vsd.setSelectedModeID(models.VideoModeH265)
@@ -1757,7 +1818,7 @@ func (vsd *VideoStartDialog) createInterface() {
 	bitrateCardBorder.CornerRadius = design.RadiusMD
 	bitrateCardBorder.StrokeColor = videoDialogBorderColor
 	bitrateCardBorder.StrokeWidth = 1
-	bitrateCardContent := NewInset(container.NewVBox(bitrateHeaderRow, vsd.bitrateSlider, bitrateHintsRow), 14, 14, 10, 10)
+	bitrateCardContent := NewInsetExact(container.NewVBox(bitrateHeaderRow, vsd.bitrateSlider, bitrateHintsRow), 10, 10, 6, 4)
 	vsd.bitrateBlock = container.NewStack(bitrateCardBG, bitrateCardContent, bitrateCardBorder)
 
 	vsd.bitrateSlider.OnChanged(vsd.bitrateSlider.Value)
@@ -1795,33 +1856,30 @@ func (vsd *VideoStartDialog) createInterface() {
 		container.NewVBox(
 			newVideoDialogFieldLabel(i18n.Current.Resolution),
 			vsd.resolutionSelect,
-			container.NewCenter(vsd.resolutionMeta),
 		),
 		container.NewVBox(
 			newVideoDialogFieldLabel(i18n.Current.FrameRate),
 			vsd.fpsSelect,
-			container.NewCenter(vsd.fpsMeta),
 		),
 	)
 
-	// Codec buttons get their own small bordered card (same border color as
-	// everywhere else in this dialog) instead of sitting bare in the body --
-	// see videoCodecButton.MinSize's own comment for why the buttons
-	// themselves shrank slightly to fit it.
+	// Codec buttons sit in one shared track (agent-style segmented
+	// control): outer card border only, no per-button outline.
 	codecCardBG := canvas.NewRectangle(design.ColorGray950)
 	codecCardBG.CornerRadius = design.RadiusMD
 	codecCardBorder := canvas.NewRectangle(color.Transparent)
 	codecCardBorder.CornerRadius = design.RadiusMD
 	codecCardBorder.StrokeColor = videoDialogBorderColor
 	codecCardBorder.StrokeWidth = 1
-	codecCard := container.NewStack(codecCardBG, codecCardBorder, NewInsetExact(vsd.modeButtonsRow, 4, 4, 4, 4))
+	codecCard := container.NewStack(codecCardBG, codecCardBorder, NewInsetExact(vsd.modeButtonsRow, 3, 3, 3, 3))
 
 	bodyChildren := []fyne.CanvasObject{
-		newVideoDialogFieldLabel(i18n.Current.VideoCodec),
+		container.NewBorder(nil, nil, newVideoDialogFieldLabel(i18n.Current.VideoCodec), nil, vsd.modeDescription),
 		codecCard,
-		container.NewCenter(vsd.modeDescription),
+		videoDialogVSpace(8),
 		resolutionFPSRow,
-		NewInsetExact(vsd.modeDetailsSlot, 0, 0, 2, 0), // was flush against resolutionFPSRow above
+		videoDialogVSpace(8),
+		vsd.modeDetailsSlot,
 		videoDialogVSpace(8),
 		newVideoDialogLabeledDivider(i18n.Current.OtherSettings),
 	}
@@ -1988,13 +2046,6 @@ func (vsd *VideoStartDialog) Configure(info *models.VideoInfoData, defaultWidth,
 	// by side -- the popup's own rows still show the full option text.
 	resolutionShortLabels := make(map[string]string, len(vsd.captureModes))
 	defaultResolutionLabel := ""
-	hasMultipleFormats := false
-	formatsSeen := map[string]bool{}
-	for _, captureMode := range vsd.captureModes {
-		formatsSeen[captureMode.PixelFormat] = true
-	}
-	hasMultipleFormats = len(formatsSeen) > 1
-
 	for _, captureMode := range vsd.captureModes {
 		label := formatResolutionBaseLabel(captureMode)
 		vsd.resolutionLabels[label] = captureMode
@@ -2027,7 +2078,6 @@ func (vsd *VideoStartDialog) Configure(info *models.VideoInfoData, defaultWidth,
 	if defaultResolutionLabel != "" {
 		vsd.resolutionSelect.SetSelected(defaultResolutionLabel)
 	}
-	vsd.updateResolutionMeta(hasMultipleFormats)
 
 	// Resolve which codec button should be preselected, in priority order:
 	//  1. The codec actually negotiated by a currently-running session — the
@@ -2110,6 +2160,28 @@ func (vsd *VideoStartDialog) Show(onApply func(request *models.VideoStartRequest
 		overlayShow()
 	}
 	vsd.dialog.Show()
+}
+
+// SetAppliedToggles stores the last-applied VSync / 4:4:4 / HDR values and
+// paints the checkboxes to match. Call after Configure when opening the
+// dialog so a previous unapplied draft cannot leak into the next open.
+func (vsd *VideoStartDialog) SetAppliedToggles(vsync, color444, hdr bool) {
+	vsd.appliedVSync = vsync
+	vsd.appliedColor444 = color444
+	vsd.appliedHdr = hdr
+	vsd.restoreAppliedToggles()
+}
+
+func (vsd *VideoStartDialog) restoreAppliedToggles() {
+	if vsd.vsyncCheck != nil {
+		vsd.vsyncCheck.SetChecked(vsd.appliedVSync)
+	}
+	if vsd.color444Check != nil {
+		vsd.color444Check.SetChecked(vsd.color444Available && vsd.appliedColor444)
+	}
+	if vsd.hdrCheck != nil {
+		vsd.hdrCheck.SetChecked(vsd.hdrAvailable && vsd.appliedHdr)
+	}
 }
 
 // SetUpscaleMode restores the upscale-quality picker to a persisted
@@ -2231,51 +2303,49 @@ func (vsd *VideoStartDialog) refreshModeUI() {
 	}
 	vsd.modeDetailsSlot.Refresh()
 
-	// RustShine 4:4:4 color: only meaningful for H.265 (this project's
-	// hardware encode path has no H.264/AV1 4:4:4 profile, see
-	// service.moonlightVideoFormat's doc comment). The row itself always
-	// stays visible on every codec -- rather than disappearing when it
-	// doesn't apply, it grays out (title + checkbox) while its description
-	// explains why (requires H.265, or requires RustShine Pro); the "Pro"
-	// badge itself stays constant (see its construction in createInterface)
-	// since it was already saying the same thing the title used to say too
-	// ("4:4:4 Color (RustShine Pro)") -- one "Pro" is enough.
+	// 4:4:4: agent GET /api/video/info color_444_available is GPU/encoder
+	// probe (+ license), not a separate "monitor" flag. When that is false
+	// show a warning triangle (tap explains hardware, not "Pro is locked").
+	// On H.264 with hardware available, keep a normal empty checkbox — checking
+	// it switches to H.265.
 	switch {
-	case modeID != models.VideoModeH265:
+	case !vsd.color444Available:
+		vsd.color444Check.SetWarn(true)
 		vsd.color444Check.SetChecked(false)
 		vsd.color444Check.Disable()
-		vsd.color444Hint.SetSpans(videoDialogWrapSpan{Text: i18n.Current.Color444RequiresH265Hint, Color: videoDialogHintColor})
-		vsd.setColor444TitleEnabled(false)
-	case vsd.color444Available:
+		vsd.color444Hint.SetSpans(videoDialogWrapSpan{Text: i18n.Current.Color444UnavailableHint, Color: videoDialogHintColor})
+		vsd.setColor444TitleEnabled(true)
+	case modeID != models.VideoModeH265:
+		vsd.color444Check.SetWarn(false)
+		vsd.color444Check.SetChecked(false)
 		vsd.color444Check.Enable()
 		vsd.color444Hint.SetSpans(videoDialogWrapSpan{Text: i18n.Current.Color444Hint, Color: videoDialogHintColor})
 		vsd.setColor444TitleEnabled(true)
 	default:
-		vsd.color444Check.SetChecked(false)
-		vsd.color444Check.Disable()
-		vsd.color444Hint.SetSpans(videoDialogWrapSpan{Text: i18n.Current.Color444UnavailableHint, Color: videoDialogHintColor})
-		vsd.setColor444TitleEnabled(false)
+		vsd.color444Check.SetWarn(false)
+		vsd.color444Check.Enable()
+		vsd.color444Hint.SetSpans(videoDialogWrapSpan{Text: i18n.Current.Color444Hint, Color: videoDialogHintColor})
+		vsd.setColor444TitleEnabled(true)
 	}
 
-	// RustShine HDR color: mirrors the 4:4:4 block immediately above
-	// exactly (see docs/COLOR_MODES.md in rust-shine) -- independent
-	// availability (hdrAvailable, not color444Available), same H.265-only
-	// gate, same always-visible-but-grayed-out treatment.
 	switch {
-	case modeID != models.VideoModeH265:
+	case !vsd.hdrAvailable:
+		vsd.hdrCheck.SetWarn(true)
 		vsd.hdrCheck.SetChecked(false)
 		vsd.hdrCheck.Disable()
-		vsd.hdrHint.SetSpans(videoDialogWrapSpan{Text: i18n.Current.HdrRequiresH265Hint, Color: videoDialogHintColor})
-		vsd.setHdrTitleEnabled(false)
-	case vsd.hdrAvailable:
+		vsd.hdrHint.SetSpans(videoDialogWrapSpan{Text: i18n.Current.HdrUnavailableHint, Color: videoDialogHintColor})
+		vsd.setHdrTitleEnabled(true)
+	case modeID != models.VideoModeH265:
+		vsd.hdrCheck.SetWarn(false)
+		vsd.hdrCheck.SetChecked(false)
 		vsd.hdrCheck.Enable()
 		vsd.hdrHint.SetSpans(videoDialogWrapSpan{Text: i18n.Current.HdrHint, Color: videoDialogHintColor})
 		vsd.setHdrTitleEnabled(true)
 	default:
-		vsd.hdrCheck.SetChecked(false)
-		vsd.hdrCheck.Disable()
-		vsd.hdrHint.SetSpans(videoDialogWrapSpan{Text: i18n.Current.HdrUnavailableHint, Color: videoDialogHintColor})
-		vsd.setHdrTitleEnabled(false)
+		vsd.hdrCheck.SetWarn(false)
+		vsd.hdrCheck.Enable()
+		vsd.hdrHint.SetSpans(videoDialogWrapSpan{Text: i18n.Current.HdrHint, Color: videoDialogHintColor})
+		vsd.setHdrTitleEnabled(true)
 	}
 }
 
@@ -2378,39 +2448,6 @@ func videoCodecButtonLabel(modeID string) string {
 	}
 }
 
-func (vsd *VideoStartDialog) updateResolutionMeta(hasMultipleFormats bool) {
-	if vsd.resolutionMeta == nil {
-		return
-	}
-
-	commonFormat := ""
-	commonFPS := ""
-	if len(vsd.captureModes) > 0 {
-		first := vsd.captureModes[0]
-		commonFormat = first.PixelFormat
-		commonFPS = formatFPSRange(first.FPS)
-		for _, mode := range vsd.captureModes[1:] {
-			if mode.PixelFormat != commonFormat {
-				commonFormat = ""
-			}
-			if formatFPSRange(mode.FPS) != commonFPS {
-				commonFPS = ""
-			}
-		}
-	}
-
-	parts := make([]string, 0, 2)
-	if !hasMultipleFormats && commonFormat != "" {
-		parts = append(parts, commonFormat)
-	}
-	if commonFPS != "" {
-		parts = append(parts, commonFPS)
-	}
-
-	vsd.resolutionMeta.Text = strings.Join(parts, " · ")
-	vsd.resolutionMeta.Refresh()
-}
-
 func formatResolutionBaseLabel(mode models.VideoCaptureMode) string {
 	if mode.PixelFormat != "" {
 		return fmt.Sprintf("%d x %d (%s)", mode.Width, mode.Height, mode.PixelFormat)
@@ -2509,6 +2546,7 @@ func (vsd *VideoStartDialog) handleStart() {
 		vsd.currentModeID, request.VideoMode)
 
 	vsd.applyLocalOverlaySettings()
+	vsd.SetAppliedToggles(request.EnableVSync, request.Color444, request.Hdr)
 	vsd.Hide()
 	if vsd.onApply != nil {
 		go vsd.onApply(request)
@@ -2529,6 +2567,7 @@ func (vsd *VideoStartDialog) applyLocalOverlaySettings() {
 }
 
 func (vsd *VideoStartDialog) revertLocalOverlayDrafts() {
+	vsd.restoreAppliedToggles()
 	if vsd.aiVisionCheck != nil {
 		vsd.aiVisionCheck.SetChecked(service.AIVisionEnabled())
 	}
@@ -2544,16 +2583,6 @@ func (vsd *VideoStartDialog) handleCancel() {
 	logrus.Info("❌ Video start cancelled")
 	vsd.revertLocalOverlayDrafts()
 	vsd.Hide()
-}
-
-func formatFPSRange(values []int) string {
-	if len(values) == 0 {
-		return "fps?"
-	}
-	if len(values) == 1 {
-		return fmt.Sprintf("%d fps", values[0])
-	}
-	return fmt.Sprintf("%d-%d fps", values[0], values[len(values)-1])
 }
 
 func (vsd *VideoStartDialog) refreshAvailableModes() {
