@@ -117,7 +117,7 @@ This replaces the older **Lock GPU Clocks** checkbox (an elevated NVML clock-loc
 
 ## 📶 Wi-Fi streaming optimization (macOS)
 
-The **Permissions** panel has a **Disable AWDL while streaming** setting: while a Moonlight client is actively connected, the agent brings the `awdl0` interface down and back up once the session ends. AWDL (Apple Wireless Direct Link — the mesh protocol behind AirDrop, Handoff, Sidecar, and Instant Hotspot) shares the same Wi-Fi radio as your normal connection and periodically forces channel-hopping scans even when idle, which measurably hurts a concurrent stream's latency/stability.
+The **Permissions** panel has a **Disable AWDL while streaming** setting: while a Moonlight client is actively connected, the agent keeps the `awdl0` interface down, restoring it once the session ends. AWDL (Apple Wireless Direct Link — the mesh protocol behind AirDrop, Handoff, Sidecar, and Instant Hotspot) shares the same Wi-Fi radio as your normal connection and periodically forces channel-hopping scans even when idle, which measurably hurts a concurrent stream's latency/stability. macOS brings `awdl0` back up on its own after a while even while held down, so this isn't a one-shot toggle at session start — the agent re-asserts it down once a second for as long as the stream stays active.
 
 Off by default (opt-in). Turning it on installs a narrow `sudoers.d` rule scoped to exactly `ifconfig awdl0 down`/`up` for your user — one admin-password prompt the first time, never again after. The USBridge Client has the same setting (its own footer icon/header prompt), and both apps share the same rule, so granting it once in either app covers the other too.
 
