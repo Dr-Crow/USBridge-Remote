@@ -112,8 +112,42 @@ _sunshine_resolve_tag() {
         echo "$version"
         return 0
     fi
+    local py
+    py="$(command -v python3 || command -v python)" || return 1
     curl -fsSL "${_sunshine_curl_auth[@]+"${_sunshine_curl_auth[@]}"}" "https://api.github.com/repos/${_sunshine_repo}/releases/latest" \
-        | python3 -c "import sys, json; print(json.load(sys.stdin)['tag_name'])"
+        | "$py" -c "import sys, json; print(json.load(sys.stdin)['tag_name'])"
+}
+
+# The release tag a staged dest came from is recorded outside dest itself
+# (dest ends up inside the AppImage / signed .app bundle), keyed by its path.
+_sunshine_tag_file() {
+    local key
+    key="$(cd "$(dirname "$1")" 2>/dev/null && pwd)/$(basename "$1")"
+    echo "${XDG_CACHE_HOME:-$HOME/.cache}/usbridge-sunshine/$(echo "$key" | tr '/:\\ ' '____').tag"
+}
+
+_sunshine_record_tag() {
+    local tag="$1" file
+    [[ -n "$tag" ]] || return 0
+    file="$(_sunshine_tag_file "$2")"
+    mkdir -p "$(dirname "$file")" && echo "$tag" > "$file"
+}
+
+# _sunshine_staged_is_current <dest> <staged_path>
+# True when staged_path exists and came from the release that would be
+# fetched now, so a local rebuild picks up a new fork release instead of
+# reusing whatever an earlier build staged. When the wanted tag can't be
+# resolved (offline, rate-limited) an existing stage is kept.
+_sunshine_staged_is_current() {
+    local dest="$1" staged="$2" want have
+    [[ -e "$staged" && "${USBRIDGE_SUNSHINE_FORCE:-0}" != "1" ]] || return 1
+    want="$(_sunshine_resolve_tag 2>/dev/null || true)"
+    [[ -z "$want" ]] && return 0
+    have="$(cat "$(_sunshine_tag_file "$dest")" 2>/dev/null || true)"
+    if [[ "$want" != "$have" ]]; then
+        echo -e "${YELLOW}Staged Sunshine is ${have:-unknown}, fork release is $want — re-fetching${NC}"
+        return 1
+    fi
 }
 
 # fetch_sunshine_linux / build_sunshine_linux <dest_dir>
@@ -132,7 +166,7 @@ build_sunshine_linux() {
         echo -e "${YELLOW}USBRIDGE_SKIP_SUNSHINE=1 — skipping Sunshine bundling${NC}"
         return 0
     fi
-    if [[ -f "$dest/usr/bin/sunshine" && "${USBRIDGE_SUNSHINE_FORCE:-0}" != "1" ]]; then
+    if _sunshine_staged_is_current "$dest" "$dest/usr/bin/sunshine"; then
         echo -e "${GREEN}✓${NC} Sunshine already staged at $dest, skipping"
         _sunshine_clean_creds "$dest"
         return 0
@@ -162,6 +196,7 @@ build_sunshine_linux() {
         rm -f "$tmp_tgz"
         chmod +x "$dest/usr/bin/sunshine" 2>/dev/null || true
         _sunshine_clean_creds "$dest"
+        _sunshine_record_tag "$(_sunshine_resolve_tag 2>/dev/null || true)" "$dest"
         echo -e "${GREEN}✓${NC} Sunshine (fork release) staged at $dest"
         return 0
     fi
@@ -209,7 +244,7 @@ fetch_sunshine_windows() {
         echo -e "${YELLOW}USBRIDGE_SKIP_SUNSHINE=1 — skipping Sunshine bundling${NC}"
         return 0
     fi
-    if [[ -f "$dest/sunshine.exe" && "${USBRIDGE_SUNSHINE_FORCE:-0}" != "1" ]]; then
+    if _sunshine_staged_is_current "$dest" "$dest/sunshine.exe"; then
         echo -e "${GREEN}✓${NC} Sunshine already staged at $dest, skipping download"
         _sunshine_clean_creds "$dest"
         return 0
@@ -244,6 +279,7 @@ fetch_sunshine_windows() {
     fi
 
     _sunshine_clean_creds "$dest"
+    _sunshine_record_tag "$(_sunshine_resolve_tag 2>/dev/null || true)" "$dest"
     echo -e "${GREEN}✓${NC} Sunshine staged at $dest"
 }
 
@@ -258,7 +294,7 @@ build_sunshine_macos() {
         echo -e "${YELLOW}USBRIDGE_SKIP_SUNSHINE=1 — skipping Sunshine bundling${NC}"
         return 0
     fi
-    if [[ -d "$dest/Sunshine.app" && "${USBRIDGE_SUNSHINE_FORCE:-0}" != "1" ]]; then
+    if _sunshine_staged_is_current "$dest" "$dest/Sunshine.app"; then
         echo -e "${GREEN}✓${NC} Sunshine already staged at $dest, skipping"
         _sunshine_clean_creds "$dest"
         return 0
@@ -296,6 +332,7 @@ build_sunshine_macos() {
 
         xattr -dr com.apple.quarantine "$dest/Sunshine.app" 2>/dev/null || true
         _sunshine_clean_creds "$dest"
+        _sunshine_record_tag "$(_sunshine_resolve_tag 2>/dev/null || true)" "$dest"
         echo -e "${GREEN}✓${NC} Sunshine (fork release) staged at $dest/Sunshine.app"
         return 0
     fi

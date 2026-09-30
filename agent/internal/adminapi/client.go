@@ -184,6 +184,12 @@ func (c *Client) GPUClockLockSupported() bool {
 	return body.Value
 }
 
+func (c *Client) NvidiaPowerPrefsSupported() bool {
+	var body boolBody
+	_ = c.do(http.MethodGet, "/token/nvidia-power-prefs-supported", nil, &body)
+	return body.Value
+}
+
 func (c *Client) LockGPUClocksEnabled() bool {
 	var body boolBody
 	_ = c.do(http.MethodGet, "/token/gpu-clock-lock-enabled", nil, &body)
@@ -195,13 +201,35 @@ func (c *Client) SetLockGPUClocksEnabled(enabled bool) error {
 }
 
 func (c *Client) NvencTwoPassEnabled() bool {
-	body := boolBody{Value: true}
+	body := boolBody{Value: false}
 	_ = c.do(http.MethodGet, "/token/nvenc-two-pass", nil, &body)
 	return body.Value
 }
 
 func (c *Client) SetNvencTwoPass(enabled bool) error {
 	return c.do(http.MethodPost, "/token/nvenc-two-pass", boolBody{Value: enabled}, nil)
+}
+
+func (c *Client) AWDLDisableDuringStreamingSupported() bool {
+	var body boolBody
+	_ = c.do(http.MethodGet, "/token/awdl-disable-supported", nil, &body)
+	return body.Value
+}
+
+func (c *Client) AWDLDisableDuringStreamingEnabled() bool {
+	var body boolBody
+	_ = c.do(http.MethodGet, "/token/awdl-disable-enabled", nil, &body)
+	return body.Value
+}
+
+func (c *Client) SetAWDLDisableDuringStreaming(enabled bool) error {
+	return c.do(http.MethodPost, "/token/awdl-disable-enabled", boolBody{Value: enabled}, nil)
+}
+
+func (c *Client) AWDLSudoersPreview() string {
+	var body stringBody
+	_ = c.do(http.MethodGet, "/token/awdl-sudoers-preview", nil, &body)
+	return body.Value
 }
 
 func (c *Client) GPUs() []config.GPUInfo {

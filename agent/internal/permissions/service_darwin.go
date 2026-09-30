@@ -156,5 +156,11 @@ func (s *Service) GPUClockLockSupported() bool                            { retu
 func (s *Service) GPUClockLockElevated() bool                             { return false }
 func (s *Service) RequestGPUClockLock(binPath string, watchPID int) error { return nil }
 
+// NvidiaPowerPrefsSupported: macOS has no NVIDIA GPUs, so there's nothing
+// for these encoder preferences to apply to (see service_linux.go's
+// NvidiaPowerPrefsSupported for why Linux differs from GPUClockLockSupported
+// here despite both being false).
+func (s *Service) NvidiaPowerPrefsSupported() bool { return false }
+
 // KillGamestreamServerElevated is Windows-only -- see service_windows.go.
 func (s *Service) KillGamestreamServerElevated() error { return nil }

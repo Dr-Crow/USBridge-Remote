@@ -108,6 +108,10 @@ type ConfigStore interface {
 type CodecProbe interface {
 	CurrentVideoCodec() string
 	SupportedVideoCodecs(adminPort int) []string
+	// SessionActive reports whether a Moonlight client is currently
+	// mid-stream, as opposed to merely paired or the streamer process
+	// merely running idle -- see session_active.go.
+	SessionActive() bool
 	// Color444Status reports the RustShine Pro color upgrade's state:
 	// active is whether the current/most recent session actually negotiated
 	// 4:4:4 chroma; available is whether this host could offer it right now

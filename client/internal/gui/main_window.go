@@ -223,6 +223,17 @@ type MainWindow struct {
 	clipboardIcon *headerStatusBadgeButton
 	inputModeIcon *headerStatusBadgeButton
 	rndisIcon     *headerStatusBadgeButton
+	// awdlIcon/awdlGrantBtn/awdlSuppressing: macOS-desktop-only "disable
+	// AWDL while streaming" feature -- see awdl_status.go. awdlIcon lives
+	// in the Control footer like keyboardIcon/rndisIcon above; awdlGrantBtn
+	// is the more prominent duplicate in the main header (next to
+	// mainExitBtn), shown only while the one-time sudoers permission isn't
+	// granted yet. awdlSuppressing tracks whether THIS process currently
+	// holds awdl0 down, so updateStatus only calls netutil.SetAWDLDown on
+	// an actual state transition, not every poll tick.
+	awdlIcon        *headerStatusBadgeButton
+	awdlGrantBtn    *view.HeaderActionButton
+	awdlSuppressing bool
 	// gamepadIcon/cdromIcon/backupIcon/snapshotIcon are that strip's own
 	// *passive* indicators (main_window_status_indicator_bar.go's
 	// "indicators" sub-group) -- bare newHeaderPassiveIndicator images, not

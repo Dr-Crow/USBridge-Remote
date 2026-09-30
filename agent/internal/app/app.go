@@ -808,6 +808,7 @@ func (a *App) Run(headless, startHidden bool) error {
 	}
 	go a.sunshineWatchdog(ctx)
 	go a.x11SessionEnvWatchdog(ctx)
+	go a.awdlWatchdog(ctx)
 	// Always started, even before ever linking -- recheckEntitlement no-ops
 	// immediately (no network call) whenever cfg.EntitlementToken is
 	// empty, so this is cheap, and it means a purchase/trial made
@@ -994,6 +995,13 @@ func (a *App) startSunshineNow() {
 	a.reconcileOutputName()
 	a.reconcileAudioSink()
 	a.applyNvencPrefs(a.stream, a.streamKind)
+	// A Sunshine that failed every encoder with the old value keeps running
+	// without ever re-reading its config, so restart it on a change.
+	if a.applySunshineEncoder(a.stream, a.streamKind) && a.stream.Running() {
+		if err := a.RestartSunshine(); err != nil {
+			log.Printf("[app] restart Sunshine after encoder change: %v", err)
+		}
+	}
 	if err := a.stream.Start(a.cfg.SunshinePort); err != nil {
 		log.Printf("[app] failed to start Sunshine: %v", err)
 	} else {
@@ -3465,6 +3473,17 @@ func (a *App) GPUClockLockSupported() bool {
 		return false
 	}
 	return a.perms.GPUClockLockSupported()
+}
+
+// NvidiaPowerPrefsSupported reports whether the NVIDIA power-mode/two-pass
+// encoder preferences UI should be offered -- true on Windows and Linux
+// (see internal/permissions's per-platform NvidiaPowerPrefsSupported for
+// why this differs from GPUClockLockSupported above).
+func (a *App) NvidiaPowerPrefsSupported() bool {
+	if a.perms == nil {
+		return false
+	}
+	return a.perms.NvidiaPowerPrefsSupported()
 }
 
 // LockGPUClocksEnabled returns the persisted "Lock GPU clocks" setting.

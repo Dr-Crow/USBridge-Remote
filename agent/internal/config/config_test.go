@@ -26,6 +26,9 @@ func TestDefault(t *testing.T) {
 	if cfg.StateDir == "" || !filepath.IsAbs(cfg.StateDir) {
 		t.Fatalf("Default() StateDir = %q, want an absolute path", cfg.StateDir)
 	}
+	if cfg.NvencTwoPassOK() {
+		t.Fatal("Default() should leave NVENC two-pass off (NvencTwoPass nil = off, not the encoder's own on-by-default)")
+	}
 }
 
 func TestEffectiveListenHost(t *testing.T) {

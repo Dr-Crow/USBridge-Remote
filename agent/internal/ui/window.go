@@ -50,10 +50,15 @@ type TokenProvider interface {
 	KMSCaptureGranted() bool
 	RequestKMSCapture() bool
 	GPUClockLockSupported() bool
+	NvidiaPowerPrefsSupported() bool
 	LockGPUClocksEnabled() bool
 	SetLockGPUClocksEnabled(enabled bool) error
 	NvencTwoPassEnabled() bool
 	SetNvencTwoPass(enabled bool) error
+	AWDLDisableDuringStreamingSupported() bool
+	AWDLDisableDuringStreamingEnabled() bool
+	SetAWDLDisableDuringStreaming(enabled bool) error
+	AWDLSudoersPreview() string
 	NvidiaPowerMode() string
 	SetNvidiaPowerMode(mode string) error
 	GPUs() []config.GPUInfo
@@ -218,6 +223,12 @@ type Window struct {
 	clipboardToolRow *fyne.Container
 	clipboardToolBtn *widget.Button
 
+	// awdlDisableRow: macOS only -- lets the user opt into the agent
+	// bringing awdl0 down for the duration of a streaming session (see
+	// app.AWDLDisableDuringStreamingSupported / internal/netutil/awdl_darwin.go).
+	awdlDisableRow   *fyne.Container
+	awdlDisableCheck *styledCheck
+
 	// rustshineWebRTCRow: shown only while RustShine is the active backend
 	// -- lets a supporter turn USBridge's browser/WASM web client on or off
 	// without needing to reopen the license dialog. Sunshine has no
@@ -295,7 +306,6 @@ type Window struct {
 
 	autostartCheck *styledCheck
 
-
 	// supportBtn opens showLicenseDialog -- a single, low-emphasis entry
 	// point for the whole license/RustShine flow, deliberately never
 	// popped up on its own (unlike promptForUpdate's confirm dialog, which
@@ -309,16 +319,17 @@ type Window struct {
 	loginAvatar *loginAvatarButton
 	themeBtn    *footerTextButton
 
-	permPanel     *themedPanel
-	statusPanel   *themedPanel
-	protocolPanel *themedPanel
-	autostartLang *autostartRow
-	nvidiaPowerLabel  *canvas.Text
-	gpuSettingsBox    *fyne.Container
-	nvencTwoPassLang  *permToggleRow
-	mlClientsLang *canvas.Text
-	usbDriverLang *canvas.Text
-	clipboardLang *widget.Label
+	permPanel        *themedPanel
+	statusPanel      *themedPanel
+	protocolPanel    *themedPanel
+	autostartLang    *autostartRow
+	nvidiaPowerLabel *canvas.Text
+	gpuSettingsBox   *fyne.Container
+	nvencTwoPassLang *permToggleRow
+	mlClientsLang    *canvas.Text
+	usbDriverLang    *canvas.Text
+	clipboardLang    *widget.Label
+	awdlDisableLang  *widget.Label
 
 	// guiWin is the Fyne window ShowAndRun created -- confirm dialogs from
 	// the protocol card's Change button need a parent.
@@ -1047,11 +1058,14 @@ func (w *Window) ShowAndRun(onClose func()) {
 
 	// NVIDIA encoder preferences, written into both streamers' configs
 	// (see app.applyNvencPrefs); changing one restarts the running
-	// streamer. Windows only, like the GPU clock lock they replace in this
-	// block: "max performance" is the driver profile that keeps the GPU at
-	// full clocks without the lock's UAC prompt, and two-pass trades GPU
-	// load for picture quality. Without an NVIDIA GPU both keys are unused.
-	gpuClockSupported := w.token != nil && w.token.GPUClockLockSupported()
+	// streamer. Windows and Linux only ("max performance" is the driver
+	// profile that keeps the GPU at full clocks without Windows's UAC-gated
+	// clock lock, and two-pass trades GPU load for picture quality) --
+	// gated on NvidiaPowerPrefsSupported rather than GPUClockLockSupported
+	// since the latter is specifically about Windows's NVML clock lock,
+	// while these are just RustShine/Sunshine config keys both streamers
+	// honor on Linux too. Without an NVIDIA GPU both keys are unused.
+	gpuClockSupported := w.token != nil && w.token.NvidiaPowerPrefsSupported()
 	nvidiaToggle := func(initial bool, set func(bool) error) *styledCheck {
 		var check *styledCheck
 		check = newStyledCheck("", initial, func(checked bool) {
@@ -1131,6 +1145,39 @@ func (w *Window) ShowAndRun(onClose func()) {
 	clipLabel := widget.NewLabel(loc().ClipboardTool)
 	w.clipboardLang = clipLabel
 	w.clipboardToolRow = container.NewHBox(clipLabel, layout.NewSpacer(), clipboardInfoBtn, w.clipboardToolBtn)
+
+	// AWDL disable-during-streaming (macOS only): turning it on installs a
+	// sudoers.d NOPASSWD rule (one admin-password prompt, see
+	// app.SetAWDLDisableDuringStreaming) so the agent can toggle awdl0
+	// without a prompt on every session. Same "?" preview-before-prompting
+	// shape as the clipboard row above.
+	w.awdlDisableCheck = newStyledCheck("", w.token != nil && w.token.AWDLDisableDuringStreamingEnabled(), func(checked bool) {
+		if w.token == nil {
+			return
+		}
+		w.awdlDisableCheck.Disable()
+		go func() {
+			err := w.token.SetAWDLDisableDuringStreaming(checked)
+			fyne.Do(func() {
+				w.awdlDisableCheck.Enable()
+				if err != nil {
+					logrus.Errorf("[ui] AWDL disable-during-streaming toggle failed: %v", err)
+					w.awdlDisableCheck.SetChecked(!checked)
+					showErrorDialog(err, win)
+				}
+			})
+		}()
+	})
+	awdlInfoBtn := widget.NewButtonWithIcon("", theme.InfoIcon(), func() {
+		preview := ""
+		if w.token != nil {
+			preview = w.token.AWDLSudoersPreview()
+		}
+		showInfoDialog(loc().AWDLDisableInfoTitle, preview, win)
+	})
+	awdlLabel := widget.NewLabel(loc().AWDLDisable)
+	w.awdlDisableLang = awdlLabel
+	w.awdlDisableRow = container.NewHBox(awdlLabel, layout.NewSpacer(), awdlInfoBtn, w.awdlDisableCheck)
 
 	// RustShine web client (WebRTC) toggle -- shown only while RustShine is
 	// the active backend (see refreshRustShineUI). Built unconditionally
@@ -1252,6 +1299,9 @@ func (w *Window) ShowAndRun(onClose func()) {
 	if runtime.GOOS == "linux" {
 		permTop = append(permTop, w.clipboardToolRow)
 		w.refreshClipboardToolUI()
+	}
+	if w.token != nil && w.token.AWDLDisableDuringStreamingSupported() {
+		permTop = append(permTop, w.awdlDisableRow)
 	}
 	permTop = append(permTop, w.rustshineWebRTCRow)
 	permTop = append(permTop, w.usbDriverRow)
@@ -1931,6 +1981,9 @@ func (w *Window) applyLanguage() {
 	}
 	if w.clipboardLang != nil {
 		w.clipboardLang.SetText(c.ClipboardTool)
+	}
+	if w.awdlDisableLang != nil {
+		w.awdlDisableLang.SetText(c.AWDLDisable)
 	}
 	if w.tsEmpty != nil {
 		w.tsEmpty.Text = c.NoRemoteControllers

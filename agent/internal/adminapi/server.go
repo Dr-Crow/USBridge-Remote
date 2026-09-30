@@ -33,10 +33,15 @@ type TokenBackend interface {
 	KMSCaptureTargetPath() string
 	RecheckKMSCapture() bool
 	GPUClockLockSupported() bool
+	NvidiaPowerPrefsSupported() bool
 	LockGPUClocksEnabled() bool
 	SetLockGPUClocksEnabled(enabled bool) error
 	NvencTwoPassEnabled() bool
 	SetNvencTwoPass(enabled bool) error
+	AWDLDisableDuringStreamingSupported() bool
+	AWDLDisableDuringStreamingEnabled() bool
+	SetAWDLDisableDuringStreaming(enabled bool) error
+	AWDLSudoersPreview() string
 	NvidiaPowerMode() string
 	SetNvidiaPowerMode(mode string) error
 	GPUs() []config.GPUInfo
@@ -210,12 +215,19 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /token/kms-capexec-path", s.handleKMSCapExecPath)
 	mux.HandleFunc("POST /token/kms-recheck", s.handleKMSRecheck)
 	mux.HandleFunc("GET /token/gpu-clock-lock-supported", s.handleGPUClockLockSupported)
+	mux.HandleFunc("GET /token/nvidia-power-prefs-supported", s.boolGetter(func() bool { return s.token.NvidiaPowerPrefsSupported() }))
 	mux.HandleFunc("GET /token/gpu-clock-lock-enabled", s.handleGPUClockLockEnabled)
 	mux.HandleFunc("POST /token/gpu-clock-lock-enabled", s.handleSetGPUClockLockEnabled)
 	mux.HandleFunc("GET /token/nvenc-two-pass", s.boolGetter(func() bool { return s.token.NvencTwoPassEnabled() }))
 	mux.HandleFunc("POST /token/nvenc-two-pass", s.boolSetter(func(v bool) error { return s.token.SetNvencTwoPass(v) }))
 	mux.HandleFunc("GET /token/gpus", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, s.token.GPUs())
+	})
+	mux.HandleFunc("GET /token/awdl-disable-supported", s.boolGetter(func() bool { return s.token.AWDLDisableDuringStreamingSupported() }))
+	mux.HandleFunc("GET /token/awdl-disable-enabled", s.boolGetter(func() bool { return s.token.AWDLDisableDuringStreamingEnabled() }))
+	mux.HandleFunc("POST /token/awdl-disable-enabled", s.boolSetter(func(v bool) error { return s.token.SetAWDLDisableDuringStreaming(v) }))
+	mux.HandleFunc("GET /token/awdl-sudoers-preview", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, stringBody{Value: s.token.AWDLSudoersPreview()})
 	})
 	mux.HandleFunc("GET /token/nvidia-power-mode", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, stringBody{Value: s.token.NvidiaPowerMode()})
