@@ -258,6 +258,22 @@ func (p *Parser) ParseIconsOnly(imgBytes []byte) (icons []Icon, err error) {
 	return p.parseIconsOnlyRGB(original)
 }
 
+// ParseIconsOnlyMarked mirrors the native build's ParseIconsOnlyMarked (see
+// parser.go's doc comment) -- behavior here is identical.
+func (p *Parser) ParseIconsOnlyMarked(imgBytes []byte) (markedPNG []byte, result *Result, err error) {
+	original, err := decodeToRGB(imgBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decode image: %w", err)
+	}
+	icons, err := p.parseIconsOnlyRGB(original)
+	if err != nil {
+		return nil, nil, err
+	}
+	result = &Result{Icons: icons, ImageWidth: original.W, ImageHeight: original.H, Backend: "local-onnx-web"}
+	markedPNG = drawResultWasm(original, result)
+	return markedPNG, result, nil
+}
+
 func (p *Parser) ParseIconsOnlyRGBA(img *image.RGBA) (icons []Icon, err error) {
 	if img == nil || img.Bounds().Dx() == 0 || img.Bounds().Dy() == 0 {
 		return nil, fmt.Errorf("empty image")

@@ -268,6 +268,26 @@ func (p *Parser) ParseIconsOnly(imgBytes []byte) (icons []Icon, err error) {
 	return p.parseIconsOnlyRGB(original)
 }
 
+// ParseIconsOnlyMarked is ParseIconsOnly plus the annotated PNG (red boxes
+// only -- there's no text to draw green ones for). Built for MCP's ui.parse
+// (local_ui_intercept.go): an agent that only wants "what's clickable"
+// shouldn't have to pay dbnet+svtr's several-second OCR cost just to get
+// back the same annotated screenshot Parse would have produced anyway --
+// see ParseIconsOnly's own doc comment for the icon_detect-alone timing.
+func (p *Parser) ParseIconsOnlyMarked(imgBytes []byte) (markedPNG []byte, result *Result, err error) {
+	original, err := decodeToRGB(imgBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("decode image: %w", err)
+	}
+	icons, err := p.parseIconsOnlyRGB(original)
+	if err != nil {
+		return nil, nil, err
+	}
+	result = &Result{Icons: icons, ImageWidth: original.W, ImageHeight: original.H, Backend: backendLabel(p.accel)}
+	markedPNG = drawResult(original, result)
+	return markedPNG, result, nil
+}
+
 func (p *Parser) ParseIconsOnlyRGBA(img *image.RGBA) (icons []Icon, err error) {
 	if img == nil || img.Bounds().Dx() == 0 || img.Bounds().Dy() == 0 {
 		return nil, fmt.Errorf("empty image")

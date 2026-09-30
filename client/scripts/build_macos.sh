@@ -324,6 +324,24 @@ else
     :
 fi
 
+# 5b2. Compile the OCR helper (Vision.framework text recognition for the
+# Control footer's "Copy Text from Screen" tool -- see
+# macos/ocr-helper/main.swift's doc comment for why this is a precompiled
+# binary rather than `swift <file>` run at call time). macOS-only feature:
+# a missing swiftc just skips it, same non-fatal pattern as ffmpeg/tailscale
+# above.
+echo -e "\n${YELLOW}🔎 Compiling OCR helper (Vision.framework)...${NC}"
+if command -v swiftc >/dev/null 2>&1; then
+    if swiftc -O "$REPO_ROOT/macos/ocr-helper/main.swift" -o "$APP_MACOS_DIR/usbridge-ocr-helper" 2>&1; then
+        chmod 755 "$APP_MACOS_DIR/usbridge-ocr-helper"
+        echo -e "${GREEN}✓${NC} MacOS/usbridge-ocr-helper"
+    else
+        echo -e "   ${YELLOW}⚠${NC} swiftc failed -- \"Copy Text from Screen\" will stay unavailable in this build"
+    fi
+else
+    echo -e "   ${YELLOW}⚠${NC} swiftc not found -- \"Copy Text from Screen\" will stay unavailable in this build"
+fi
+
 # 5c. Bundle Tailscale (Go binary — statically linked, no dylib deps)
 echo -e "\n${YELLOW}🔗 Bundling Tailscale...${NC}"
 _ts_src=""

@@ -30,15 +30,49 @@ import (
 var (
 	liveFrameWanted atomic.Bool
 	liveFrameCh     = make(chan []byte, 1)
+
+	// liveFrameGetter, when set (service package's init on platforms that
+	// keep a stable "last rendered" buffer -- currently macOS's Metal path,
+	// see metal_video_darwin.go's g_lastRenderedBuf), answers RequestLiveFrame
+	// immediately from that already-composited frame instead of arming
+	// liveFrameWanted and waiting for the decode thread's next callback.
+	// Confirmed live: the wait-based path could catch a frame mid-reconnect
+	// glitch (a visibly smeared/torn frame the operator never actually saw
+	// as a stable picture) simply because it happened to be whatever the
+	// decoder produced in the timeout window right after being asked --
+	// asking "what's already on screen" instead of "decode me a fresh one"
+	// avoids that class of bug entirely, not just the timing race the
+	// timeout value alone fixed. nil on platforms without such an accessor,
+	// where the wait-based fallback below still applies.
+	liveFrameGetter atomic.Pointer[func() []byte]
 )
 
-// RequestLiveFrame asks the video decode path for its next frame
-// (PNG-encoded, full resolution) and waits up to timeout for it. Returns
-// (nil, false) if no video session is actively decoding frames right now
-// (nothing answers within timeout) -- the caller should fall back to
-// fetching a screenshot from the device in that case, exactly as if this
-// didn't exist.
+// SetLiveFrameGetter registers a getter that returns the current frame
+// (PNG-encoded) instantly, no waiting -- see liveFrameGetter's doc comment.
+// Pass nil to clear it back to the wait-based fallback.
+func SetLiveFrameGetter(fn func() []byte) {
+	if fn == nil {
+		liveFrameGetter.Store(nil)
+		return
+	}
+	liveFrameGetter.Store(&fn)
+}
+
+// RequestLiveFrame asks the video decode path for a frame (PNG-encoded,
+// full resolution). Prefers liveFrameGetter's instant "already rendered"
+// snapshot when one is registered; otherwise waits up to timeout for the
+// decode thread's next callback to hand one over via SubmitLiveFrame.
+// Returns (nil, false) if no video session is actively decoding frames
+// right now -- the caller should fall back to fetching a screenshot from
+// the device in that case, exactly as if this didn't exist.
 func RequestLiveFrame(timeout time.Duration) ([]byte, bool) {
+	if p := liveFrameGetter.Load(); p != nil {
+		if png := (*p)(); png != nil {
+			return png, true
+		}
+		return nil, false
+	}
+
 	// Drain a stale frame left over from a previous call that timed out
 	// before anything arrived, so this call doesn't get handed a frame
 	// from seconds ago instead of a fresh one.

@@ -37,12 +37,15 @@ extern void goMetalLog(char *msg, int level);
 import "C"
 
 import (
+	"bytes"
 	"image"
+	"image/png"
 	"sync/atomic"
 	"unsafe"
 
 	"github.com/sirupsen/logrus"
 
+	usbapi "usbridge-client/internal/api"
 	"usbridge-client/internal/localui"
 	"usbridge-client/internal/models"
 )
@@ -75,6 +78,30 @@ func init() {
 	// UpscaleMode (upscale_mode.go's cross-platform SetUpscaleMode) -- see
 	// that file's own doc comment for why this hook indirection exists.
 	upscaleModeMetalSet = MetalVideoSetUpscaleMode
+
+	// Live-frame getter for local ui.parse / the Control footer's
+	// Screenshot tool (see api/live_frame.go's liveFrameGetter doc
+	// comment): answer instantly from g_lastRenderedBuf, the same stable
+	// "last actually rendered" frame the pause-snapshot path
+	// (VideoWidget.clearVideo) already uses, instead of arming a
+	// wait-for-next-decoded-frame signal.
+	usbapi.SetLiveFrameGetter(getLastRenderedFramePNG)
+}
+
+// getLastRenderedFramePNG PNG-encodes MetalVideoGetLastFrameRGBA's result,
+// or returns nil if no frame has been rendered yet (no video session, or
+// the very first frame hasn't arrived).
+func getLastRenderedFramePNG() []byte {
+	img := MetalVideoGetLastFrameRGBA()
+	if img == nil {
+		return nil
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		logrus.Warnf("🔎 [live-frame] PNG encode failed: %v", err)
+		return nil
+	}
+	return buf.Bytes()
 }
 
 // pushNetGraphOverlayToMetal hands a just-built HUD canvas (see

@@ -224,6 +224,10 @@ type MainWindow struct {
 	clipboardIcon *headerStatusBadgeButton
 	inputModeIcon *headerStatusBadgeButton
 	rndisIcon     *headerStatusBadgeButton
+	// screenshotToolIcon opens the Screenshot / Copy Text from Screen menu
+	// (screenshot_tool.go) -- Control footer only, same group as
+	// keyboardIcon/mouseIcon/clipboardIcon.
+	screenshotToolIcon *headerStatusBadgeButton
 	// awdlIcon/awdlGrantBtn/awdlSuppressing: macOS-desktop-only "disable
 	// AWDL while streaming" feature -- see awdl_status.go. awdlIcon lives
 	// in the Control footer like keyboardIcon/rndisIcon above; awdlGrantBtn

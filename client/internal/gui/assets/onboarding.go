@@ -52,6 +52,8 @@ var (
 	mouseIcon []byte
 	//go:embed clipboard-sync.svg
 	clipboardSyncIcon []byte
+	//go:embed screenshot-tool.svg
+	screenshotToolIcon []byte
 	//go:embed keyboard-input-mode.svg
 	keyboardInputModeIcon []byte
 	//go:embed cursor-pointer.svg
@@ -228,6 +230,10 @@ var (
 	// menus, same #C9C9C9 rest / #e0e3e7 hover as the keyboard icon.
 	ClipboardIcon                    = fyne.NewStaticResource("clipboard-sync.svg", recolorStrokeIcon(clipboardSyncIcon, "#C9C9C9", "1.8"))
 	ClipboardIconFooterHover         = fyne.NewStaticResource("clipboard-sync-footer-hover.svg", recolorStrokeIcon(clipboardSyncIcon, "#e0e3e7", "1.8"))
+	// ScreenshotToolIcon -- the Control footer's Screenshot / Copy Text
+	// from Screen menu (screenshot_tool.go), same style as ClipboardIcon.
+	ScreenshotToolIcon            = fyne.NewStaticResource("screenshot-tool.svg", recolorStrokeIcon(screenshotToolIcon, "#C9C9C9", "1.8"))
+	ScreenshotToolIconFooterHover = fyne.NewStaticResource("screenshot-tool-footer-hover.svg", recolorStrokeIcon(screenshotToolIcon, "#e0e3e7", "1.8"))
 	KeyboardInputModeIcon            = fyne.NewStaticResource("keyboard-input-mode.svg", recolorStrokeIcon(keyboardInputModeIcon, "#C9C9C9", "1.8"))
 	KeyboardInputModeIconFooterHover = fyne.NewStaticResource("keyboard-input-mode-footer-hover.svg", recolorStrokeIcon(keyboardInputModeIcon, "#e0e3e7", "1.8"))
 	FullscreenIconFooterHover        = fyne.NewStaticResource("fullscreen-svgrepo-com-footer-hover.svg", recolorFillIcon(fullscreenIcon, "#e0e3e7"))

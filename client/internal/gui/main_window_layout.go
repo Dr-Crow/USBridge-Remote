@@ -1359,6 +1359,12 @@ func (mw *MainWindow) createStatusBar() *fyne.Container {
 	mw.clipboardIcon.SetIconSize(fyne.NewSize(14, 14))
 	mw.clipboardIcon.SetBadgeText("")
 	mw.clipboardIcon.Hide()
+	mw.screenshotToolIcon = newHeaderStatusBadgeButton(assets.ScreenshotToolIcon, func() {
+		mw.showScreenshotToolMenu()
+	})
+	mw.screenshotToolIcon.SetIconSize(fyne.NewSize(14, 14))
+	mw.screenshotToolIcon.SetBadgeText("")
+	mw.screenshotToolIcon.Hide()
 	mw.inputModeIcon = newHeaderStatusBadgeButton(assets.KeyboardInputModeIcon, func() {
 		mw.showKeyboardInputModeMenu()
 	})

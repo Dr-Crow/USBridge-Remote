@@ -149,13 +149,33 @@ func tryLocalUIParse(client *USBClient, reqBody []byte) (respBody []byte, handle
 	if call.Name != "ui.parse" {
 		return nil, false, nil
 	}
+	var args struct {
+		Text bool `json:"text"`
+	}
+	// Best-effort: absent/malformed arguments just means the default
+	// (fast, no text) -- ui.parse takes no required arguments today, so a
+	// caller that predates this flag sends "{}" or omits arguments
+	// entirely, neither of which should be treated as an error.
+	_ = json.Unmarshal(call.Arguments, &args)
 
 	imgBytes, err := screenImageForLocalParse(client)
 	if err != nil {
 		return nil, true, fmt.Errorf("local ui.parse: fetch screen.get_image from device: %w", err)
 	}
 
-	markedPNG, result, err := parser.Parse(imgBytes)
+	var markedPNG []byte
+	var result *localui.Result
+	if args.Text {
+		markedPNG, result, err = parser.Parse(imgBytes)
+	} else {
+		// Fast path (default): icon_detect alone, no dbnet/svtr OCR --
+		// measured live at ~300-400ms on a 3840x2160 frame vs. several
+		// seconds for full Parse (see ParseIconsOnlyMarked's doc comment).
+		// A caller that only needs to click something should never pay
+		// OCR's cost; one that also wants to read text passes
+		// arguments:{"text":true} and gets the slower, complete pass.
+		markedPNG, result, err = parser.ParseIconsOnlyMarked(imgBytes)
+	}
 	if err != nil {
 		return nil, true, fmt.Errorf("local ui.parse: %w", err)
 	}
@@ -183,12 +203,21 @@ func tryLocalUIParse(client *USBClient, reqBody []byte) (respBody []byte, handle
 
 // liveFrameWaitTimeout bounds how long screenImageForLocalParse waits for
 // the video decode path to hand over a frame (see live_frame.go) before
-// giving up and falling back to a device round-trip. Long enough that a
-// live session (frames arriving every 8-16ms at 60-120fps) always wins the
-// race; short enough that calling ui.parse with no video session open
-// (a perfectly normal, headless MCP-agent use case) doesn't add a
-// noticeable stall before it falls back to fetchScreenImage.
-const liveFrameWaitTimeout = 300 * time.Millisecond
+// giving up and falling back to a device round-trip. Must cover not just a
+// frame's arrival (8-16ms at 60-120fps) but maybeServeLiveFrame's own PNG
+// encode of it, which the requester blocks on too -- confirmed live at
+// 3840x2160 that a bare image/png.Encode of a single frame alone already
+// costs 110-120ms on a highly-compressible synthetic frame, before even
+// counting a real desktop's far less compressible pixels or the queueing
+// delay until the next decoded frame after the request arrives. 300ms
+// measured live as too tight: maybeServeLiveFrame would start encoding but
+// RequestLiveFrame's own timeout (and its deferred liveFrameWanted reset)
+// fired first, so SubmitLiveFrame's CompareAndSwap always lost the race
+// and every call fell through to fetchScreenImage regardless of an active
+// session. 2s comfortably covers a real encode with margin; still far
+// short of the 30s a caller would otherwise wait on fetchScreenImage's own
+// device round-trip when no video session is open at all.
+const liveFrameWaitTimeout = 2 * time.Second
 
 // screenImageForLocalParse gets the screenshot local ui.parse decodes,
 // preferring a frame the video decode path is already producing (no extra
@@ -257,10 +286,15 @@ func fetchScreenImage(client *USBClient) ([]byte, error) {
 func localUIParseToolDef() map[string]any {
 	return map[string]any{
 		"name":        "ui.parse",
-		"description": "Detect and read graphical UI elements on the current screen via this CLIENT's local ONNX pipeline (YOLOv8 icon/element detector + DBNet+SVTR text detector/recognizer, running on this machine's CPU/GPU -- see internal/localui) instead of the connected device's own hardware: fetches a screenshot from the device (cheap) and runs detection here. Returns an annotated PNG (red boxes = clickable icons/elements, green boxes = recognized text) alongside a JSON list of every box with its pixel bbox (and, for text, the recognized string) plus image_width/image_height for that capture. Each entry also carries a best-effort label (nearby/overlapping text) so you can search for an element by name. To act on a result: compute the box center ((x1+x2)/2, (y1+y2)/2) and pass it plus image_width/image_height to mouse.action's move_to/click_at/double_click_at -- the same recipe works whether the connected device is a hardware KVM or a software Agent. Call it when you need to LOCATE something you don't already have coordinates for, not routinely after every action.",
+		"description": "Detect and read graphical UI elements on the current screen via this CLIENT's local ONNX pipeline (YOLOv8 icon/element detector + DBNet+SVTR text detector/recognizer, running on this machine's CPU/GPU -- see internal/localui) instead of the connected device's own hardware: fetches a screenshot from the device (cheap) and runs detection here. By default (no arguments, or text:false) this ONLY runs icon/element detection -- a fraction of a second -- and returns just the clickable boxes, no text: enough to locate and click_at something. Pass {\"text\":true} to also run OCR (DBNet+SVTR) and get recognized text back, which costs several more seconds -- use it only when you actually need to read what's on screen, not before every click. Returns an annotated PNG (red boxes = clickable icons/elements, green boxes = recognized text, only present with text:true) alongside a JSON list of every box with its pixel bbox (and, for text, the recognized string) plus image_width/image_height for that capture. Each entry also carries a best-effort label (nearby/overlapping text, text:true only) so you can search for an element by name. To act on a result: compute the box center ((x1+x2)/2, (y1+y2)/2) and pass it plus image_width/image_height to mouse.action's move_to/click_at/double_click_at -- the same recipe works whether the connected device is a hardware KVM or a software Agent. Call it when you need to LOCATE something you don't already have coordinates for, not routinely after every action.",
 		"inputSchema": map[string]any{
-			"type":                 "object",
-			"properties":           map[string]any{},
+			"type": "object",
+			"properties": map[string]any{
+				"text": map[string]any{
+					"type":        "boolean",
+					"description": "Also run OCR and return recognized text (several seconds slower). Default false: icons/elements only, sub-second.",
+				},
+			},
 			"additionalProperties": false,
 		},
 	}
