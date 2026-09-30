@@ -83,6 +83,9 @@ type VideoStartDialog struct {
 	appliedVSync    bool
 	appliedColor444 bool
 	appliedHdr      bool
+	// hdrAgentAvailable: the agent offers HDR regardless of whether this
+	// client can display it -- only picks which "unavailable" hint to show.
+	hdrAgentAvailable bool
 	// netGraphCheck/netGraphHint: the TF2 net_graph-style live HUD
 	// (client/internal/service/net_graph.go) -- draft until Apply/Start,
 	// same as AI Vision. Only built/shown when service.NetGraphSupported()
@@ -1713,7 +1716,11 @@ func (vsd *VideoStartDialog) createInterface() {
 	})
 	vsd.hdrCheck.OnTapWhileDisabled = func() {
 		if !vsd.hdrAvailable {
-			ShowInfoDialog(i18n.Current.Hdr, i18n.Current.HdrUnavailableMessage, vsd.parent)
+			msg := i18n.Current.HdrUnavailableMessage
+			if vsd.hdrAgentAvailable {
+				msg = i18n.Current.HdrClientUnsupportedHint
+			}
+			ShowInfoDialog(i18n.Current.Hdr, msg, vsd.parent)
 			return
 		}
 		if vsd.selectedModeID() == models.VideoModeH265 {
@@ -1964,7 +1971,10 @@ func (vsd *VideoStartDialog) Configure(info *models.VideoInfoData, defaultWidth,
 	if !vsd.color444Available {
 		vsd.color444Check.SetChecked(false)
 	}
-	vsd.hdrAvailable = info != nil && info.HdrAvailable
+	// Both ends must do HDR: the agent encodes it (hardware + license), and
+	// this client must be able to display it (service.HdrDisplaySupported).
+	vsd.hdrAgentAvailable = info != nil && info.HdrAvailable
+	vsd.hdrAvailable = vsd.hdrAgentAvailable && service.HdrDisplaySupported()
 	if !vsd.hdrAvailable {
 		vsd.hdrCheck.SetChecked(false)
 	}
@@ -2330,10 +2340,14 @@ func (vsd *VideoStartDialog) refreshModeUI() {
 
 	switch {
 	case !vsd.hdrAvailable:
+		hint := i18n.Current.HdrUnavailableHint
+		if vsd.hdrAgentAvailable {
+			hint = i18n.Current.HdrClientUnsupportedHint
+		}
 		vsd.hdrCheck.SetWarn(true)
 		vsd.hdrCheck.SetChecked(false)
 		vsd.hdrCheck.Disable()
-		vsd.hdrHint.SetSpans(videoDialogWrapSpan{Text: i18n.Current.HdrUnavailableHint, Color: videoDialogHintColor})
+		vsd.hdrHint.SetSpans(videoDialogWrapSpan{Text: hint, Color: videoDialogHintColor})
 		vsd.setHdrTitleEnabled(true)
 	case modeID != models.VideoModeH265:
 		vsd.hdrCheck.SetWarn(false)
