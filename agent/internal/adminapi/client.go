@@ -363,6 +363,14 @@ func (c *Client) CertStatus() tlshost.CertStatus {
 	return status
 }
 
+// RetryDeviceCert mirrors CancelPurchase's own "always safe to call, no
+// error surfaced" contract -- the Status UI's cert-error retry button
+// doesn't need to know or care whether the retry it triggered ends up
+// succeeding; CertStatus's next poll reflects that.
+func (c *Client) RetryDeviceCert() {
+	_ = c.do(http.MethodPost, "/token/retry-device-cert", nil, nil)
+}
+
 func (c *Client) StreamerRunning() bool {
 	var body boolBody
 	_ = c.do(http.MethodGet, "/token/streamer-running", nil, &body)

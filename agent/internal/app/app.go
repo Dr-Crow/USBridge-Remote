@@ -2627,18 +2627,41 @@ func (a *App) tickDeviceCert(ctx context.Context) error {
 		return nil
 	}
 
+	csrDER, err := a.tlsMgr.DeviceCSR(hostname)
+	if err != nil {
+		log.Printf("[app] device-cert: generate CSR failed: %v", err)
+		a.tlsMgr.SetDeviceCertError(err)
+		return fmt.Errorf("generate CSR failed: %w", err)
+	}
+
 	certCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	cert, err := devicecert.FetchCert(certCtx, hwID)
+	cert, err := devicecert.RequestCert(certCtx, hwID, csrDER)
 	cancel()
 	if err != nil {
-		log.Printf("[app] device-cert: fetch cert failed: %v", err)
-		return fmt.Errorf("fetch cert failed: %w", err)
+		log.Printf("[app] device-cert: request cert failed: %v", err)
+		a.tlsMgr.SetDeviceCertError(err)
+		return fmt.Errorf("request cert failed: %w", err)
 	}
-	if err := a.tlsMgr.InstallDeviceCert(hostname, cert.CertPEM, cert.KeyPEM); err != nil {
+	if err := a.tlsMgr.InstallDeviceCert(hostname, cert.CertPEM); err != nil {
 		log.Printf("[app] device-cert: install cert failed: %v", err)
+		a.tlsMgr.SetDeviceCertError(err)
 		return fmt.Errorf("install cert failed: %w", err)
 	}
 	return nil
+}
+
+// RetryDeviceCert re-runs tickDeviceCert immediately, outside its normal
+// poll/heartbeat schedule -- what the Status UI's certificate-error retry
+// button calls. Safe to call any time: tickDeviceCert itself is idempotent
+// (it no-ops once a fresh device cert is already installed) and already
+// runs concurrently with the watchdog's own ticks without any shared state
+// beyond tlsMgr, which is already safe for concurrent use.
+func (a *App) RetryDeviceCert() {
+	go func() {
+		if err := a.tickDeviceCert(context.Background()); err != nil {
+			log.Printf("[app] device-cert: manual retry failed: %v", err)
+		}
+	}()
 }
 
 // recheckEntitlement re-verifies whatever's currently cached in

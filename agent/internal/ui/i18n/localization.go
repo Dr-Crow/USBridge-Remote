@@ -183,6 +183,8 @@ type LocalizedStrings struct {
 	CertHostnameLabel string
 	CertExpiresLabel  string
 	CertPending       string
+	CertErrorPrefix   string
+	CertRetry         string
 	SunshineStreaming string
 	SunshineAdminPort string
 	InvalidPortWide   string
@@ -463,6 +465,8 @@ func EN() *LocalizedStrings {
 		CertHostnameLabel: "Hostname",
 		CertExpiresLabel:  "Valid until",
 		CertPending:       "Registering with USBridge's backend for a trusted hostname — this can take a minute after first launch or a network change.",
+		CertErrorPrefix:   "Couldn't get a trusted certificate: ",
+		CertRetry:         "Retry",
 		SunshineStreaming: "Sunshine Streaming",
 		SunshineAdminPort: "Sunshine Admin Port",
 		InvalidPortWide:   "Invalid port (1–65534)",
@@ -694,6 +698,8 @@ func ES() *LocalizedStrings {
 	locale.CertHostnameLabel = "Host"
 	locale.CertExpiresLabel = "Valido hasta"
 	locale.CertPending = "Registrando con el backend de USBridge para obtener un host de confianza — puede tardar un minuto tras el primer arranque o un cambio de red."
+	locale.CertErrorPrefix = "No se pudo obtener un certificado de confianza: "
+	locale.CertRetry = "Reintentar"
 	locale.SunshineStreaming = "Sunshine Streaming"
 	locale.SunshineAdminPort = "Sunshine Admin Port"
 	locale.InvalidPortWide = "Puerto invalido (1–65534)"
@@ -924,6 +930,8 @@ func UK() *LocalizedStrings {
 	locale.CertHostnameLabel = "Хост"
 	locale.CertExpiresLabel = "Дійсний до"
 	locale.CertPending = "Реєстрація в бекенді USBridge для отримання довіреного хоста — це може зайняти хвилину після першого запуску або зміни мережі."
+	locale.CertErrorPrefix = "Не вдалося отримати довірений сертифікат: "
+	locale.CertRetry = "Повторити"
 	locale.SunshineStreaming = "Sunshine Streaming"
 	locale.SunshineAdminPort = "Sunshine Admin Port"
 	locale.InvalidPortWide = "Некоректний порт (1–65534)"

@@ -70,6 +70,23 @@ type Manager struct {
 	device         *tls.Certificate
 	deviceLeaf     *x509.Certificate
 	deviceHostname string // the "<label>.device.usbridge.io" this device's cert covers, if any yet
+
+	// deviceKey is this device's OWN persistent TLS key (see DeviceCSR) --
+	// generated locally on first use and never sent anywhere; only a CSR
+	// signed by it ever leaves this machine. Cached here once loaded/
+	// generated so repeated DeviceCSR calls don't re-read disk; deliberately
+	// separate from `device`/`deviceLeaf` above since this key outlives many
+	// cert renewals (same key, new cert each time).
+	deviceKey *ecdsa.PrivateKey
+
+	// lastCertErr/lastCertErrAt record the most recent device-cert issuance
+	// failure (set by internal/app's tickDeviceCert via SetDeviceCertError)
+	// so CertStatus can surface it to the Status UI's retry button instead
+	// of silently leaving the user stuck on a stale self-signed fallback
+	// with no explanation. Cleared the moment InstallDeviceCert next
+	// succeeds.
+	lastCertErr   error
+	lastCertErrAt time.Time
 }
 
 // NewManager returns a Manager persisting its certs under dir (created on
@@ -131,12 +148,91 @@ func (m *Manager) EnsureSelfSigned(ips []net.IP, dnsNames []string) error {
 	return nil
 }
 
-// InstallDeviceCert installs a freshly fetched shared wildcard cert/key
-// (see internal/devicecert.FetchCert) for this device's own hostname,
-// persisting it so a restart doesn't need a network round trip before
-// HTTPS on that name works again.
-func (m *Manager) InstallDeviceCert(hostname, certPEM, keyPEM string) error {
-	cert, leaf, err := parseCertKeyPair([]byte(certPEM), []byte(keyPEM))
+// ensureDeviceKeyLocked returns this device's own persistent TLS key,
+// loading it from disk or generating (and persisting) a fresh one on first
+// use. Callers must hold m.mu.
+func (m *Manager) ensureDeviceKeyLocked() (*ecdsa.PrivateKey, error) {
+	if m.deviceKey != nil {
+		return m.deviceKey, nil
+	}
+	if keyPEM, err := os.ReadFile(filepath.Join(m.dir, deviceKeyFile)); err == nil {
+		if key, err := parseECDSAKeyPEM(keyPEM); err == nil {
+			m.deviceKey = key
+			return key, nil
+		}
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("tlshost: generate device key: %w", err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("tlshost: marshal device key: %w", err)
+	}
+	if err := os.MkdirAll(m.dir, 0700); err != nil {
+		return nil, fmt.Errorf("tlshost: create %s: %w", m.dir, err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+	if err := os.WriteFile(filepath.Join(m.dir, deviceKeyFile), keyPEM, 0600); err != nil {
+		return nil, fmt.Errorf("tlshost: persist device key: %w", err)
+	}
+	m.deviceKey = key
+	return key, nil
+}
+
+// DeviceCSR returns a DER-encoded PKCS#10 CSR naming hostname, signed by
+// this device's own persistent key (see ensureDeviceKeyLocked) -- the
+// private key itself never leaves this call. See
+// devicecert.RequestCert for how the caller sends this to the backend, and
+// this package's top doc comment for why that's the whole point: unlike
+// the old shared-wildcard-key design, there is no key here for the backend
+// (or anyone intercepting the request) to ever see.
+func (m *Manager) DeviceCSR(hostname string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key, err := m.ensureDeviceKeyLocked()
+	if err != nil {
+		return nil, err
+	}
+	template := &x509.CertificateRequest{
+		Subject:  pkix.Name{CommonName: hostname},
+		DNSNames: []string{hostname},
+	}
+	return x509.CreateCertificateRequest(rand.Reader, template, key)
+}
+
+// SetDeviceCertError records the most recent device-cert issuance failure
+// (see internal/app's tickDeviceCert) so CertStatus can surface it to the
+// Status UI's retry button. Pass nil to clear it outside of a successful
+// InstallDeviceCert (not currently needed, but keeps the setter symmetric).
+func (m *Manager) SetDeviceCertError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lastCertErr = err
+	m.lastCertErrAt = time.Now()
+}
+
+// InstallDeviceCert installs a freshly issued leaf certificate (see
+// devicecert.RequestCert) for this device's own hostname, pairing it with
+// the local key DeviceCSR already signed a CSR with -- there is no key
+// parameter: the backend only ever returns a certificate now (see this
+// package's top doc comment). Persisting only the cert here is sufficient
+// for a restart to work without a network round trip: ensureDeviceKeyLocked
+// already persisted the matching key the moment DeviceCSR first generated
+// it.
+func (m *Manager) InstallDeviceCert(hostname, certPEM string) error {
+	m.mu.Lock()
+	key := m.deviceKey
+	m.mu.Unlock()
+	if key == nil {
+		return fmt.Errorf("tlshost: InstallDeviceCert called before DeviceCSR generated a device key")
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return fmt.Errorf("tlshost: marshal device key: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
+	cert, leaf, err := parseCertKeyPair([]byte(certPEM), keyPEM)
 	if err != nil {
 		return fmt.Errorf("tlshost: parse device cert: %w", err)
 	}
@@ -150,14 +246,12 @@ func (m *Manager) InstallDeviceCert(hostname, certPEM, keyPEM string) error {
 	if err := os.WriteFile(filepath.Join(m.dir, deviceCertFile), []byte(certPEM), 0644); err != nil {
 		return fmt.Errorf("tlshost: persist device cert: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(m.dir, deviceKeyFile), []byte(keyPEM), 0600); err != nil {
-		return fmt.Errorf("tlshost: persist device key: %w", err)
-	}
 	if err := os.WriteFile(filepath.Join(m.dir, deviceHostFile), []byte(hostname), 0644); err != nil {
 		return fmt.Errorf("tlshost: persist device hostname: %w", err)
 	}
 
 	m.device, m.deviceLeaf, m.deviceHostname = cert, leaf, hostname
+	m.lastCertErr = nil
 	log.Printf("🔒 [tls] device cert ready for %s (valid until %s)", hostname, leaf.NotAfter.Format(time.RFC3339))
 	return nil
 }
@@ -194,6 +288,12 @@ type CertStatus struct {
 	// device cert if LetsEncrypt, the self-signed one otherwise), zero if
 	// neither has been generated/installed yet.
 	ExpiresAt time.Time `json:"expiresAt"`
+	// LastError is the most recent device-cert issuance failure's message
+	// (see SetDeviceCertError), "" once the next attempt succeeds. The
+	// Status UI's cert dialog shows this alongside a retry button rather
+	// than leaving the user stuck on a stale self-signed fallback with no
+	// explanation of why the trusted hostname never showed up.
+	LastError string `json:"lastError,omitempty"`
 }
 
 // CertStatus reports what GetCertificate is currently serving -- cheap,
@@ -201,10 +301,14 @@ type CertStatus struct {
 func (m *Manager) CertStatus() CertStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.device != nil && m.deviceLeaf != nil {
-		return CertStatus{Hostname: m.deviceHostname, LetsEncrypt: true, ExpiresAt: m.deviceLeaf.NotAfter}
+	errMsg := ""
+	if m.lastCertErr != nil {
+		errMsg = m.lastCertErr.Error()
 	}
-	st := CertStatus{Hostname: m.deviceHostname}
+	if m.device != nil && m.deviceLeaf != nil {
+		return CertStatus{Hostname: m.deviceHostname, LetsEncrypt: true, ExpiresAt: m.deviceLeaf.NotAfter, LastError: errMsg}
+	}
+	st := CertStatus{Hostname: m.deviceHostname, LastError: errMsg}
 	if m.selfLeaf != nil {
 		st.ExpiresAt = m.selfLeaf.NotAfter
 	}
@@ -312,6 +416,25 @@ func parseCertKeyPair(certPEM, keyPEM []byte) (*tls.Certificate, *x509.Certifica
 		return nil, nil, err
 	}
 	return &cert, leaf, nil
+}
+
+// parseECDSAKeyPEM decodes a single PKCS#8-in-PEM ECDSA private key, the
+// same shape ensureDeviceKeyLocked persists -- used to load the device key
+// back in on a later process start.
+func parseECDSAKeyPEM(keyPEM []byte) (*ecdsa.PrivateKey, error) {
+	block, _ := pem.Decode(keyPEM)
+	if block == nil {
+		return nil, fmt.Errorf("no PEM block found")
+	}
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	ecKey, ok := key.(*ecdsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("device key is not ECDSA")
+	}
+	return ecKey, nil
 }
 
 func loadCertKeyPairFiles(certPath, keyPath string) (*tls.Certificate, *x509.Certificate, error) {

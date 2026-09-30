@@ -150,7 +150,8 @@ func (w *Window) showCertStatusDialog(parent fyne.Window) {
 	rows := []fyne.CanvasObject{wrapDialogLabel(hint, 11, design.ColorMutedOlive)}
 
 	var certFooter fyne.CanvasObject = container.NewCenter()
-	if st.LetsEncrypt {
+	switch {
+	case st.LetsEncrypt:
 		labelW := dialogFormLabelWidth(loc().CertHostnameLabel, loc().CertExpiresLabel)
 		deviceURL := "https://" + st.Hostname
 		rows = append(rows,
@@ -162,7 +163,22 @@ func (w *Window) showCertStatusDialog(parent fyne.Window) {
 				_ = w.app.OpenURL(parsed)
 			}
 		}))
-	} else if !st.ExpiresAt.IsZero() {
+	case st.LastError != "":
+		// Distinct from the CertPending case below: this is "the last
+		// attempt actually failed" (e.g. Let's Encrypt rate-limited the
+		// order), not "still waiting on the normal registration round
+		// trip" -- the retry button re-runs tickDeviceCert immediately
+		// instead of leaving the user to guess whether it's still working.
+		errLabel := widget.NewLabel(loc().CertErrorPrefix + st.LastError)
+		errLabel.Wrapping = fyne.TextWrapWord
+		rows = append(rows, wrapDialogLabel(errLabel, 11, design.ColorAlert))
+		certFooter = container.NewCenter(newDialogCTA(loc().CertRetry, func() {
+			if w.token != nil {
+				w.token.RetryDeviceCert()
+			}
+			closeDialog()
+		}))
+	case !st.ExpiresAt.IsZero():
 		pending := widget.NewLabel(loc().CertPending)
 		pending.Wrapping = fyne.TextWrapWord
 		rows = append(rows, wrapDialogLabel(pending, 11, design.ColorAlert))

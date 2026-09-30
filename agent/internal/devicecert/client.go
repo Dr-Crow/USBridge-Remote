@@ -21,7 +21,9 @@ package devicecert
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -70,26 +72,40 @@ func RegisterIP(ctx context.Context, hwID, ip string) (hostname string, err erro
 	return raw.Hostname, nil
 }
 
-// Cert is the shared wildcard cert/key this machine's HTTPS listener
-// should present for the hostname RegisterIP returned -- the SAME cert
-// every other device/agent in the fleet gets (see the backend's README for
-// why: one shared private key, not one per install, at the cost of the
-// key existing on every install -- a deliberate, documented tradeoff, not
-// an oversight).
+// Cert is the leaf certificate the backend signed for this device's own
+// CSR (see tlshost.Manager.DeviceCSR) -- unlike the shared-wildcard design
+// this replaced, there is no key here: the private half never left this
+// machine, so there is nothing this struct could carry even if it wanted
+// to. See usbridge-entitlement-backend's 2026-09-30 security review for why
+// (the old GET /v1/device/cert handed back a private key shared by the
+// whole fleet, gated by nothing stronger than "hw_id looks well-formed").
 type Cert struct {
-	CertPEM        string `json:"cert"`
-	KeyPEM         string `json:"key"`
-	HostnameSuffix string `json:"hostname_suffix"`
-	NotAfter       string `json:"not_after"` // RFC 3339
+	CertPEM  string `json:"cert"`
+	Hostname string `json:"hostname"`
+	NotAfter string `json:"not_after"` // RFC 3339
 }
 
-// FetchCert retrieves the current shared wildcard cert+key. Gated
-// server-side only on hwID looking like a real hardware id (see this
-// package's doc comment) -- never fails because a machine hasn't purchased
-// anything.
-func FetchCert(ctx context.Context, hwID string) (*Cert, error) {
+// ErrRateLimited is returned by RequestCert when the backend reports that
+// Let's Encrypt itself rate-limited the order (HTTP 503,
+// {"error":"rate_limited"}) -- distinct from every other failure so a
+// caller (tickDeviceCert, ultimately the Status UI's retry button) can show
+// "try again later, this is expected under load" instead of a generic
+// error.
+var ErrRateLimited = errors.New("devicecert: certificate issuance is rate-limited, try again later")
+
+// RequestCert asks the backend to issue (or return the cached, still-fresh)
+// leaf certificate for this device's own hostname, signing csrDER -- a
+// DER-encoded PKCS#10 CSR generated locally (see
+// tlshost.Manager.DeviceCSR). The backend independently recomputes the
+// hostname from hwID and rejects a CSR that doesn't name it, so csrDER must
+// already be built for the hostname RegisterIP returned.
+func RequestCert(ctx context.Context, hwID string, csrDER []byte) (*Cert, error) {
+	reqBody, _ := json.Marshal(map[string]string{
+		"hw_id": hwID,
+		"csr":   base64.StdEncoding.EncodeToString(csrDER),
+	})
 	var out Cert
-	if err := doJSON(ctx, http.MethodGet, "/v1/device/cert?hw_id="+hwID, nil, &out); err != nil {
+	if err := doJSON(ctx, http.MethodPost, "/v1/device/cert", reqBody, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -126,6 +142,13 @@ func doJSON(ctx context.Context, method, path string, body []byte, out any) erro
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
+		var apiErr struct {
+			Error  string `json:"error"`
+			Detail string `json:"detail"`
+		}
+		if json.Unmarshal(respBody, &apiErr) == nil && apiErr.Error == "rate_limited" {
+			return fmt.Errorf("%w: %s", ErrRateLimited, apiErr.Detail)
+		}
 		return fmt.Errorf("devicecert: %s: HTTP %d: %s", path, resp.StatusCode, truncate(respBody))
 	}
 	if out == nil {
