@@ -57,18 +57,25 @@ func (a *App) AWDLSudoersPreview() string {
 	return netutil.AWDLSudoersPreview()
 }
 
-// awdlPollInterval is how often awdlWatchdog checks session state. Short
-// enough that AWDL comes back up within a couple seconds of a client
-// disconnecting (so AirDrop/Handoff aren't left off any longer than
-// necessary), long enough not to matter as overhead.
-const awdlPollInterval = 2 * time.Second
+// awdlPollInterval is how often awdlWatchdog re-checks session state and
+// re-asserts awdl0 down. macOS itself brings awdl0 back up on its own
+// after a while even while held down (confirmed live) -- a single toggle
+// at session start isn't enough, so this has to keep re-issuing `ifconfig
+// awdl0 down` for as long as the session stays active, the same way a
+// manual `while true; do sudo ifconfig awdl0 down; sleep 1; done` loop
+// would. 1s matches that same proven-good cadence; the call itself is a
+// cheap, idempotent local ifconfig invocation (a few ms), so polling this
+// often is not meaningful overhead.
+const awdlPollInterval = 1 * time.Second
 
 // awdlWatchdog polls the running streamer's session state (see
-// streamhost.Backend.SessionActive) and toggles awdl0 down for the
-// duration of an active streaming session, back up otherwise. A no-op loop
-// (returns immediately) unless AWDLDisableDuringStreamingSupported is
-// true, so it's always safe for Run() to start this unconditionally on
-// every platform.
+// streamhost.Backend.SessionActive) every awdlPollInterval. While a
+// session is active it unconditionally re-asserts awdl0 down on every
+// tick (see awdlPollInterval's doc comment for why "once at session
+// start" isn't enough); once the session ends it brings awdl0 back up
+// exactly once. A no-op loop (returns immediately) unless
+// AWDLDisableDuringStreamingSupported is true, so it's always safe for
+// Run() to start this unconditionally on every platform.
 func (a *App) awdlWatchdog(ctx context.Context) {
 	if !a.AWDLDisableDuringStreamingSupported() {
 		return
@@ -101,14 +108,15 @@ func (a *App) awdlWatchdog(ctx context.Context) {
 			stream := a.stream
 			a.streamMu.Unlock()
 			active := stream != nil && stream.SessionActive()
-			if active == down {
+			if !active {
+				restore()
 				continue
 			}
-			if err := netutil.SetAWDLDown(active); err != nil {
-				log.Printf("[app] AWDL toggle (down=%v) failed: %v", active, err)
+			if err := netutil.SetAWDLDown(true); err != nil {
+				log.Printf("[app] AWDL re-assert (down=true) failed: %v", err)
 				continue
 			}
-			down = active
+			down = true
 		}
 	}
 }

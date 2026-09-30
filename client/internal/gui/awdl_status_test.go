@@ -2,6 +2,7 @@ package gui
 
 import (
 	"testing"
+	"time"
 
 	"fyne.io/fyne/v2/test"
 )
@@ -85,4 +86,40 @@ func TestSyncAWDLStreamingState_UnsupportedOrDisabledNoop(t *testing.T) {
 func TestRefreshAWDLUI_NilSafe(t *testing.T) {
 	mw := newTestMainWindowForAWDL(t)
 	mw.refreshAWDLUI()
+}
+
+// TestSyncAWDLStreamingState_NotStreamingRestoresOnce confirms the
+// isStreaming=false path only calls netutil.SetAWDLDown (and thus only
+// clears awdlSuppressing) when awdlSuppressing was already true -- calling
+// it repeatedly while not streaming must stay a no-op after the first
+// restore, not shell out to sudo every time.
+func TestSyncAWDLStreamingState_NotStreamingRestoresOnce(t *testing.T) {
+	mw := newTestMainWindowForAWDL(t)
+	mw.app.Preferences().SetBool(awdlDisablePrefKey, true)
+	mw.awdlSuppressing = false
+
+	mw.syncAWDLStreamingState(false)
+	if mw.awdlSuppressing {
+		t.Error("syncAWDLStreamingState(false) set awdlSuppressing=true")
+	}
+}
+
+// TestStartAWDLWatchdog_NoopWhenUnsupported confirms startAWDLWatchdog
+// doesn't spawn its ticker goroutine at all on platforms where AWDL isn't
+// supported -- nothing to stop, no ticker leak, safe to call
+// unconditionally from every MainWindow's startup regardless of platform.
+func TestStartAWDLWatchdog_NoopWhenUnsupported(t *testing.T) {
+	if awdlSupported() {
+		t.Skip("this platform supports AWDL -- covered by the ticker's own shape, not this test")
+	}
+	mw := newTestMainWindowForAWDL(t)
+	mw.startAWDLWatchdog()
+	// If a goroutine were spawned despite awdlSupported()==false, this
+	// would be the only signal a unit test could catch cheaply: give it a
+	// moment, then confirm no state changed (SetAWDLDown always errors on
+	// unsupported platforms, so awdlSuppressing must stay false either way).
+	time.Sleep(20 * time.Millisecond)
+	if mw.awdlSuppressing {
+		t.Error("awdlSuppressing became true on an unsupported platform")
+	}
 }

@@ -1,6 +1,8 @@
 package gui
 
 import (
+	"time"
+
 	"usbridge-client/internal/gui/assets"
 	"usbridge-client/internal/gui/i18n"
 	"usbridge-client/internal/gui/view"
@@ -58,13 +60,25 @@ func (mw *MainWindow) setAWDLEnabled(enabled bool) error {
 	return nil
 }
 
-// syncAWDLStreamingState is called from updateStatus() with the freshly
-// computed mw.isStreaming, and toggles awdl0 only on an actual state
-// transition (edge-triggered -- mirrors USBridge-Remote/agent's own
-// awdlWatchdog) so a stream running for hours doesn't shell out to sudo on
-// every status poll tick.
+// awdlPollInterval matches USBridge-Remote/agent's own awdlWatchdog: macOS
+// brings awdl0 back up on its own after a while even while held down
+// (confirmed live), so a single toggle at stream start isn't enough --
+// awdlWatchdog below keeps re-asserting it every second for as long as
+// the stream stays active, the same way a manual `while true; do sudo
+// ifconfig awdl0 down; sleep 1; done` loop would. The call itself is a
+// cheap, idempotent local ifconfig invocation, so this cadence isn't
+// meaningful overhead.
+const awdlPollInterval = 1 * time.Second
+
+// syncAWDLStreamingState is called both from updateStatus() (for a fast
+// reaction right at the real start/stop transition, via the video
+// widget's own callback -- see main_window_connection.go) and from
+// awdlWatchdog's ticker (for continuous re-assertion in between). While
+// streaming+enabled it unconditionally re-asserts awdl0 down every call;
+// once not streaming (or the setting is off) it brings awdl0 back up
+// exactly once.
 func (mw *MainWindow) syncAWDLStreamingState(isStreaming bool) {
-	if !awdlSupported() || !mw.awdlEnabled() {
+	if !awdlSupported() || !mw.awdlEnabled() || !isStreaming {
 		if mw.awdlSuppressing {
 			if err := netutil.SetAWDLDown(false); err != nil {
 				logrus.Warnf("[awdl] restoring AWDL: %v", err)
@@ -74,14 +88,33 @@ func (mw *MainWindow) syncAWDLStreamingState(isStreaming bool) {
 		}
 		return
 	}
-	if isStreaming == mw.awdlSuppressing {
+	if err := netutil.SetAWDLDown(true); err != nil {
+		logrus.Warnf("[awdl] re-assert (down=true) failed: %v", err)
 		return
 	}
-	if err := netutil.SetAWDLDown(isStreaming); err != nil {
-		logrus.Warnf("[awdl] toggle (down=%v) failed: %v", isStreaming, err)
+	mw.awdlSuppressing = true
+}
+
+// startAWDLWatchdog runs for the lifetime of the window (stopped via
+// mw.isClosing, same pattern as startDeepLinkMonitoring), continuously
+// re-asserting awdl0 down while mw.isStreaming and the setting is on --
+// see syncAWDLStreamingState's and awdlPollInterval's doc comments for
+// why a one-shot toggle at stream start isn't enough on macOS. A no-op
+// loop (returns immediately) everywhere awdlSupported() is false.
+func (mw *MainWindow) startAWDLWatchdog() {
+	if !awdlSupported() {
 		return
 	}
-	mw.awdlSuppressing = isStreaming
+	go func() {
+		ticker := time.NewTicker(awdlPollInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			if mw.isClosing.Load() {
+				return
+			}
+			mw.syncAWDLStreamingState(mw.isStreaming)
+		}
+	}()
 }
 
 // refreshAWDLUI syncs both the footer icon and the header grant button to
