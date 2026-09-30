@@ -79,6 +79,17 @@ type Manager struct {
 	// cert renewals (same key, new cert each time).
 	deviceKey *ecdsa.PrivateKey
 
+	// csrDER/csrHostname cache the last CSR DeviceCSR built, so every poll
+	// sends byte-identical CSRs. An ECDSA signature is randomized, so
+	// re-signing yields new bytes each call -- and the backend used to
+	// fingerprint the raw CSR DER, so every poll looked like a new key:
+	// it re-queued the row, burned the per-IP quota and made the relay
+	// issue certs nobody could claim until Let's Encrypt's duplicate-cert
+	// limit was hit. The backend now fingerprints the public key instead;
+	// this is the belt to that pair of braces.
+	csrDER      []byte
+	csrHostname string
+
 	// lastCertErr/lastCertErrAt record the most recent device-cert issuance
 	// failure (set by internal/app's tickDeviceCert via SetDeviceCertError)
 	// so CertStatus can surface it to the Status UI's retry button instead
@@ -221,11 +232,19 @@ func (m *Manager) DeviceCSR(hostname string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if m.csrDER != nil && m.csrHostname == hostname {
+		return m.csrDER, nil
+	}
 	template := &x509.CertificateRequest{
 		Subject:  pkix.Name{CommonName: hostname},
 		DNSNames: []string{hostname},
 	}
-	return x509.CreateCertificateRequest(rand.Reader, template, key)
+	der, err := x509.CreateCertificateRequest(rand.Reader, template, key)
+	if err != nil {
+		return nil, err
+	}
+	m.csrDER, m.csrHostname = der, hostname
+	return der, nil
 }
 
 // SetDeviceCertError records the most recent device-cert issuance failure

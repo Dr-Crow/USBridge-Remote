@@ -1,6 +1,7 @@
 package tlshost
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -234,6 +235,28 @@ func TestDeviceCSR_ReusesTheSameKeyAcrossCalls(t *testing.T) {
 	}
 	if pub1.X.Cmp(pub2.X) != 0 || pub1.Y.Cmp(pub2.Y) != 0 {
 		t.Error("DeviceCSR signed two CSRs with two different keys -- the device key must be stable across calls")
+	}
+}
+
+func TestDeviceCSR_ByteIdenticalWhilePolling(t *testing.T) {
+	m := NewManager(t.TempDir())
+	a, err := m.DeviceCSR("abc123.device.usbridge.io")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := m.DeviceCSR("abc123.device.usbridge.io")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(a, b) {
+		t.Error("two DeviceCSR calls for the same hostname returned different bytes -- each poll must send the same CSR")
+	}
+	c, err := m.DeviceCSR("other.device.usbridge.io")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if csr, err := x509.ParseCertificateRequest(c); err != nil || len(csr.DNSNames) != 1 || csr.DNSNames[0] != "other.device.usbridge.io" {
+		t.Errorf("CSR after hostname change names %v (err %v), want [other.device.usbridge.io]", csr.DNSNames, err)
 	}
 }
 
