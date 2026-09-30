@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"log"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -50,6 +51,25 @@ func (a *App) applyNvencPrefs(b streamhost.Backend, kind string) (changed bool) 
 		changed = true
 	}
 	return changed
+}
+
+// applySunshineEncoder writes sunshineEncoderPin into Sunshine's config,
+// reporting whether it changed. Only a value this sets is ever removed, so
+// a hand-picked encoder on a host without the pin stays.
+func (a *App) applySunshineEncoder(b streamhost.Backend, kind string) (changed bool) {
+	if b == nil || kind != "sunshine" || runtime.GOOS != "linux" {
+		return false
+	}
+	want, have := sunshineEncoderPin(), b.ConfigKey("encoder")
+	if want == have || (want == "" && have != "nvenc") {
+		return false
+	}
+	if err := b.SetConfigKey("encoder", want); err != nil {
+		log.Printf("[app] writing encoder = %s: %v", want, err)
+		return false
+	}
+	log.Printf("[app] sunshine: encoder %q -> %q", have, want)
+	return true
 }
 
 func (a *App) NvencTwoPassEnabled() bool { return a.cfg.NvencTwoPassOK() }

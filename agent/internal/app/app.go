@@ -994,6 +994,13 @@ func (a *App) startSunshineNow() {
 	a.reconcileOutputName()
 	a.reconcileAudioSink()
 	a.applyNvencPrefs(a.stream, a.streamKind)
+	// A Sunshine that failed every encoder with the old value keeps running
+	// without ever re-reading its config, so restart it on a change.
+	if a.applySunshineEncoder(a.stream, a.streamKind) && a.stream.Running() {
+		if err := a.RestartSunshine(); err != nil {
+			log.Printf("[app] restart Sunshine after encoder change: %v", err)
+		}
+	}
 	if err := a.stream.Start(a.cfg.SunshinePort); err != nil {
 		log.Printf("[app] failed to start Sunshine: %v", err)
 	} else {
