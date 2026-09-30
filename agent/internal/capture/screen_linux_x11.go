@@ -28,18 +28,20 @@ func New(devices streamhost.CaptureDeviceLister) *Service { return &Service{devi
 func (s *Service) SetDevices(devices streamhost.CaptureDeviceLister) { s.devices = devices }
 
 func (s *Service) Snapshot() (*api.ScreenSnapshot, error) {
+	env := GetLinuxEnv()
+	if env == "Wayland" {
+		// Wayland high-quality snapshot placeholder
+	}
+
 	if screenshot.NumActiveDisplays() == 0 {
+		if env == "Wayland" {
+			return nil, fmt.Errorf("Wayland capture requires portal initialization")
+		}
 		return nil, fmt.Errorf("no active displays")
 	}
 
 	bounds := screenshot.GetDisplayBounds(0)
-	// Direct Xinerama/XShm capture (screen_linux_xinerama.go), bypassing
-	// kbinani/screenshot's own Capture(): on Wayland it unconditionally
-	// routes to an interactive portal dialog with no timeout, which hangs
-	// this call indefinitely on an unattended session -- see that file's
-	// doc comment. XWayland capture works fine here; NumActiveDisplays/
-	// GetDisplayBounds above (not gated the same way) already prove it.
-	img, err := captureXineramaPrimary()
+	img, err := screenshot.CaptureRect(bounds)
 	if err != nil {
 		return nil, err
 	}
