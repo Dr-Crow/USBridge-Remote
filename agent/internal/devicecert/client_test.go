@@ -114,3 +114,18 @@ func TestRequestCert_RateLimitedResponseReturnsErrRateLimited(t *testing.T) {
 		t.Fatalf("RequestCert error = %v, want errors.Is(err, ErrRateLimited)", err)
 	}
 }
+
+func TestRequestCertPendingIsErrPending(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"status":"pending","hostname":"x.device.usbridge.io"}`))
+	}))
+	defer srv.Close()
+	prev := TestSetBackendBaseURL(srv.URL)
+	defer TestSetBackendBaseURL(prev)
+
+	_, err := RequestCert(context.Background(), "hw", []byte("csr"))
+	if !errors.Is(err, ErrPending) {
+		t.Fatalf("want ErrPending, got %v", err)
+	}
+}

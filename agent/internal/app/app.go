@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -2529,6 +2530,11 @@ func (a *App) tickTurnCredentials(ctx context.Context) {
 // as a periodic heartbeat even when no IP change has been detected.
 const deviceCertRegisterInterval = 5 * time.Minute
 
+// deviceCertPendingRetry is how soon deviceCertWatchdog asks again after the
+// backend answered "pending" (CSR queued for the external issuer, see
+// devicecert.ErrPending).
+const deviceCertPendingRetry = time.Minute
+
 // deviceCertPollInterval is how frequently deviceCertWatchdog checks the local
 // routing table for IP address / interface changes.
 const deviceCertPollInterval = 3 * time.Second
@@ -2552,7 +2558,15 @@ func (a *App) deviceCertWatchdog(ctx context.Context) {
 		if ip == "" {
 			return
 		}
-		if err := a.tickDeviceCert(ctx); err == nil {
+		err := a.tickDeviceCert(ctx)
+		if errors.Is(err, devicecert.ErrPending) {
+			// Registered fine, cert just not issued yet: poll again in
+			// ~deviceCertPendingRetry instead of every deviceCertPollInterval.
+			lastRegisteredIP = ip
+			lastRegisterTime = time.Now().Add(deviceCertPendingRetry - deviceCertRegisterInterval)
+			return
+		}
+		if err == nil {
 			if lastRegisteredIP != "" && lastRegisteredIP != ip {
 				log.Printf("🌐 [app] device-cert: local IP changed (%s -> %s), registered domain", lastRegisteredIP, ip)
 			}

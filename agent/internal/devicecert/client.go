@@ -93,6 +93,12 @@ type Cert struct {
 // error.
 var ErrRateLimited = errors.New("devicecert: certificate issuance is rate-limited, try again later")
 
+// ErrPending is returned by RequestCert when the backend has queued this
+// device's CSR for its external issuer (HTTP 202, {"status":"pending"}) --
+// the normal first-issuance/renewal state, not a failure: the cert shows up
+// on a later poll, typically within a few minutes.
+var ErrPending = errors.New("devicecert: certificate is being issued, check back in a few minutes")
+
 // RequestCert asks the backend to issue (or return the cached, still-fresh)
 // leaf certificate for this device's own hostname, signing csrDER -- a
 // DER-encoded PKCS#10 CSR generated locally (see
@@ -140,6 +146,15 @@ func doJSON(ctx context.Context, method, path string, body []byte, out any) erro
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return err
+	}
+	if resp.StatusCode == http.StatusAccepted {
+		var p struct {
+			Detail string `json:"detail"`
+		}
+		if json.Unmarshal(respBody, &p) == nil && p.Detail != "" {
+			return fmt.Errorf("%w (%s)", ErrPending, p.Detail)
+		}
+		return ErrPending
 	}
 	if resp.StatusCode != http.StatusOK {
 		var apiErr struct {
