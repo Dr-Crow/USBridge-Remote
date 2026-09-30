@@ -240,6 +240,31 @@ func (p *MCPProxy) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Local click_at/double_click_at screen-diff (see mouse_click_diff.go):
+	// forwards the click as usual, but recomputes screen_changed_pct/
+	// screen_visibly_changed from the Client's own before/after video
+	// frames instead of trusting the device's own (sometimes broken)
+	// capture. No-op (handled=false) when no stream is active.
+	if localResp, handled, localErr := tryLocalMouseClickDiff(client, body); handled {
+		if localErr != nil {
+			writeJSONRPCError(w, id, -32000, fmt.Sprintf("device error: %v", localErr), http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(localResp)
+		return
+	}
+
+	// Local screen.get_image (see local_ui_intercept.go's
+	// tryLocalScreenImage doc comment): answer directly from the video
+	// decode pipeline's already-rendered frame when a session is
+	// streaming, independent of the local ui.parse offload setting below.
+	if localResp, handled := tryLocalScreenImage(body); handled {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(localResp)
+		return
+	}
+
 	// Local ui.parse offload (see local_ui_intercept.go): when enabled in
 	// settings, answer ui.parse ourselves via ONNX Runtime on this
 	// machine's CPU or GPU instead of forwarding to the device's NPU. Every

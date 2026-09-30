@@ -1,9 +1,12 @@
 package api
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	_ "image/png" // registers the PNG format with image.DecodeConfig
 	"sync"
 	"time"
 
@@ -116,6 +119,58 @@ func GetLocalUIParser() *localui.Parser {
 	globalLocalUI.mu.RLock()
 	defer globalLocalUI.mu.RUnlock()
 	return globalLocalUI.parser
+}
+
+// tryLocalScreenImage intercepts a tools/call "screen.get_image" request
+// and answers it directly from the video decode pipeline's already-
+// rendered frame (see live_frame.go) when a session is actively
+// streaming -- no ONNX/localui involved, no gating on the local ui.parse
+// offload setting, just "is a frame already sitting here decoded". The
+// device (Agent or hardware KVM) is never asked at all in that case.
+//
+// Exists because the Agent's own screen.get_image capture can be
+// unreliable or outright broken depending on the target's desktop
+// session (confirmed live: a KDE/Wayland Agent either hangs on an
+// unanswerable portal consent dialog, or -- after routing around that --
+// returns a blank black frame, since KWin blocks plain X11 capture over
+// XWayland as a privacy measure) -- none of which matters when the
+// Client is already displaying the real picture right now. Falls through
+// (handled=false) exactly like tryLocalUIParse when no live frame shows
+// up within the timeout (no stream open), so the normal forward-to-device
+// path runs unchanged for a headless/no-video MCP session.
+func tryLocalScreenImage(reqBody []byte) (respBody []byte, handled bool) {
+	var env mcpEnvelope
+	if err := json.Unmarshal(reqBody, &env); err != nil || env.Method != "tools/call" {
+		return nil, false
+	}
+	var call mcpToolCallParams
+	if err := json.Unmarshal(env.Params, &call); err != nil || call.Name != "screen.get_image" {
+		return nil, false
+	}
+
+	png, ok := RequestLiveFrame(liveFrameWaitTimeout)
+	if !ok {
+		return nil, false
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(png))
+	if err != nil {
+		return nil, false // malformed frame -- let the device answer instead of erroring the call
+	}
+
+	toolResult := mcpToolResult{Content: []mcpContent{
+		{Type: "image", MimeType: "image/png", Data: base64.StdEncoding.EncodeToString(png)},
+		{Type: "text", Text: fmt.Sprintf(`{"width":%d,"height":%d}`, cfg.Width, cfg.Height)},
+	}}
+	resultJSON, err := json.Marshal(toolResult)
+	if err != nil {
+		return nil, false
+	}
+	out := mcpEnvelope{JSONRPC: "2.0", ID: env.ID, Result: resultJSON}
+	body, err := json.Marshal(out)
+	if err != nil {
+		return nil, false
+	}
+	return body, true
 }
 
 // tryLocalUIParse intercepts a tools/call request for "ui.parse" and

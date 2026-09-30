@@ -320,7 +320,119 @@ func (c *Controller) Combo(mod, key uint8) error {
 	return nil
 }
 
+// textRun is a maximal substring of text that types under one host
+// keyboard layout -- see Text()'s doc comment.
+type textRun struct {
+	layout string // "en" or "ru"; layout-agnostic runes attach to whichever run they fall in
+	runes  []rune
+}
+
+// splitTextRuns groups text into runs by required host layout (see
+// scriptLayout), so Text() switches the host's active layout only on an
+// actual script change instead of once per character -- a run of digits/
+// spaces/punctuation inside a Cyrillic sentence stays in that sentence's
+// "ru" run rather than forcing a layout round trip for every space.
+// Leading layout-agnostic runes with no preceding letter default to "en".
+func splitTextRuns(text string) []textRun {
+	var runs []textRun
+	for _, r := range text {
+		layout := scriptLayout(r)
+		switch {
+		case len(runs) == 0:
+			if layout == "" {
+				layout = "en"
+			}
+			runs = append(runs, textRun{layout: layout})
+		case layout != "" && layout != runs[len(runs)-1].layout:
+			runs = append(runs, textRun{layout: layout})
+		}
+		last := &runs[len(runs)-1]
+		last.runes = append(last.runes, r)
+	}
+	return runs
+}
+
+// Text types text on the host by switching its active keyboard layout to
+// match each script run (scriptLayout/splitTextRuns) and driving uinput
+// with the corresponding physical HID codes (asciiToHID for a Latin run,
+// cyrillicToHID for a Cyrillic one under ЙЦУКЕН) -- see cyrillicToHID's
+// doc comment for why a layout switch is what makes this possible at all
+// on Linux, unlike macOS/Windows' direct Unicode-injection primitives.
+// Any character neither table maps (CJK, emoji, accented Latin, ...) is
+// silently skipped rather than erroring the whole call, matching how a
+// wrong-layout mistype already silently produces wrong output elsewhere
+// in this MCP surface (see this tool's own description).
 func (c *Controller) Text(text string) error {
+	c.tryInitUinput()
+	if c.kbdFile == nil {
+		return nil
+	}
+
+	shiftSpec, hasShift := hidSpec(225) // Left Shift
+	shiftHeld := false
+	release := func() error {
+		if !shiftHeld {
+			return nil
+		}
+		if err := writeEvent(c.kbdFile, evKey, shiftSpec.linuxKey, 0); err != nil {
+			return err
+		}
+		shiftHeld = false
+		return syncReport(c.kbdFile)
+	}
+	defer release()
+
+	pressKey := func(code uint8, needShift bool) error {
+		spec, ok := hidSpec(code)
+		if !ok {
+			return nil
+		}
+		if needShift && hasShift && !shiftHeld {
+			if err := writeEvent(c.kbdFile, evKey, shiftSpec.linuxKey, 1); err != nil {
+				return err
+			}
+			if err := syncReport(c.kbdFile); err != nil {
+				return err
+			}
+			shiftHeld = true
+		} else if !needShift && shiftHeld {
+			if err := release(); err != nil {
+				return err
+			}
+		}
+		if err := writeEvent(c.kbdFile, evKey, spec.linuxKey, 1); err != nil {
+			return err
+		}
+		if err := syncReport(c.kbdFile); err != nil {
+			return err
+		}
+		if err := writeEvent(c.kbdFile, evKey, spec.linuxKey, 0); err != nil {
+			return err
+		}
+		return syncReport(c.kbdFile)
+	}
+
+	for _, run := range splitTextRuns(text) {
+		// Best-effort: a host without KDE's keyboard D-Bus service (see
+		// layout_other.go) just proceeds on whatever layout is already
+		// active, same as before per-script switching existed.
+		_, _ = SetKeyboardLayout(run.layout)
+		for _, r := range run.runes {
+			var code uint8
+			var needShift, ok bool
+			if run.layout == "ru" {
+				code, needShift, ok = cyrillicToHID(r)
+			} else {
+				code, needShift, ok = asciiToHID(r)
+			}
+			if !ok {
+				continue
+			}
+			if err := pressKey(code, needShift); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
