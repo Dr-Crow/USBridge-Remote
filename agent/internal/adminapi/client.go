@@ -369,6 +369,12 @@ func (c *Client) StreamerRunning() bool {
 	return body.Value
 }
 
+func (c *Client) SessionActive() bool {
+	var body boolBody
+	_ = c.do(http.MethodGet, "/token/session-active", nil, &body)
+	return body.Value
+}
+
 func (c *Client) EntitlementStatus() entitlement.Status {
 	var status entitlement.Status
 	_ = c.do(http.MethodGet, "/token/entitlement-status", nil, &status)

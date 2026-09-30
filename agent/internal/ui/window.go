@@ -95,6 +95,10 @@ type TokenProvider interface {
 	// process is alive right now -- for the status traffic light next to
 	// streamerNameLabel, distinct from whether it's staged/entitled at all.
 	StreamerRunning() bool
+	// SessionActive reports whether a Moonlight client is currently
+	// mid-stream (as opposed to merely paired) -- drives the tray icon's
+	// status dot (see updateTrayStatus).
+	SessionActive() bool
 
 	// Hardware-bound RustShine entitlement (see internal/entitlement,
 	// internal/hwid).
@@ -445,6 +449,7 @@ type uiStatus struct {
 	moonlightCount  int
 	usbStatus       usbpass.Status
 	streamerRunning bool
+	sessionActive   bool
 }
 
 // accountSnapshot is the comparable (== usable) subset of account.Status --
@@ -1708,13 +1713,9 @@ func (w *Window) updateTrayStatus(entStatus entitlement.Status, status uiStatus)
 	state := trayIconIdle
 	header := "USBridge Agent — Idle"
 	switch {
-	case status.moonlightCount > 0:
+	case status.sessionActive:
 		state = trayIconActive
-		plural := "s"
-		if status.moonlightCount == 1 {
-			plural = ""
-		}
-		header = fmt.Sprintf("USBridge Agent — Streaming (%d client%s)", status.moonlightCount, plural)
+		header = "USBridge Agent — Streaming"
 	case !status.accessGranted:
 		state = trayIconAttention
 		header = "USBridge Agent — Permissions needed"
@@ -2611,6 +2612,7 @@ func (w *Window) performRefresh() {
 			entStatus = w.token.EntitlementStatus()
 			status.usbStatus = w.token.USBPassthroughStatus()
 			status.streamerRunning = w.token.StreamerRunning()
+			status.sessionActive = w.token.SessionActive()
 			certStatus = w.token.CertStatus()
 		}
 		fyne.Do(func() {
