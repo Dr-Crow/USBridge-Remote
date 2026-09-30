@@ -40,9 +40,12 @@ On a hardware KVM, this tab also mounts local `.iso`/`.img` files as virtual USB
 
 ## 4. Scripts Tab
 
-**Hardware KVM only** — a software Agent has no automation/scripting engine to point at. This is where you manage [Starlark automation scripts](https://github.com/USBridge-Technologies/USBridge-KVM-2.0/blob/main/docs/content/3-bios-in-terminal/scripting-automation.md):
+The Starlark script management section below is **hardware KVM only** — a software Agent has no automation/scripting engine to point at. The MCP Proxy card is not: it's agent-agnostic and works fully with either backend (see [Agent MCP access](../../agent/docs/README.md#mcp--ai-agent-access) for exactly what an Agent connection can and can't do compared to the hardware KVM).
+
+Starlark script management ([full reference](https://github.com/USBridge-Technologies/USBridge-KVM-2.0/blob/main/docs/content/3-bios-in-terminal/scripting-automation.md)):
 
 * **New (SD)** / **New (eMMC)** — create a script on whichever storage you pick.
 * Built-in syntax-highlighted editor with **Save** and **Run** right in the toolbar.
 * **Delete** — with a confirmation prompt.
-* **MCP Proxy card** — a **Start**/**Stop** toggle plus a **Copy** button for a local `http://127.0.0.1:8765/api/mcp` endpoint. Starting it runs a small local HTTP server that signs and forwards requests to the appliance on your behalf, so an AI agent (Claude, or any [MCP](https://modelcontextprotocol.io)-speaking tool) pointed at that local address gets full access without implementing the request-signing scheme itself. Full reference: [AI Agent Integration (MCP)](https://github.com/USBridge-Technologies/USBridge-KVM-2.0/blob/main/docs/content/3-bios-in-terminal/mcp-ai-agents.md).
+
+**MCP Proxy card** — a **Start**/**Stop** toggle plus a **Copy** button for a local `http://127.0.0.1:8765/api/mcp` endpoint. Starting it runs a small local HTTP server that signs and forwards requests to whichever device is connected — hardware KVM or software Agent — on your behalf, so an AI agent (Claude, or any [MCP](https://modelcontextprotocol.io)-speaking tool) pointed at that local address gets access without implementing the request-signing scheme itself. Against a hardware KVM that's the full tool catalog; against an Agent it's the smaller one (`screen.get_image`/`keyboard.send`/`mouse.action`/`device.info`, plus `ui.parse` and click-at-a-detected-element when the **Local models** toggle below is on — see the Agent doc's MCP section). Full reference: [AI Agent Integration (MCP)](https://github.com/USBridge-Technologies/USBridge-KVM-2.0/blob/main/docs/content/3-bios-in-terminal/mcp-ai-agents.md).

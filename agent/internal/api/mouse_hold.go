@@ -45,7 +45,7 @@ const (
 
 func isAbsoluteMouseAction(action string) bool {
 	switch action {
-	case "touch", "touch_position", "absolute_event":
+	case "touch", "touch_position", "absolute_event", "absolute":
 		return true
 	}
 	return false

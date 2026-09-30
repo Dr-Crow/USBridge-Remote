@@ -161,6 +161,134 @@ func TestMCPProxySurfacesDeviceAuthFailureAsJSON(t *testing.T) {
 	}
 }
 
+// TestMCPProxy_InjectsUIParseForAgentBackend is the end-to-end regression
+// test for the click-on-detected-field gap this change closes: a software
+// Agent's own tools/list (agent/internal/api/mcp.go's mcpToolCatalog) never
+// lists ui.parse (it has no detector), so before this an MCP client that
+// discovers tools via tools/list -- rather than calling ui.parse blind --
+// would never learn the client's local offload (local_ui_intercept.go)
+// could answer it anyway. This drives the real MCPProxy HTTP handler (not
+// just injectLocalUIParseTool directly) against a fake upstream shaped like
+// an Agent's tools/list, and also checks that a click_at tools/call still
+// forwards through untouched.
+func TestMCPProxy_InjectsUIParseForAgentBackend(t *testing.T) {
+	withLocalUIEnabled(t, true)
+
+	// Fake Agent-shaped upstream: tools/list has no ui.parse (mirrors the
+	// real agent/internal/api/mcp.go catalog); any tools/call just echoes a
+	// plain "ok" text content block, enough to prove the request reached
+	// here unmodified.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "tools/list":
+			resp, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0", "id": json.RawMessage(req.ID),
+				"result": map[string]any{"tools": []map[string]any{
+					{"name": "screen.get_image", "description": "d", "inputSchema": map[string]any{}},
+					{"name": "keyboard.send", "description": "d", "inputSchema": map[string]any{}},
+					{"name": "mouse.action", "description": "d", "inputSchema": map[string]any{}},
+					{"name": "device.info", "description": "d", "inputSchema": map[string]any{}},
+				}},
+			})
+			w.Write(resp)
+		case "tools/call":
+			// Echo back the call name+arguments so the test can confirm
+			// exactly what reached the "device" -- proof the proxy didn't
+			// rewrite or intercept it.
+			resp, _ := json.Marshal(map[string]any{
+				"jsonrpc": "2.0", "id": json.RawMessage(req.ID),
+				"result": map[string]any{"content": []map[string]any{
+					{"type": "text", "text": "ok"},
+					{"type": "text", "text": string(req.Params)},
+				}},
+			})
+			w.Write(resp)
+		default:
+			http.Error(w, "unexpected method: "+req.Method, http.StatusBadRequest)
+		}
+	}))
+	defer upstream.Close()
+
+	host, portStr, err := splitHostPortHelper(upstream.URL)
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse upstream port: %v", err)
+	}
+	client := NewUSBClient(host, port, 5)
+
+	const testPort = 18767
+	proxy := &MCPProxy{}
+	if err := proxy.Start(testPort, client); err != nil {
+		t.Fatalf("start proxy: %v", err)
+	}
+	defer proxy.Stop()
+	proxyURL := "http://127.0.0.1:" + strconv.Itoa(testPort) + "/api/mcp"
+
+	t.Run("tools/list gains ui.parse even though the Agent backend never listed it", func(t *testing.T) {
+		resp, err := http.Post(proxyURL, "application/json", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, body: %s", resp.StatusCode, body)
+		}
+		names := toolNames(t, body)
+		for _, want := range []string{"screen.get_image", "keyboard.send", "mouse.action", "device.info", "ui.parse"} {
+			if !names[want] {
+				t.Errorf("tools/list missing %q after proxying through an Agent backend: %s", want, body)
+			}
+		}
+	})
+
+	t.Run("click_at still forwards through to the backend untouched", func(t *testing.T) {
+		callBody := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"mouse.action","arguments":{"action":"click_at","x":42,"y":7,"screen_width":100,"screen_height":50}}}`
+		resp, err := http.Post(proxyURL, "application/json", strings.NewReader(callBody))
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, body: %s", resp.StatusCode, body)
+		}
+		var parsed struct {
+			Result struct {
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			t.Fatalf("decode response: %v (body: %s)", err, body)
+		}
+		if len(parsed.Result.Content) < 2 {
+			t.Fatalf("expected 2 content blocks, got %d: %s", len(parsed.Result.Content), body)
+		}
+		echoedArgs := parsed.Result.Content[1].Text
+		for _, want := range []string{`"action":"click_at"`, `"x":42`, `"y":7`, `"screen_width":100`, `"screen_height":50`} {
+			if !strings.Contains(echoedArgs, want) {
+				t.Errorf("click_at arguments reached the backend altered -- missing %q in echoed params: %s", want, echoedArgs)
+			}
+		}
+	})
+}
+
 // splitHostPortHelper pulls "host" and "port" out of an httptest.Server URL
 // (e.g. "http://127.0.0.1:54321") for use with NewUSBClient(host, port, ...).
 func splitHostPortHelper(rawURL string) (string, string, error) {
