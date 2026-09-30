@@ -250,6 +250,7 @@ type LocalizedStrings struct {
 	// Tray
 	TrayOpen         string
 	TrayRestart      string
+	TrayCheckUpdate  string
 	TrayQuit         string
 	TrayStillRunning string
 
@@ -526,6 +527,7 @@ func EN() *LocalizedStrings {
 
 		TrayOpen:         "Open USBridge Agent",
 		TrayRestart:      "Restart Streaming",
+		TrayCheckUpdate:  "Check for Updates",
 		TrayQuit:         "Quit",
 		TrayStillRunning: "Still running in the tray — click the tray icon to reopen.",
 
@@ -756,6 +758,7 @@ func ES() *LocalizedStrings {
 
 	locale.TrayOpen = "Abrir USBridge Agent"
 	locale.TrayRestart = "Reiniciar streaming"
+	locale.TrayCheckUpdate = "Buscar actualizaciones"
 	locale.TrayQuit = "Salir"
 	locale.TrayStillRunning = "Sigue en la bandeja — pulsa el icono para reabrir."
 
@@ -985,6 +988,7 @@ func UK() *LocalizedStrings {
 
 	locale.TrayOpen = "Відкрити USBridge Agent"
 	locale.TrayRestart = "Перезапустити стрім"
+	locale.TrayCheckUpdate = "Перевірити оновлення"
 	locale.TrayQuit = "Вийти"
 	locale.TrayStillRunning = "Працює в треї — натисніть іконку, щоб відкрити знову."
 

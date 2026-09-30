@@ -66,6 +66,7 @@ type TokenBackend interface {
 	DeviceHostname() string
 	CertStatus() tlshost.CertStatus
 	StreamerRunning() bool
+	SessionActive() bool
 
 	// Hardware-bound RustShine entitlement (see internal/entitlement,
 	// internal/hwid).
@@ -265,6 +266,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /token/device-hostname", s.handleDeviceHostname)
 	mux.HandleFunc("GET /token/cert-status", s.handleCertStatus)
 	mux.HandleFunc("GET /token/streamer-running", s.handleStreamerRunning)
+	mux.HandleFunc("GET /token/session-active", s.handleSessionActive)
 	mux.HandleFunc("GET /token/entitlement-status", s.handleEntitlementStatus)
 	mux.HandleFunc("POST /token/start-trial", s.handleStartTrial)
 	mux.HandleFunc("POST /token/start-purchase", s.handleStartPurchase)
@@ -612,6 +614,10 @@ func (s *Server) handleCertStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStreamerRunning(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, boolBody{Value: s.token.StreamerRunning()})
+}
+
+func (s *Server) handleSessionActive(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, boolBody{Value: s.token.SessionActive()})
 }
 
 func (s *Server) handleEntitlementStatus(w http.ResponseWriter, r *http.Request) {

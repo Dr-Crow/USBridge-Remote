@@ -3989,6 +3989,21 @@ func (a *App) StreamerRunning() bool {
 	return a.stream.Running()
 }
 
+// SessionActive reports whether a Moonlight client is currently mid-stream
+// (as opposed to merely paired, or the streamer process merely running
+// idle) -- see streamhost.Backend.SessionActive. Used for the tray icon's
+// status dot, which should track an actual video stream rather than pairing
+// state (see ui.Window.updateTrayStatus).
+func (a *App) SessionActive() bool {
+	a.streamMu.Lock()
+	stream := a.stream
+	a.streamMu.Unlock()
+	if stream == nil {
+		return false
+	}
+	return stream.SessionActive()
+}
+
 // AdminUser returns the streaming host's admin-API username.
 func (a *App) AdminUser() string {
 	if a.stream == nil {

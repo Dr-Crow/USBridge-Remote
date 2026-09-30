@@ -40,12 +40,13 @@ type trayController struct {
 	desk  desktop.App
 	menu  *fyne.Menu
 
-	statusItem    *fyne.MenuItem
-	infoItem      *fyne.MenuItem
-	openItem      *fyne.MenuItem
-	restartItem   *fyne.MenuItem
-	autostartItem *fyne.MenuItem
-	quitItem      *fyne.MenuItem
+	statusItem      *fyne.MenuItem
+	infoItem        *fyne.MenuItem
+	openItem        *fyne.MenuItem
+	restartItem     *fyne.MenuItem
+	checkUpdateItem *fyne.MenuItem
+	autostartItem   *fyne.MenuItem
+	quitItem        *fyne.MenuItem
 
 	icons       map[trayIconState]fyne.Resource
 	currentIcon trayIconState
@@ -97,6 +98,14 @@ func (w *Window) attachTray(win fyne.Window, quit func()) *trayController {
 
 	t.restartItem = restartItem
 
+	checkUpdateItem := fyne.NewMenuItem(loc().TrayCheckUpdate, func() {
+		t.showWindow()
+		if t.owner != nil {
+			t.owner.beginStreamerUpdateCheck()
+		}
+	})
+	t.checkUpdateItem = checkUpdateItem
+
 	t.autostartItem = fyne.NewMenuItem(autostartMenuLabel(), nil)
 	t.autostartItem.Checked = autostart.IsEnabled()
 	t.autostartItem.Action = func() { t.toggleAutostart() }
@@ -117,6 +126,7 @@ func (w *Window) attachTray(win fyne.Window, quit func()) *trayController {
 		fyne.NewMenuItemSeparator(),
 		openItem,
 		restartItem,
+		checkUpdateItem,
 		fyne.NewMenuItemSeparator(),
 		t.autostartItem,
 		fyne.NewMenuItemSeparator(),
@@ -189,6 +199,9 @@ func (t *trayController) applyLanguage() {
 	}
 	if t.restartItem != nil {
 		t.restartItem.Label = c.TrayRestart
+	}
+	if t.checkUpdateItem != nil {
+		t.checkUpdateItem.Label = c.TrayCheckUpdate
 	}
 	if t.autostartItem != nil {
 		t.autostartItem.Label = autostartMenuLabel()
