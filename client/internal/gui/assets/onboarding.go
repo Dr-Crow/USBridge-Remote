@@ -161,6 +161,7 @@ var (
 	// Devices' footer busy spinner sits on the tab's own background, so
 	// the video overlay's baked-in circle would read as a dirty blob.
 	LoadingLimeFrames = buildDotSpinnerFrames("#c4e77a", false, "loading-lime")
+	LoadingTealFrames = buildDotSpinnerFrames("#41e0c3", false, "loading-teal")
 	// VideoConnectingFramesAgent/VideoConnectingFramesKVM are the same dot
 	// spinner shape as LoadingGrayFrames, for the video overlay shown while
 	// a stream is connecting (VideoWidget's spinnerIcon, see
@@ -324,6 +325,7 @@ var (
 	UploadIcon             = fyne.NewStaticResource("upload-svgrepo-com.svg", recolorStrokeIcon(uploadIcon, "#F5F5F5", "2"))
 	UploadIconMuted        = fyne.NewStaticResource("upload-svgrepo-com-muted.svg", recolorStrokeIcon(uploadIcon, "#8E8E8E", "2"))
 	DownloadIconDark       = fyne.NewStaticResource("download-svgrepo-com-dark.svg", recolorStrokeIcon(downloadIcon, "#0b0f12", "2"))
+	DownloadIconLight      = fyne.NewStaticResource("download-svgrepo-com-light.svg", recolorStrokeIcon(downloadIcon, "#c4e77a", "2"))
 	CameraIcon             = fyne.NewStaticResource("cam-svgrepo-com.svg", recolorStrokeIcon(cameraIcon, "#C9C9C9", "1.8"))
 	CameraIconActive       = fyne.NewStaticResource("cam-svgrepo-com-active.svg", recolorStrokeIcon(cameraIcon, "#93C572", "1.8"))
 	// CameraIconStatusBar is the Control header's own video/fps/resolution

@@ -49,8 +49,11 @@ func newMobileSnapshotsHeader(data SnapshotsSectionData) fyne.CanvasObject {
 		NewMobileFillWidth(subtitle),
 	)
 
-	mountBtn := newSnapshotsMountButton(mobileSnapshotsMountData(data))
-	row := container.New(&mobileHeaderRowLayout{}, left, mountBtn)
+	var action fyne.CanvasObject = newSnapshotsMountButton(mobileSnapshotsMountData(data))
+	if data.MountInactive {
+		action = NewVisibleHardwareOnlyBadge()
+	}
+	row := container.New(&mobileHeaderRowLayout{}, left, action)
 
 	accentLine := canvas.NewRectangle(design.ColorConnectionsSectionUnderline)
 	accentLine.SetMinSize(fyne.NewSize(1, 0.5))

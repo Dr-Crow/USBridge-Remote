@@ -556,6 +556,7 @@ func (w *ScriptsTabWidget) sectionData() view.ScriptsSectionData {
 		},
 		ScriptCount:   len(scripts),
 		NewEnabled:    newEnabled,
+		HardwareOnly:  w.agentPromo,
 		OnNewEMMC:     func() { w.showNewScriptDialog(w.refreshScriptsList, false) },
 		OnNewSD:       func() { w.showNewScriptDialog(w.refreshScriptsList, true) },
 		Rows:          rows,

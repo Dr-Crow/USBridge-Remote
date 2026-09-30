@@ -57,7 +57,13 @@ func newAccountLicenseManagerStrip() fyne.CanvasObject {
 		hint := widget.NewLabel(i18n.Current.AccountLicenseManagerHint)
 		hint.Wrapping = fyne.TextWrapWord
 		hint.Alignment = fyne.TextAlignLeading
-		styledHint = wrapAccountField(hint, 11, muted)
+		lineH := fyne.MeasureText("Ag", 10, fyne.TextStyle{}).Height
+		if lineH < 1 {
+			lineH = 14
+		}
+		lock := canvas.NewRectangle(color.Transparent)
+		lock.SetMinSize(fyne.NewSize(0, lineH*2))
+		styledHint = container.NewStack(lock, wrapAccountField(hint, 10, muted))
 	} else {
 		// Single-line canvas text reports real height (unlike wrap Label),
 		// so the desktop Account panel can grow instead of scrolling.
@@ -85,9 +91,13 @@ func newAccountLicenseManagerStrip() fyne.CanvasObject {
 func newAccountLoginLicenseRow() fyne.CanvasObject {
 	inset := float32(14)
 	if accountDialogMobile() {
-		inset = 12
+		inset = 10
 	}
-	return newAccountCardInset(newAccountLicenseManagerStrip(), inset, inset, 6, 6)
+	topBottom := float32(6)
+	if accountDialogMobile() {
+		topBottom = 4
+	}
+	return newAccountCardInset(newAccountLicenseManagerStrip(), inset, inset, topBottom, topBottom)
 }
 
 // newAccountDivider is the thin low-contrast rule between a card's header
@@ -322,6 +332,14 @@ func (b *accountDialogDarkButton) CreateRenderer() fyne.WidgetRenderer {
 	b.lbl.TextSize = 11
 	b.lbl.TextStyle = fyne.TextStyle{Bold: true}
 
+	iconOnly := b.iconNormal != nil && strings.TrimSpace(b.text) == ""
+	if iconOnly {
+		b.icon = canvas.NewImageFromResource(b.iconNormal)
+		b.icon.SetMinSize(fyne.NewSize(16, 16))
+		b.icon.FillMode = canvas.ImageFillContain
+		return widget.NewSimpleRenderer(container.NewStack(b.bg, b.bdr, view.NewInsetExact(container.NewCenter(b.icon), 6, 6, 6, 6)))
+	}
+
 	var content *fyne.Container
 	if b.iconNormal != nil {
 		b.icon = canvas.NewImageFromResource(b.iconNormal)
@@ -337,6 +355,9 @@ func (b *accountDialogDarkButton) CreateRenderer() fyne.WidgetRenderer {
 
 func (b *accountDialogDarkButton) MinSize() fyne.Size {
 	b.ExtendBaseWidget(b)
+	if b.iconNormal != nil && strings.TrimSpace(b.text) == "" {
+		return fyne.NewSize(28, 28)
+	}
 	return b.BaseWidget.MinSize()
 }
 
@@ -402,7 +423,10 @@ func (b *accountDialogDarkButton) refreshVisuals() {
 	fill, border, label := accountDialogDarkButtonColors(b.lime, b.danger, b.hovered)
 	b.bg.FillColor = fill
 	b.bdr.StrokeColor = border
-	b.lbl.Color = label
+	if b.lbl != nil {
+		b.lbl.Color = label
+		b.lbl.Refresh()
+	}
 	if b.icon != nil {
 		if b.hovered && b.iconHover != nil {
 			b.icon.Resource = b.iconHover
@@ -412,7 +436,6 @@ func (b *accountDialogDarkButton) refreshVisuals() {
 	}
 	b.bg.Refresh()
 	b.bdr.Refresh()
-	b.lbl.Refresh()
 	if b.icon != nil {
 		b.icon.Refresh()
 	}
@@ -565,7 +588,11 @@ func newAccountAutoSyncRow(checked bool, onChange func(bool)) fyne.CanvasObject 
 		onChange: onChange,
 	}
 	row.ExtendBaseWidget(row)
-	return view.NewInset(row, 0, 0, 8, 2)
+	top := float32(8)
+	if accountDialogMobile() {
+		top = 2
+	}
+	return view.NewInset(row, 0, 0, top, 2)
 }
 
 func (r *accountCheckRow) Tapped(*fyne.PointEvent) {

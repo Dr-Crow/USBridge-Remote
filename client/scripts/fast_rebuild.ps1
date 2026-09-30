@@ -13,7 +13,8 @@
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path $PSScriptRoot -Parent
 $ExeOut   = "$RepoRoot\.cache\build\windows-amd64\release\USBridge_Client.exe"
-$DistExe  = "$RepoRoot\dist\windows\USBridge_Client.exe"
+$DistDir  = "$RepoRoot\dist\windows\bin"
+$DistExe  = "$DistDir\USBridge_Client.exe"
 
 # Pin MSYS2 UCRT64 gcc. A plain PATH hit (e.g. Strawberry Perl's MinGW) links
 # a PE with an empty .idata and Windows then fails with 0xc000007b before main.
@@ -37,25 +38,65 @@ $env:CXX          = $Gpp
 $env:GOCACHE      = "$RepoRoot\.cache\go-build\windows-amd64"
 $env:GOMODCACHE   = "$RepoRoot\.cache\go-mod"
 $env:GOMAXPROCS   = "12"
+$env:GOFLAGS      = if ($env:GOFLAGS) { "$($env:GOFLAGS) -buildvcs=false" } else { "-buildvcs=false" }
 # Go bin must stay ahead of ucrt64 — MSYS ships its own trimmed go.exe there.
 $env:PATH         = "$GoBin;$Ucrt64Bin;$env:PATH"
 
-# Vulkan headers — prefer ucrt64 native path, fallback to msys64
-$ucrt64Inc = if (Test-Path (Join-Path $Msys2Root "ucrt64\include")) { "$($Msys2Root -replace '\\','/')/ucrt64/include" } else { "/ucrt64/include" }
-$ucrt64Lib = if (Test-Path (Join-Path $Msys2Root "ucrt64\lib"))     { "$($Msys2Root -replace '\\','/')/ucrt64/lib" }     else { "/ucrt64/lib" }
-$env:CGO_CFLAGS  = "-I$ucrt64Inc"
-$env:CGO_LDFLAGS = "-L$ucrt64Lib -lvulkan-1 -lgdi32 -luser32"
+# Same GOCACHE as build_windows.sh: do not inject CGO_CFLAGS=-I/ucrt64/include
+# (cache miss + winsock2.h vs windows.h). Drop local moonlight openssl/opus
+# .pc trees so pkg-config does not pick Android/source artifacts.
+$ucrt64Pc = Join-Path $Msys2Root "ucrt64\lib\pkgconfig"
+$drop = @("moonlight-common-c\openssl-3.3.2", "moonlight-common-c/openssl-3.3.2",
+          "moonlight-common-c\opus-1.5.2", "moonlight-common-c/opus-1.5.2",
+          "moonlight-common-c\opus-cmake-build", "moonlight-common-c/opus-cmake-build",
+          "moonlight-common-c\build\android", "moonlight-common-c/build/android")
+if ($env:PKG_CONFIG_PATH) {
+    $kept = @()
+    foreach ($p in ($env:PKG_CONFIG_PATH -split ';')) {
+        $skip = $false
+        foreach ($d in $drop) {
+            if ($p -like "*$d*") { $skip = $true; break }
+        }
+        if (-not $skip -and $p) { $kept += $p }
+    }
+    $env:PKG_CONFIG_PATH = ($kept -join ';')
+}
+if (Test-Path $ucrt64Pc) {
+    if (-not $env:PKG_CONFIG_PATH) {
+        $env:PKG_CONFIG_PATH = $ucrt64Pc
+    } elseif ($env:PKG_CONFIG_PATH -notlike "*$ucrt64Pc*") {
+        $env:PKG_CONFIG_PATH = "$ucrt64Pc;$($env:PKG_CONFIG_PATH)"
+    }
+}
+$env:PKG_CONFIG = Join-Path $Ucrt64Bin "pkg-config.exe"
+
+New-Item -ItemType Directory -Force -Path (Split-Path $ExeOut) | Out-Null
+New-Item -ItemType Directory -Force -Path (Split-Path $DistExe) | Out-Null
+New-Item -ItemType Directory -Force -Path $env:GOCACHE | Out-Null
+New-Item -ItemType Directory -Force -Path $env:GOMODCACHE | Out-Null
+
 
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
+$Version = (Get-Content -Raw "$RepoRoot\VERSION").Trim()
+if (-not $Version) { $Version = "1.0.0" }
+Copy-Item -Force "$RepoRoot\VERSION" "$RepoRoot\cmd\VERSION"
+
 Set-Location "$RepoRoot\cmd"
-& go build -trimpath -tags usbpass_gousb -ldflags="-H=windowsgui -extldflags=-Wl,--stack,8388608" -o $ExeOut .
+& go build -trimpath -tags usbpass_gousb "-ldflags=-H=windowsgui -X main.version=$Version -extldflags=-Wl,--stack,8388608" -o $ExeOut .
 if ($LASTEXITCODE -ne 0) { Write-Error "go build failed"; exit 1 }
 
 $sw.Stop()
 Write-Host "==> Build done in $($sw.Elapsed.TotalSeconds.ToString('0.0'))s"
 
-Write-Host "==> Copying to dist\windows..."
+Write-Host "==> Copying to dist\windows\bin (next to runtime DLLs)..."
+New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 Copy-Item $ExeOut $DistExe -Force
+if (-not (Get-ChildItem -Path $DistDir -Filter "avutil-*.dll" -ErrorAction SilentlyContinue)) {
+    Write-Host "==> WARNING: no avutil-*.dll in $DistDir"
+    Write-Host "    Run .\scripts\build_windows.ps1 once so FFmpeg/OpenSSL/opus DLLs are bundled."
+}
+Write-Host "==> Done: $DistExe"
+Write-Host "    Launch dist\windows\USBridge_Client.lnk or this bin\ exe, not dist\windows\USBridge_Client.exe"
 $size = (Get-Item $DistExe).Length / 1MB
-Write-Host "==> Done: $DistExe ($($size.ToString('0.0')) MB)"
+Write-Host "==> ($($size.ToString('0.0')) MB)"

@@ -1685,6 +1685,23 @@ func (vw *VideoWidget) startRenderTicker(fps ...int) {
 	}()
 }
 
+func (vw *VideoWidget) fyneOverlaysOpen() bool {
+	if vw == nil {
+		return false
+	}
+	if view.PopupActive() {
+		return true
+	}
+	w := vw.parentWindow
+	if vw.fullscreenDialog != nil && vw.fullscreenDialog.IsFullscreen() && vw.fullscreenDialog.fullscreenWindow != nil {
+		w = vw.fullscreenDialog.fullscreenWindow
+	}
+	if w == nil || w.Canvas() == nil {
+		return false
+	}
+	return w.Canvas().Overlays().Top() != nil
+}
+
 func (vw *VideoWidget) renderLatestFrame() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -1743,7 +1760,7 @@ func (vw *VideoWidget) renderLatestFrame() {
 	}
 	// touchpadWrapper.Refresh() removed from per-frame hot path;
 	// cursor updates call Refresh() directly via UpdateCursorOverlayPointer.
-	if mainWindowVisible && (frameNum == 1 || needsFullRefresh) {
+	if mainWindowVisible && (frameNum == 1 || needsFullRefresh) && !vw.fyneOverlaysOpen() {
 		vw.noteVideoTraceFirstPaint(frameNum)
 		if vw.contentContainer != nil {
 			vw.contentContainer.Refresh()

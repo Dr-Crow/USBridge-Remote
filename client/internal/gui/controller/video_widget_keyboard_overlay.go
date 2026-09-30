@@ -24,6 +24,14 @@ func (vw *VideoWidget) ensureVirtualKeyboard() {
 		return
 	}
 	vw.virtualKeyboard = graphics.NewVirtualKeyboard(vw.parentWindow, vw.handleVirtualKeyPress, vw.handlePhysicalRunePress)
+	vw.virtualKeyboard.SetOnKeyHold(vw.handleVirtualKeyHold)
+	vw.virtualKeyboard.SetOnCompactLayoutChanged(func() {
+		if vw.onKeyboardChromeSync != nil {
+			vw.onKeyboardChromeSync()
+		} else if vw.onKeyboardStackChanged != nil {
+			vw.onKeyboardStackChanged()
+		}
+	})
 	vw.virtualKeyboard.SetOnDismiss(func() {
 		vw.CloseAllKeyboards()
 	})

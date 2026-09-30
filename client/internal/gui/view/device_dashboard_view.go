@@ -14,6 +14,7 @@ import (
 
 	"usbridge-client/internal/gui/assets"
 	"usbridge-client/internal/gui/design"
+	"usbridge-client/internal/gui/i18n"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -300,14 +301,79 @@ func NewDeviceDashboardHoverCell() (onHover func(bool), bind func(func(bool))) {
 // edge. bindHover, from NewDeviceDashboardHoverCell, wires this card's own
 // hover-border logic to the onHover cell every interactive control inside
 // content was already built with.
-func NewDeviceDashboardCard(icon fyne.Resource, title string, description string, headerRight fyne.CanvasObject, content fyne.CanvasObject, bindHover func(func(bool))) fyne.CanvasObject {
-	card, _ := NewDeviceDashboardCardWithTitle(icon, title, description, headerRight, content, bindHover)
+const deviceDashboardCardCollapsedPrefPrefix = "devices.card.collapsed."
+
+func deviceDashboardCardCollapsed(key string) bool {
+	if key == "" {
+		return false
+	}
+	app := fyne.CurrentApp()
+	if app == nil {
+		return false
+	}
+	return app.Preferences().BoolWithFallback(deviceDashboardCardCollapsedPrefPrefix+key, false)
+}
+
+func setDeviceDashboardCardCollapsed(key string, collapsed bool) {
+	if key == "" {
+		return
+	}
+	app := fyne.CurrentApp()
+	if app == nil {
+		return
+	}
+	app.Preferences().SetBool(deviceDashboardCardCollapsedPrefPrefix+key, collapsed)
+}
+
+type deviceDashboardHeaderHit struct {
+	widget.BaseWidget
+	inner   fyne.CanvasObject
+	onTap   func()
+	onHover func(bool)
+}
+
+func newDeviceDashboardHeaderHit(inner fyne.CanvasObject, onTap func(), onHover func(bool)) *deviceDashboardHeaderHit {
+	h := &deviceDashboardHeaderHit{inner: inner, onTap: onTap, onHover: onHover}
+	h.ExtendBaseWidget(h)
+	return h
+}
+
+func (h *deviceDashboardHeaderHit) Tapped(*fyne.PointEvent) {
+	if h.onTap != nil {
+		h.onTap()
+	}
+}
+
+func (h *deviceDashboardHeaderHit) MouseIn(*desktop.MouseEvent) {
+	if h.onHover != nil {
+		h.onHover(true)
+	}
+}
+
+func (h *deviceDashboardHeaderHit) MouseOut() {
+	if h.onHover != nil {
+		h.onHover(false)
+	}
+}
+
+func (h *deviceDashboardHeaderHit) MouseMoved(*desktop.MouseEvent) {}
+
+func (h *deviceDashboardHeaderHit) Cursor() desktop.Cursor {
+	return desktop.PointerCursor
+}
+
+func (h *deviceDashboardHeaderHit) CreateRenderer() fyne.WidgetRenderer {
+	return widget.NewSimpleRenderer(h.inner)
+}
+
+func NewDeviceDashboardCard(icon fyne.Resource, title string, description string, headerRight fyne.CanvasObject, content fyne.CanvasObject, bindHover func(func(bool)), collapseKey string, onLayout func()) fyne.CanvasObject {
+	card, _ := NewDeviceDashboardCardWithTitle(icon, title, description, headerRight, content, bindHover, collapseKey, onLayout)
 	return card
 }
 
 // NewDeviceDashboardCardWithTitle is NewDeviceDashboardCard plus a setter
 // for the header label.
-func NewDeviceDashboardCardWithTitle(icon fyne.Resource, title string, description string, headerRight fyne.CanvasObject, content fyne.CanvasObject, bindHover func(func(bool))) (fyne.CanvasObject, func(string)) {
+func NewDeviceDashboardCardWithTitle(icon fyne.Resource, title string, description string, headerRight fyne.CanvasObject, content fyne.CanvasObject, bindHover func(func(bool)), collapseKey string, onLayout func()) (fyne.CanvasObject, func(string)) {
 	iconImg := canvas.NewImageFromResource(icon)
 	iconImg.FillMode = canvas.ImageFillContain
 	iconImg.SetMinSize(fyne.NewSize(16, 16))
@@ -316,7 +382,17 @@ func NewDeviceDashboardCardWithTitle(icon fyne.Resource, title string, descripti
 	titleText.TextSize = 11
 	titleText.TextStyle.Bold = true
 
-	titleRow := container.New(&DeviceRowControlsLayout{Gap: 8}, iconImg, titleText)
+	var titleRow fyne.CanvasObject
+	var chevron *canvas.Image
+	mobileCollapse := IsMobile() && strings.TrimSpace(collapseKey) != ""
+	if mobileCollapse {
+		chevron = canvas.NewImageFromResource(coloredArrowUp(design.ColorConnectionsSectionMutedText))
+		chevron.FillMode = canvas.ImageFillContain
+		chevron.SetMinSize(fyne.NewSize(14, 14))
+		titleRow = container.New(&DeviceRowControlsLayout{Gap: 6}, chevron, iconImg, titleText)
+	} else {
+		titleRow = container.New(&DeviceRowControlsLayout{Gap: 8}, iconImg, titleText)
+	}
 
 	var headerRow fyne.CanvasObject = titleRow
 	if headerRight != nil {
@@ -335,13 +411,55 @@ func NewDeviceDashboardCardWithTitle(icon fyne.Resource, title string, descripti
 	sep := canvas.NewRectangle(deviceDashboardCardSep)
 	sep.SetMinSize(fyne.NewSize(0, 1))
 
+	contentBlock := NewInset(content, 14, 14, 3, 12)
+	headerPad := NewInset(headerBlock, 14, 14, 7, 5)
+	var headerFace fyne.CanvasObject = headerPad
+	applyCollapsed := func(collapsed bool) {
+		if chevron != nil {
+			if collapsed {
+				chevron.Resource = coloredArrowDown(design.ColorConnectionsSectionMutedText)
+			} else {
+				chevron.Resource = coloredArrowUp(design.ColorConnectionsSectionMutedText)
+			}
+			chevron.Refresh()
+		}
+		if collapsed {
+			sep.Hide()
+			contentBlock.Hide()
+		} else {
+			sep.Show()
+			contentBlock.Show()
+		}
+	}
+	var headerHit *deviceDashboardHeaderHit
+	if mobileCollapse {
+		collapsed := deviceDashboardCardCollapsed(collapseKey)
+		applyCollapsed(collapsed)
+		headerHit = newDeviceDashboardHeaderHit(headerPad, func() {
+			nextCollapsed := contentBlock.Visible()
+			applyCollapsed(nextCollapsed)
+			setDeviceDashboardCardCollapsed(collapseKey, nextCollapsed)
+			if onLayout != nil {
+				onLayout()
+			}
+		}, nil)
+		headerFace = headerHit
+	}
+
 	body := container.NewVBox(
-		NewInset(headerBlock, 14, 14, 7, 5),
+		headerFace,
 		sep,
-		// Top padding trimmed (was 8) -- the row list read like it was
-		// sitting noticeably lower than the divider above it.
-		NewInset(content, 14, 14, 3, 12),
+		contentBlock,
 	)
+	if headerHit != nil {
+		prev := headerHit.onTap
+		headerHit.onTap = func() {
+			if prev != nil {
+				prev()
+			}
+			body.Refresh()
+		}
+	}
 
 	cardBg := canvas.NewRectangle(design.ColorGray900)
 	cardBg.CornerRadius = design.RadiusLG
@@ -373,6 +491,9 @@ func NewDeviceDashboardCardWithTitle(icon fyne.Resource, title string, descripti
 		}
 	}
 	bindHover(setCardHovered)
+	if headerHit != nil {
+		headerHit.onHover = setCardHovered
+	}
 
 	// Covers whatever part of the card no interactive control already
 	// claims (e.g. the header/divider area) -- placed behind the actual
@@ -546,8 +667,12 @@ func newDeviceDashboardFlexibleRow(icon fyne.Resource, name string, nameColor co
 	nameText := newDeviceDashboardWrapText(name, nameColor)
 	var center fyne.CanvasObject = nameText
 	if chip != nil {
-		chipRow := container.New(&DeviceRowControlsLayout{Gap: 0}, chip)
-		center = container.New(&tightStatsVBoxLayout{Gap: 2}, nameText, chipRow)
+		if IsMobile() {
+			center = newDeviceDashboardWrapNameChip(name, nameColor, chip)
+		} else {
+			chipRow := container.New(&DeviceRowControlsLayout{Gap: 0}, chip)
+			center = container.New(&tightStatsVBoxLayout{Gap: 2}, nameText, chipRow)
+		}
 	}
 	var left fyne.CanvasObject
 	if icon != nil {
@@ -766,6 +891,195 @@ func wrapDashboardName(text string, textSize, width float32) []string {
 	}
 	return lines
 }
+
+func splitDashboardNameFirstLine(text string, textSize, width float32) (line, rest string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", ""
+	}
+	if width <= 8 {
+		return text, ""
+	}
+	style := fyne.TextStyle{}
+	if fyne.MeasureText(text, textSize, style).Width <= width {
+		return text, ""
+	}
+	runes := []rune(text)
+	best := 1
+	lastSpace := -1
+	for end := 1; end <= len(runes); end++ {
+		if fyne.MeasureText(string(runes[:end]), textSize, style).Width > width {
+			break
+		}
+		best = end
+		if runes[end-1] == ' ' {
+			lastSpace = end
+		}
+	}
+	cut := best
+	if cut < len(runes) && lastSpace > 0 {
+		cut = lastSpace
+	}
+	if cut < 1 {
+		cut = 1
+	}
+	return strings.TrimSpace(string(runes[:cut])), strings.TrimSpace(string(runes[cut:]))
+}
+
+func ellipsizeDashboardName(text string, textSize, width float32) string {
+	text = strings.TrimSpace(text)
+	if text == "" || width <= 8 {
+		return text
+	}
+	style := fyne.TextStyle{}
+	if fyne.MeasureText(text, textSize, style).Width <= width {
+		return text
+	}
+	runes := []rune(text)
+	for len(runes) > 1 && fyne.MeasureText(string(runes)+"…", textSize, style).Width > width {
+		runes = runes[:len(runes)-1]
+	}
+	if len(runes) == 0 {
+		return "…"
+	}
+	return string(runes) + "…"
+}
+
+// deviceDashboardWrapNameChip is a two-line name: the first line takes the
+// full leftover row width, overflow continues on the chip row so a long
+// USB/ISO title does not add a third line above the VID/size plaque.
+type deviceDashboardWrapNameChip struct {
+	widget.BaseWidget
+	name     string
+	color    color.Color
+	textSize float32
+	chip     fyne.CanvasObject
+	gap      float32
+}
+
+func newDeviceDashboardWrapNameChip(name string, col color.Color, chip fyne.CanvasObject) *deviceDashboardWrapNameChip {
+	t := &deviceDashboardWrapNameChip{name: name, color: col, textSize: 11, chip: chip, gap: 6}
+	t.ExtendBaseWidget(t)
+	return t
+}
+
+func (t *deviceDashboardWrapNameChip) MinSize() fyne.Size {
+	h1 := fyne.MeasureText("Ag", t.textSize, fyne.TextStyle{}).Height
+	if h1 < 1 {
+		h1 = 14
+	}
+	h2 := h1
+	if t.chip != nil {
+		if ch := t.chip.MinSize().Height; ch > h2 {
+			h2 = ch
+		}
+	}
+	return fyne.NewSize(1, h1+2+h2)
+}
+
+func (t *deviceDashboardWrapNameChip) Resize(size fyne.Size) {
+	prev := t.Size()
+	t.BaseWidget.Resize(size)
+	if prev.Width != size.Width {
+		t.Refresh()
+	}
+}
+
+func (t *deviceDashboardWrapNameChip) CreateRenderer() fyne.WidgetRenderer {
+	line1 := canvas.NewText("", t.color)
+	line1.TextSize = t.textSize
+	line2 := canvas.NewText("", t.color)
+	line2.TextSize = t.textSize
+	return &deviceDashboardWrapNameChipRenderer{t: t, line1: line1, line2: line2}
+}
+
+type deviceDashboardWrapNameChipRenderer struct {
+	t     *deviceDashboardWrapNameChip
+	line1 *canvas.Text
+	line2 *canvas.Text
+}
+
+func (r *deviceDashboardWrapNameChipRenderer) Layout(size fyne.Size) {
+	r.apply(size)
+}
+
+func (r *deviceDashboardWrapNameChipRenderer) apply(size fyne.Size) {
+	w := size.Width
+	h1 := fyne.MeasureText("Ag", r.t.textSize, fyne.TextStyle{}).Height
+	if h1 < 1 {
+		h1 = 14
+	}
+	chip := r.t.chip
+	chipSize := fyne.NewSize(0, 0)
+	if chip != nil {
+		chipSize = chip.MinSize()
+	}
+	h2 := h1
+	if chipSize.Height > h2 {
+		h2 = chipSize.Height
+	}
+	head, rest := splitDashboardNameFirstLine(r.t.name, r.t.textSize, w)
+	r.line1.Text = head
+	r.line1.Color = r.t.color
+	r.line1.TextSize = r.t.textSize
+	r.line1.Show()
+	r.line1.Move(fyne.NewPos(0, 0))
+	r.line1.Resize(fyne.NewSize(w, h1))
+	r.line1.Refresh()
+
+	y := h1 + 2
+	if rest == "" {
+		r.line2.Hide()
+		if chip != nil {
+			chip.Move(fyne.NewPos(0, y+(h2-chipSize.Height)/2))
+			chip.Resize(chipSize)
+		}
+		return
+	}
+	avail := w
+	if chip != nil {
+		avail = w - chipSize.Width - r.t.gap
+	}
+	if avail < 8 {
+		avail = 8
+	}
+	shown := ellipsizeDashboardName(rest, r.t.textSize, avail)
+	tw := fyne.MeasureText(shown, r.t.textSize, fyne.TextStyle{}).Width
+	r.line2.Text = shown
+	r.line2.Color = r.t.color
+	r.line2.TextSize = r.t.textSize
+	r.line2.Show()
+	r.line2.Move(fyne.NewPos(0, y+(h2-h1)/2))
+	r.line2.Resize(fyne.NewSize(tw, h1))
+	r.line2.Refresh()
+	if chip != nil {
+		chip.Move(fyne.NewPos(tw+r.t.gap, y+(h2-chipSize.Height)/2))
+		chip.Resize(chipSize)
+	}
+}
+
+func (r *deviceDashboardWrapNameChipRenderer) MinSize() fyne.Size {
+	return r.t.MinSize()
+}
+
+func (r *deviceDashboardWrapNameChipRenderer) Refresh() {
+	r.apply(r.t.Size())
+	canvas.Refresh(r.t)
+}
+
+func (r *deviceDashboardWrapNameChipRenderer) BackgroundColor() color.Color {
+	return color.Transparent
+}
+
+func (r *deviceDashboardWrapNameChipRenderer) Objects() []fyne.CanvasObject {
+	objs := []fyne.CanvasObject{r.line1, r.line2}
+	if r.t.chip != nil {
+		objs = append(objs, r.t.chip)
+	}
+	return objs
+}
+
+func (r *deviceDashboardWrapNameChipRenderer) Destroy() {}
 
 // NewDeviceDashboardCaptureSelector is Video/Audio's exclusive round radio
 // -- the same CaptureSelector the old list used, recolored to this
@@ -1712,8 +2026,6 @@ func NewDeviceDashboardStorageRow(icon fyne.Resource, name string, active bool, 
 // agent (see controller.RequiresProLicense's own doc comment: display-only,
 // never the actual enforcement decision).
 func NewDeviceDashboardStorageRowWithBadge(icon fyne.Resource, name string, active bool, badge, modePicker, deleteBtn, uploadBtn, connectBtn, uploadProgress fyne.CanvasObject, chips ...string) fyne.CanvasObject {
-	left := newDeviceDashboardRowLeftChips(icon, name, active, chips...)
-
 	var rightParts []fyne.CanvasObject
 	if uploadProgress != nil {
 		rightParts = append(rightParts, uploadProgress)
@@ -1734,8 +2046,26 @@ func NewDeviceDashboardStorageRowWithBadge(icon fyne.Resource, name string, acti
 			rightParts = append(rightParts, connectBtn)
 		}
 	}
-	right := container.New(&DeviceRowControlsLayout{Gap: 8}, rightParts...)
 
+	if IsMobile() {
+		var chip fyne.CanvasObject
+		var chipObjs []fyne.CanvasObject
+		for _, text := range chips {
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			chipObjs = append(chipObjs, newConnectionPlatformChipSized(text, 7))
+		}
+		if len(chipObjs) == 1 {
+			chip = chipObjs[0]
+		} else if len(chipObjs) > 1 {
+			chip = container.New(&DeviceRowControlsLayout{Gap: 4}, chipObjs...)
+		}
+		return newDeviceDashboardFlexibleRow(icon, name, rowNameColor(active, DeviceDashboardAccentLime), chip, rightParts...)
+	}
+
+	left := newDeviceDashboardRowLeftChips(icon, name, active, chips...)
+	right := container.New(&DeviceRowControlsLayout{Gap: 8}, rightParts...)
 	row := container.NewBorder(nil, nil, left, right)
 	return NewInsetExact(row, 0, 0, 2, 2)
 }
@@ -1751,9 +2081,11 @@ const deviceDashboardBusySpinnerInterval = 140 * time.Millisecond
 type DeviceDashboardBusySpinner struct {
 	widget.BaseWidget
 
-	hint      string
-	hintLabel *canvas.Text
-	box       *fyne.Container
+	hint       string
+	hintLabel  *canvas.Text
+	box        *fyne.Container
+	frames     []fyne.Resource
+	labelColor color.Color
 
 	mu     sync.Mutex
 	stop   chan struct{}
@@ -1768,14 +2100,50 @@ func NewDeviceDashboardBusySpinner() *DeviceDashboardBusySpinner {
 // NewDeviceDashboardBusyHint is the footer spinner with a lime status
 // label shown next to the dots while the spinner is active.
 func NewDeviceDashboardBusyHint(hint string) *DeviceDashboardBusySpinner {
-	s := &DeviceDashboardBusySpinner{hint: strings.TrimSpace(hint)}
+	return newDeviceDashboardBusyHint(hint, design.ColorConnectionAddFill, assets.LoadingLimeFrames)
+}
+
+// NewDeviceDashboardBusyHintTeal is the Control-footer benchmark spinner:
+// turquoise dots and label, same size as the Devices "connecting device" chip.
+func NewDeviceDashboardBusyHintTeal(hint string) *DeviceDashboardBusySpinner {
+	return newDeviceDashboardBusyHint(hint, design.ColorConnectionBadgeText, assets.LoadingTealFrames)
+}
+
+func newDeviceDashboardBusyHint(hint string, label color.Color, frames []fyne.Resource) *DeviceDashboardBusySpinner {
+	s := &DeviceDashboardBusySpinner{hint: strings.TrimSpace(hint), frames: frames, labelColor: label}
 	s.ExtendBaseWidget(s)
 	if s.hint != "" {
-		s.hintLabel = canvas.NewText(s.hint, design.ColorConnectionAddFill)
+		s.hintLabel = canvas.NewText(s.hint, label)
 		s.hintLabel.TextSize = 9
 	}
 	s.Hide()
 	return s
+}
+
+func (s *DeviceDashboardBusySpinner) spinnerFrames() []fyne.Resource {
+	if len(s.frames) > 0 {
+		return s.frames
+	}
+	return assets.LoadingLimeFrames
+}
+
+func (s *DeviceDashboardBusySpinner) SetHint(hint string) {
+	s.hint = strings.TrimSpace(hint)
+	if s.hintLabel == nil {
+		if s.hint == "" {
+			return
+		}
+		col := s.labelColor
+		if col == nil {
+			col = design.ColorConnectionAddFill
+		}
+		s.hintLabel = canvas.NewText(s.hint, col)
+		s.hintLabel.TextSize = 9
+		s.Refresh()
+		return
+	}
+	s.hintLabel.Text = s.hint
+	s.hintLabel.Refresh()
 }
 
 func (s *DeviceDashboardBusySpinner) Start() {
@@ -1791,7 +2159,7 @@ func (s *DeviceDashboardBusySpinner) Start() {
 
 	s.Show()
 	s.Refresh()
-	frames := assets.LoadingLimeFrames
+	frames := s.spinnerFrames()
 	if s.img != nil && len(frames) > 0 {
 		s.img.Resource = frames[0]
 		s.img.Refresh()
@@ -1859,8 +2227,8 @@ func (s *DeviceDashboardBusySpinner) CreateRenderer() fyne.WidgetRenderer {
 	s.img = canvas.NewImageFromResource(nil)
 	s.img.FillMode = canvas.ImageFillContain
 	s.img.SetMinSize(fyne.NewSize(deviceDashboardBusySpinnerSize, deviceDashboardBusySpinnerSize))
-	if len(assets.LoadingLimeFrames) > 0 {
-		s.img.Resource = assets.LoadingLimeFrames[0]
+	if len(s.spinnerFrames()) > 0 {
+		s.img.Resource = s.spinnerFrames()[0]
 	}
 	if s.hintLabel == nil {
 		return widget.NewSimpleRenderer(s.img)
@@ -2123,6 +2491,15 @@ func NewDeviceDashboardHeaderBadge(text string, textColor color.Color) *DeviceDa
 	return b
 }
 
+// NewVisibleHardwareOnlyBadge is Storage's Hardware only plaque, already
+// shown — Scripts/Snapshots headers swap their + buttons for this on a
+// software agent.
+func NewVisibleHardwareOnlyBadge() *DeviceDashboardHeaderBadge {
+	b := NewDeviceDashboardHeaderBadge(i18n.Current.DevicesHardwareOnly, design.ColorConnectionAddFill)
+	b.Show()
+	return b
+}
+
 func (b *DeviceDashboardHeaderBadge) MouseIn(*desktop.MouseEvent) {
 	if b.OnHover != nil {
 		b.OnHover(true)
@@ -2196,6 +2573,9 @@ func (h *DeviceDashboardZadigHint) CreateRenderer() fyne.WidgetRenderer {
 }
 
 var (
+	_ fyne.Tappable      = (*deviceDashboardHeaderHit)(nil)
+	_ desktop.Hoverable  = (*deviceDashboardHeaderHit)(nil)
+	_ desktop.Cursorable = (*deviceDashboardHeaderHit)(nil)
 	_ fyne.Tappable      = (*DeviceDashboardZadigHint)(nil)
 	_ desktop.Hoverable  = (*DeviceDashboardZadigHint)(nil)
 	_ desktop.Cursorable = (*DeviceDashboardZadigHint)(nil)

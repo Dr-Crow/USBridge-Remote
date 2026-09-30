@@ -50,8 +50,8 @@ type SnapshotsSectionData struct {
 	MountEnabled  bool
 	MountLoading  bool
 	FlashMounted  bool
-	// MountInactive is the software-agent treatment: the + button stays
-	// visible but gray and unclickable (backup flash lives on the board).
+	// MountInactive is the software-agent treatment: Hardware only plaque
+	// instead of + Mount backup flash (backup flash lives on the board).
 	MountInactive bool
 	OnMount       func()
 	Rows          []SnapshotTableRow
@@ -128,7 +128,10 @@ func newSnapshotsHeader(data SnapshotsSectionData) fyne.CanvasObject {
 	left := container.NewVBox(titleRow, subtitle)
 
 	mountBtn := newSnapshotsMountButton(data)
-	right := container.NewCenter(mountBtn)
+	var right fyne.CanvasObject = container.NewCenter(mountBtn)
+	if data.MountInactive {
+		right = container.NewCenter(NewVisibleHardwareOnlyBadge())
+	}
 	row := container.NewHBox(container.NewCenter(left), layout.NewSpacer(), right)
 
 	accentLine := canvas.NewRectangle(design.ColorConnectionsSectionUnderline)

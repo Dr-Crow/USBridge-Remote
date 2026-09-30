@@ -22,9 +22,9 @@ import (
 	"fyne.io/fyne/v2/widget"
 )
 
-// FirmwarePromoURL is the 24h-trial / board-download landing page -- the
-// banner CTA and the Hardware Agent footer link both open it.
-const FirmwarePromoURL = "https://www.usbridge.io/kvm-software"
+// FirmwarePromoURL is the hardware-agent / firmware landing page -- the
+// banner CTA, Hardware Agent menu, and footer chip all open it.
+const FirmwarePromoURL = "https://www.usbridge.io/hardware-agent/"
 
 var firmwarePromoBoardsList = []string{
 	"Radxa Zero 3W / 3E",

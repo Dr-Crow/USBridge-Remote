@@ -8,6 +8,8 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"os"
+	"path/filepath"
 	"math"
 	"strings"
 	"sync/atomic"
@@ -22,6 +24,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"usbridge-client/internal/api"
+	"usbridge-client/internal/gui/assets"
 	"usbridge-client/internal/gui/design"
 	"usbridge-client/internal/gui/i18n"
 	"usbridge-client/internal/gui/view"
@@ -100,26 +103,26 @@ func (mw *MainWindow) showBenchmarkSetup(available []string, mons []api.BenchMon
 	for _, b := range available {
 		has[b] = true
 	}
-	checks := map[string]*widget.Check{}
-	var boxes []fyne.CanvasObject
+	checks := map[string]view.DialogToggle{}
+	var rows []fyne.CanvasObject
 	for _, kind := range []string{"sunshine", "rustshine"} {
-		label := service.BenchBackendLabel(kind)
-		if !has[kind] {
-			label += " (" + i18n.Current.BenchNotInstalled + ")"
-		}
-		c := widget.NewCheck(label, nil)
-		c.SetChecked(has[kind])
+		c := view.NewDialogToggle(has[kind], nil)
 		if !has[kind] {
 			c.Disable()
 		}
 		checks[kind] = c
-		boxes = append(boxes, c)
+		desc := ""
+		if !has[kind] {
+			desc = i18n.Current.BenchNotInstalled
+		}
+		rows = append(rows, view.NewDialogToggleRow(c, service.BenchBackendLabel(kind), desc, 0))
 	}
-	var labels []string
+
+	var durLabels []string
 	for _, w := range benchmarkWindows {
-		labels = append(labels, w.label)
+		durLabels = append(durLabels, w.label)
 	}
-	durSel := view.NewHeaderDropdown(labels, benchmarkWindows[1].label, nil)
+	durSel := view.NewDialogPicker(durLabels, benchmarkWindows[1].label, nil)
 
 	// Both streamers capture, and the test video plays on, the one monitor
 	// picked here -- otherwise each streamer used its own saved monitor and
@@ -127,61 +130,74 @@ func (mw *MainWindow) showBenchmarkSetup(available []string, mons []api.BenchMon
 	// can't list its monitors (then nothing is pinned).
 	choices, defChoice := benchMonitorChoices(mons)
 	var monSel *view.HeaderDropdown
-	settings := []fyne.CanvasObject{container.NewVBox(boxes...), widget.NewSeparator()}
+	fields := []fyne.CanvasObject{}
 	if len(choices) > 0 {
 		var monLabels []string
 		for _, c := range choices {
 			monLabels = append(monLabels, c.label)
 		}
-		monSel = view.NewHeaderDropdown(monLabels, choices[defChoice].label, nil)
-		settings = append(settings, container.NewBorder(nil, nil, benchText(i18n.Current.BenchMonitor, design.ColorTextMuted, 13, false), nil, monSel))
+		monSel = view.NewDialogPicker(monLabels, choices[defChoice].label, nil)
+		fields = append(fields, view.NewDialogField(i18n.Current.BenchMonitor, monSel))
 	}
-	codecSel := view.NewHeaderDropdown(benchCodecLabels(), benchCodecs[0].label(), nil)
-	settings = append(settings, container.NewBorder(nil, nil, benchText(i18n.Current.BenchCodec, design.ColorTextMuted, 13, false), nil, codecSel))
-	settings = append(settings, container.NewBorder(nil, nil, benchText(i18n.Current.BenchDuration, design.ColorTextMuted, 13, false), nil, durSel))
+	codecSel := view.NewDialogPicker(benchCodecLabels(), benchCodecs[0].label(), nil)
+	fields = append(fields, view.NewDialogField(i18n.Current.BenchCodec, codecSel))
+	fields = append(fields, view.NewDialogField(i18n.Current.BenchDuration, durSel))
 
-	hint := widget.NewLabel(i18n.Current.BenchHint)
-	hint.Wrapping = fyne.TextWrapWord
-	hint.Importance = widget.LowImportance
-	content := container.New(&benchMinWidthLayout{width: 420}, benchCard(container.NewVBox(append([]fyne.CanvasObject{hint}, settings...)...), design.ColorBorder))
-	view.ShowCustomConfirmDialog(i18n.Current.BenchTitle, i18n.Current.BenchStart, i18n.Current.Cancel, content, func(ok bool) {
-		if !ok {
+	bodyKids := []fyne.CanvasObject{
+		view.NewDialogHint(i18n.Current.BenchHint, 0),
+		view.NewDialogVSpace(8),
+		view.NewDialogSurfaceCard(container.NewVBox(rows...)),
+		view.NewDialogVSpace(10),
+	}
+	for _, f := range fields {
+		bodyKids = append(bodyKids, f, view.NewDialogVSpace(8))
+	}
+	body := container.NewVBox(bodyKids...)
+
+	view.ShowBrandFormDialog(view.BrandFormDialogSpec{
+		Parent:     mw.window,
+		Title:      i18n.Current.BenchTitle,
+		Body:       body,
+		CancelText: i18n.Current.Cancel,
+		ApplyText:  i18n.Current.BenchStart,
+		OnCancel: func() {
 			benchmarkBusy.Store(false)
-			return
-		}
-		var picked []string
-		for _, kind := range []string{"sunshine", "rustshine"} {
-			if checks[kind].Checked && !checks[kind].Disabled() {
-				picked = append(picked, kind)
-			}
-		}
-		if len(picked) == 0 {
-			benchmarkBusy.Store(false)
-			view.ShowInfoDialog(i18n.Current.BenchTitle, i18n.Current.BenchNeedOne, mw.window)
-			return
-		}
-		window := benchmarkWindows[1].d
-		for _, w := range benchmarkWindows {
-			if w.label == durSel.Selected {
-				window = w.d
-			}
-		}
-		monitor := ""
-		if monSel != nil {
-			for _, c := range choices {
-				if c.label == monSel.Selected {
-					monitor = c.id
+		},
+		OnApply: func() {
+			var picked []string
+			for _, kind := range []string{"sunshine", "rustshine"} {
+				if checks[kind].IsChecked() && !checks[kind].Disabled() {
+					picked = append(picked, kind)
 				}
 			}
-		}
-		codec := ""
-		for _, c := range benchCodecs {
-			if c.label() == codecSel.Selected {
-				codec = c.mode
+			if len(picked) == 0 {
+				benchmarkBusy.Store(false)
+				view.ShowInfoDialog(i18n.Current.BenchTitle, i18n.Current.BenchNeedOne, mw.window)
+				return
 			}
-		}
-		mw.startBenchmark(picked, monitor, codec, window)
-	}, mw.window)
+			window := benchmarkWindows[1].d
+			for _, w := range benchmarkWindows {
+				if w.label == durSel.Selected {
+					window = w.d
+				}
+			}
+			monitor := ""
+			if monSel != nil {
+				for _, c := range choices {
+					if c.label == monSel.Selected {
+						monitor = c.id
+					}
+				}
+			}
+			codec := ""
+			for _, c := range benchCodecs {
+				if c.label() == codecSel.Selected {
+					codec = c.mode
+				}
+			}
+			mw.startBenchmark(picked, monitor, codec, window)
+		},
+	})
 }
 
 // benchCodec is one entry of the setup dialog's codec pick: the saved
@@ -209,100 +225,86 @@ func benchCodecLabels() []string {
 	return out
 }
 
-// benchMinWidthLayout keeps the wrapped hint from collapsing to one word wide.
-type benchMinWidthLayout struct{ width float32 }
-
-func (l *benchMinWidthLayout) Layout(objs []fyne.CanvasObject, size fyne.Size) {
-	for _, o := range objs {
-		o.Resize(size)
-		o.Move(fyne.NewPos(0, 0))
-	}
-}
-
-func (l *benchMinWidthLayout) MinSize(objs []fyne.CanvasObject) fyne.Size {
-	h := float32(0)
-	for _, o := range objs {
-		o.Resize(fyne.NewSize(l.width, o.MinSize().Height))
-		h = float32(math.Max(float64(h), float64(o.MinSize().Height)))
-	}
-	return fyne.NewSize(l.width, h)
-}
-
-// benchStyledPanel wraps body in the app's own dark bordered panel (bg
-// design.ColorGray900, 1px design.ColorBorder, a centered title + an "X"
-// close icon) instead of handing it to fyne's stock dialog.NewCustom. That
-// package's panel background comes from theme.ColorNameOverlayBackground,
-// which BrandTheme (design/theme.go) deliberately leaves transparent --
-// every OTHER dialog in this app paints its own opaque panel as part of its
-// content (see view.ShowCustomConfirmDialog), a convention dialog.NewCustom
-// doesn't know about, so its panel showed through as the Fyne default
-// (light) theme instead: white background, and this file's own
-// design.ColorTextLight text on top of it read as white-on-white.
-func benchStyledPanel(title string, body fyne.CanvasObject, onClose func()) fyne.CanvasObject {
-	titleText := view.NewBrandText(title, 19, design.ColorTextLight, true)
-	titleText.Alignment = fyne.TextAlignCenter
-	closeBtn := widget.NewButtonWithIcon("", theme.CancelIcon(), onClose)
-	closeBtn.Importance = widget.LowImportance
-	titleBar := container.NewBorder(nil, nil, nil, closeBtn, titleText)
-
-	bg := canvas.NewRectangle(design.ColorGray900)
-	bg.CornerRadius = design.RadiusMD
-	border := canvas.NewRectangle(color.Transparent)
-	border.CornerRadius = design.RadiusMD
-	border.StrokeColor = design.ColorBorder
-	border.StrokeWidth = 1
-
-	// Border, not VBox: a VBox only ever gives body its MinSize, which for
-	// the results dialog's scroll is one line -- everything below "Saved
-	// to" was clipped.
-	content := container.NewBorder(titleBar, nil, nil, nil, view.NewInset(body, 0, 0, 16, 14))
-	return container.NewStack(bg, view.NewInset(content, 18, 18, 16, 16), border)
-}
-
-// showBenchStyledDialog shows body in benchStyledPanel's dark panel via the
-// app's own overlay popup machinery (view.ShowOverlayPopup), sized by
-// sizeFn -- the "how big" policy the two callers below need differs (the
-// progress dialog sizes to its own small content, the results dialog wants
-// most of the window), so it's left to the caller rather than baked in
-// here. onClose (may be nil) runs once, from the title bar's close icon,
-// before the popup hides.
-func showBenchStyledDialog(parent fyne.Window, title string, body fyne.CanvasObject,
+// showBenchStyledDialog shows body in the Add Connection / Video chrome
+// (accent bar, left title, corner X, hairline footer). footerButtons is
+// the row pinned under the body (Cancel left / Apply right).
+func showBenchStyledDialog(parent fyne.Window, title string, body, footerButtons fyne.CanvasObject,
 	sizeFn func(canvasSize fyne.Size, panel fyne.CanvasObject) fyne.Size, onClose func()) *widget.PopUp {
+	return showBenchStyledDialogEx(parent, title, body, footerButtons, sizeFn, onClose, false)
+}
+
+func showBenchStyledDialogEx(parent fyne.Window, title string, body, footerButtons fyne.CanvasObject,
+	sizeFn func(canvasSize fyne.Size, panel fyne.CanvasObject) fyne.Size, onClose func(), tightFooter bool) *widget.PopUp {
 	var popup *widget.PopUp
-	panel := benchStyledPanel(title, body, func() {
+	closeOnce := func() {
 		if onClose != nil {
 			onClose()
+			onClose = nil
 		}
 		if popup != nil {
 			popup.Hide()
 		}
-	})
+	}
+	var panel fyne.CanvasObject
+	if tightFooter {
+		panel = view.AssembleBrandDialogChromeTightFooter(title, body, footerButtons, closeOnce)
+	} else {
+		panel = view.AssembleBrandDialogChrome(title, body, footerButtons, closeOnce)
+	}
 	popup = view.ShowOverlayPopup(parent, view.OverlayPopupSpec{
 		Panel:     panel,
 		DimColor:  color.NRGBA{R: 0x00, G: 0x00, B: 0x00, A: 0x72},
 		PanelSize: sizeFn,
+		PanelPos: func(canvasSize fyne.Size, panelSize fyne.Size) fyne.Position {
+			x := (canvasSize.Width - panelSize.Width) / 2
+			if view.UseCompactLayout(canvasSize.Width) {
+				return fyne.NewPos(x, view.CompactOverlayTopMargin(canvasSize))
+			}
+			return fyne.NewPos(x, (canvasSize.Height-panelSize.Height)/2)
+		},
 	})
 	return popup
-}
-
-// benchContentSizeFn sizes the panel to its own content (clamped to the
-// available width) -- the progress dialog's status line + progress bar
-// never need more room than that.
-func benchContentSizeFn(canvasSize fyne.Size, panel fyne.CanvasObject) fyne.Size {
-	const margin = 24
-	maxWidth := canvasSize.Width - margin*2
-	min := panel.MinSize()
-	if min.Width > maxWidth {
-		min.Width = maxWidth
-	}
-	return min
 }
 
 // benchResultsSizeFn sizes the results panel to most of the window
 // regardless of its (large, scrollable) content's own MinSize -- matches
 // the fyne dialog.NewCustom-based version's previous d.Resize(sz*0.94).
 func benchResultsSizeFn(canvasSize fyne.Size, _ fyne.CanvasObject) fyne.Size {
+	if view.UseCompactLayout(canvasSize.Width) {
+		inset := theme.InnerPadding() + 6
+		if inset < 12 {
+			inset = 12
+		}
+		top := view.CompactOverlayTopMargin(canvasSize)
+		return fyne.NewSize(
+			maxFloat32(1, canvasSize.Width-inset*2),
+			maxFloat32(1, canvasSize.Height-top-6),
+		)
+	}
 	return fyne.NewSize(canvasSize.Width*0.94, canvasSize.Height*0.94)
+}
+
+func benchResultsCompact(w fyne.Window) bool {
+	if w == nil || w.Canvas() == nil {
+		return view.UseCompactLayout(0)
+	}
+	return view.UseCompactLayout(w.Canvas().Size().Width)
+}
+
+func (mw *MainWindow) setBenchmarkFooterBusy(on bool, hint string) {
+	for _, s := range mw.benchmarkFooterHints {
+		if s == nil {
+			continue
+		}
+		if hint != "" {
+			s.SetHint(hint)
+		}
+		if on {
+			s.Start()
+			continue
+		}
+		s.Stop()
+	}
 }
 
 func (mw *MainWindow) startBenchmark(backends []string, monitor, codec string, window time.Duration) {
@@ -311,15 +313,23 @@ func (mw *MainWindow) startBenchmark(backends []string, monitor, codec string, w
 	// native video (black picture on Windows, see
 	// VideoWidget.syncCanvasOverlayHidden) -- exactly the stream being
 	// measured -- so progress goes to the Net Graph HUD, which the
-	// benchmark turns on anyway.
+	// benchmark turns on anyway, and a Control-footer spinner like Devices'
+	// "connecting device" chip.
 	ctx, cancel := context.WithCancel(context.Background())
+	fyne.Do(func() { mw.setBenchmarkFooterBusy(true, i18n.Current.BenchFooterBusy) })
 
 	go func() {
 		res, err := benchmarkRunFn(mw, ctx, backends, monitor, codec, window, func(text string, f float64) {
 			service.SetNetGraphBanner(fmt.Sprintf("%s  %.0f%%", text, math.Min(math.Max(f, 0), 1)*100))
+			hint := strings.TrimSpace(text)
+			if hint == "" {
+				hint = i18n.Current.BenchFooterBusy
+			}
+			fyne.Do(func() { mw.setBenchmarkFooterBusy(true, hint) })
 		})
 		service.SetNetGraphBanner("")
 		benchmarkBusy.Store(false)
+		fyne.Do(func() { mw.setBenchmarkFooterBusy(false, "") })
 		cancelled := ctx.Err() != nil
 		cancel()
 		if cancelled {
@@ -427,15 +437,193 @@ func benchText(s string, c color.Color, size float32, bold bool) *canvas.Text {
 	return t
 }
 
+func benchEllipsize(s string, size, maxW float32, col color.Color) *canvas.Text {
+	t := canvas.NewText(s, col)
+	t.TextSize = size
+	if maxW <= 8 || t.MinSize().Width <= maxW {
+		return t
+	}
+	runes := []rune(s)
+	ell := "…"
+	lo, hi := 1, len(runes)
+	best := ell
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		t.Text = string(runes[:mid]) + ell
+		if t.MinSize().Width <= maxW {
+			best = t.Text
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	t.Text = best
+	return t
+}
+
 // benchCard is a rounded surface panel with an optional colored outline.
 func benchCard(body fyne.CanvasObject, outline color.Color) fyne.CanvasObject {
+	return benchCardPad(body, outline, 14, 14, 12, 12)
+}
+
+func benchCardPad(body fyne.CanvasObject, outline color.Color, left, right, top, bottom float32) fyne.CanvasObject {
 	bg := canvas.NewRectangle(design.ColorSurface)
 	bg.CornerRadius = design.RadiusMD
 	border := canvas.NewRectangle(color.Transparent)
 	border.CornerRadius = design.RadiusMD
 	border.StrokeColor = outline
 	border.StrokeWidth = 1
-	return container.NewStack(bg, view.NewInset(body, 14, 14, 12, 12), border)
+	return container.NewStack(bg, view.NewInsetExact(body, left, right, top, bottom), border)
+}
+
+// benchTightVBox stacks children with a fixed gap and no Fyne theme padding.
+type benchTightVBox struct{ gap float32 }
+
+func (l *benchTightVBox) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	var h float32
+	n := 0
+	for _, o := range objects {
+		if o == nil || !o.Visible() {
+			continue
+		}
+		h += benchLaidHeight(o, 0)
+		n++
+	}
+	if n > 1 {
+		h += l.gap * float32(n-1)
+	}
+	return fyne.NewSize(0, h)
+}
+
+func (l *benchTightVBox) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	y := float32(0)
+	for _, o := range objects {
+		if o == nil || !o.Visible() {
+			continue
+		}
+		h := benchLaidHeight(o, size.Width)
+		o.Resize(fyne.NewSize(size.Width, h))
+		o.Move(fyne.NewPos(0, y))
+		y += h + l.gap
+	}
+}
+
+func benchLaidHeight(o fyne.CanvasObject, width float32) float32 {
+	if c, ok := o.(*fyne.Container); ok {
+		if l, ok := c.Layout.(*benchChartFill); ok {
+			w := width
+			if w < 1 {
+				w = l.guessW
+			}
+			if w < 1 {
+				w = 280
+			}
+			return w * l.aspect
+		}
+	}
+	return o.MinSize().Height
+}
+
+// benchChartFill sizes a chart image to the full allocated width, keeping
+// the PNG's aspect so stacked plots stay readable.
+type benchChartFill struct {
+	aspect float32
+	guessW float32
+}
+
+func (l *benchChartFill) MinSize([]fyne.CanvasObject) fyne.Size {
+	w := l.guessW
+	if w < 1 {
+		w = 280
+	}
+	return fyne.NewSize(0, w*l.aspect)
+}
+
+func (l *benchChartFill) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	h := size.Width * l.aspect
+	if h < 1 {
+		h = 1
+	}
+	for _, o := range objects {
+		o.Move(fyne.NewPos(0, 0))
+		o.Resize(fyne.NewSize(size.Width, h))
+	}
+}
+
+// benchShrinkCols lays out n columns whose MinSize width is one cell, so a
+// phone card can shrink instead of GridWithColumns forcing n× widest tile.
+type benchShrinkCols struct {
+	cols int
+	gap  float32
+}
+
+func (l *benchShrinkCols) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	cols := l.cols
+	if cols < 1 {
+		cols = 1
+	}
+	var maxH float32
+	n := 0
+	for _, o := range objects {
+		if o == nil || !o.Visible() {
+			continue
+		}
+		n++
+		m := o.MinSize()
+		if m.Height > maxH {
+			maxH = m.Height
+		}
+	}
+	rows := (n + cols - 1) / cols
+	if rows < 1 {
+		rows = 1
+	}
+	h := maxH * float32(rows)
+	if rows > 1 {
+		h += l.gap * float32(rows-1)
+	}
+	return fyne.NewSize(0, h)
+}
+
+func (l *benchShrinkCols) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	cols := l.cols
+	if cols < 1 {
+		cols = 1
+	}
+	vis := make([]fyne.CanvasObject, 0, len(objects))
+	for _, o := range objects {
+		if o != nil && o.Visible() {
+			vis = append(vis, o)
+		}
+	}
+	n := len(vis)
+	if n == 0 {
+		return
+	}
+	rows := (n + cols - 1) / cols
+	rowH := make([]float32, rows)
+	for i, o := range vis {
+		r := i / cols
+		if h := o.MinSize().Height; h > rowH[r] {
+			rowH[r] = h
+		}
+	}
+	colW := (size.Width - l.gap*float32(cols-1)) / float32(cols)
+	if colW < 1 {
+		colW = 1
+	}
+	y := float32(0)
+	for r := 0; r < rows; r++ {
+		for c := 0; c < cols; c++ {
+			i := r*cols + c
+			if i >= n {
+				break
+			}
+			vis[i].Resize(fyne.NewSize(colW, rowH[r]))
+			vis[i].Move(fyne.NewPos(float32(c)*(colW+l.gap), y))
+		}
+		y += rowH[r] + l.gap
+	}
 }
 
 // benchSummaryTile is one metric in a streamer's summary card: a large
@@ -459,8 +647,8 @@ var benchSummaryTiles = []benchSummaryTile{
 
 // benchSummaryCards builds one card per streamer with its headline numbers
 // side by side, so the comparison reads at a glance before the full table.
-func benchSummaryCards(metrics []service.BenchMetrics) fyne.CanvasObject {
-	best := make([]int, len(benchSummaryTiles))
+func benchSummaryCards(metrics []service.BenchMetrics, compact bool) fyne.CanvasObject {
+	best := make([][]bool, len(benchSummaryTiles))
 	for t, tile := range benchSummaryTiles {
 		vals := make([]float64, len(metrics))
 		oks := make([]bool, len(metrics))
@@ -468,21 +656,40 @@ func benchSummaryCards(metrics []service.BenchMetrics) fyne.CanvasObject {
 			vals[i], oks[i] = tile.value(m)
 			oks[i] = oks[i] && m.Error == ""
 		}
-		best[t] = benchmarkBest(vals, oks, tile.lower)
+		best[t] = benchmarkBestMask(vals, oks, tile.lower, tile.format)
+	}
+	titleSize, valueSize, capSize := float32(17), float32(22), float32(11)
+	tileCols := 3
+	if compact {
+		titleSize, valueSize, capSize = 13, 15, 9
+		tileCols = 2
 	}
 	var cards []fyne.CanvasObject
 	for i, m := range metrics {
 		accent := service.BenchBackendColor(m.Backend)
-		title := benchText(service.BenchBackendLabel(m.Backend), accent, 17, true)
+		title := benchText(service.BenchBackendLabel(m.Backend), accent, titleSize, true)
 		sub := ""
 		if m.Codec != "" {
 			sub = strings.ToUpper(m.Codec)
 		}
-		head := container.NewBorder(nil, nil, title, benchText(sub, design.ColorTextMuted, 12, false))
+		var head fyne.CanvasObject
+		if compact {
+			parts := []fyne.CanvasObject{title}
+			if sub != "" {
+				parts = append(parts, benchText(sub, design.ColorTextMuted, 9, false))
+			}
+			head = container.New(&benchTightVBox{gap: 1}, parts...)
+		} else {
+			head = container.NewBorder(nil, nil, title, benchText(sub, design.ColorTextMuted, 12, false))
+		}
+		cardPadL, cardPadR, cardPadT, cardPadB := float32(14), float32(14), float32(12), float32(12)
+		if compact {
+			cardPadL, cardPadR, cardPadT, cardPadB = 8, 8, 6, 6
+		}
 		if m.Error != "" {
 			msg := widget.NewLabel(m.Error)
 			msg.Wrapping = fyne.TextWrapWord
-			cards = append(cards, benchCard(container.NewVBox(head, benchText("failed", design.ColorDanger, 22, true), msg), accent))
+			cards = append(cards, benchCardPad(container.New(&benchTightVBox{gap: 4}, head, benchText("failed", design.ColorDanger, valueSize, true), msg), accent, cardPadL, cardPadR, cardPadT, cardPadB))
 			continue
 		}
 		var tiles []fyne.CanvasObject
@@ -493,19 +700,45 @@ func benchSummaryCards(metrics []service.BenchMetrics) fyne.CanvasObject {
 				s = fmt.Sprintf(tile.format, v)
 			}
 			c := color.Color(design.ColorTextLight)
-			if best[t] == i {
+			if best[t] != nil && best[t][i] {
 				c = benchBestColor
 			}
-			tiles = append(tiles, container.NewVBox(benchText(s, c, 22, true), benchText(tile.caption, design.ColorTextMuted, 11, false)))
+			val := benchText(s, c, valueSize, true)
+			cap := benchText(tile.caption, design.ColorTextMuted, capSize, false)
+			if compact {
+				tiles = append(tiles, container.New(&benchTightVBox{gap: 0}, val, cap))
+			} else {
+				tiles = append(tiles, container.NewVBox(val, cap))
+			}
 		}
-		cards = append(cards, benchCard(container.NewVBox(head, container.NewGridWithColumns(3, tiles...)), accent))
+		var grid fyne.CanvasObject
+		if compact {
+			grid = container.New(&benchShrinkCols{cols: tileCols, gap: 4}, tiles...)
+		} else {
+			grid = container.NewGridWithColumns(tileCols, tiles...)
+		}
+		innerGap := float32(8)
+		if compact {
+			innerGap = 4
+		}
+		cards = append(cards, benchCardPad(container.New(&benchTightVBox{gap: innerGap}, head, grid), accent, cardPadL, cardPadR, cardPadT, cardPadB))
+	}
+	if compact || len(cards) <= 1 {
+		gap := float32(theme.Padding())
+		if compact {
+			gap = 6
+		}
+		return container.New(&benchTightVBox{gap: gap}, cards...)
 	}
 	return container.NewGridWithColumns(len(cards), cards...)
 }
 
 // benchResultsTable is the full per-metric comparison: section header
 // rows, then striped metric rows with the best value in green.
-func benchResultsTable(metrics []service.BenchMetrics) fyne.CanvasObject {
+func benchResultsTable(metrics []service.BenchMetrics, compact bool, wrap float32) fyne.CanvasObject {
+	if compact {
+		return benchResultsTableCompact(metrics, wrap)
+	}
 	cols := 1 + len(metrics)
 	row := func(cells []fyne.CanvasObject, fill color.Color) fyne.CanvasObject {
 		grid := container.NewGridWithColumns(cols, cells...)
@@ -529,35 +762,15 @@ func benchResultsTable(metrics []service.BenchMetrics) fyne.CanvasObject {
 			stripe = 0
 		}
 		cells := []fyne.CanvasObject{benchText(r.label, design.ColorTextMuted, 13, false)}
-		vals := make([]float64, len(metrics))
-		oks := make([]bool, len(metrics))
+		vals, oks, bestMask := benchRowValues(metrics, r)
 		for i, m := range metrics {
-			vals[i], oks[i] = r.value(m)
-			if m.Error != "" {
-				oks[i] = false
-			}
-		}
-		bestIdx := benchmarkBest(vals, oks, r.lower)
-		for i, m := range metrics {
-			s := "n/a"
-			switch {
-			case m.Error != "":
-				s = "failed"
-			case !oks[i]:
-			case r.label == "Codec":
-				s = strings.ToUpper(m.Codec)
-			case r.label == "Frame time p50 / p95":
-				s = fmt.Sprintf("%.1f / %.1f ms", m.IntervalP50, m.IntervalP95)
-			case r.label == "Recovered by IDR / RFI":
-				s = fmt.Sprintf("%d / %d", m.RecoveredByIDR, m.RecoveredByRFI)
-			default:
-				s = fmt.Sprintf(r.format, vals[i])
-			}
+			s := benchRowCell(r, m, vals[i], oks[i])
 			c := color.Color(design.ColorTextLight)
-			if i == bestIdx {
+			win := bestMask[i]
+			if win {
 				c = benchBestColor
 			}
-			cells = append(cells, benchText(s, c, 13, i == bestIdx))
+			cells = append(cells, benchText(s, c, 13, win))
 		}
 		var fill color.Color
 		if stripe%2 == 1 {
@@ -567,6 +780,89 @@ func benchResultsTable(metrics []service.BenchMetrics) fyne.CanvasObject {
 		rows = append(rows, row(cells, fill))
 	}
 	return container.NewVBox(rows...)
+}
+
+func benchResultsTableCompact(metrics []service.BenchMetrics, wrap float32) fyne.CanvasObject {
+	n := len(metrics)
+	if n < 1 {
+		n = 1
+	}
+	headCells := make([]fyne.CanvasObject, 0, n)
+	colW := wrap / float32(n)
+	if colW < 48 {
+		colW = 48
+	}
+	for _, m := range metrics {
+		headCells = append(headCells, benchEllipsize(service.BenchBackendLabel(m.Backend), 10, colW-4, service.BenchBackendColor(m.Backend)))
+	}
+	rows := []fyne.CanvasObject{
+		view.NewInsetExact(container.New(&benchShrinkCols{cols: n, gap: 4}, headCells...), 4, 4, 2, 2),
+	}
+	stripe := 0
+	for _, r := range benchmarkRows() {
+		if r.section != "" {
+			rows = append(rows, view.NewInsetExact(benchText(r.section, design.ColorAccent, 11, true), 4, 4, 8, 1), widget.NewSeparator())
+			stripe = 0
+		}
+		vals, oks, bestMask := benchRowValues(metrics, r)
+		lbl := benchEllipsize(r.label, 10, wrap, design.ColorTextMuted)
+		valsRow := make([]fyne.CanvasObject, 0, len(metrics))
+		for i, m := range metrics {
+			s := benchRowCell(r, m, vals[i], oks[i])
+			c := color.Color(design.ColorTextLight)
+			win := bestMask[i]
+			if win {
+				c = benchBestColor
+			}
+			cell := benchEllipsize(s, 12, colW-4, c)
+			cell.TextStyle.Bold = win
+			valsRow = append(valsRow, cell)
+		}
+		body := container.New(&benchTightVBox{gap: 1}, lbl, container.New(&benchShrinkCols{cols: n, gap: 4}, valsRow...))
+		var fill color.Color
+		if stripe%2 == 1 {
+			fill = design.ColorAlphaWhite07
+		}
+		stripe++
+		inner := view.NewInsetExact(body, 4, 4, 2, 2)
+		if fill == nil {
+			rows = append(rows, inner)
+			continue
+		}
+		bg := canvas.NewRectangle(fill)
+		bg.CornerRadius = 4
+		rows = append(rows, container.NewStack(bg, inner))
+	}
+	return container.New(&benchTightVBox{gap: 0}, rows...)
+}
+
+func benchRowValues(metrics []service.BenchMetrics, r benchmarkRow) ([]float64, []bool, []bool) {
+	vals := make([]float64, len(metrics))
+	oks := make([]bool, len(metrics))
+	for i, m := range metrics {
+		vals[i], oks[i] = r.value(m)
+		if m.Error != "" {
+			oks[i] = false
+		}
+	}
+	return vals, oks, benchmarkBestMask(vals, oks, r.lower, r.format)
+}
+
+func benchRowCell(r benchmarkRow, m service.BenchMetrics, v float64, ok bool) string {
+	switch {
+	case m.Error != "":
+		return "failed"
+	case !ok:
+		return "n/a"
+	case r.label == "Codec":
+		return strings.ToUpper(m.Codec)
+	case r.label == "Frame time p50 / p95":
+		return fmt.Sprintf("%.1f / %.1f ms", m.IntervalP50, m.IntervalP95)
+	case r.label == "Recovered by IDR / RFI":
+		return fmt.Sprintf("%d / %d", m.RecoveredByIDR, m.RecoveredByRFI)
+	default:
+		return fmt.Sprintf(r.format, v)
+	}
 }
 
 func benchStallList(metrics []service.BenchMetrics) fyne.CanvasObject {
@@ -590,55 +886,122 @@ func benchStallList(metrics []service.BenchMetrics) fyne.CanvasObject {
 	return list
 }
 
+func benchCompactWrap(w fyne.Window, extra float32) float32 {
+	cw := float32(280)
+	if w != nil && w.Canvas() != nil {
+		cw = w.Canvas().Size().Width - extra
+	}
+	if cw < 180 {
+		return 180
+	}
+	return cw
+}
+
 func (mw *MainWindow) showBenchmarkResults(res *benchmarkResult, dir string) {
 	metrics := res.Metrics
+	compact := benchResultsCompact(mw.window)
+	wrap := benchCompactWrap(mw.window, 88)
 
-	sections := container.NewVBox()
+	var bits []fyne.CanvasObject
 	if len(res.Runs) > 0 && res.Runs[0].Content != "" {
 		r := res.Runs[0]
-		sections.Add(benchText(fmt.Sprintf("%s · %dx%d @ %d fps · %.0f s per streamer", r.Content, r.Width, r.Height, r.ExpectedFPS, res.Duration), design.ColorTextMuted, 12, false))
+		line := fmt.Sprintf("%s · %dx%d @ %d fps · %.0f s per streamer", r.Content, r.Width, r.Height, r.ExpectedFPS, res.Duration)
+		if compact {
+			bits = append(bits, benchEllipsize(line, 10, wrap, design.ColorTextMuted))
+		} else {
+			meta := widget.NewLabel(line)
+			meta.Wrapping = fyne.TextWrapWord
+			meta.Importance = widget.LowImportance
+			bits = append(bits, meta)
+		}
 	}
-	sections.Add(benchSummaryCards(metrics))
-	sections.Add(benchCard(benchResultsTable(metrics), design.ColorBorder))
+	bits = append(bits, benchSummaryCards(metrics, compact))
+	tableCard := benchResultsTable(metrics, compact, wrap)
+	if compact {
+		bits = append(bits, benchCardPad(tableCard, design.ColorBorder, 6, 6, 4, 4))
+	} else {
+		bits = append(bits, benchCard(tableCard, design.ColorBorder))
+	}
 
 	img := service.RenderBenchChart(res.Runs, metrics)
 	chart := canvas.NewImageFromImage(img)
 	chart.FillMode = canvas.ImageFillContain
-	w := float32(900)
-	chart.SetMinSize(fyne.NewSize(w, w*float32(img.Bounds().Dy())/float32(img.Bounds().Dx())))
-	sections.Add(benchCard(chart, design.ColorBorder))
+	if compact {
+		aspect := float32(img.Bounds().Dy()) / float32(img.Bounds().Dx())
+		if aspect < 0.2 {
+			aspect = 0.2
+		}
+		bits = append(bits, container.New(&benchChartFill{aspect: aspect, guessW: benchCompactWrap(mw.window, 24)}, chart))
+	} else {
+		w := float32(900)
+		chart.SetMinSize(fyne.NewSize(w, w*float32(img.Bounds().Dy())/float32(img.Bounds().Dx())))
+		bits = append(bits, benchCard(chart, design.ColorBorder))
+	}
 
 	stalls := widget.NewAccordion(widget.NewAccordionItem(i18n.Current.BenchStalls, benchStallList(metrics)))
-	sections.Add(stalls)
+	bits = append(bits, stalls)
 
-	scroll := container.NewVScroll(view.NewInset(sections, 0, 10, 0, 8))
-
-	// Footer stays pinned below the scroll: where the auto-save went, and
-	// the download/close actions.
-	var popup *widget.PopUp
-	saved := widget.NewLabel("")
-	saved.Truncation = fyne.TextTruncateEllipsis
-	if dir != "" {
-		saved.SetText(fmt.Sprintf(i18n.Current.BenchSavedTo, dir))
+	secGap := float32(theme.Padding())
+	pad := float32(18)
+	if compact {
+		secGap = 8
+		pad = 4
 	}
-	download := widget.NewButtonWithIcon(i18n.Current.BenchSaveResults, theme.DownloadIcon(), func() {
+	sections := container.New(&benchTightVBox{gap: secGap}, bits...)
+	scroll := container.NewVScroll(view.NewInsetExact(sections, pad, pad, 4, 4))
+
+	var popup *widget.PopUp
+	download := view.NewDialogApplyButton(i18n.Current.BenchSaveResults, func() {
 		mw.downloadBenchmarkResults(res)
 	})
-	download.Importance = widget.HighImportance
-	closeBtn := widget.NewButton(i18n.Current.Close, func() {
+	closeBtn := view.NewDialogCancelButton(i18n.Current.Close, func() {
 		if popup != nil {
 			popup.Hide()
 		}
 	})
-	footer := container.NewVBox(widget.NewSeparator(), container.NewBorder(nil, nil, nil, container.NewHBox(closeBtn, download), saved))
+	savedPath := ""
+	if dir != "" {
+		savedPath = fmt.Sprintf(i18n.Current.BenchSavedTo, dir)
+	}
+	var footer fyne.CanvasObject
+	if compact {
+		dl := view.NewDialogIconButton(assets.DownloadIconDark, func() {
+			mw.downloadBenchmarkResults(res)
+		})
+		path := benchEllipsize(savedPath, 8, wrap-36, color.NRGBA{R: 0x8f, G: 0x93, B: 0x81, A: 0xff})
+		footer = container.NewBorder(nil, nil, nil, dl, path)
+	} else {
+		saved := benchText(savedPath, color.NRGBA{R: 0x8f, G: 0x93, B: 0x81, A: 0xff}, 9, false)
+		footer = container.NewBorder(nil, nil, saved, container.New(&view.DeviceRowControlsLayout{Gap: 12}, closeBtn, download))
+	}
 
-	popup = showBenchStyledDialog(mw.window, i18n.Current.BenchResultsTitle, container.NewBorder(nil, footer, nil, nil, scroll), benchResultsSizeFn, nil)
+	popup = showBenchStyledDialogEx(mw.window, i18n.Current.BenchResultsTitle, scroll, footer, benchResultsSizeFn, nil, compact)
 }
 
 // downloadBenchmarkResults saves the results as one zip (results.json +
 // chart.png) wherever the operator picks -- the auto-save location is a
 // user-config directory most people never look inside.
 func (mw *MainWindow) downloadBenchmarkResults(res *benchmarkResult) {
+	name := "usbridge-benchmark-" + res.CreatedAt.Format("20060102_150405") + ".zip"
+	title := i18n.Current.BenchSaveResults
+	if nativeSaveAvailable() {
+		go func() {
+			path, err := nativeSaveFile(title, name)
+			if err != nil {
+				fyne.Do(func() { mw.fyneSaveBenchmarkZip(res, name) })
+				return
+			}
+			if path == "" {
+				return
+			}
+			mw.saveBenchmarkZipFile(res, withZipExt(path))
+		}()
+		return
+	}
+	mw.fyneSaveBenchmarkZip(res, name)
+}
+
+func (mw *MainWindow) fyneSaveBenchmarkZip(res *benchmarkResult, name string) {
 	fd := dialog.NewFileSave(func(wc fyne.URIWriteCloser, err error) {
 		if err != nil || wc == nil {
 			return
@@ -653,8 +1016,29 @@ func (mw *MainWindow) downloadBenchmarkResults(res *benchmarkResult) {
 		}
 		view.ShowInfoDialog(i18n.Current.BenchResultsTitle, fmt.Sprintf(i18n.Current.BenchSaveResultsDone, wc.URI().Name()), mw.window)
 	}, mw.window)
-	fd.SetFileName("usbridge-benchmark-" + res.CreatedAt.Format("20060102_150405") + ".zip")
+	fd.SetFileName(name)
 	fd.Show()
+}
+
+func (mw *MainWindow) saveBenchmarkZipFile(res *benchmarkResult, path string) {
+	f, err := os.Create(path)
+	if err != nil {
+		fyne.Do(func() {
+			view.ShowErrorDialog(fmt.Errorf(i18n.Current.BenchSaveResultsFailed, err), mw.window)
+		})
+		return
+	}
+	werr := writeBenchmarkZip(f, res)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	fyne.Do(func() {
+		if werr != nil {
+			view.ShowErrorDialog(fmt.Errorf(i18n.Current.BenchSaveResultsFailed, werr), mw.window)
+			return
+		}
+		view.ShowInfoDialog(i18n.Current.BenchResultsTitle, fmt.Sprintf(i18n.Current.BenchSaveResultsDone, filepath.Base(path)), mw.window)
+	})
 }
 
 // writeBenchmarkZip writes results.json and chart.png, the same pair
@@ -681,28 +1065,54 @@ func writeBenchmarkZip(w io.Writer, res *benchmarkResult) error {
 	return zw.Close()
 }
 
-// benchmarkBest returns the index of the best value, or -1 when there is
-// nothing to compare or all compared values are equal.
-func benchmarkBest(vals []float64, oks []bool, lower bool) int {
+// benchmarkBestMask marks every streamer that shares the best value as
+// shown on screen (rounded to the row's format). Ties — 60.04 vs 59.96
+// both printing as 60.0 fps — highlight both, instead of greening only
+// the first raw float.
+func benchmarkBestMask(vals []float64, oks []bool, lower bool, format string) []bool {
+	out := make([]bool, len(vals))
 	best, n := -1, 0
+	rounded := make([]float64, len(vals))
+	prec := benchFormatPrecision(format)
 	for i, v := range vals {
 		if !oks[i] {
 			continue
 		}
 		n++
-		if best < 0 || (lower && v < vals[best]) || (!lower && v > vals[best]) {
+		rounded[i] = benchRound(v, prec)
+		if best < 0 || (lower && rounded[i] < rounded[best]) || (!lower && rounded[i] > rounded[best]) {
 			best = i
 		}
 	}
-	if n < 2 {
-		return -1
+	if n < 2 || best < 0 {
+		return out
 	}
-	for i, v := range vals {
-		if oks[i] && i != best && v == vals[best] {
-			return -1
+	for i := range vals {
+		if oks[i] && rounded[i] == rounded[best] {
+			out[i] = true
 		}
 	}
-	return best
+	return out
+}
+
+func benchFormatPrecision(format string) int {
+	i := strings.Index(format, "%.")
+	if i < 0 || i+2 >= len(format) {
+		return 6
+	}
+	d := format[i+2]
+	if d >= '0' && d <= '9' {
+		return int(d - '0')
+	}
+	return 6
+}
+
+func benchRound(v float64, prec int) float64 {
+	if prec < 0 {
+		prec = 0
+	}
+	p := math.Pow(10, float64(prec))
+	return math.Round(v*p) / p
 }
 
 // benchmarkMenuAction is the gear menu's "Run benchmark" handler, nil

@@ -74,6 +74,7 @@ type MainWindow struct {
 	connectedVersionFooter fyne.CanvasObject
 	connectedFooterBusy    fyne.CanvasObject
 	connectedFooterScript  fyne.CanvasObject
+	benchmarkFooterHints   []*view.DeviceDashboardBusySpinner
 	mobileTabsRow          fyne.CanvasObject
 	connectedLandscape     bool
 	deviceButtonsPanel     *fyne.Container

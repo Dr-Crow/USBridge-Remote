@@ -150,6 +150,7 @@ func (r *accountGoogleLoginButtonRenderer) Refresh() {
 type accountDialogSnapshot struct {
 	loginInProgress bool
 	loggedIn        bool
+	hasSyncKey      bool
 	lastError       string
 }
 
@@ -157,6 +158,7 @@ func newAccountDialogSnapshot(am *controller.AccountManager) accountDialogSnapsh
 	return accountDialogSnapshot{
 		loginInProgress: am.LoginInProgress(),
 		loggedIn:        am.LoggedIn(),
+		hasSyncKey:      am.HasSyncKey(),
 		lastError:       am.LastError(),
 	}
 }
@@ -179,9 +181,7 @@ func (mw *MainWindow) showAccountDialog() {
 	// own state (render() rebuilds the whole body on every call, so
 	// anything that must survive across renders lives out here).
 	var resettingSyncPassphrase bool
-	var confirmingAccountDelete bool
-	var accountDeleteBusy bool
-	var accountDeleteError string
+	var closeAccount func()
 
 	var scroll *container.Scroll
 	footerContainer := container.NewStack()
@@ -213,81 +213,17 @@ func (mw *MainWindow) showAccountDialog() {
 			body.Add(container.NewCenter(cancelBtn))
 
 		case am.LoggedIn():
-			if confirmingAccountDelete {
-				warnTitle := canvas.NewText(i18n.Current.AccountDeleteConfirmTitle, design.ColorAlert)
-				warnTitle.TextSize = 13
-				warnTitle.TextStyle = fyne.TextStyle{Bold: true}
-
-				warnMsg := widget.NewLabel(i18n.Current.AccountDeleteConfirmMsg)
-				warnMsg.Wrapping = fyne.TextWrapWord
-				warnMsgStyled := wrapAccountField(warnMsg, 11, color.NRGBA{R: 0xc5, G: 0xc8, B: 0xb5, A: 0xff})
-
-				deleteCardContent := container.NewVBox(
-					warnTitle,
-					warnMsgStyled,
-				)
-
-				if accountDeleteError != "" {
-					errText := widget.NewLabel(accountDeleteError)
-					errText.Wrapping = fyne.TextWrapWord
-					errStyled := wrapAccountField(errText, 11, design.ColorAlert)
-					deleteCardContent.Add(errStyled)
-
-					manageBtn := newAccountDialogDarkButton(i18n.Current.AccountLicenseManager, nil, nil, openLicenseManager)
-					deleteCardContent.Add(container.NewCenter(manageBtn))
-				}
-
-				if accountDeleteBusy {
-					prog := widget.NewProgressBarInfinite()
-					styledProg := container.NewThemeOverride(prog, &progressTheme{Theme: theme.DefaultTheme()})
-					progContainer := container.New(&fixedHeightLayout{height: 5}, styledProg)
-					deleteCardContent.Add(view.NewInset(progContainer, 0, 0, 8, 4))
-				}
-
-				body.Add(newAccountCard(deleteCardContent))
-
-				cancelBtn := newAccountDialogTextButton(i18n.Current.Cancel, func() {
-					confirmingAccountDelete = false
-					accountDeleteError = ""
-					render()
-				})
-
-				confirmDeleteBtn := newAccountDialogDangerButton(i18n.Current.AccountDelete, nil, nil, func() {
-					if accountDeleteBusy {
-						return
-					}
-					accountDeleteBusy = true
-					accountDeleteError = ""
-					render()
-					go func() {
-						err := am.DeleteAccount(context.Background())
-						accountDeleteBusy = false
-						if err != nil {
-							accountDeleteError = err.Error()
-							render()
-							return
-						}
-						confirmingAccountDelete = false
-						render()
-					}()
-				})
-
-				footerBar := container.NewBorder(nil, nil, cancelBtn, confirmDeleteBtn)
-				fl, fr, ft, fb := accountDialogFooterInset()
-				footerArea := container.NewVBox(
-					newAccountDivider(),
-					view.NewInset(footerBar, fl, fr, ft, fb),
-				)
-				footerContainer.Objects = []fyne.CanvasObject{footerArea}
-				break
-			}
-
 			emailText := newAccountEmailText(am.Email())
+
+			deleteIconNormal := fyne.NewStaticResource("delete_acc.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#8f9381"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`))
+			deleteIconHover := fyne.NewStaticResource("delete_acc_hover.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#ed6b7f"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`))
+			deleteBtn := newAccountDialogDangerButton("", deleteIconNormal, deleteIconHover, func() {
+				mw.showAccountDeleteConfirm(am, closeAccount)
+			})
 
 			var identityHeader fyne.CanvasObject
 			if resettingSyncPassphrase {
-				// Hide avatar and "Signed in as"
-				identityHeader = emailText
+				identityHeader = view.NewInset(emailText, 0, 0, 8, 10)
 			} else {
 				trimmed := strings.TrimSpace(am.Email())
 				letter := "U"
@@ -296,16 +232,16 @@ func (mw *MainWindow) showAccountDialog() {
 				}
 				signedInLabel := canvas.NewText(i18n.Current.AccountSignedInAs, color.NRGBA{R: 0x8f, G: 0x93, B: 0x81, A: 0xff})
 				signedInLabel.TextSize = 10
-				identityCopy := view.NewInset(container.NewVBox(signedInLabel, emailText), 10, 0, 0, 0)
+				identityCopy := view.NewInset(container.NewVBox(signedInLabel, emailText), 10, 8, 0, 0)
+				avatar := newAccountAvatarBadge(letter)
+				identityHeader = container.NewBorder(nil, nil, avatar, container.NewCenter(deleteBtn), identityCopy)
 				if accountDialogMobile() {
-					identityHeader = container.NewBorder(nil, nil, newAccountAvatarBadge(letter), nil, identityCopy)
-				} else {
-					identityHeader = container.NewHBox(newAccountAvatarBadge(letter), identityCopy)
+					identityHeader = view.NewInset(identityHeader, 0, 0, 0, 10)
 				}
 			}
 
 			var identityBody *fyne.Container
-			if resettingSyncPassphrase {
+			if resettingSyncPassphrase || accountDialogMobile() {
 				identityBody = container.New(&tightVBoxLayout{}, identityHeader)
 			} else {
 				identityBody = container.NewVBox(identityHeader)
@@ -318,16 +254,16 @@ func (mw *MainWindow) showAccountDialog() {
 			}
 
 			identityBody.Add(newAccountDivider())
+			if !resettingSyncPassphrase {
+				licPad := float32(2)
+				if accountDialogMobile() {
+					licPad = 0
+				}
+				identityBody.Add(view.NewInset(newAccountLicenseManagerStrip(), 0, 0, licPad, licPad))
+				identityBody.Add(newAccountDivider())
+			}
 			syncContent, syncFooter := accountSyncPassphraseSection(cm, am, &resettingSyncPassphrase, render)
 			identityBody.Add(syncContent)
-			// License Manager lives inside the card (same strip as the
-			// logged-out Google-login panel) on mobile and desktop.
-			if !resettingSyncPassphrase {
-				identityBody.Add(newAccountDivider())
-				// Tight vertical inset: License strip used to inflate the
-				// card enough that desktop opened with a pointless scrollbar.
-				identityBody.Add(view.NewInset(newAccountLicenseManagerStrip(), 0, 0, 2, 2))
-			}
 
 			body.Add(newAccountCard(identityBody))
 
@@ -341,22 +277,12 @@ func (mw *MainWindow) showAccountDialog() {
 				footerLeft = syncFooter
 			}
 
-			deleteIconNormal := fyne.NewStaticResource("delete_acc.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#8f9381"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`))
-			deleteIconHover := fyne.NewStaticResource("delete_acc_hover.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#ed6b7f"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`))
-
-			deleteBtn := newAccountDialogDarkButton(i18n.Current.AccountDelete, deleteIconNormal, deleteIconHover, func() {
-				confirmingAccountDelete = true
-				accountDeleteError = ""
-				render()
-			})
-
 			logoutIconNormal := fyne.NewStaticResource("logout.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#e0e3e7"><path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg>`))
 			logoutIconHover := fyne.NewStaticResource("logout_hover.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#ed6b7f"><path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg>`))
 
 			logoutBtn := newAccountDialogDarkButton(i18n.Current.AccountLogOut, logoutIconNormal, logoutIconHover, func() {
 				am.Logout()
 				resettingSyncPassphrase = false
-				confirmingAccountDelete = false
 				render()
 			})
 
@@ -365,11 +291,14 @@ func (mw *MainWindow) showAccountDialog() {
 				footerLeftCentered = container.NewCenter(footerLeft)
 			}
 
-			buttonsRight := container.NewHBox(deleteBtn, logoutBtn)
+			buttonsRight := logoutBtn
 
-			// Footer: Log out + Delete account + Set passphrase / Forgot link only.
+			// Footer: Log out + Set passphrase / Forgot link. Delete is
+			// the trash icon on the identity row.
 			var footerBar fyne.CanvasObject
-			if !am.HasSyncKey() && !resettingSyncPassphrase {
+			if resettingSyncPassphrase {
+				footerBar = footerLeftCentered
+			} else if !am.HasSyncKey() {
 				footerBar = container.NewBorder(nil, nil, buttonsRight, footerLeftCentered)
 			} else {
 				footerBar = container.NewBorder(nil, nil, footerLeftCentered, buttonsRight)
@@ -406,7 +335,7 @@ func (mw *MainWindow) showAccountDialog() {
 		body.Refresh()
 		footerContainer.Refresh()
 
-		applyAccountDialogScroll(scroll, body, am.LoggedIn(), am.HasSyncKey(), am.LoginInProgress())
+		applyAccountDialogScroll(scroll, body, am.LoggedIn(), am.HasSyncKey(), am.LoginInProgress(), accountDialogLayoutWidth(mw))
 	}
 	render()
 
@@ -420,6 +349,7 @@ func (mw *MainWindow) showAccountDialog() {
 			popup.Hide()
 		}
 	}
+	closeAccount = closeDialog
 
 	title := view.NewBrandText(i18n.Current.AccountTitle, 13, design.ColorTextLight, true)
 	closeBtn := newAccountDialogIconButton(accountDialogCloseIcon, closeDialog)
@@ -436,7 +366,7 @@ func (mw *MainWindow) showAccountDialog() {
 	header := container.NewVBox(topAccent, view.NewInset(title, tl, tr, tt, tb), sep)
 
 	scroll = container.NewVScroll(nil)
-	applyAccountDialogScroll(scroll, body, am.LoggedIn(), am.HasSyncKey(), am.LoginInProgress())
+	applyAccountDialogScroll(scroll, body, am.LoggedIn(), am.HasSyncKey(), am.LoginInProgress(), accountDialogLayoutWidth(mw))
 
 	bg := canvas.NewRectangle(design.ColorGray900)
 	bg.CornerRadius = design.RadiusMD
@@ -460,8 +390,9 @@ func (mw *MainWindow) showAccountDialog() {
 	)
 
 	popup = view.ShowOverlayPopup(mw.window, view.OverlayPopupSpec{
-		Panel:    panel,
-		DimColor: color.NRGBA{R: 0x00, G: 0x00, B: 0x00, A: 0x72},
+		Panel:           panel,
+		DimColor:        color.NRGBA{R: 0x00, G: 0x00, B: 0x00, A: 0x72},
+		KeyboardOverlap: true,
 		PanelSize: func(canvasSize fyne.Size, panel fyne.CanvasObject) fyne.Size {
 			return accountDialogPanelSize(panel, canvasSize)
 		},
@@ -469,6 +400,10 @@ func (mw *MainWindow) showAccountDialog() {
 			return accountDialogPanelPos(canvasSize, panelSize)
 		},
 	})
+	applyAccountDialogScroll(scroll, body, am.LoggedIn(), am.HasSyncKey(), am.LoginInProgress(), accountDialogLayoutWidth(mw))
+	if popup != nil {
+		popup.Refresh()
+	}
 
 	// Polls while the dialog is open (2s cadence) so a login completing
 	// in the browser is
@@ -496,6 +431,83 @@ func (mw *MainWindow) showAccountDialog() {
 			fyne.Do(render)
 		}
 	}()
+}
+
+func (mw *MainWindow) showAccountDeleteConfirm(am *controller.AccountManager, onDeleted func()) {
+	if am == nil {
+		return
+	}
+
+	msg := view.NewDialogHint(i18n.Current.AccountDeleteConfirmMsg, 0)
+	errText := canvas.NewText("", design.ColorAlert)
+	errText.TextSize = 11
+	errText.Hide()
+	busyBar := widget.NewProgressBarInfinite()
+	busyWrap := container.NewThemeOverride(busyBar, &progressTheme{Theme: theme.DefaultTheme()})
+	busyBox := view.NewInset(container.New(&fixedHeightLayout{height: 5}, busyWrap), 0, 0, 8, 0)
+	busyBox.Hide()
+
+	body := container.NewVBox(msg, errText, busyBox)
+
+	var popup *widget.PopUp
+	var busy bool
+	hide := func() {
+		if popup != nil {
+			popup.Hide()
+		}
+	}
+
+	cancelBtn := view.NewDialogCancelButton(i18n.Current.Cancel, hide)
+	deleteBtn := newAccountDialogDangerButton(i18n.Current.AccountDelete, nil, nil, func() {
+		if busy {
+			return
+		}
+		busy = true
+		errText.Hide()
+		busyBox.Show()
+		body.Refresh()
+		go func() {
+			err := am.DeleteAccount(context.Background())
+			fyne.Do(func() {
+				busy = false
+				busyBox.Hide()
+				if err != nil {
+					errText.Text = fmt.Sprintf(i18n.Current.AccountDeleteFailed, err)
+					errText.Show()
+					errText.Refresh()
+					body.Refresh()
+					return
+				}
+				hide()
+				if onDeleted != nil {
+					onDeleted()
+				}
+			})
+		}()
+	})
+	footer := container.NewBorder(nil, nil, container.NewCenter(cancelBtn), container.New(&view.DeviceRowControlsLayout{Gap: 12}, deleteBtn))
+	panel := view.AssembleBrandDialogChrome(i18n.Current.AccountDeleteConfirmTitle, view.NewInset(body, 18, 18, 12, 8), footer, hide)
+	popup = view.ShowOverlayPopup(mw.window, view.OverlayPopupSpec{
+		Panel:        panel,
+		DimColor:     color.NRGBA{R: 0x00, G: 0x00, B: 0x00, A: 0x72},
+		OnOutsideTap: hide,
+		PanelSize: func(canvasSize fyne.Size, panel fyne.CanvasObject) fyne.Size {
+			margin := float32(24)
+			maxW := canvasSize.Width - margin*2
+			maxH := canvasSize.Height - margin*2
+			min := panel.MinSize()
+			if min.Width < 408 {
+				min.Width = 408
+			}
+			if min.Width > maxW && maxW > 0 {
+				min.Width = maxW
+			}
+			if min.Height > maxH && maxH > 0 {
+				min.Height = maxH
+			}
+			return min
+		},
+	})
 }
 
 const licenseManagerURL = "https://billing.usbridge.io/"

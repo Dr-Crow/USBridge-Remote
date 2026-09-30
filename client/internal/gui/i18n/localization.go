@@ -106,6 +106,7 @@ type LocalizedStrings struct {
 	BenchSaveResultsFailed            string
 	BenchStalls                       string
 	BenchNoStalls                     string
+	BenchFooterBusy                   string
 	MenuWebsite                       string
 	TabLabelControl                   string
 	TabLabelDevices                   string
@@ -719,7 +720,7 @@ func EN() *LocalizedStrings {
 		MenuAccount:                       "Account",
 		MenuBenchmark:                     "Run benchmark",
 		MenuHotkeys:                       "Hotkeys",
-		HotkeysTitle:                      "Hotkeys (Ctrl+Alt+Shift + key)",
+		HotkeysTitle:                      "Ctrl+Alt+Shift + key",
 		HotkeyQuit:                        "Stop the stream",
 		HotkeyFullscreen:                  "Toggle fullscreen",
 		HotkeyStats:                       "Show / hide the Net Graph statistics",
@@ -753,6 +754,7 @@ func EN() *LocalizedStrings {
 		BenchSaveResultsFailed:            "Couldn't save results: %v",
 		BenchStalls:                       "Every stall",
 		BenchNoStalls:                     "no stalls",
+		BenchFooterBusy:                   "measuring streamers",
 		MenuWebsite:                       "Website",
 		TabLabelControl:                   "Control",
 		TabLabelDevices:                   "Devices",
@@ -1614,6 +1616,7 @@ func ES() *LocalizedStrings {
 	locale.BenchNotInstalled = "no instalado en el host"
 	locale.BenchNeedOne = "Selecciona al menos un streamer."
 	locale.BenchStart = "Iniciar"
+	locale.BenchFooterBusy = "midiendo streamers"
 	locale.BenchStepStatus = "Consultando al host…"
 	locale.BenchStepPrepare = "Preparando el vídeo de prueba en el host…"
 	locale.BenchStepSwitch = "%s: cambiando el streamer del host…"
@@ -1630,7 +1633,7 @@ func ES() *LocalizedStrings {
 	locale.BenchStalls = "Todas las congelaciones"
 	locale.BenchNoStalls = "sin congelaciones"
 	locale.MenuHotkeys = "Atajos de teclado"
-	locale.HotkeysTitle = "Atajos (Ctrl+Alt+Shift + tecla)"
+	locale.HotkeysTitle = "Ctrl+Alt+Shift + tecla"
 	locale.HotkeyQuit = "Detener la transmisión"
 	locale.HotkeyFullscreen = "Pantalla completa"
 	locale.HotkeyStats = "Mostrar / ocultar estadísticas (Net Graph)"
@@ -1997,6 +2000,7 @@ func UKProper() *LocalizedStrings {
 	locale.BenchNotInstalled = "не встановлено на хості"
 	locale.BenchNeedOne = "Виберіть хоча б один стрімер."
 	locale.BenchStart = "Почати"
+	locale.BenchFooterBusy = "вимірювання стрімерів"
 	locale.BenchStepStatus = "Запит до хоста…"
 	locale.BenchStepPrepare = "Підготовка тестового відео на хості…"
 	locale.BenchStepSwitch = "%s: перемикання стрімера на хості…"
@@ -2013,7 +2017,7 @@ func UKProper() *LocalizedStrings {
 	locale.BenchStalls = "Усі фризи"
 	locale.BenchNoStalls = "без фризів"
 	locale.MenuHotkeys = "Гарячі клавіші"
-	locale.HotkeysTitle = "Гарячі клавіші (Ctrl+Alt+Shift + клавіша)"
+	locale.HotkeysTitle = "Ctrl+Alt+Shift + клавіша"
 	locale.HotkeyQuit = "Зупинити стрім"
 	locale.HotkeyFullscreen = "Повний екран"
 	locale.HotkeyStats = "Показати / сховати статистику (Net Graph)"

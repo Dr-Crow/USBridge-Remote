@@ -258,6 +258,7 @@ func watchOverlayPopupHooks(parent fyne.Window, popup *widget.PopUp, fireHooks b
 		<-syncDone
 
 		wasShown := false
+		hideMisses := 0
 
 		for {
 			var currentVisible bool
@@ -278,6 +279,7 @@ func watchOverlayPopupHooks(parent fyne.Window, popup *widget.PopUp, fireHooks b
 			<-syncDone
 
 			if currentVisible {
+				hideMisses = 0
 				if !wasShown {
 					wasShown = true
 					if fireHooks {
@@ -285,6 +287,15 @@ func watchOverlayPopupHooks(parent fyne.Window, popup *widget.PopUp, fireHooks b
 					}
 				}
 			} else if wasShown {
+				// A connected video stream refreshes the Fyne canvas; PopUp.Visible()
+				// can drop for a tick without the dialog actually closing. Treating
+				// that as dismiss unhides the native overlay on top of the dialog
+				// and the window starts flashing.
+				hideMisses++
+				if hideMisses < 4 {
+					time.Sleep(120 * time.Millisecond)
+					continue
+				}
 				if fireHooks {
 					overlayHide()
 				}
@@ -296,7 +307,13 @@ func watchOverlayPopupHooks(parent fyne.Window, popup *widget.PopUp, fireHooks b
 				currentKeyboardH = KeyboardHeight()
 			}
 
-			if hasCanvas && (currentSize != lastSize || currentKeyboardH != lastKeyboardH) {
+			sizeChanged := hasCanvas && currentSize != lastSize
+			kbDelta := currentKeyboardH - lastKeyboardH
+			if kbDelta < 0 {
+				kbDelta = -kbDelta
+			}
+			kbChanged := kbDelta >= 8
+			if sizeChanged || kbChanged {
 				lastSize = currentSize
 				lastKeyboardH = currentKeyboardH
 				fyne.Do(func() {

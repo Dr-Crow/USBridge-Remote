@@ -14,11 +14,15 @@ import (
 
 func newMobileScriptsSection(data ScriptsSectionData) fyne.CanvasObject {
 	mcpHeader := newMobileScriptsColumnHeader("MCP", i18n.Current.ScriptsMCPSubtitle, nil, nil)
+	autoAction := fyne.CanvasObject(newScriptsNewButtons(data))
+	if data.HardwareOnly {
+		autoAction = NewVisibleHardwareOnlyBadge()
+	}
 	autoHeader := newMobileScriptsColumnHeader(
 		i18n.Current.ScriptsAutomationTitle,
 		i18n.Current.ScriptsAutomationSubtitle,
 		nil,
-		newScriptsNewButtons(data),
+		autoAction,
 	)
 
 	mcpCard := NewMobileFillWidth(NewScriptsMCPCard(data.MCP))
