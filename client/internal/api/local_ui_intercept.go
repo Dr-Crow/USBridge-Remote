@@ -26,10 +26,16 @@ import (
 // an accelerator EP finish in well under 5s (see internal/localui's package
 // doc comment and its benchmarked numbers).
 //
-// Every other MCP tool (including ui.parse's own tools/list entry) is
-// untouched -- an MCP client sees identical behavior and JSON shape
-// regardless of which backend answered, aside from the added informational
-// "_backend" field localui.Result carries.
+// Every other MCP tool call is untouched -- an MCP client sees identical
+// behavior and JSON shape regardless of which backend answered, aside from
+// the added informational "_backend" field localui.Result carries. The one
+// exception is tools/list itself (see injectLocalUIParseTool below): a
+// hardware KVM backend already advertises ui.parse on its own, but a
+// software Agent backend (agent/internal/api/mcp.go) has no detector at all
+// and so never lists it -- without injection here, an MCP client that
+// discovers tools via tools/list rather than calling ui.parse blind would
+// never learn this local offload exists when talking to an Agent, even
+// though tryLocalUIParse above answers it perfectly well either way.
 
 // minimal local mirrors of the device's MCP JSON-RPC envelope -- just
 // enough fields to parse a tools/call request and re-serialize a
@@ -38,10 +44,15 @@ import (
 type mcpEnvelope struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
-	Method  string          `json:"method"`
-	Params  json.RawMessage `json:"params,omitempty"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   json.RawMessage `json:"error,omitempty"`
+	// omitempty: this struct doubles as the shape for both requests (which
+	// have a method) and responses (which don't) -- without it, every
+	// response built from this struct (tryLocalUIParse's own reply below,
+	// and injectLocalUIParseTool's re-marshaled tools/list) would gain a
+	// spurious "method":"" field no real MCP response carries.
+	Method string          `json:"method,omitempty"`
+	Params json.RawMessage `json:"params,omitempty"`
+	Result json.RawMessage `json:"result,omitempty"`
+	Error  json.RawMessage `json:"error,omitempty"`
 }
 
 type mcpToolCallParams struct {
@@ -233,4 +244,89 @@ func fetchScreenImage(client *USBClient) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("screen.get_image returned no image content")
+}
+
+// localUIParseToolDef is the ui.parse MCP tool definition injected into a
+// tools/list response by injectLocalUIParseTool below -- deliberately kept
+// close to the hardware KVM's own ui.parse description (see
+// usbridge_service/web/handlers.go's mcpTools) so an MCP client follows the
+// exact same "compute the box center, pass it plus image_width/image_height
+// to mouse.action's move_to/click_at/double_click_at" recipe regardless of
+// which backend it's talking to -- that recipe now works against a software
+// Agent backend too (see agent/internal/api/mcp_mouse_absolute.go).
+func localUIParseToolDef() map[string]any {
+	return map[string]any{
+		"name":        "ui.parse",
+		"description": "Detect and read graphical UI elements on the current screen via this CLIENT's local ONNX pipeline (YOLOv8 icon/element detector + DBNet+SVTR text detector/recognizer, running on this machine's CPU/GPU -- see internal/localui) instead of the connected device's own hardware: fetches a screenshot from the device (cheap) and runs detection here. Returns an annotated PNG (red boxes = clickable icons/elements, green boxes = recognized text) alongside a JSON list of every box with its pixel bbox (and, for text, the recognized string) plus image_width/image_height for that capture. Each entry also carries a best-effort label (nearby/overlapping text) so you can search for an element by name. To act on a result: compute the box center ((x1+x2)/2, (y1+y2)/2) and pass it plus image_width/image_height to mouse.action's move_to/click_at/double_click_at -- the same recipe works whether the connected device is a hardware KVM or a software Agent. Call it when you need to LOCATE something you don't already have coordinates for, not routinely after every action.",
+		"inputSchema": map[string]any{
+			"type":                 "object",
+			"properties":           map[string]any{},
+			"additionalProperties": false,
+		},
+	}
+}
+
+// mcpToolsListResult mirrors the shape of a tools/list JSON-RPC result --
+// just enough to read and re-append to the "tools" array without needing
+// the full MCPTool type from either backend repo (this client doesn't
+// import either).
+type mcpToolsListResult struct {
+	Tools []json.RawMessage `json:"tools"`
+}
+
+// injectLocalUIParseTool adds ui.parse to a tools/list response when local
+// offload is enabled (see SetLocalUIParser) and the backend's own answer
+// doesn't already advertise it -- a hardware KVM backend already includes
+// its own real ui.parse (left untouched, never duplicated), so this only
+// ever actually adds anything when reqBody/respBody are talking to a
+// software Agent. Best-effort: any parse failure of either body just
+// returns respBody unchanged, so a malformed or unexpected response is
+// still reported to the caller as-is rather than hidden behind an
+// injection bug here.
+func injectLocalUIParseTool(reqBody, respBody []byte) []byte {
+	globalLocalUI.mu.RLock()
+	enabled := globalLocalUI.enabled
+	globalLocalUI.mu.RUnlock()
+	if !enabled {
+		return respBody
+	}
+
+	var reqEnv mcpEnvelope
+	if err := json.Unmarshal(reqBody, &reqEnv); err != nil || reqEnv.Method != "tools/list" {
+		return respBody
+	}
+
+	var respEnv mcpEnvelope
+	if err := json.Unmarshal(respBody, &respEnv); err != nil || len(respEnv.Result) == 0 {
+		return respBody
+	}
+	var result mcpToolsListResult
+	if err := json.Unmarshal(respEnv.Result, &result); err != nil {
+		return respBody
+	}
+
+	for _, raw := range result.Tools {
+		var t struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(raw, &t) == nil && t.Name == "ui.parse" {
+			return respBody // already advertised by the backend itself
+		}
+	}
+
+	toolJSON, err := json.Marshal(localUIParseToolDef())
+	if err != nil {
+		return respBody
+	}
+	result.Tools = append(result.Tools, toolJSON)
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return respBody
+	}
+	respEnv.Result = resultJSON
+	out, err := json.Marshal(respEnv)
+	if err != nil {
+		return respBody
+	}
+	return out
 }

@@ -183,6 +183,8 @@ type LocalizedStrings struct {
 	CertHostnameLabel string
 	CertExpiresLabel  string
 	CertPending       string
+	CertErrorPrefix   string
+	CertRetry         string
 	SunshineStreaming string
 	SunshineAdminPort string
 	InvalidPortWide   string
@@ -250,6 +252,7 @@ type LocalizedStrings struct {
 	// Tray
 	TrayOpen         string
 	TrayRestart      string
+	TrayCheckUpdate  string
 	TrayQuit         string
 	TrayStillRunning string
 
@@ -346,7 +349,7 @@ func EN() *LocalizedStrings {
 		Install:              "Install",
 		ClipboardInstall:     "Clipboard Tool Install",
 		ClipboardNoPkgMgr:    "No supported package manager (or pkexec) was found on this system -- clicking Install will show why, instead of a command preview.",
-		AWDLDisable:          "Disable AWDL while streaming (reduces Wi-Fi interference)",
+		AWDLDisable:          "Disable AWDL (recommended for Wi-Fi)",
 		AWDLDisableInfoTitle: "AWDL Streaming Optimization",
 		USBPassthrough:       "USB Passthrough Driver",
 		USBAccess:            "USB Passthrough",
@@ -462,6 +465,8 @@ func EN() *LocalizedStrings {
 		CertHostnameLabel: "Hostname",
 		CertExpiresLabel:  "Valid until",
 		CertPending:       "Registering with USBridge's backend for a trusted hostname — this can take a minute after first launch or a network change.",
+		CertErrorPrefix:   "Couldn't get a trusted certificate: ",
+		CertRetry:         "Retry",
 		SunshineStreaming: "Sunshine Streaming",
 		SunshineAdminPort: "Sunshine Admin Port",
 		InvalidPortWide:   "Invalid port (1–65534)",
@@ -526,6 +531,7 @@ func EN() *LocalizedStrings {
 
 		TrayOpen:         "Open USBridge Agent",
 		TrayRestart:      "Restart Streaming",
+		TrayCheckUpdate:  "Check for Updates",
 		TrayQuit:         "Quit",
 		TrayStillRunning: "Still running in the tray — click the tray icon to reopen.",
 
@@ -692,6 +698,8 @@ func ES() *LocalizedStrings {
 	locale.CertHostnameLabel = "Host"
 	locale.CertExpiresLabel = "Valido hasta"
 	locale.CertPending = "Registrando con el backend de USBridge para obtener un host de confianza — puede tardar un minuto tras el primer arranque o un cambio de red."
+	locale.CertErrorPrefix = "No se pudo obtener un certificado de confianza: "
+	locale.CertRetry = "Reintentar"
 	locale.SunshineStreaming = "Sunshine Streaming"
 	locale.SunshineAdminPort = "Sunshine Admin Port"
 	locale.InvalidPortWide = "Puerto invalido (1–65534)"
@@ -756,6 +764,7 @@ func ES() *LocalizedStrings {
 
 	locale.TrayOpen = "Abrir USBridge Agent"
 	locale.TrayRestart = "Reiniciar streaming"
+	locale.TrayCheckUpdate = "Buscar actualizaciones"
 	locale.TrayQuit = "Salir"
 	locale.TrayStillRunning = "Sigue en la bandeja — pulsa el icono para reabrir."
 
@@ -921,6 +930,8 @@ func UK() *LocalizedStrings {
 	locale.CertHostnameLabel = "Хост"
 	locale.CertExpiresLabel = "Дійсний до"
 	locale.CertPending = "Реєстрація в бекенді USBridge для отримання довіреного хоста — це може зайняти хвилину після першого запуску або зміни мережі."
+	locale.CertErrorPrefix = "Не вдалося отримати довірений сертифікат: "
+	locale.CertRetry = "Повторити"
 	locale.SunshineStreaming = "Sunshine Streaming"
 	locale.SunshineAdminPort = "Sunshine Admin Port"
 	locale.InvalidPortWide = "Некоректний порт (1–65534)"
@@ -985,6 +996,7 @@ func UK() *LocalizedStrings {
 
 	locale.TrayOpen = "Відкрити USBridge Agent"
 	locale.TrayRestart = "Перезапустити стрім"
+	locale.TrayCheckUpdate = "Перевірити оновлення"
 	locale.TrayQuit = "Вийти"
 	locale.TrayStillRunning = "Працює в треї — натисніть іконку, щоб відкрити знову."
 

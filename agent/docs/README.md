@@ -17,7 +17,8 @@ This is the one thing to understand before anything else: the client talks to bo
 | Virtual media (mount `.iso`/`.img`) | ❌ | ✅ |
 | Internet sharing to the target | ❌ | ✅ — USB-LAN/RNDIS bridge |
 | Versioned/immutable backup storage | ❌ | ✅ — Btrfs snapshots |
-| MCP server (AI agent access) | ❌ | ✅ |
+| MCP server (AI agent access) | ✅ — smaller tool catalog, see below | ✅ — full catalog incl. `mountdrive.*`/`scripts.*`/`pcpanel.*` |
+| UI element detection (`ui.parse`) + click-at-detected-element | ✅ — via the Client's local ONNX offload, see below | ✅ — native, on the KVM's own NPU |
 | Remote Starlark script execution | ❌ | ✅ |
 
 The rule of thumb: the Agent gives you everything a **software remote-desktop tool** can give you — because that's exactly what it is, an OS-level agent. Anything that needs to act **before or independently of** that OS — power-cycling a frozen machine, mounting install media for a bare-metal OS install, reading BIOS/UEFI screens, surviving that OS being fully compromised — needs the physical hardware KVM instead. If you need that, the Agent and the hardware unit aren't competing options; they're complementary, and the same client manages both from one dashboard.
@@ -52,6 +53,21 @@ There are two independent things going on under "USB support," and they don't fo
 | Any other physical device (drives, tablets, audio, vendor devices…) | Real device imported over the USB passthrough stack | Windows, Linux Agent | **Pro / Enterprise** |
 
 The Agent's USB passthrough component is a separate, closed-source binary from the rest of this (open-source) Agent — it never downloads or runs on its own; it only starts after you explicitly enable it from the USB status row in the main window. Which specific device classes are free is decided by that component itself at connect time, from the device's own real USB descriptors — never by anything this Agent reports about itself.
+
+---
+
+## MCP / AI Agent Access
+
+Both the Agent and the hardware KVM answer the same `POST /api/mcp` JSON-RPC 2.0 endpoint (HMAC-signed, same scheme as every other request), and the [Client](../../client/docs/README.md) exposes a local proxy (`client/internal/api/mcp_proxy.go`, default `http://127.0.0.1:8765/api/mcp`) so a native AI tool on the Client machine can reach whichever device is currently connected without signing requests itself.
+
+**Tool catalog.** The Agent's is smaller than the hardware KVM's (`agent/internal/api/mcp.go`'s `mcpToolCatalog`) — no `mountdrive.*`/`media.*`/`rndis.*` (input works directly, no USB-HID gadget to arm), no `scripts.*` (no on-device Starlark engine), no `pcpanel.*` (no physical front panel). What's left covers driving the OS UI and seeing the result: `screen.get_image`, `keyboard.send`, `mouse.action`, `device.info`.
+
+**Clicking on a detected UI element.** The hardware KVM's `ui.parse` (YOLOv8 + DBNet/SVTR on its NPU) returns pixel bounding boxes for every icon/button/text on screen; its `mouse.action` `move_to`/`click_at`/`double_click_at` actions take a pixel x/y plus the capture's `screen_width`/`screen_height` and click there in one step. The Agent didn't have either half of that until recently:
+
+- *Detection* — the Agent itself has no NPU/ONNX pipeline, so it never lists `ui.parse`. If the connected Client has its own local `ui.parse` offload enabled (an ONNX pipeline running the same three models on the Client's own CPU/GPU — see [`client/internal/localui`](../../client/internal/localui/models/README.md)), the Client's MCP proxy answers `ui.parse` on the Agent's behalf: it fetches a screenshot via the Agent's `screen.get_image` and runs detection locally. The proxy also injects `ui.parse` into the Agent's `tools/list` response when this is active (see `client/internal/api/local_ui_intercept.go`'s `injectLocalUIParseTool`), so an MCP client that discovers tools by listing them — not by calling `ui.parse` blind — still finds it.
+- *Clicking* — `agent/internal/api/mcp_mouse_absolute.go` adds `move_to`/`click_at`/`double_click_at` to the Agent's `mouse.action`, using the exact same pixel→normalized-axis conversion (`pixelToAbsoluteXY`, a 0..32767 axis) as the hardware KVM, so a box's pixel center from `ui.parse` lands in the right place regardless of which backend answered it. `click_at`/`double_click_at` take a before/after screenshot diff (pure Go, no OpenCV) around the click and return `{status, screen_changed_pct, screen_visibly_changed}`, matching the hardware KVM's own confirmation shape.
+
+Net effect: an MCP client following `ui.parse`'s documented recipe ("compute the box center, pass it plus `image_width`/`image_height` to `mouse.action`'s `move_to`/`click_at`") doesn't need a different code path depending on whether it's driving a hardware KVM or a software Agent.
 
 ---
 

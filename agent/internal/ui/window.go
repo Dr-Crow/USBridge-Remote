@@ -91,10 +91,19 @@ type TokenProvider interface {
 	// fallback (the thing that makes client/web unreachable until it
 	// lands, see internal/tlshost's own top doc comment).
 	CertStatus() tlshost.CertStatus
+	// RetryDeviceCert re-runs the device-cert issuance flow immediately
+	// instead of waiting for its normal poll schedule -- see app.App's own
+	// doc comment. Called by the cert dialog's retry button when
+	// CertStatus().LastError is non-empty.
+	RetryDeviceCert()
 	// StreamerRunning reports whether the active streaming host's own child
 	// process is alive right now -- for the status traffic light next to
 	// streamerNameLabel, distinct from whether it's staged/entitled at all.
 	StreamerRunning() bool
+	// SessionActive reports whether a Moonlight client is currently
+	// mid-stream (as opposed to merely paired) -- drives the tray icon's
+	// status dot (see updateTrayStatus).
+	SessionActive() bool
 
 	// Hardware-bound RustShine entitlement (see internal/entitlement,
 	// internal/hwid).
@@ -445,6 +454,7 @@ type uiStatus struct {
 	moonlightCount  int
 	usbStatus       usbpass.Status
 	streamerRunning bool
+	sessionActive   bool
 }
 
 // accountSnapshot is the comparable (== usable) subset of account.Status --
@@ -1708,13 +1718,9 @@ func (w *Window) updateTrayStatus(entStatus entitlement.Status, status uiStatus)
 	state := trayIconIdle
 	header := "USBridge Agent — Idle"
 	switch {
-	case status.moonlightCount > 0:
+	case status.sessionActive:
 		state = trayIconActive
-		plural := "s"
-		if status.moonlightCount == 1 {
-			plural = ""
-		}
-		header = fmt.Sprintf("USBridge Agent — Streaming (%d client%s)", status.moonlightCount, plural)
+		header = "USBridge Agent — Streaming"
 	case !status.accessGranted:
 		state = trayIconAttention
 		header = "USBridge Agent — Permissions needed"
@@ -2611,6 +2617,7 @@ func (w *Window) performRefresh() {
 			entStatus = w.token.EntitlementStatus()
 			status.usbStatus = w.token.USBPassthroughStatus()
 			status.streamerRunning = w.token.StreamerRunning()
+			status.sessionActive = w.token.SessionActive()
 			certStatus = w.token.CertStatus()
 		}
 		fyne.Do(func() {
@@ -3052,7 +3059,7 @@ func buildQuickConnectLink(internalHost, tailscaleHost string, masterKey, protoc
 // app.App.DeviceHostname) over the bare LAN IP once one is registered -- it
 // re-resolves via DNS on every connect instead of pinning a LAN IP that
 // goes stale the moment this machine's address changes, and it's what lets
-// a browser web client select the trusted device wildcard cert via SNI
+// a browser web client select the trusted per-device cert via SNI
 // (never sent for a bare-IP connection). Falls back to the bare LAN IP
 // when no hostname is registered yet.
 func (w *Window) quickConnectTargets() (internalHost string, tailscaleHost string, protocol string, hwID string) {

@@ -65,7 +65,12 @@ type TokenBackend interface {
 	StreamerName() string
 	DeviceHostname() string
 	CertStatus() tlshost.CertStatus
+	// RetryDeviceCert mirrors app.App's own doc comment -- re-runs device
+	// cert issuance immediately instead of waiting for its normal poll
+	// schedule, for the Status UI's cert-error retry button.
+	RetryDeviceCert()
 	StreamerRunning() bool
+	SessionActive() bool
 
 	// Hardware-bound RustShine entitlement (see internal/entitlement,
 	// internal/hwid).
@@ -265,10 +270,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /token/device-hostname", s.handleDeviceHostname)
 	mux.HandleFunc("GET /token/cert-status", s.handleCertStatus)
 	mux.HandleFunc("GET /token/streamer-running", s.handleStreamerRunning)
+	mux.HandleFunc("GET /token/session-active", s.handleSessionActive)
 	mux.HandleFunc("GET /token/entitlement-status", s.handleEntitlementStatus)
 	mux.HandleFunc("POST /token/start-trial", s.handleStartTrial)
 	mux.HandleFunc("POST /token/start-purchase", s.handleStartPurchase)
 	mux.HandleFunc("POST /token/cancel-purchase", s.handleCancelPurchase)
+	mux.HandleFunc("POST /token/retry-device-cert", s.handleRetryDeviceCert)
 	mux.HandleFunc("POST /token/clear-license", s.handleClearLicense)
 	mux.HandleFunc("POST /token/download-rustshine", s.handleDownloadRustShine)
 	mux.HandleFunc("POST /token/check-rustshine-update", s.handleCheckRustShineUpdateNow)
@@ -614,6 +621,10 @@ func (s *Server) handleStreamerRunning(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, boolBody{Value: s.token.StreamerRunning()})
 }
 
+func (s *Server) handleSessionActive(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, boolBody{Value: s.token.SessionActive()})
+}
+
 func (s *Server) handleEntitlementStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.token.EntitlementStatus())
 }
@@ -638,6 +649,11 @@ func (s *Server) handleStartPurchase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, stringBody{Value: url})
+}
+
+func (s *Server) handleRetryDeviceCert(w http.ResponseWriter, r *http.Request) {
+	s.token.RetryDeviceCert()
+	writeJSON(w, http.StatusOK, struct{}{})
 }
 
 func (s *Server) handleCancelPurchase(w http.ResponseWriter, r *http.Request) {

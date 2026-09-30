@@ -1,13 +1,13 @@
 // Package devicecert talks to the usbridge-entitlement backend's
-// per-device dynamic-DNS + shared wildcard TLS scheme (see
-// usbridge-entitlement-backend's README "Per-device dynamic DNS + wildcard
+// per-device dynamic-DNS + per-device TLS scheme (see
+// usbridge-entitlement-backend's README "Per-device dynamic DNS + per-device
 // TLS" section, and this repo's client/web mixed-content problem it
 // solves): a browser served from https://web.usbridge.io can't
 // fetch()/WebSocket to this agent's plain-HTTP or self-signed-HTTPS local
 // listener at all (mixed content / untrusted-cert rejection, neither of
 // which has a click-through for a background fetch the way top-level
 // navigation does). This package gets the agent a real, browser-trusted
-// hostname (`<label>.device.usbridge.io`) and the shared wildcard
+// hostname (`<label>.device.usbridge.io`) and a per-device
 // certificate to present for it -- see internal/tlshost for what actually
 // installs that cert into the agent's HTTPS listener.
 //
@@ -21,7 +21,9 @@ package devicecert
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -70,26 +72,46 @@ func RegisterIP(ctx context.Context, hwID, ip string) (hostname string, err erro
 	return raw.Hostname, nil
 }
 
-// Cert is the shared wildcard cert/key this machine's HTTPS listener
-// should present for the hostname RegisterIP returned -- the SAME cert
-// every other device/agent in the fleet gets (see the backend's README for
-// why: one shared private key, not one per install, at the cost of the
-// key existing on every install -- a deliberate, documented tradeoff, not
-// an oversight).
+// Cert is the leaf certificate the backend signed for this device's own
+// CSR (see tlshost.Manager.DeviceCSR) -- unlike the shared-wildcard design
+// this replaced, there is no key here: the private half never left this
+// machine, so there is nothing this struct could carry even if it wanted
+// to. See usbridge-entitlement-backend's 2026-09-30 security review for why
+// (the old GET /v1/device/cert handed back a private key shared by the
+// whole fleet, gated by nothing stronger than "hw_id looks well-formed").
 type Cert struct {
-	CertPEM        string `json:"cert"`
-	KeyPEM         string `json:"key"`
-	HostnameSuffix string `json:"hostname_suffix"`
-	NotAfter       string `json:"not_after"` // RFC 3339
+	CertPEM  string `json:"cert"`
+	Hostname string `json:"hostname"`
+	NotAfter string `json:"not_after"` // RFC 3339
 }
 
-// FetchCert retrieves the current shared wildcard cert+key. Gated
-// server-side only on hwID looking like a real hardware id (see this
-// package's doc comment) -- never fails because a machine hasn't purchased
-// anything.
-func FetchCert(ctx context.Context, hwID string) (*Cert, error) {
+// ErrRateLimited is returned by RequestCert when the backend reports that
+// Let's Encrypt itself rate-limited the order (HTTP 503,
+// {"error":"rate_limited"}) -- distinct from every other failure so a
+// caller (tickDeviceCert, ultimately the Status UI's retry button) can show
+// "try again later, this is expected under load" instead of a generic
+// error.
+var ErrRateLimited = errors.New("devicecert: certificate issuance is rate-limited, try again later")
+
+// ErrPending is returned by RequestCert when the backend has queued this
+// device's CSR for its external issuer (HTTP 202, {"status":"pending"}) --
+// the normal first-issuance/renewal state, not a failure: the cert shows up
+// on a later poll, typically within a few minutes.
+var ErrPending = errors.New("devicecert: certificate is being issued, check back in a few minutes")
+
+// RequestCert asks the backend to issue (or return the cached, still-fresh)
+// leaf certificate for this device's own hostname, signing csrDER -- a
+// DER-encoded PKCS#10 CSR generated locally (see
+// tlshost.Manager.DeviceCSR). The backend independently recomputes the
+// hostname from hwID and rejects a CSR that doesn't name it, so csrDER must
+// already be built for the hostname RegisterIP returned.
+func RequestCert(ctx context.Context, hwID string, csrDER []byte) (*Cert, error) {
+	reqBody, _ := json.Marshal(map[string]string{
+		"hw_id": hwID,
+		"csr":   base64.StdEncoding.EncodeToString(csrDER),
+	})
 	var out Cert
-	if err := doJSON(ctx, http.MethodGet, "/v1/device/cert?hw_id="+hwID, nil, &out); err != nil {
+	if err := doJSON(ctx, http.MethodPost, "/v1/device/cert", reqBody, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -125,7 +147,23 @@ func doJSON(ctx context.Context, method, path string, body []byte, out any) erro
 	if err != nil {
 		return err
 	}
+	if resp.StatusCode == http.StatusAccepted {
+		var p struct {
+			Detail string `json:"detail"`
+		}
+		if json.Unmarshal(respBody, &p) == nil && p.Detail != "" {
+			return fmt.Errorf("%w (%s)", ErrPending, p.Detail)
+		}
+		return ErrPending
+	}
 	if resp.StatusCode != http.StatusOK {
+		var apiErr struct {
+			Error  string `json:"error"`
+			Detail string `json:"detail"`
+		}
+		if json.Unmarshal(respBody, &apiErr) == nil && apiErr.Error == "rate_limited" {
+			return fmt.Errorf("%w: %s", ErrRateLimited, apiErr.Detail)
+		}
 		return fmt.Errorf("devicecert: %s: HTTP %d: %s", path, resp.StatusCode, truncate(respBody))
 	}
 	if out == nil {

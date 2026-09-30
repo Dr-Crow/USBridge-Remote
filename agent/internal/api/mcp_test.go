@@ -3,7 +3,11 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -13,14 +17,25 @@ import (
 	"usbridge_agent/internal/clipboard"
 )
 
+// mcpTestAbsoluteCall records one AbsoluteEvent invocation so tests can
+// assert click_at/double_click_at's press+release sequencing and the
+// pixel->0..32767 conversion, without caring about the OS-specific
+// controller each platform actually drives.
+type mcpTestAbsoluteCall struct {
+	mask  uint8
+	x, y  uint16
+	wheel int8
+}
+
 // mcpTestInput records every call so tests can assert dispatch, and lets a
 // specific action be made to fail to exercise the isError:true path.
 type mcpTestInput struct {
-	failAction string
-	lastKey    uint8
-	lastCombo  [2]uint8
-	lastText   string
-	lastMouse  string
+	failAction    string
+	lastKey       uint8
+	lastCombo     [2]uint8
+	lastText      string
+	lastMouse     string
+	absoluteCalls []mcpTestAbsoluteCall
 }
 
 func (i *mcpTestInput) Key(k uint8) error {
@@ -45,8 +60,12 @@ func (i *mcpTestInput) MouseAction(uint8, int8, int8, int8) error {
 	i.lastMouse = "action"
 	return nil
 }
-func (i *mcpTestInput) AbsoluteEvent(uint8, uint16, uint16, int8) error {
+func (i *mcpTestInput) AbsoluteEvent(mask uint8, x, y uint16, wheel int8) error {
 	i.lastMouse = "absolute"
+	i.absoluteCalls = append(i.absoluteCalls, mcpTestAbsoluteCall{mask: mask, x: x, y: y, wheel: wheel})
+	if i.failAction == "absolute" {
+		return errTestInput
+	}
 	return nil
 }
 
@@ -62,12 +81,58 @@ func (mcpTestScreen) Snapshot() (*ScreenSnapshot, error) {
 	return &ScreenSnapshot{Format: "png-base64", Width: 100, Height: 50, ImageBase64: "Zm9v"}, nil
 }
 
+// solidPNG encodes a w*h image filled with c -- used to build real,
+// decodable before/after screenshots for click_at's screen-diff tests
+// (mcpTestScreen's own "Zm9v" placeholder isn't valid PNG, which is fine
+// for tests that don't care about the diff, but click_at's diff tests need
+// bytes screenChangePercent can actually decode).
+func solidPNG(t *testing.T, w, h int, c color.Color) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, c)
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode test PNG: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// mcpTestSeqScreen returns a different image on each successive Snapshot
+// call (clamped to the last one once exhausted) so click_at tests can
+// control exactly what the "before" and "after" diff captures see.
+type mcpTestSeqScreen struct {
+	width, height int
+	images        [][]byte // raw PNG bytes, returned base64-encoded
+	calls         int
+}
+
+func (s *mcpTestSeqScreen) Snapshot() (*ScreenSnapshot, error) {
+	idx := s.calls
+	if idx >= len(s.images) {
+		idx = len(s.images) - 1
+	}
+	s.calls++
+	return &ScreenSnapshot{
+		Format:      "png-base64",
+		Width:       s.width,
+		Height:      s.height,
+		ImageBase64: base64.StdEncoding.EncodeToString(s.images[idx]),
+	}, nil
+}
+
 // mcpTestApp implements Application with just enough behavior to exercise
 // the MCP handler in isolation, independent of clipboard_test.go's stubApp
 // (whose Screen() intentionally returns a nil snapshot, which would panic
 // mcpScreenGetImage's field access).
 type mcpTestApp struct {
-	input *mcpTestInput
+	input  *mcpTestInput
+	screen interface {
+		Snapshot() (*ScreenSnapshot, error)
+	}
 }
 
 func (a *mcpTestApp) Status() SystemStatus { return SystemStatus{} }
@@ -91,6 +156,9 @@ func (a *mcpTestApp) Input() interface {
 func (a *mcpTestApp) Screen() interface {
 	Snapshot() (*ScreenSnapshot, error)
 } {
+	if a.screen != nil {
+		return a.screen
+	}
 	return mcpTestScreen{}
 }
 func (a *mcpTestApp) VideoDevices() []VideoDeviceInfo       { return nil }
@@ -119,6 +187,17 @@ const mcpTestSecret = "test-mcp-master-key"
 func mcpTestServer() (*Server, *mcpTestInput) {
 	input := &mcpTestInput{}
 	srv := NewServerWithAuth(&mcpTestApp{input: input}, []byte(mcpTestSecret), 0)
+	return srv, input
+}
+
+// mcpTestServerWithScreen is mcpTestServer but with a caller-supplied Screen
+// backend, for click_at/move_to tests that need real decodable PNGs (a
+// before/after diff) rather than mcpTestScreen's fixed "Zm9v" placeholder.
+func mcpTestServerWithScreen(screen interface {
+	Snapshot() (*ScreenSnapshot, error)
+}) (*Server, *mcpTestInput) {
+	input := &mcpTestInput{}
+	srv := NewServerWithAuth(&mcpTestApp{input: input, screen: screen}, []byte(mcpTestSecret), 0)
 	return srv, input
 }
 
@@ -277,5 +356,277 @@ func TestMCP_RejectsUnsigned(t *testing.T) {
 	srv.Routes().ServeHTTP(rec, req)
 	if rec.Code == http.StatusOK {
 		t.Fatalf("expected an unsigned request to be rejected, got 200: %s", rec.Body.String())
+	}
+}
+
+// ─── move_to/click_at/double_click_at ──────────────────────────────────────
+
+// mcpCallTool is a small helper around mcpTestRequest+decodeRPC for
+// tools/call tests below: returns the decoded "result" object.
+func mcpCallTool(t *testing.T, srv *Server, name string, args map[string]any) map[string]any {
+	t.Helper()
+	rec := mcpTestRequest(t, srv, map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+		"params": map[string]any{"name": name, "arguments": args},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	out := decodeRPC(t, rec)
+	result, ok := out["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("no result object in response: %s", rec.Body.String())
+	}
+	return result
+}
+
+// mcpFirstText returns the "text" field of a tool result's first content
+// block, failing the test if there isn't one.
+func mcpFirstText(t *testing.T, result map[string]any) string {
+	t.Helper()
+	content, ok := result["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatalf("no content blocks in result: %v", result)
+	}
+	block, ok := content[0].(map[string]any)
+	if !ok {
+		t.Fatalf("content[0] is not an object: %v", content[0])
+	}
+	text, _ := block["text"].(string)
+	return text
+}
+
+func TestMCP_ToolsList_AdvertisesAbsoluteMouseActions(t *testing.T) {
+	srv, _ := mcpTestServer()
+	rec := mcpTestRequest(t, srv, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+	out := decodeRPC(t, rec)
+	tools := out["result"].(map[string]any)["tools"].([]any)
+
+	var mouseTool map[string]any
+	for _, raw := range tools {
+		tool := raw.(map[string]any)
+		if tool["name"] == "mouse.action" {
+			mouseTool = tool
+			break
+		}
+	}
+	if mouseTool == nil {
+		t.Fatal("tools/list missing mouse.action")
+	}
+	schema := mouseTool["inputSchema"].(map[string]any)
+	props := schema["properties"].(map[string]any)
+	enumRaw := props["action"].(map[string]any)["enum"].([]any)
+	enum := map[string]bool{}
+	for _, v := range enumRaw {
+		enum[v.(string)] = true
+	}
+	for _, want := range []string{"move_to", "click_at", "double_click_at"} {
+		if !enum[want] {
+			t.Errorf("mouse.action's action enum missing %q: %v", want, enumRaw)
+		}
+	}
+	for _, want := range []string{"x", "y", "screen_width", "screen_height", "capture_after_ms"} {
+		if _, ok := props[want]; !ok {
+			t.Errorf("mouse.action inputSchema missing property %q", want)
+		}
+	}
+}
+
+func TestMCP_MouseAction_ClickAt_RequiresCoordinates(t *testing.T) {
+	srv, _ := mcpTestServer()
+	result := mcpCallTool(t, srv, "mouse.action", map[string]any{"action": "click_at", "x": 10})
+	if isErr, _ := result["isError"].(bool); !isErr {
+		t.Fatalf("expected isError:true for missing y/screen_width/screen_height, got %v", result)
+	}
+}
+
+func TestMCP_MouseAction_ClickAt_InvalidButton(t *testing.T) {
+	srv, _ := mcpTestServer()
+	result := mcpCallTool(t, srv, "mouse.action", map[string]any{
+		"action": "click_at", "x": 10, "y": 10, "screen_width": 100, "screen_height": 100, "button": 9,
+	})
+	if isErr, _ := result["isError"].(bool); !isErr {
+		t.Fatalf("expected isError:true for button=9, got %v", result)
+	}
+}
+
+func TestMCP_MouseAction_ClickAt_ConvertsPixelsAndSequencesPressRelease(t *testing.T) {
+	srv, input := mcpTestServer()
+	wantX, wantY := pixelToAbsoluteXY(100, 50, 200, 100)
+
+	result := mcpCallTool(t, srv, "mouse.action", map[string]any{
+		"action": "click_at", "x": 100, "y": 50, "screen_width": 200, "screen_height": 100,
+	})
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("unexpected isError:true: %v", result)
+	}
+
+	if len(input.absoluteCalls) != 2 {
+		t.Fatalf("expected 2 AbsoluteEvent calls (press+release), got %d: %+v", len(input.absoluteCalls), input.absoluteCalls)
+	}
+	press, release := input.absoluteCalls[0], input.absoluteCalls[1]
+	if press.mask != 0x01 {
+		t.Errorf("press mask = %#x, want 0x01 (left button, default)", press.mask)
+	}
+	if release.mask != 0 {
+		t.Errorf("release mask = %#x, want 0 (button up)", release.mask)
+	}
+	for _, call := range []mcpTestAbsoluteCall{press, release} {
+		if call.x != wantX || call.y != wantY {
+			t.Errorf("call coords = (%d,%d), want (%d,%d) from pixelToAbsoluteXY(100,50,200,100)", call.x, call.y, wantX, wantY)
+		}
+	}
+}
+
+func TestMCP_MouseAction_ClickAt_DefaultButtonIsLeft(t *testing.T) {
+	srv, input := mcpTestServer()
+	mcpCallTool(t, srv, "mouse.action", map[string]any{
+		"action": "click_at", "x": 5, "y": 5, "screen_width": 10, "screen_height": 10,
+	})
+	if len(input.absoluteCalls) == 0 || input.absoluteCalls[0].mask != 0x01 {
+		t.Fatalf("expected default button to be left (mask 0x01), got %+v", input.absoluteCalls)
+	}
+}
+
+func TestMCP_MouseAction_ClickAt_RightButton(t *testing.T) {
+	srv, input := mcpTestServer()
+	mcpCallTool(t, srv, "mouse.action", map[string]any{
+		"action": "click_at", "x": 5, "y": 5, "screen_width": 10, "screen_height": 10, "button": 2,
+	})
+	if len(input.absoluteCalls) == 0 || input.absoluteCalls[0].mask != 0x02 {
+		t.Fatalf("expected right button (mask 0x02), got %+v", input.absoluteCalls)
+	}
+}
+
+func TestMCP_MouseAction_DoubleClickAt_FourAbsoluteEvents(t *testing.T) {
+	srv, input := mcpTestServer()
+	result := mcpCallTool(t, srv, "mouse.action", map[string]any{
+		"action": "double_click_at", "x": 5, "y": 5, "screen_width": 10, "screen_height": 10,
+	})
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("unexpected isError:true: %v", result)
+	}
+	if len(input.absoluteCalls) != 4 {
+		t.Fatalf("expected 4 AbsoluteEvent calls (press,release,press,release), got %d: %+v", len(input.absoluteCalls), input.absoluteCalls)
+	}
+	wantMasks := []uint8{0x01, 0, 0x01, 0}
+	for i, want := range wantMasks {
+		if input.absoluteCalls[i].mask != want {
+			t.Errorf("call[%d].mask = %#x, want %#x", i, input.absoluteCalls[i].mask, want)
+		}
+	}
+}
+
+func TestMCP_MouseAction_MoveTo_SingleZeroMaskEvent(t *testing.T) {
+	srv, input := mcpTestServer()
+	result := mcpCallTool(t, srv, "mouse.action", map[string]any{
+		"action": "move_to", "x": 5, "y": 5, "screen_width": 10, "screen_height": 10,
+	})
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("unexpected isError:true: %v", result)
+	}
+	if len(input.absoluteCalls) != 1 {
+		t.Fatalf("expected exactly 1 AbsoluteEvent call for move_to, got %d: %+v", len(input.absoluteCalls), input.absoluteCalls)
+	}
+	if input.absoluteCalls[0].mask != 0 {
+		t.Errorf("move_to must not press a button, mask = %#x", input.absoluteCalls[0].mask)
+	}
+	text := mcpFirstText(t, result)
+	if text != "ok" {
+		t.Errorf(`move_to without capture_after_ms should return plain "ok", got %q`, text)
+	}
+}
+
+func TestMCP_MouseAction_ClickAt_ScreenChangeDetected(t *testing.T) {
+	black := solidPNG(t, 20, 20, color.RGBA{0, 0, 0, 255})
+	white := solidPNG(t, 20, 20, color.RGBA{255, 255, 255, 255})
+	screen := &mcpTestSeqScreen{width: 20, height: 20, images: [][]byte{black, white}}
+	srv, _ := mcpTestServerWithScreen(screen)
+
+	result := mcpCallTool(t, srv, "mouse.action", map[string]any{
+		"action": "click_at", "x": 5, "y": 5, "screen_width": 20, "screen_height": 20,
+	})
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(mcpFirstText(t, result)), &payload); err != nil {
+		t.Fatalf("decode click_at result payload: %v (text: %s)", err, mcpFirstText(t, result))
+	}
+	pct, _ := payload["screen_changed_pct"].(float64)
+	if pct < 90 {
+		t.Errorf("screen_changed_pct = %v, want ~100 for a full black->white change", pct)
+	}
+	if visibly, _ := payload["screen_visibly_changed"].(bool); !visibly {
+		t.Errorf("screen_visibly_changed = %v, want true", visibly)
+	}
+}
+
+func TestMCP_MouseAction_ClickAt_NoScreenChangeDetected(t *testing.T) {
+	gray := solidPNG(t, 20, 20, color.RGBA{128, 128, 128, 255})
+	screen := &mcpTestSeqScreen{width: 20, height: 20, images: [][]byte{gray, gray}}
+	srv, _ := mcpTestServerWithScreen(screen)
+
+	result := mcpCallTool(t, srv, "mouse.action", map[string]any{
+		"action": "click_at", "x": 5, "y": 5, "screen_width": 20, "screen_height": 20,
+	})
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(mcpFirstText(t, result)), &payload); err != nil {
+		t.Fatalf("decode click_at result payload: %v", err)
+	}
+	if visibly, _ := payload["screen_visibly_changed"].(bool); visibly {
+		t.Errorf("screen_visibly_changed = true for an identical before/after screenshot, want false")
+	}
+}
+
+func TestMCP_MouseAction_ClickAt_UndecodableScreenshotOmitsDiffButStillClicks(t *testing.T) {
+	// Default mcpTestScreen returns "Zm9v" ("foo"), not a valid PNG -- the
+	// diff must fail silently (best-effort) rather than block the click.
+	srv, input := mcpTestServer()
+	result := mcpCallTool(t, srv, "mouse.action", map[string]any{
+		"action": "click_at", "x": 5, "y": 5, "screen_width": 10, "screen_height": 10,
+	})
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("undecodable before/after screenshot must not fail the click itself: %v", result)
+	}
+	if len(input.absoluteCalls) != 2 {
+		t.Fatalf("click must still have happened despite the diff failing, got %d AbsoluteEvent calls", len(input.absoluteCalls))
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(mcpFirstText(t, result)), &payload); err != nil {
+		t.Fatalf("decode click_at result payload: %v", err)
+	}
+	if _, present := payload["screen_changed_pct"]; present {
+		t.Errorf("screen_changed_pct should be omitted when the diff couldn't be computed, got %v", payload)
+	}
+}
+
+func TestMCP_MouseAction_ClickAt_InputFailureSurfacesAsToolError(t *testing.T) {
+	input := &mcpTestInput{failAction: "absolute"}
+	srv := NewServerWithAuth(&mcpTestApp{input: input}, []byte(mcpTestSecret), 0)
+	result := mcpCallTool(t, srv, "mouse.action", map[string]any{
+		"action": "click_at", "x": 5, "y": 5, "screen_width": 10, "screen_height": 10,
+	})
+	if isErr, _ := result["isError"].(bool); !isErr {
+		t.Fatalf("expected isError:true when AbsoluteEvent fails, got %v", result)
+	}
+}
+
+// TestMCP_MouseAction_LegacyAbsoluteActionNowWorks guards against the bug
+// this change also fixed: the "absolute" action was declared in this same
+// tool's schema but applyMouse's switch had no case for it, so it silently
+// did nothing (fell to default: return nil) instead of erroring OR moving
+// the mouse. See server.go's applyMouse.
+func TestMCP_MouseAction_LegacyAbsoluteActionNowWorks(t *testing.T) {
+	srv, input := mcpTestServer()
+	result := mcpCallTool(t, srv, "mouse.action", map[string]any{
+		"action": "absolute", "x": 16000, "y": 8000, "button_state": 1,
+	})
+	if isErr, _ := result["isError"].(bool); isErr {
+		t.Fatalf("unexpected isError:true: %v", result)
+	}
+	if len(input.absoluteCalls) != 1 {
+		t.Fatalf("expected action=\"absolute\" to reach AbsoluteEvent exactly once, got %d calls", len(input.absoluteCalls))
+	}
+	call := input.absoluteCalls[0]
+	if call.x != 16000 || call.y != 8000 || call.mask != 1 {
+		t.Fatalf("AbsoluteEvent called with %+v, want x=16000 y=8000 mask=1", call)
 	}
 }
