@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -308,5 +310,74 @@ func TestCertStatus_SurfacesAndClearsDeviceCertError(t *testing.T) {
 	installTestDeviceCert(t, m, "abc123.device.usbridge.io")
 	if st := m.CertStatus(); st.LastError != "" {
 		t.Errorf("CertStatus.LastError after a successful InstallDeviceCert = %q, want empty", st.LastError)
+	}
+}
+
+// Agents <= 3.0.50 persisted the shared *.device.usbridge.io wildcard cert
+// together with its fleet-wide private key under the same file names the
+// per-device flow uses. LoadPersisted must drop both, so the next DeviceCSR
+// uses a fresh key instead of the leaked one.
+func TestLoadPersisted_DiscardsLegacyWildcardCertAndKey(t *testing.T) {
+	dir := t.TempDir()
+	const hostname = "abc123.device.usbridge.io"
+
+	sharedKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(5),
+		Subject:      pkix.Name{CommonName: "*.device.usbridge.io"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(80 * 24 * time.Hour),
+		DNSNames:     []string{"*.device.usbridge.io", "device.usbridge.io"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &sharedKey.PublicKey, sharedKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, _ := x509.MarshalPKCS8PrivateKey(sharedKey)
+	mustWrite := func(name string, data []byte) {
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite(deviceCertFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+	mustWrite(deviceKeyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
+	mustWrite(deviceHostFile, []byte(hostname))
+
+	m := NewManager(dir)
+	m.LoadPersisted()
+
+	if _, needsRefresh := m.DeviceCertStatus(); !needsRefresh {
+		t.Fatal("legacy wildcard cert must not count as an installed device cert")
+	}
+	for _, f := range []string{deviceCertFile, deviceKeyFile} {
+		if _, err := os.Stat(filepath.Join(dir, f)); !os.IsNotExist(err) {
+			t.Errorf("%s should have been removed, stat err = %v", f, err)
+		}
+	}
+	csrDER, err := m.DeviceCSR(hostname)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr, err := x509.ParseCertificateRequest(csrDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if csr.PublicKey.(*ecdsa.PublicKey).Equal(&sharedKey.PublicKey) {
+		t.Fatal("CSR reused the leaked shared wildcard key")
+	}
+}
+
+func TestLoadPersisted_KeepsOwnPerDeviceCert(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	installTestDeviceCert(t, m, "abc123.device.usbridge.io")
+
+	m2 := NewManager(dir)
+	m2.LoadPersisted()
+	if host, needsRefresh := m2.DeviceCertStatus(); host != "abc123.device.usbridge.io" || needsRefresh {
+		t.Fatalf("own per-device cert should survive a restart, got host=%q needsRefresh=%v", host, needsRefresh)
 	}
 }

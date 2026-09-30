@@ -107,8 +107,35 @@ func (m *Manager) LoadPersisted() {
 		m.self, m.selfLeaf = cert, leaf
 	}
 	if hostnameBytes, err := os.ReadFile(filepath.Join(m.dir, deviceHostFile)); err == nil {
+		hostname := strings.TrimSpace(string(hostnameBytes))
 		if cert, leaf, err := loadCertKeyPairFiles(filepath.Join(m.dir, deviceCertFile), filepath.Join(m.dir, deviceKeyFile)); err == nil {
-			m.device, m.deviceLeaf, m.deviceHostname = cert, leaf, strings.TrimSpace(string(hostnameBytes))
+			if isOwnDeviceCert(leaf, hostname) {
+				m.device, m.deviceLeaf, m.deviceHostname = cert, leaf, hostname
+			} else {
+				m.discardLegacyDeviceCertLocked(leaf)
+			}
+		}
+	}
+}
+
+// isOwnDeviceCert reports whether leaf is a per-device cert issued for
+// exactly hostname -- as opposed to the old shared *.device.usbridge.io
+// wildcard (agents <= 3.0.50 fetched it WITH its fleet-wide private key;
+// revoked 2026-09-30 for keyCompromise).
+func isOwnDeviceCert(leaf *x509.Certificate, hostname string) bool {
+	return len(leaf.DNSNames) == 1 && leaf.DNSNames[0] == hostname
+}
+
+// discardLegacyDeviceCertLocked deletes a legacy shared-wildcard cert AND
+// its key from disk. The key must go too: it is the leaked fleet-wide
+// wildcard key, and ensureDeviceKeyLocked would otherwise reuse it as this
+// device's "own" key for every future CSR (Let's Encrypt refuses it anyway
+// -- keys revoked for keyCompromise are blocked). Callers must hold m.mu.
+func (m *Manager) discardLegacyDeviceCertLocked(leaf *x509.Certificate) {
+	log.Printf("🔒 [tls] discarding legacy shared device cert (SANs %v, serial %X) and its key -- will request a per-device cert", leaf.DNSNames, leaf.SerialNumber)
+	for _, f := range []string{deviceCertFile, deviceKeyFile} {
+		if err := os.Remove(filepath.Join(m.dir, f)); err != nil && !os.IsNotExist(err) {
+			log.Printf("tlshost: failed to remove legacy %s: %v", f, err)
 		}
 	}
 }
