@@ -394,6 +394,10 @@ func (b *videoDialogPillButton) SetText(text string) {
 	b.Refresh()
 }
 
+func (b *videoDialogPillButton) Text() string {
+	return b.text
+}
+
 func (b *videoDialogPillButton) Enable() {
 	if !b.disabled {
 		return
@@ -818,6 +822,10 @@ func (c *videoDialogCheckbox) Disable() {
 
 func (c *videoDialogCheckbox) Disabled() bool {
 	return c.disabled
+}
+
+func (c *videoDialogCheckbox) IsChecked() bool {
+	return c.Checked
 }
 
 func (c *videoDialogCheckbox) Tapped(*fyne.PointEvent) {

@@ -112,6 +112,7 @@ type ScriptsSectionData struct {
 	MCP           ScriptsMCPData
 	ScriptCount   int
 	NewEnabled    bool
+	HardwareOnly  bool
 	OnNewEMMC     func()
 	OnNewSD       func()
 	Rows          []ScriptTableRow
@@ -245,7 +246,11 @@ func newScriptsAutomationHeader(data ScriptsSectionData) fyne.CanvasObject {
 		false,
 		nil,
 	)
-	return newScriptsColumnHeader(i18n.Current.ScriptsAutomationTitle, i18n.Current.ScriptsAutomationSubtitle, badge, newScriptsNewButtons(data))
+	action := fyne.CanvasObject(newScriptsNewButtons(data))
+	if data.HardwareOnly {
+		action = NewVisibleHardwareOnlyBadge()
+	}
+	return newScriptsColumnHeader(i18n.Current.ScriptsAutomationTitle, i18n.Current.ScriptsAutomationSubtitle, badge, action)
 }
 
 func newScriptsNewButtons(data ScriptsSectionData) fyne.CanvasObject {

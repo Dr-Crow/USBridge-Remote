@@ -152,7 +152,7 @@ func markWhatsNewCatalogSeen() {
 func whatsNewCatalog() []whatsNewCard {
 	return []whatsNewCard{
 		{
-			Version: "2.4.48",
+			Version: "3.0.45",
 			Date:    "September 2026",
 			Items: []whatsNewItem{
 				{

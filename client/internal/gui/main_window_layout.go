@@ -319,6 +319,7 @@ func (mw *MainWindow) recreateContainers() {
 	controlScriptFooter := view.NewScriptFooterStatus()
 	controlConnecting := view.NewDeviceDashboardBusyHint(i18n.Current.ConnectingDevice)
 	snapshotsConnecting := view.NewDeviceDashboardBusyHint(i18n.Current.ConnectingDevice)
+	controlBench := view.NewDeviceDashboardBusyHintTeal(i18n.Current.BenchFooterBusy)
 	if mw.diskWidget != nil {
 		mw.diskWidget.SetDashboardScriptFooter(devicesScriptFooter)
 		if mw.scriptsWidget != nil {
@@ -338,7 +339,8 @@ func (mw *MainWindow) recreateContainers() {
 	}
 	var controlBottom fyne.CanvasObject
 	if !useMobileControl() {
-		controlBottom = view.NewAppFooter("", mw.buildDesktopControlFooterActions(), controlConnecting, controlScriptFooter)
+		controlBottom = view.NewAppFooter("", mw.buildDesktopControlFooterActions(), controlConnecting, controlScriptFooter, controlBench)
+		mw.benchmarkFooterHints = append(mw.benchmarkFooterHints[:0], controlBench)
 	}
 	controlContent := view.NewEdgeStack(nil, controlBottom, mw.videoWidget.GetContainer())
 	devicesContent := mw.diskWidget.GetDashboardContainer()

@@ -149,7 +149,7 @@ func TestWhatsNewCatalogHasCards(t *testing.T) {
 
 func TestWhatsNewCatalogFingerprintJoinsVersions(t *testing.T) {
 	fp := whatsNewCatalogFingerprint()
-	if fp != "2.4.48" {
+	if fp != "3.0.45" {
 		t.Fatalf("got %q", fp)
 	}
 }
@@ -165,7 +165,7 @@ func TestWhatsNewUnseenTracksCatalogFingerprint(t *testing.T) {
 	if whatsNewHasUnseen() {
 		t.Fatal("opening What's new should clear the pip")
 	}
-	a.Preferences().SetString(whatsNewSeenPrefKey, "2.4.47")
+	a.Preferences().SetString(whatsNewSeenPrefKey, "3.0.44")
 	if !whatsNewHasUnseen() {
 		t.Fatal("a new catalog card should light the pip again")
 	}

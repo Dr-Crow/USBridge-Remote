@@ -93,7 +93,7 @@ func (dw *DiskWidget) GetDashboardContainer() fyne.CanvasObject {
 	storageHardwareBadge := view.NewDeviceDashboardHeaderBadge(i18n.Current.DevicesHardwareOnly, design.ColorConnectionAddFill)
 	storageHardwareBadge.OnHover = dw.dashboardStorageHover
 	dw.dashboardStorageHardwareBadge = storageHardwareBadge
-	storageHeaderRight := container.New(&view.DeviceRowControlsLayout{Gap: 8}, addImageBtn, storageHardwareBadge)
+	storageHeaderRight := container.New(&view.DeviceRowControlsLayout{Gap: 8}, storageHardwareBadge, addImageBtn)
 
 	vdPlusGlyph := view.NewDeviceDashboardPlusGlyph(10, view.DeviceDashboardHeaderButtonTealTextColor)
 	vdLabel := "Add"

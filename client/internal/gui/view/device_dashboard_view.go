@@ -14,6 +14,7 @@ import (
 
 	"usbridge-client/internal/gui/assets"
 	"usbridge-client/internal/gui/design"
+	"usbridge-client/internal/gui/i18n"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -1751,9 +1752,11 @@ const deviceDashboardBusySpinnerInterval = 140 * time.Millisecond
 type DeviceDashboardBusySpinner struct {
 	widget.BaseWidget
 
-	hint      string
-	hintLabel *canvas.Text
-	box       *fyne.Container
+	hint       string
+	hintLabel  *canvas.Text
+	box        *fyne.Container
+	frames     []fyne.Resource
+	labelColor color.Color
 
 	mu     sync.Mutex
 	stop   chan struct{}
@@ -1768,14 +1771,50 @@ func NewDeviceDashboardBusySpinner() *DeviceDashboardBusySpinner {
 // NewDeviceDashboardBusyHint is the footer spinner with a lime status
 // label shown next to the dots while the spinner is active.
 func NewDeviceDashboardBusyHint(hint string) *DeviceDashboardBusySpinner {
-	s := &DeviceDashboardBusySpinner{hint: strings.TrimSpace(hint)}
+	return newDeviceDashboardBusyHint(hint, design.ColorConnectionAddFill, assets.LoadingLimeFrames)
+}
+
+// NewDeviceDashboardBusyHintTeal is the Control-footer benchmark spinner:
+// turquoise dots and label, same size as the Devices "connecting device" chip.
+func NewDeviceDashboardBusyHintTeal(hint string) *DeviceDashboardBusySpinner {
+	return newDeviceDashboardBusyHint(hint, design.ColorConnectionBadgeText, assets.LoadingTealFrames)
+}
+
+func newDeviceDashboardBusyHint(hint string, label color.Color, frames []fyne.Resource) *DeviceDashboardBusySpinner {
+	s := &DeviceDashboardBusySpinner{hint: strings.TrimSpace(hint), frames: frames, labelColor: label}
 	s.ExtendBaseWidget(s)
 	if s.hint != "" {
-		s.hintLabel = canvas.NewText(s.hint, design.ColorConnectionAddFill)
+		s.hintLabel = canvas.NewText(s.hint, label)
 		s.hintLabel.TextSize = 9
 	}
 	s.Hide()
 	return s
+}
+
+func (s *DeviceDashboardBusySpinner) spinnerFrames() []fyne.Resource {
+	if len(s.frames) > 0 {
+		return s.frames
+	}
+	return assets.LoadingLimeFrames
+}
+
+func (s *DeviceDashboardBusySpinner) SetHint(hint string) {
+	s.hint = strings.TrimSpace(hint)
+	if s.hintLabel == nil {
+		if s.hint == "" {
+			return
+		}
+		col := s.labelColor
+		if col == nil {
+			col = design.ColorConnectionAddFill
+		}
+		s.hintLabel = canvas.NewText(s.hint, col)
+		s.hintLabel.TextSize = 9
+		s.Refresh()
+		return
+	}
+	s.hintLabel.Text = s.hint
+	s.hintLabel.Refresh()
 }
 
 func (s *DeviceDashboardBusySpinner) Start() {
@@ -1791,7 +1830,7 @@ func (s *DeviceDashboardBusySpinner) Start() {
 
 	s.Show()
 	s.Refresh()
-	frames := assets.LoadingLimeFrames
+	frames := s.spinnerFrames()
 	if s.img != nil && len(frames) > 0 {
 		s.img.Resource = frames[0]
 		s.img.Refresh()
@@ -1859,8 +1898,8 @@ func (s *DeviceDashboardBusySpinner) CreateRenderer() fyne.WidgetRenderer {
 	s.img = canvas.NewImageFromResource(nil)
 	s.img.FillMode = canvas.ImageFillContain
 	s.img.SetMinSize(fyne.NewSize(deviceDashboardBusySpinnerSize, deviceDashboardBusySpinnerSize))
-	if len(assets.LoadingLimeFrames) > 0 {
-		s.img.Resource = assets.LoadingLimeFrames[0]
+	if len(s.spinnerFrames()) > 0 {
+		s.img.Resource = s.spinnerFrames()[0]
 	}
 	if s.hintLabel == nil {
 		return widget.NewSimpleRenderer(s.img)
@@ -2120,6 +2159,15 @@ func NewDeviceDashboardHeaderBadge(text string, textColor color.Color) *DeviceDa
 	}
 	b.ExtendBaseWidget(b)
 	b.Hide()
+	return b
+}
+
+// NewVisibleHardwareOnlyBadge is Storage's Hardware only plaque, already
+// shown — Scripts/Snapshots headers swap their + buttons for this on a
+// software agent.
+func NewVisibleHardwareOnlyBadge() *DeviceDashboardHeaderBadge {
+	b := NewDeviceDashboardHeaderBadge(i18n.Current.DevicesHardwareOnly, design.ColorConnectionAddFill)
+	b.Show()
 	return b
 }
 

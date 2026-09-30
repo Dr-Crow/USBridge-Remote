@@ -322,6 +322,14 @@ func (b *accountDialogDarkButton) CreateRenderer() fyne.WidgetRenderer {
 	b.lbl.TextSize = 11
 	b.lbl.TextStyle = fyne.TextStyle{Bold: true}
 
+	iconOnly := b.iconNormal != nil && strings.TrimSpace(b.text) == ""
+	if iconOnly {
+		b.icon = canvas.NewImageFromResource(b.iconNormal)
+		b.icon.SetMinSize(fyne.NewSize(16, 16))
+		b.icon.FillMode = canvas.ImageFillContain
+		return widget.NewSimpleRenderer(container.NewStack(b.bg, b.bdr, view.NewInsetExact(container.NewCenter(b.icon), 6, 6, 6, 6)))
+	}
+
 	var content *fyne.Container
 	if b.iconNormal != nil {
 		b.icon = canvas.NewImageFromResource(b.iconNormal)
@@ -337,6 +345,9 @@ func (b *accountDialogDarkButton) CreateRenderer() fyne.WidgetRenderer {
 
 func (b *accountDialogDarkButton) MinSize() fyne.Size {
 	b.ExtendBaseWidget(b)
+	if b.iconNormal != nil && strings.TrimSpace(b.text) == "" {
+		return fyne.NewSize(28, 28)
+	}
 	return b.BaseWidget.MinSize()
 }
 
@@ -402,7 +413,10 @@ func (b *accountDialogDarkButton) refreshVisuals() {
 	fill, border, label := accountDialogDarkButtonColors(b.lime, b.danger, b.hovered)
 	b.bg.FillColor = fill
 	b.bdr.StrokeColor = border
-	b.lbl.Color = label
+	if b.lbl != nil {
+		b.lbl.Color = label
+		b.lbl.Refresh()
+	}
 	if b.icon != nil {
 		if b.hovered && b.iconHover != nil {
 			b.icon.Resource = b.iconHover
@@ -412,7 +426,6 @@ func (b *accountDialogDarkButton) refreshVisuals() {
 	}
 	b.bg.Refresh()
 	b.bdr.Refresh()
-	b.lbl.Refresh()
 	if b.icon != nil {
 		b.icon.Refresh()
 	}

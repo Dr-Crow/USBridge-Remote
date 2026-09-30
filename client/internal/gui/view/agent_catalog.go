@@ -1,6 +1,6 @@
 package view
 
-// agent_catalog.go -- Connections footer's Agent dialog: four host-service
+// agent_catalog.go -- Connections footer's Agent dialog: host-service
 // editions on the left, feature copy on the right. Chrome (title, X,
 // Download/GitHub) lives in the controller; this file is the two-column
 // body. Feature strings come from i18n.
@@ -44,7 +44,6 @@ var agentCatalogEditions = []agentEdition{
 	{Title: "Sunshine", Tag: "Open Source", Kind: agentEditionList},
 	{Title: "USBridge Streamer", Tag: "Free", Kind: agentEditionList},
 	{Title: "USBridge Streamer", Tag: "Pro", Pro: true, Kind: agentEditionProPlus},
-	{Title: "USBridge Streamer", Tag: "Enterprise", Pro: true, Kind: agentEditionProPlus},
 }
 
 func agentEditionFeatures(ed agentEdition) []string {

@@ -103,15 +103,19 @@ func findInOverlays(w fyne.Window, match func(fyne.CanvasObject) bool) fyne.Canv
 	return found
 }
 
-func findButton(w fyne.Window, text string) *widget.Button {
-	o := findInOverlays(w, func(o fyne.CanvasObject) bool {
-		b, ok := o.(*widget.Button)
-		return ok && b.Text == text
+func findButton(w fyne.Window, text string) fyne.CanvasObject {
+	return findInOverlays(w, func(o fyne.CanvasObject) bool {
+		if b, ok := o.(*widget.Button); ok && b.Text == text {
+			return true
+		}
+		type labeled interface{ Text() string }
+		if l, ok := o.(labeled); ok && l.Text() == text {
+			if _, tap := o.(fyne.Tappable); tap {
+				return true
+			}
+		}
+		return false
 	})
-	if o == nil {
-		return nil
-	}
-	return o.(*widget.Button)
 }
 
 func openBenchmarkSetup(t *testing.T, mw *MainWindow, w fyne.Window) {
@@ -120,7 +124,12 @@ func openBenchmarkSetup(t *testing.T, mw *MainWindow, w fyne.Window) {
 	waitFor(t, "the setup dialog", func() bool { return findButton(w, i18n.Current.BenchStart) != nil })
 }
 
-func tap(b *widget.Button) { fyne.DoAndWait(func() { test.Tap(b) }) }
+func tap(o fyne.CanvasObject) {
+	if o == nil {
+		return
+	}
+	fyne.DoAndWait(func() { test.Tap(o) })
+}
 
 func sampleBenchResult() *benchmarkResult {
 	return &benchmarkResult{
@@ -286,6 +295,27 @@ func TestBenchmarkResults_BodyFillsPanel(t *testing.T) {
 	}
 }
 
+func TestBenchmarkResults_CompactLayout(t *testing.T) {
+	mw, w := newBenchTestWindow(t, nil)
+	fyne.DoAndWait(func() {
+		w.Resize(fyne.NewSize(390, 780))
+		mw.showBenchmarkResults(sampleBenchResult(), `C:\Users\bogom\AppData\Roaming\USBridge`)
+	})
+	if findButton(w, i18n.Current.Close) != nil {
+		t.Fatal("compact results should not show Close")
+	}
+	if findButton(w, i18n.Current.BenchSaveResults) != nil {
+		t.Fatal("compact results should use an icon download, not the pill label")
+	}
+	sz := benchResultsSizeFn(fyne.NewSize(390, 780), nil)
+	if sz.Width > 390 || sz.Height > 780 {
+		t.Fatalf("compact panel %v larger than canvas", sz)
+	}
+	if sz.Width < 300 {
+		t.Fatalf("compact panel too narrow: %v", sz)
+	}
+}
+
 func TestWriteBenchmarkZip(t *testing.T) {
 	i18n.Init("en")
 	res := sampleBenchResult()
@@ -318,5 +348,21 @@ func TestWriteBenchmarkZip(t *testing.T) {
 	}
 	if _, err := png.Decode(bytes.NewReader(files["chart.png"])); err != nil {
 		t.Fatalf("chart.png: %v", err)
+	}
+}
+
+func TestBenchmarkBestMask_TiedDisplayHighlightsBoth(t *testing.T) {
+	oks := []bool{true, true}
+	got := benchmarkBestMask([]float64{60.04, 59.96}, oks, false, "%.1f")
+	if !got[0] || !got[1] {
+		t.Fatalf("60.04 and 59.96 both show as 60.0 fps, want both green, got %v", got)
+	}
+	got = benchmarkBestMask([]float64{60.2, 59.9}, oks, false, "%.1f")
+	if !got[0] || got[1] {
+		t.Fatalf("60.2 vs 59.9 should green only the first, got %v", got)
+	}
+	got = benchmarkBestMask([]float64{12.04, 12.01}, oks, true, "%.1f ms")
+	if !got[0] || !got[1] {
+		t.Fatalf("lower-is-better 12.04 and 12.01 both show as 12.0, want both green, got %v", got)
 	}
 }
