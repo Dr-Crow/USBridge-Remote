@@ -291,6 +291,7 @@ func (mw *MainWindow) Show() {
 	mw.deepLinkHandler = NewDeepLinkHandler(mw.handleConnectionFromDeepLink, mw.handleSaveFromDeepLink)
 	mw.checkDeepLink()
 	mw.startDeepLinkMonitoring()
+	mw.startAWDLWatchdog()
 	if mw.onReadyCallback != nil {
 		go mw.onReadyCallback()
 	}
