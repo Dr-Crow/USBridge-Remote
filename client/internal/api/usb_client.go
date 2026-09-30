@@ -1128,12 +1128,25 @@ func (c *USBClient) PostRawWithTimeout(endpoint string, body []byte, timeout tim
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	}
 
-	var oneOffTransport http.RoundTripper = &http.Transport{
-		Proxy:        http.ProxyURL(nil),
-		TLSNextProto: make(map[string]func(authority string, conn *tls.Conn) http.RoundTripper),
-	}
-	if c.openDataChannel != nil {
-		oneOffTransport = &webrtcAPITransport{openDataChannel: c.openDataChannel, fallback: oneOffTransport}
+	// Reuse c.httpClient's Transport (only the Timeout differs): in
+	// Tailscale mode it carries the embedded tsnet dialer, and a fresh
+	// default Transport would dial the 100.x address through the OS
+	// network stack instead -- which has no route to it when the host's
+	// own Tailscale isn't up, so every MCP call timed out without ever
+	// reaching the device. Sharing a Transport across Clients is safe.
+	// SetOpenDataChannel already wrapped that Transport in
+	// webrtcAPITransport, so only the fallback path wraps it here.
+	var oneOffTransport http.RoundTripper
+	if c.httpClient != nil && c.httpClient.Transport != nil {
+		oneOffTransport = c.httpClient.Transport
+	} else {
+		oneOffTransport = &http.Transport{
+			Proxy:        http.ProxyURL(nil),
+			TLSNextProto: make(map[string]func(authority string, conn *tls.Conn) http.RoundTripper),
+		}
+		if c.openDataChannel != nil {
+			oneOffTransport = &webrtcAPITransport{openDataChannel: c.openDataChannel, fallback: oneOffTransport}
+		}
 	}
 	oneOff := &http.Client{Timeout: timeout, Transport: oneOffTransport}
 	resp, err := oneOff.Do(req)
