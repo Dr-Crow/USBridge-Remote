@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
@@ -22,35 +23,79 @@ import (
 	"usbridge_agent/internal/tlshost"
 )
 
-// generateTestServerCert builds a throwaway self-signed cert/key PEM pair
-// covering dns, standing in for what the real backend's GET
-// /v1/device/cert would return -- mirrors internal/tlshost's own
-// generateTestCert test helper (unexported there, so duplicated here
-// rather than imported).
-func generateTestServerCert(t *testing.T, dns string) (certPEM, keyPEM string) {
+// parseCSRForHostname decodes the {hw_id, csr} POST body tickDeviceCert
+// sent, fails the test unless the CSR's own SAN names hostname -- the real
+// backend performs exactly this check (see usbridge-entitlement-backend's
+// csrCoversHostname) before ever spending an ACME order on it -- and
+// returns the parsed CSR for signTestCSR below.
+func parseCSRForHostname(t *testing.T, r *http.Request, hostname string) *x509.CertificateRequest {
 	t.Helper()
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	var body struct {
+		HwID string `json:"hw_id"`
+		CSR  string `json:"csr"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		t.Fatalf("decode /v1/device/cert request body: %v", err)
+	}
+	csrDER, err := base64.StdEncoding.DecodeString(body.CSR)
+	if err != nil {
+		t.Fatalf("csr is not valid base64: %v", err)
+	}
+	csr, err := x509.ParseCertificateRequest(csrDER)
+	if err != nil {
+		t.Fatalf("csr does not parse: %v", err)
+	}
+	for _, name := range csr.DNSNames {
+		if name == hostname {
+			return csr
+		}
+	}
+	t.Fatalf("csr DNSNames = %v, want to include %q", csr.DNSNames, hostname)
+	return nil
+}
+
+// signTestCSR builds a leaf certificate for csr's OWN public key, signed by
+// a throwaway CA key generated here -- standing in for what a real CA
+// (Let's Encrypt via ACME) does: sign the caller's CSR, never mint a
+// keypair of its own. Using an unrelated keypair here (as an earlier,
+// buggy version of this helper did) would make InstallDeviceCert correctly
+// reject the result with "private key does not match public key", since in
+// production the cert's public key must match the device's own persisted
+// key that DeviceCSR signed the CSR with.
+func signTestCSR(t *testing.T, csr *x509.CertificateRequest) (certPEM string) {
+	t.Helper()
+	caPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	template := x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: dns},
+	caTemplate := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caPriv.PublicKey, caPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      csr.Subject,
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(90 * 24 * time.Hour),
-		DNSNames:     []string{dns},
+		DNSNames:     csr.DNSNames,
 	}
-	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, caCert, csr.PublicKey, caPriv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certPEM = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
-	keyPEM = string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
-	return certPEM, keyPEM
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}))
 }
 
 // withDeviceCertBackendURL mirrors app_test.go's own withBackendURL, for
@@ -93,15 +138,15 @@ func TestTickDeviceCert_RegistersIPAndInstallsCertOnFirstRun(t *testing.T) {
 			registeredIP = body.IP
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]string{"hostname": "abc123.device.usbridge.test"})
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/device/cert":
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/device/cert":
 			certRequested = true
-			certPEM, keyPEM := generateTestServerCert(t, "abc123.device.usbridge.test")
+			csr := parseCSRForHostname(t, r, "abc123.device.usbridge.test")
+			certPEM := signTestCSR(t, csr)
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(devicecert.Cert{
-				CertPEM:        certPEM,
-				KeyPEM:         keyPEM,
-				HostnameSuffix: "device.usbridge.test",
-				NotAfter:       "2027-01-01T00:00:00Z",
+				CertPEM:  certPEM,
+				Hostname: "abc123.device.usbridge.test",
+				NotAfter: "2027-01-01T00:00:00Z",
 			})
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -135,11 +180,12 @@ func TestTickDeviceCert_SkipsCertFetchWhenHostnameUnchangedAndFresh(t *testing.T
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/device/dns":
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]string{"hostname": "abc123.device.usbridge.test"})
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/device/cert":
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/device/cert":
 			certRequests++
-			certPEM, keyPEM := generateTestServerCert(t, "abc123.device.usbridge.test")
+			csr := parseCSRForHostname(t, r, "abc123.device.usbridge.test")
+			certPEM := signTestCSR(t, csr)
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(devicecert.Cert{CertPEM: certPEM, KeyPEM: keyPEM, HostnameSuffix: "device.usbridge.test", NotAfter: "2027-01-01T00:00:00Z"})
+			_ = json.NewEncoder(w).Encode(devicecert.Cert{CertPEM: certPEM, Hostname: "abc123.device.usbridge.test", NotAfter: "2027-01-01T00:00:00Z"})
 		}
 	})).URL)
 
@@ -165,11 +211,12 @@ func TestTickDeviceCert_ReusesCertOnIPChange(t *testing.T) {
 			dnsRegistrations++
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]string{"hostname": "abc123.device.usbridge.test"})
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/device/cert":
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/device/cert":
 			certRequests++
-			certPEM, keyPEM := generateTestServerCert(t, "abc123.device.usbridge.test")
+			csr := parseCSRForHostname(t, r, "abc123.device.usbridge.test")
+			certPEM := signTestCSR(t, csr)
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(devicecert.Cert{CertPEM: certPEM, KeyPEM: keyPEM, HostnameSuffix: "device.usbridge.test", NotAfter: "2027-01-01T00:00:00Z"})
+			_ = json.NewEncoder(w).Encode(devicecert.Cert{CertPEM: certPEM, Hostname: "abc123.device.usbridge.test", NotAfter: "2027-01-01T00:00:00Z"})
 		}
 	})).URL)
 

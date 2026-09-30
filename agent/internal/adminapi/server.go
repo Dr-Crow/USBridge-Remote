@@ -65,6 +65,10 @@ type TokenBackend interface {
 	StreamerName() string
 	DeviceHostname() string
 	CertStatus() tlshost.CertStatus
+	// RetryDeviceCert mirrors app.App's own doc comment -- re-runs device
+	// cert issuance immediately instead of waiting for its normal poll
+	// schedule, for the Status UI's cert-error retry button.
+	RetryDeviceCert()
 	StreamerRunning() bool
 	SessionActive() bool
 
@@ -271,6 +275,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /token/start-trial", s.handleStartTrial)
 	mux.HandleFunc("POST /token/start-purchase", s.handleStartPurchase)
 	mux.HandleFunc("POST /token/cancel-purchase", s.handleCancelPurchase)
+	mux.HandleFunc("POST /token/retry-device-cert", s.handleRetryDeviceCert)
 	mux.HandleFunc("POST /token/clear-license", s.handleClearLicense)
 	mux.HandleFunc("POST /token/download-rustshine", s.handleDownloadRustShine)
 	mux.HandleFunc("POST /token/check-rustshine-update", s.handleCheckRustShineUpdateNow)
@@ -644,6 +649,11 @@ func (s *Server) handleStartPurchase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, stringBody{Value: url})
+}
+
+func (s *Server) handleRetryDeviceCert(w http.ResponseWriter, r *http.Request) {
+	s.token.RetryDeviceCert()
+	writeJSON(w, http.StatusOK, struct{}{})
 }
 
 func (s *Server) handleCancelPurchase(w http.ResponseWriter, r *http.Request) {

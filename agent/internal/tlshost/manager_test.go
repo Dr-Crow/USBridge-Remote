@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"net"
 	"testing"
@@ -78,32 +79,65 @@ func TestLoadPersisted_RoundTripsSelfSignedAcrossInstances(t *testing.T) {
 	}
 }
 
-// generateTestCert builds a throwaway self-signed cert/key PEM pair
-// covering `dns`, standing in for what devicecert.FetchCert would return.
-func generateTestCert(t *testing.T, dns string) (certPEM, keyPEM string) {
+// signCSRForTest builds a leaf certificate for csr's OWN public key, signed
+// by a throwaway CA key generated here -- standing in for what the real
+// backend (ACME) does: sign the caller's CSR, never mint a keypair of its
+// own. Mirrors internal/app/devicecert_test.go's identical helper (that
+// package can't import this one's unexported symbols, and vice versa).
+func signCSRForTest(t *testing.T, csr *x509.CertificateRequest) (certPEM string) {
 	t.Helper()
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	caPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	template := x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: dns},
+	caTemplate := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caPriv.PublicKey, caPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      csr.Subject,
 		NotBefore:    time.Now().Add(-time.Hour),
 		NotAfter:     time.Now().Add(90 * 24 * time.Hour),
-		DNSNames:     []string{dns},
+		DNSNames:     csr.DNSNames,
 	}
-	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, caCert, csr.PublicKey, caPriv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	keyDER, err := x509.MarshalPKCS8PrivateKey(priv)
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}))
+}
+
+// installTestDeviceCert drives the real DeviceCSR -> (sign) -> InstallDeviceCert
+// sequence for hostname, the same round trip tickDeviceCert performs against
+// the real backend -- exercises the actual key-pairing path rather than
+// installing an unrelated cert/key pair.
+func installTestDeviceCert(t *testing.T, m *Manager, hostname string) {
+	t.Helper()
+	csrDER, err := m.DeviceCSR(hostname)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("DeviceCSR: %v", err)
 	}
-	certPEM = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
-	keyPEM = string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
-	return certPEM, keyPEM
+	csr, err := x509.ParseCertificateRequest(csrDER)
+	if err != nil {
+		t.Fatalf("parse generated CSR: %v", err)
+	}
+	certPEM := signCSRForTest(t, csr)
+	if err := m.InstallDeviceCert(hostname, certPEM); err != nil {
+		t.Fatalf("InstallDeviceCert: %v", err)
+	}
 }
 
 func TestInstallDeviceCert_ThenGetCertificatePicksItBySNI(t *testing.T) {
@@ -111,10 +145,7 @@ func TestInstallDeviceCert_ThenGetCertificatePicksItBySNI(t *testing.T) {
 	if err := m.EnsureSelfSigned([]net.IP{net.ParseIP("127.0.0.1")}, nil); err != nil {
 		t.Fatal(err)
 	}
-	certPEM, keyPEM := generateTestCert(t, "abc123.device.usbridge.io")
-	if err := m.InstallDeviceCert("abc123.device.usbridge.io", certPEM, keyPEM); err != nil {
-		t.Fatalf("InstallDeviceCert: %v", err)
-	}
+	installTestDeviceCert(t, m, "abc123.device.usbridge.io")
 
 	deviceCert, err := m.GetCertificate(&tls.ClientHelloInfo{ServerName: "abc123.device.usbridge.io"})
 	if err != nil {
@@ -143,10 +174,7 @@ func TestDeviceCertStatus_NeedsRefreshWhenNoneInstalled(t *testing.T) {
 
 func TestDeviceCertStatus_NoRefreshWhenFresh(t *testing.T) {
 	m := NewManager(t.TempDir())
-	certPEM, keyPEM := generateTestCert(t, "abc123.device.usbridge.io")
-	if err := m.InstallDeviceCert("abc123.device.usbridge.io", certPEM, keyPEM); err != nil {
-		t.Fatal(err)
-	}
+	installTestDeviceCert(t, m, "abc123.device.usbridge.io")
 	hostname, needsRefresh := m.DeviceCertStatus()
 	if hostname != "abc123.device.usbridge.io" || needsRefresh {
 		t.Errorf("DeviceCertStatus after install = (%q, %v), want (abc123.device.usbridge.io, false)", hostname, needsRefresh)
@@ -157,5 +185,128 @@ func TestGetCertificate_ErrorsWhenNothingInstalledYet(t *testing.T) {
 	m := NewManager(t.TempDir())
 	if _, err := m.GetCertificate(&tls.ClientHelloInfo{}); err == nil {
 		t.Fatal("expected an error before EnsureSelfSigned/InstallDeviceCert has ever run")
+	}
+}
+
+func TestDeviceCSR_NamesHostnameInSAN(t *testing.T) {
+	m := NewManager(t.TempDir())
+	csrDER, err := m.DeviceCSR("abc123.device.usbridge.io")
+	if err != nil {
+		t.Fatalf("DeviceCSR: %v", err)
+	}
+	csr, err := x509.ParseCertificateRequest(csrDER)
+	if err != nil {
+		t.Fatalf("parse generated CSR: %v", err)
+	}
+	if len(csr.DNSNames) != 1 || csr.DNSNames[0] != "abc123.device.usbridge.io" {
+		t.Errorf("csr.DNSNames = %v, want [abc123.device.usbridge.io]", csr.DNSNames)
+	}
+}
+
+func TestDeviceCSR_ReusesTheSameKeyAcrossCalls(t *testing.T) {
+	m := NewManager(t.TempDir())
+	csr1DER, err := m.DeviceCSR("abc123.device.usbridge.io")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A second CSR (e.g. a renewal for the same hostname) must be signed by
+	// the SAME device key, not a freshly generated one -- otherwise every
+	// renewal would silently orphan whatever cert the previous key's CSR
+	// earned.
+	csr2DER, err := m.DeviceCSR("abc123.device.usbridge.io")
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr1, err := x509.ParseCertificateRequest(csr1DER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr2, err := x509.ParseCertificateRequest(csr2DER)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub1, ok1 := csr1.PublicKey.(*ecdsa.PublicKey)
+	pub2, ok2 := csr2.PublicKey.(*ecdsa.PublicKey)
+	if !ok1 || !ok2 {
+		t.Fatalf("CSR public keys are not ECDSA: %T, %T", csr1.PublicKey, csr2.PublicKey)
+	}
+	if pub1.X.Cmp(pub2.X) != 0 || pub1.Y.Cmp(pub2.Y) != 0 {
+		t.Error("DeviceCSR signed two CSRs with two different keys -- the device key must be stable across calls")
+	}
+}
+
+func TestDeviceCSR_KeySurvivesAcrossManagerInstances(t *testing.T) {
+	dir := t.TempDir()
+	m1 := NewManager(dir)
+	csr1DER, err := m1.DeviceCSR("abc123.device.usbridge.io")
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr1, err := x509.ParseCertificateRequest(csr1DER)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A fresh Manager over the SAME directory (simulating a process
+	// restart) must sign with the SAME persisted key, not generate a new
+	// one -- otherwise a restart between DeviceCSR and the backend's
+	// response would orphan any in-flight cert request.
+	m2 := NewManager(dir)
+	csr2DER, err := m2.DeviceCSR("abc123.device.usbridge.io")
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr2, err := x509.ParseCertificateRequest(csr2DER)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pub1 := csr1.PublicKey.(*ecdsa.PublicKey)
+	pub2 := csr2.PublicKey.(*ecdsa.PublicKey)
+	if pub1.X.Cmp(pub2.X) != 0 || pub1.Y.Cmp(pub2.Y) != 0 {
+		t.Error("device key was not persisted -- a fresh Manager over the same dir generated a different key")
+	}
+}
+
+func TestInstallDeviceCert_FailsBeforeDeviceCSREverRan(t *testing.T) {
+	m := NewManager(t.TempDir())
+	// Build a cert for some unrelated key, since there's no device key yet
+	// to build one for that would legitimately pair.
+	otherPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{DNSNames: []string{"abc123.device.usbridge.io"}}, otherPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsedCSR, err := x509.ParseCertificateRequest(csr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM := signCSRForTest(t, parsedCSR)
+	if err := m.InstallDeviceCert("abc123.device.usbridge.io", certPEM); err == nil {
+		t.Fatal("expected InstallDeviceCert to fail when DeviceCSR was never called to establish a local key")
+	}
+}
+
+func TestCertStatus_SurfacesAndClearsDeviceCertError(t *testing.T) {
+	m := NewManager(t.TempDir())
+	if st := m.CertStatus(); st.LastError != "" {
+		t.Errorf("CertStatus.LastError on a fresh Manager = %q, want empty", st.LastError)
+	}
+
+	m.SetDeviceCertError(fmt.Errorf("backend unreachable"))
+	st := m.CertStatus()
+	if st.LastError != "backend unreachable" {
+		t.Errorf("CertStatus.LastError = %q, want %q", st.LastError, "backend unreachable")
+	}
+
+	// A subsequent successful install clears it -- the retry button's whole
+	// point is that a later success removes the error, not just adds a cert
+	// alongside a stale one.
+	installTestDeviceCert(t, m, "abc123.device.usbridge.io")
+	if st := m.CertStatus(); st.LastError != "" {
+		t.Errorf("CertStatus.LastError after a successful InstallDeviceCert = %q, want empty", st.LastError)
 	}
 }

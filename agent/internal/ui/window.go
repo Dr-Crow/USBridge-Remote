@@ -91,6 +91,11 @@ type TokenProvider interface {
 	// fallback (the thing that makes client/web unreachable until it
 	// lands, see internal/tlshost's own top doc comment).
 	CertStatus() tlshost.CertStatus
+	// RetryDeviceCert re-runs the device-cert issuance flow immediately
+	// instead of waiting for its normal poll schedule -- see app.App's own
+	// doc comment. Called by the cert dialog's retry button when
+	// CertStatus().LastError is non-empty.
+	RetryDeviceCert()
 	// StreamerRunning reports whether the active streaming host's own child
 	// process is alive right now -- for the status traffic light next to
 	// streamerNameLabel, distinct from whether it's staged/entitled at all.

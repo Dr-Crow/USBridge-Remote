@@ -137,18 +137,21 @@ var mcpToolCatalog = []mcpTool{
 	},
 	{
 		Name:        "mouse.action",
-		Description: "Send a mouse event. action: \"move\" (dx,dy relative), \"click\" (button), \"scroll\" (scroll), \"action\" (button+dx+dy+scroll combined), or \"absolute\" (x,y absolute position + button_state).",
+		Description: "Send a mouse event. action=move/click/scroll/action are RELATIVE (dx/dy deltas from the cursor's current, unknown-to-you position -- fine for nudges, unreliable for hitting a specific UI element). action=move_to/click_at/double_click_at are ABSOLUTE: give x/y in screen pixel coordinates (the same coordinate space as ui.parse's returned bboxes, or screen.get_image's width/height) plus screen_width/screen_height (that same capture's own dimensions -- required because the wire protocol is a normalized 0..32767 axis, not raw pixels), and the cursor jumps there in one step regardless of where it currently is. Prefer these whenever you have a box from ui.parse. No mountdrive/arm step needed first (unlike the hardware KVM) -- the Agent injects input directly via the host OS as soon as it's running. click_at/double_click_at optionally take button (default 1=left), and their reply is JSON {status, screen_changed_pct, screen_visibly_changed} -- a before/after screen diff taken automatically around the click, since a successful injected event only proves the OS accepted it, not that it landed on anything (wrong coordinates, an unfocused window, a disabled control all 'succeed' while changing nothing on screen). TRUST this JSON: screen_visibly_changed:true means the click had a real effect -- don't also call screen.get_image afterward just to double-check a successful click. move_to also takes optional capture_after_ms (1-5000): wait that long, then include a screenshot taken at that moment in the SAME response, as extra content blocks -- useful for hover-only UI that auto-hides in a couple seconds. action=\"absolute\" (x,y + button_state, bitmask 0x01/0x02/0x04) is the older press-and-hold form (used by e.g. a live drag over the video stream) -- prefer click_at/move_to for a one-shot click on a ui.parse result.",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":       map[string]any{"type": "string", "enum": []string{"move", "click", "scroll", "action", "absolute"}},
-				"dx":           map[string]any{"type": "integer"},
-				"dy":           map[string]any{"type": "integer"},
-				"button":       map[string]any{"type": "integer"},
-				"scroll":       map[string]any{"type": "integer"},
-				"x":            map[string]any{"type": "integer"},
-				"y":            map[string]any{"type": "integer"},
-				"button_state": map[string]any{"type": "integer"},
+				"action":           map[string]any{"type": "string", "enum": []string{"move", "click", "scroll", "action", "absolute", "move_to", "click_at", "double_click_at"}},
+				"dx":               map[string]any{"type": "integer"},
+				"dy":               map[string]any{"type": "integer"},
+				"button":           map[string]any{"type": "integer", "description": "click_at/double_click_at: 1=left (default), 2=right, 3=middle"},
+				"scroll":           map[string]any{"type": "integer"},
+				"x":                map[string]any{"type": "integer", "description": "move_to/click_at/double_click_at: target X in screen pixels. absolute: raw 0..32767 axis position"},
+				"y":                map[string]any{"type": "integer", "description": "move_to/click_at/double_click_at: target Y in screen pixels. absolute: raw 0..32767 axis position"},
+				"screen_width":     map[string]any{"type": "integer", "description": "move_to/click_at/double_click_at: width of the capture x/y are expressed in (ui.parse result.image_width, or screen.get_image's width)"},
+				"screen_height":    map[string]any{"type": "integer", "description": "move_to/click_at/double_click_at: height of the capture x/y are expressed in (ui.parse result.image_height, or screen.get_image's height)"},
+				"capture_after_ms": map[string]any{"type": "integer", "minimum": 1, "maximum": 5000, "description": "move_to only: return a screenshot taken this many ms after the move, in the same response"},
+				"button_state":     map[string]any{"type": "integer", "description": "absolute only: bitmask, 0x01=left, 0x02=right, 0x04=middle"},
 			},
 			"required": []string{"action"},
 		},
@@ -232,6 +235,21 @@ func (s *Server) mcpKeyboardSend(args json.RawMessage) ([]map[string]any, error)
 }
 
 func (s *Server) mcpMouseAction(args json.RawMessage) ([]map[string]any, error) {
+	var probe struct {
+		Action string `json:"action"`
+	}
+	if err := json.Unmarshal(args, &probe); err != nil {
+		return nil, fmt.Errorf("invalid arguments: %w", err)
+	}
+	switch probe.Action {
+	case "move_to", "click_at", "double_click_at":
+		var absArgs mouseAbsoluteArgs
+		if err := json.Unmarshal(args, &absArgs); err != nil {
+			return nil, fmt.Errorf("invalid arguments: %w", err)
+		}
+		return s.mcpMouseActionAbsolute(absArgs)
+	}
+
 	var req MouseRequest
 	if err := json.Unmarshal(args, &req); err != nil {
 		return nil, fmt.Errorf("invalid arguments: %w", err)
@@ -278,16 +296,35 @@ Available tools:
 - ` + "`keyboard.send`" + ` / ` + "`mouse.action`" + ` — inject keyboard/mouse input directly into the
   host OS. No enable/arm step needed first (unlike the hardware KVM's
   ` + "`mountdrive.start`" + `) — the Agent has direct OS-level input access as soon as
-  it's running.
+  it's running. ` + "`mouse.action`" + `'s ` + "`move_to`" + `/` + "`click_at`" + `/` + "`double_click_at`" + `
+  actions take absolute pixel coordinates (plus ` + "`screen_width`" + `/` + "`screen_height`" + `
+  of the capture those coordinates came from) and jump the cursor there in
+  one step — the reliable way to act on a box from ` + "`ui.parse`" + ` (see below),
+  much more so than relative ` + "`move`" + `+` + "`click`" + ` deltas.
 - ` + "`device.info`" + ` — the Agent's reported OS/host info.
 
 There is no OCR/text-mode screen reader here (that's specific to the
 hardware KVM's pre-OS BIOS-in-Terminal pipeline) — use ` + "`screen.get_image`" + ` and
 read the pixels directly.
 
-Recommended loop: ` + "`screen.get_image`" + ` → decide the next click/keystroke →
-` + "`mouse.action`" + `/` + "`keyboard.send`" + ` → wait ~150-300ms for the UI to react →
-` + "`screen.get_image`" + ` again.
+**` + "`ui.parse`" + ` is not listed above because the Agent itself has no
+detector** (no NPU/ONNX pipeline on this side) — but if the controlling
+client has its own local ui.parse offload enabled (an ONNX-based YOLOv8 +
+DBNet/SVTR pipeline running on the *client's* CPU/GPU, see that repo's
+internal/localui package), it answers ` + "`ui.parse`" + ` on this Agent's behalf,
+transparently: it fetches a screenshot via this Agent's own
+` + "`screen.get_image`" + `, runs detection locally, and returns the same
+{annotated PNG, JSON box list} shape the hardware KVM's own ` + "`ui.parse`" + `
+returns, with pixel bboxes in that screenshot's coordinate space. If your
+MCP client shows ` + "`ui.parse`" + ` in ` + "`tools/list`" + `, call it exactly like the
+hardware KVM's version and click the result with this Agent's
+` + "`mouse.action`" + ` ` + "`click_at`" + ` (box center, plus the result's
+` + "`image_width`" + `/` + "`image_height`" + ` as ` + "`screen_width`" + `/` + "`screen_height`" + `) — no
+different recipe needed depending on which kind of device answered.
+
+Recommended loop: ` + "`screen.get_image`" + ` (or ` + "`ui.parse`" + ` if available) →
+decide the next click/keystroke → ` + "`mouse.action`" + `/` + "`keyboard.send`" + ` → wait
+~150-300ms for the UI to react → ` + "`screen.get_image`" + ` again.
 `
 
 func (s *Server) mcpResourcesRead(w http.ResponseWriter, req mcpRequest) {

@@ -783,7 +783,12 @@ func (s *Server) applyMouse(req MouseRequest) error {
 		return s.app.Input().MouseScroll(ptrInt8(req.Scroll))
 	case "action":
 		return s.app.Input().MouseAction(ptrUint8(req.Button), ptrInt8(req.DX), ptrInt8(req.DY), ptrInt8(req.Scroll))
-	case "touch", "touch_position", "absolute_event":
+	case "touch", "touch_position", "absolute_event", "absolute":
+		// "absolute" was declared in the MCP mouse.action tool schema
+		// (mcp.go) but never handled here -- it fell through to default and
+		// silently no-op'd, an advertised action that couldn't actually do
+		// anything. Same handler as the other three legacy names, which
+		// already take x/y on this same raw 0..32767 axis.
 		return s.app.Input().AbsoluteEvent(ptrUint8(req.ButtonState), uint16(ptrInt(req.X)), uint16(ptrInt(req.Y)), ptrInt8(req.Scroll))
 	default:
 		return nil

@@ -270,6 +270,12 @@ func (p *MCPProxy) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// See injectLocalUIParseTool's doc comment: a no-op unless this was a
+	// tools/list call, local ui.parse offload is enabled, AND the backend's
+	// own answer doesn't already advertise ui.parse -- i.e. it only ever
+	// changes anything when the connected device is a software Agent.
+	resp = injectLocalUIParseTool(body, resp)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.Write(resp)
 }
