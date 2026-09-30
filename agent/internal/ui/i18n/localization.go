@@ -349,7 +349,7 @@ func EN() *LocalizedStrings {
 		Install:              "Install",
 		ClipboardInstall:     "Clipboard Tool Install",
 		ClipboardNoPkgMgr:    "No supported package manager (or pkexec) was found on this system -- clicking Install will show why, instead of a command preview.",
-		AWDLDisable:          "Disable AWDL while streaming (reduces Wi-Fi interference)",
+		AWDLDisable:          "Disable AWDL (recommended for Wi-Fi)",
 		AWDLDisableInfoTitle: "AWDL Streaming Optimization",
 		USBPassthrough:       "USB Passthrough Driver",
 		USBAccess:            "USB Passthrough",
