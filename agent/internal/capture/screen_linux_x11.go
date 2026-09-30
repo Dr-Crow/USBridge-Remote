@@ -3,12 +3,7 @@
 package capture
 
 import (
-	"bytes"
-	"encoding/base64"
 	"fmt"
-	"image/png"
-	"strconv"
-	"time"
 
 	"github.com/kbinani/screenshot"
 	"usbridge_agent/internal/api"
@@ -27,35 +22,23 @@ func New(devices streamhost.CaptureDeviceLister) *Service { return &Service{devi
 // the old one by value and nothing else here re-reads it.
 func (s *Service) SetDevices(devices streamhost.CaptureDeviceLister) { s.devices = devices }
 
+// Snapshot never attempts a real capture on Linux -- deliberately. Every
+// caller that matters is answered by the Client from its own decoded video
+// frame instead, whenever a session is streaming: MCP's screen.get_image
+// and ui.parse (client/internal/api/local_ui_intercept.go's
+// tryLocalScreenImage/tryLocalUIParse) never reach the Agent at all in that
+// case, and mouse.action's click_at/double_click_at before/after diff is
+// recomputed Client-side too (client/internal/api/mouse_click_diff.go).
+// kbinani/screenshot (still imported below, for Devices()'s unrelated
+// display-count fallback only) has no reliable answer on Linux: on Wayland
+// it either hangs on an interactive portal dialog nobody's there to answer,
+// or returns a blank frame where a compositor blocks plain X11 reads for
+// privacy -- not worth attempting for a path that, with a Client actually
+// connected and streaming, is never reached anyway. A real Agent-side
+// capture belongs in the streaming backend that already captures frames
+// for encoding, not here -- see rust-shine/LINUX_SCREENSHOT_EXPORT_TODO.md.
 func (s *Service) Snapshot() (*api.ScreenSnapshot, error) {
-	env := GetLinuxEnv()
-	if env == "Wayland" {
-		// Wayland high-quality snapshot placeholder
-	}
-
-	if screenshot.NumActiveDisplays() == 0 {
-		if env == "Wayland" {
-			return nil, fmt.Errorf("Wayland capture requires portal initialization")
-		}
-		return nil, fmt.Errorf("no active displays")
-	}
-
-	bounds := screenshot.GetDisplayBounds(0)
-	img, err := screenshot.CaptureRect(bounds)
-	if err != nil {
-		return nil, err
-	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return nil, err
-	}
-	return &api.ScreenSnapshot{
-		Format:      "png-base64",
-		Width:       bounds.Dx(),
-		Height:      bounds.Dy(),
-		ImageBase64: base64.StdEncoding.EncodeToString(buf.Bytes()),
-		Timestamp:   time.Now().Format(time.RFC3339Nano),
-	}, nil
+	return nil, fmt.Errorf("screen capture is not available directly from the Agent on Linux -- connect a Client and open its video view, which answers screen.get_image/ui.parse from the stream instead")
 }
 
 // Devices reports real display metadata (native resolution, supported FPS)
