@@ -40,6 +40,12 @@ func (s *Service) ClipboardInstallPreview() string { return "" }
 // it actually tries, not something this package can know in advance.
 func (s *Service) GPUClockLockSupported() bool { return true }
 
+// NvidiaPowerPrefsSupported reports whether the NVIDIA power-mode/two-pass
+// encoder preferences UI should be offered -- true here alongside the
+// clock-lock feature (see service_linux.go's NvidiaPowerPrefsSupported for
+// why these are gated separately).
+func (s *Service) NvidiaPowerPrefsSupported() bool { return true }
+
 // GPUClockLockElevated reports whether *this* process (the agent itself)
 // is already running elevated. In practice this is almost always false --
 // the agent deliberately never requires elevation just to launch normally

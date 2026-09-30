@@ -61,12 +61,14 @@ type Config struct {
 	LockGPUClocksEnabled bool `yaml:"lock_gpu_clocks_enabled"`
 	// NvencTwoPass and NvidiaMaxPerformance are NVIDIA encoder preferences
 	// written into both streamers' configs, under the keys Sunshine and
-	// RustShine share (see app.applyNvencPrefs). Nil means on, both
-	// streamers' own default.
+	// RustShine share (see app.applyNvencPrefs).
 	//
 	// NvencTwoPass: NVENC's quarter-resolution first pass
 	// (nvenc_twopass). Better picture at low bitrates, ~20% more GPU 3D
-	// load and ~0.5 ms more encode time.
+	// load and ~0.5 ms more encode time. Nil means off -- this agent's
+	// default, opposite of the streamers' own on-by-default: the extra
+	// GPU load/latency isn't a trade most streaming setups want made for
+	// them silently.
 	NvencTwoPass *bool `yaml:"nvenc_two_pass,omitempty"`
 	// NvidiaMaxPerformance: the driver profile "Prefer maximum
 	// performance" for the streamer (nvenc_latency_over_power). Keeps the
@@ -106,6 +108,15 @@ type Config struct {
 	// matching gamestream-server's own default) so existing installs keep
 	// the web client working without needing to opt in.
 	RustShineWebRTCDisabled bool `yaml:"rustshine_webrtc_disabled,omitempty"`
+	// DisableAWDLDuringStreaming (macOS only): bring the awdl0 interface
+	// down for the duration of an active streaming session and back up
+	// once it ends, since AWDL (AirDrop/Handoff/Sidecar's mesh protocol)
+	// shares the Wi-Fi radio and periodically forces channel-hopping scans
+	// that hurt a concurrent stream's latency/stability -- see
+	// internal/netutil/awdl_darwin.go. Defaults to false/opt-in: enabling
+	// it installs a sudoers.d NOPASSWD rule (one admin-password prompt) so
+	// it can run without a prompt on every toggle.
+	DisableAWDLDuringStreaming bool `yaml:"disable_awdl_during_streaming,omitempty"`
 	// WebRTCSignalRelayEnabled gates the agent's outbound WebSocket to
 	// usbridge-entitlement's WebRTC signaling relay (see
 	// internal/app/webrtc_signal_relay.go, usbridge-entitlement-backend's
@@ -200,8 +211,9 @@ func (c Config) StreamerAutoUpdateEnabled() bool {
 	return c.StreamerAutoUpdate == nil || *c.StreamerAutoUpdate
 }
 
-// NvencTwoPassOK and NvidiaMaxPerformanceOK are true unless turned off.
-func (c Config) NvencTwoPassOK() bool { return c.NvencTwoPass == nil || *c.NvencTwoPass }
+// NvencTwoPassOK is false unless explicitly turned on; NvidiaMaxPerformanceOK
+// is true unless turned off.
+func (c Config) NvencTwoPassOK() bool { return c.NvencTwoPass != nil && *c.NvencTwoPass }
 
 func (c Config) NvidiaMaxPerformanceOK() bool { return c.NvidiaPowerModeValue() == "max" }
 

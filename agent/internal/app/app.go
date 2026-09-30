@@ -808,6 +808,7 @@ func (a *App) Run(headless, startHidden bool) error {
 	}
 	go a.sunshineWatchdog(ctx)
 	go a.x11SessionEnvWatchdog(ctx)
+	go a.awdlWatchdog(ctx)
 	// Always started, even before ever linking -- recheckEntitlement no-ops
 	// immediately (no network call) whenever cfg.EntitlementToken is
 	// empty, so this is cheap, and it means a purchase/trial made
@@ -3472,6 +3473,17 @@ func (a *App) GPUClockLockSupported() bool {
 		return false
 	}
 	return a.perms.GPUClockLockSupported()
+}
+
+// NvidiaPowerPrefsSupported reports whether the NVIDIA power-mode/two-pass
+// encoder preferences UI should be offered -- true on Windows and Linux
+// (see internal/permissions's per-platform NvidiaPowerPrefsSupported for
+// why this differs from GPUClockLockSupported above).
+func (a *App) NvidiaPowerPrefsSupported() bool {
+	if a.perms == nil {
+		return false
+	}
+	return a.perms.NvidiaPowerPrefsSupported()
 }
 
 // LockGPUClocksEnabled returns the persisted "Lock GPU clocks" setting.

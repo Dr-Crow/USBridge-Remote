@@ -31,6 +31,10 @@ func (s *Service) ClipboardInstallPreview() string { return "" }
 // mode to begin with.
 func (s *Service) GPUClockLockSupported() bool { return false }
 
+// NvidiaPowerPrefsSupported: unsupported/unknown platform, same reasoning
+// as GPUClockLockSupported above.
+func (s *Service) NvidiaPowerPrefsSupported() bool { return false }
+
 // GPUClockLockElevated always false off Windows -- see
 // service_windows.go's IsProcessElevated docs for what this actually checks
 // there.

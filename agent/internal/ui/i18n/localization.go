@@ -52,6 +52,8 @@ type LocalizedStrings struct {
 	Install              string
 	ClipboardInstall     string
 	ClipboardNoPkgMgr    string
+	AWDLDisable          string
+	AWDLDisableInfoTitle string
 	USBPassthrough       string
 	USBAccess            string
 	VirtualDisplayAccess string
@@ -344,6 +346,8 @@ func EN() *LocalizedStrings {
 		Install:              "Install",
 		ClipboardInstall:     "Clipboard Tool Install",
 		ClipboardNoPkgMgr:    "No supported package manager (or pkexec) was found on this system -- clicking Install will show why, instead of a command preview.",
+		AWDLDisable:          "Disable AWDL while streaming (reduces Wi-Fi interference)",
+		AWDLDisableInfoTitle: "AWDL Streaming Optimization",
 		USBPassthrough:       "USB Passthrough Driver",
 		USBAccess:            "USB Passthrough",
 		VirtualDisplayAccess: "Virtual Display",
@@ -362,9 +366,9 @@ func EN() *LocalizedStrings {
 		NotRunning: "Not running",
 		NotStaged:  "Not staged",
 
-		EnableUSBBroker:       "Enable",
-		USBBrokerConsentTitle: "Enable USB passthrough?",
-		USBBrokerConsentBody:  "USB passthrough is powered by a separate, closed-source component (not open-source like the rest of this agent). It stays off until you enable it here. Once enabled, keyboard, mouse, and gamepad passthrough is free; other USB devices (drives, audio, tablets, etc.) require a Pro or Enterprise subscription.",
+		EnableUSBBroker:        "Enable",
+		USBBrokerConsentTitle:  "Enable USB passthrough?",
+		USBBrokerConsentBody:   "USB passthrough is powered by a separate, closed-source component (not open-source like the rest of this agent). It stays off until you enable it here. Once enabled, keyboard, mouse, and gamepad passthrough is free; other USB devices (drives, audio, tablets, etc.) require a Pro or Enterprise subscription.",
 		USBBrokerRunningOnPort: "Running, listening on port %d.",
 		USBBrokerFreeTierNote:  "Keyboard, mouse and gamepad passthrough works without a subscription; other USB devices require Pro or Enterprise.",
 		USBBrokerNotRunning:    "The USB broker is not running. The agent retries automatically every 15 seconds.",
