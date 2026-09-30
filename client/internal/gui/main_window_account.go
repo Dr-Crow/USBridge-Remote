@@ -150,6 +150,7 @@ func (r *accountGoogleLoginButtonRenderer) Refresh() {
 type accountDialogSnapshot struct {
 	loginInProgress bool
 	loggedIn        bool
+	hasSyncKey      bool
 	lastError       string
 }
 
@@ -157,6 +158,7 @@ func newAccountDialogSnapshot(am *controller.AccountManager) accountDialogSnapsh
 	return accountDialogSnapshot{
 		loginInProgress: am.LoginInProgress(),
 		loggedIn:        am.LoggedIn(),
+		hasSyncKey:      am.HasSyncKey(),
 		lastError:       am.LastError(),
 	}
 }
@@ -221,8 +223,7 @@ func (mw *MainWindow) showAccountDialog() {
 
 			var identityHeader fyne.CanvasObject
 			if resettingSyncPassphrase {
-				// Hide avatar and "Signed in as"
-				identityHeader = emailText
+				identityHeader = view.NewInset(emailText, 0, 0, 8, 10)
 			} else {
 				trimmed := strings.TrimSpace(am.Email())
 				letter := "U"
@@ -234,10 +235,13 @@ func (mw *MainWindow) showAccountDialog() {
 				identityCopy := view.NewInset(container.NewVBox(signedInLabel, emailText), 10, 8, 0, 0)
 				avatar := newAccountAvatarBadge(letter)
 				identityHeader = container.NewBorder(nil, nil, avatar, container.NewCenter(deleteBtn), identityCopy)
+				if accountDialogMobile() {
+					identityHeader = view.NewInset(identityHeader, 0, 0, 0, 10)
+				}
 			}
 
 			var identityBody *fyne.Container
-			if resettingSyncPassphrase {
+			if resettingSyncPassphrase || accountDialogMobile() {
 				identityBody = container.New(&tightVBoxLayout{}, identityHeader)
 			} else {
 				identityBody = container.NewVBox(identityHeader)
@@ -250,16 +254,16 @@ func (mw *MainWindow) showAccountDialog() {
 			}
 
 			identityBody.Add(newAccountDivider())
+			if !resettingSyncPassphrase {
+				licPad := float32(2)
+				if accountDialogMobile() {
+					licPad = 0
+				}
+				identityBody.Add(view.NewInset(newAccountLicenseManagerStrip(), 0, 0, licPad, licPad))
+				identityBody.Add(newAccountDivider())
+			}
 			syncContent, syncFooter := accountSyncPassphraseSection(cm, am, &resettingSyncPassphrase, render)
 			identityBody.Add(syncContent)
-			// License Manager lives inside the card (same strip as the
-			// logged-out Google-login panel) on mobile and desktop.
-			if !resettingSyncPassphrase {
-				identityBody.Add(newAccountDivider())
-				// Tight vertical inset: License strip used to inflate the
-				// card enough that desktop opened with a pointless scrollbar.
-				identityBody.Add(view.NewInset(newAccountLicenseManagerStrip(), 0, 0, 2, 2))
-			}
 
 			body.Add(newAccountCard(identityBody))
 
@@ -292,7 +296,9 @@ func (mw *MainWindow) showAccountDialog() {
 			// Footer: Log out + Set passphrase / Forgot link. Delete is
 			// the trash icon on the identity row.
 			var footerBar fyne.CanvasObject
-			if !am.HasSyncKey() && !resettingSyncPassphrase {
+			if resettingSyncPassphrase {
+				footerBar = footerLeftCentered
+			} else if !am.HasSyncKey() {
 				footerBar = container.NewBorder(nil, nil, buttonsRight, footerLeftCentered)
 			} else {
 				footerBar = container.NewBorder(nil, nil, footerLeftCentered, buttonsRight)
@@ -329,7 +335,7 @@ func (mw *MainWindow) showAccountDialog() {
 		body.Refresh()
 		footerContainer.Refresh()
 
-		applyAccountDialogScroll(scroll, body, am.LoggedIn(), am.HasSyncKey(), am.LoginInProgress())
+		applyAccountDialogScroll(scroll, body, am.LoggedIn(), am.HasSyncKey(), am.LoginInProgress(), accountDialogLayoutWidth(mw))
 	}
 	render()
 
@@ -360,7 +366,7 @@ func (mw *MainWindow) showAccountDialog() {
 	header := container.NewVBox(topAccent, view.NewInset(title, tl, tr, tt, tb), sep)
 
 	scroll = container.NewVScroll(nil)
-	applyAccountDialogScroll(scroll, body, am.LoggedIn(), am.HasSyncKey(), am.LoginInProgress())
+	applyAccountDialogScroll(scroll, body, am.LoggedIn(), am.HasSyncKey(), am.LoginInProgress(), accountDialogLayoutWidth(mw))
 
 	bg := canvas.NewRectangle(design.ColorGray900)
 	bg.CornerRadius = design.RadiusMD
@@ -384,8 +390,9 @@ func (mw *MainWindow) showAccountDialog() {
 	)
 
 	popup = view.ShowOverlayPopup(mw.window, view.OverlayPopupSpec{
-		Panel:    panel,
-		DimColor: color.NRGBA{R: 0x00, G: 0x00, B: 0x00, A: 0x72},
+		Panel:           panel,
+		DimColor:        color.NRGBA{R: 0x00, G: 0x00, B: 0x00, A: 0x72},
+		KeyboardOverlap: true,
 		PanelSize: func(canvasSize fyne.Size, panel fyne.CanvasObject) fyne.Size {
 			return accountDialogPanelSize(panel, canvasSize)
 		},
@@ -393,6 +400,10 @@ func (mw *MainWindow) showAccountDialog() {
 			return accountDialogPanelPos(canvasSize, panelSize)
 		},
 	})
+	applyAccountDialogScroll(scroll, body, am.LoggedIn(), am.HasSyncKey(), am.LoginInProgress(), accountDialogLayoutWidth(mw))
+	if popup != nil {
+		popup.Refresh()
+	}
 
 	// Polls while the dialog is open (2s cadence) so a login completing
 	// in the browser is

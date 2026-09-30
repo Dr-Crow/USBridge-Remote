@@ -210,6 +210,11 @@ func (fd *FullscreenDialog) createFullscreenWindow() {
 
 	logrus.Info("⌨️ [DEBUG] Creating the virtual keyboard for fullscreen mode")
 	fd.virtualKeyboard = graphics.NewVirtualKeyboard(fd.fullscreenWindow, fd.handleVirtualKeyPress, fd.handleRunePress)
+	fd.virtualKeyboard.SetOnKeyHold(func(keyCode int, down bool) {
+		if fd.videoWidget != nil {
+			fd.videoWidget.handleVirtualKeyHold(keyCode, down)
+		}
+	})
 	fd.platformSetupUI()
 
 	keyboardLayout := fd.virtualKeyboard.GetKeyboardLayout()

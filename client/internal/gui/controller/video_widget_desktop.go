@@ -24,6 +24,7 @@ func (vw *VideoWidget) platformHandleVirtualKeyboard() {
 			return
 		}
 		vw.virtualKeyboard = graphics.NewVirtualKeyboard(vw.parentWindow, vw.handleVirtualKeyPress, vw.handlePhysicalRunePress)
+		vw.virtualKeyboard.SetOnKeyHold(vw.handleVirtualKeyHold)
 		platformSetupKeyboardWindow(vw.virtualKeyboard)
 	}
 

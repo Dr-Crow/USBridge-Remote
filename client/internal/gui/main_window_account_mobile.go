@@ -47,7 +47,8 @@ func accountDialogScrollMetrics(loggedIn, hasSyncKey, loginProgress bool) (left,
 			minH = 200
 		}
 		if accountDialogMobile() {
-			left, right, top, bottom = 14, 14, 10, 10
+			left, right, top, bottom = 14, 14, 8, 8
+			minH = 0
 		}
 	case loginProgress:
 		left, right, top, bottom, minH = 21, 21, 2, 6, 110
@@ -70,24 +71,49 @@ func accountDialogScrollMetrics(loggedIn, hasSyncKey, loginProgress bool) (left,
 	return
 }
 
-func applyAccountDialogScroll(scroll *container.Scroll, body fyne.CanvasObject, loggedIn, hasSyncKey, loginProgress bool) {
+func accountDialogLayoutWidth(mw *MainWindow) float32 {
+	if mw == nil || mw.window == nil || mw.window.Canvas() == nil {
+		return 0
+	}
+	return accountDialogPanelWidth(mw.window.Canvas().Size())
+}
+
+func accountDialogPanelWidth(canvasSize fyne.Size) float32 {
+	margin := clampFloat32(minFloat32(canvasSize.Width, canvasSize.Height)*0.04, 20, 32)
+	if accountDialogMobile() {
+		margin = 14
+	}
+	maxWidth := canvasSize.Width - margin*2
+	if maxWidth <= 0 {
+		maxWidth = canvasSize.Width
+	}
+	if accountDialogMobile() {
+		return maxWidth
+	}
+	return minFloat32(420, maxWidth)
+}
+
+func applyAccountDialogScroll(scroll *container.Scroll, body fyne.CanvasObject, loggedIn, hasSyncKey, loginProgress bool, layoutWidth float32) {
 	if scroll == nil {
 		return
 	}
 	l, r, t, b, minH := accountDialogScrollMetrics(loggedIn, hasSyncKey, loginProgress)
 	inset := view.NewInset(body, l, r, t, b)
 	scroll.Content = inset
-	// Grow with the body so wrapped content (login License Manager row,
-	// wrap-word intro, Google CTA) does not leave an inner scrollbar.
-	// Cap still happens in accountDialogPanelSize against the canvas.
+	if layoutWidth > 1 {
+		inner := layoutWidth - l - r
+		if inner < 1 {
+			inner = layoutWidth
+		}
+		if body != nil {
+			body.Resize(fyne.NewSize(inner, 4000))
+		}
+		inset.Resize(fyne.NewSize(layoutWidth, 4000))
+	}
 	if h := inset.MinSize().Height; h > minH {
 		minH = h
 	}
 	scroll.SetMinSize(fyne.NewSize(0, minH))
-	// Desktop (and short mobile login): expand the panel with content —
-	// ScrollVerticalOnly painted a thumb even when everything fit after
-	// License Manager moved into the card. Mobile logged-in keeps scroll
-	// as a fallback for tall passphrase/reset flows on small screens.
 	if !accountDialogMobile() || !loggedIn {
 		scroll.Direction = container.ScrollNone
 	} else {
@@ -101,23 +127,13 @@ func accountDialogPanelSize(panel fyne.CanvasObject, canvasSize fyne.Size) fyne.
 	if accountDialogMobile() {
 		margin = 14
 	}
-	maxWidth := canvasSize.Width - margin*2
 	maxHeight := canvasSize.Height - margin*2
-	if maxWidth <= 0 {
-		maxWidth = canvasSize.Width
-	}
 	if maxHeight <= 0 {
 		maxHeight = canvasSize.Height
 	}
 
+	panelWidth := accountDialogPanelWidth(canvasSize)
 	panelMin := panel.MinSize()
-	// Desktop width is fixed at 420 so a long email cannot stretch the panel.
-	panelWidth := minFloat32(420, maxWidth)
-	if accountDialogMobile() {
-		// Fill the phone column. Ignore content MinSize.Width so a long
-		// email cannot force the panel wider than the canvas.
-		panelWidth = maxWidth
-	}
 	panelHeight := minFloat32(panelMin.Height, maxHeight)
 	return fyne.NewSize(panelWidth, panelHeight)
 }
@@ -143,10 +159,11 @@ func newAccountSyncOnDescription() fyne.CanvasObject {
 	}
 	lbl := widget.NewLabel(text)
 	lbl.Wrapping = fyne.TextWrapWord
-	// Label wrap reports one-line MinSize; reserve two lines so the
-	// panel grows instead of clipping into a scroll.
 	lineH := fyne.MeasureText("Ag", 8, fyne.TextStyle{}).Height
+	if lineH < 1 {
+		lineH = 12
+	}
 	lock := canvas.NewRectangle(color.Transparent)
-	lock.SetMinSize(fyne.NewSize(0, lineH*2+6))
+	lock.SetMinSize(fyne.NewSize(0, lineH*2))
 	return container.NewStack(lock, wrapAccountField(lbl, 8, muted))
 }

@@ -104,14 +104,14 @@ func (dw *DiskWidget) GetDashboardContainer() fyne.CanvasObject {
 	addVirtualDisplayBtn.OnHover = dw.dashboardVideoHover
 	dw.dashboardAddVirtualDisplayBtn = addVirtualDisplayBtn
 
-	dashboardNetworkCard := view.NewDeviceDashboardCard(view.DeviceDashboardNetworkIconSVG, i18n.Current.DevicesCardNetwork, "", nil, dw.dashboardNetworkRows, networkBind)
+	dashboardNetworkCard := view.NewDeviceDashboardCard(view.DeviceDashboardNetworkIconSVG, i18n.Current.DevicesCardNetwork, "", nil, dw.dashboardNetworkRows, networkBind, "network", dw.refreshDashboardCardLayout)
 	dw.dashboardNetworkCard = dashboardNetworkCard
 	dw.dashboardNetworkCard.Hide() // only shown once a real RNDIS device exists -- see refreshDashboard
 
 	dw.dashboardBackupSpace = view.NewDeviceDashboardSpaceMeter()
 	dw.dashboardBackupSpace.OnHover = dw.dashboardBackupHover
 	dw.syncDashboardBackupSpace()
-	dashboardBackupCard := view.NewDeviceDashboardCard(view.DeviceDashboardBackupsIconSVG, i18n.Current.DevicesCardBackups, "", dw.dashboardBackupSpace, dw.dashboardBackup, backupBind)
+	dashboardBackupCard := view.NewDeviceDashboardCard(view.DeviceDashboardBackupsIconSVG, i18n.Current.DevicesCardBackups, "", dw.dashboardBackupSpace, dw.dashboardBackup, backupBind, "backups", dw.refreshDashboardCardLayout)
 	dw.dashboardBackupCard = dashboardBackupCard
 	dw.dashboardBackupCard.Hide() // only shown once the MTP backup flash exists -- see refreshDashboard
 
@@ -130,11 +130,11 @@ func (dw *DiskWidget) GetDashboardContainer() fyne.CanvasObject {
 	}
 
 	dw.dashboardAudioGap = view.NewDeviceDashboardCardGap()
-	dw.dashboardAudioCard = view.NewDeviceDashboardCard(view.DeviceDashboardAudioIconSVG, "Audio Pipeline (UAC2)", "", nil, dw.dashboardAudio, audioBind)
+	dw.dashboardAudioCard = view.NewDeviceDashboardCard(view.DeviceDashboardAudioIconSVG, "Audio Pipeline (UAC2)", "", nil, dw.dashboardAudio, audioBind, "audio", dw.refreshDashboardCardLayout)
 	narrowColumn := container.NewVBox(
-		view.NewDeviceDashboardCard(view.DeviceDashboardHIDIconSVG, "HID & Input Hub", "", hidHeaderRight, dw.dashboardHID, hidBind),
+		view.NewDeviceDashboardCard(view.DeviceDashboardHIDIconSVG, "HID & Input Hub", "", hidHeaderRight, dw.dashboardHID, hidBind, "hid", dw.refreshDashboardCardLayout),
 		view.NewDeviceDashboardCardGap(),
-		view.NewDeviceDashboardCard(view.DeviceDashboardVideoIconSVG, "Video Pipe & EDID", "", dw.dashboardAddVirtualDisplayBtn, dw.dashboardVideo, videoBind),
+		view.NewDeviceDashboardCard(view.DeviceDashboardVideoIconSVG, "Video Pipe & EDID", "", dw.dashboardAddVirtualDisplayBtn, dw.dashboardVideo, videoBind, "video", dw.refreshDashboardCardLayout),
 		dw.dashboardAudioGap,
 		dw.dashboardAudioCard,
 	)
@@ -178,6 +178,8 @@ func (dw *DiskWidget) GetDashboardContainer() fyne.CanvasObject {
 		storageHeaderRight,
 		dw.dashboardStorageScroll,
 		storageBind,
+		"storage",
+		dw.refreshDashboardCardLayout,
 	)
 	// Zadig/WinUSB driver replacement is only ever needed on a Windows
 	// client (that's the OS whose raw, non-HID USB passthrough goes through
@@ -200,6 +202,8 @@ func (dw *DiskWidget) GetDashboardContainer() fyne.CanvasObject {
 		emulationHeaderRight,
 		dw.dashboardEmulationScroll,
 		emulationBind,
+		"emulation",
+		dw.refreshDashboardCardLayout,
 	)
 
 	dw.dashboardWideColumn = container.NewVBox(
@@ -250,6 +254,13 @@ func (dw *DiskWidget) GetDashboardContainer() fyne.CanvasObject {
 	dw.dashboardContainer = view.NewEdgeStack(nil, footer, tabBody)
 	dw.refreshDashboard()
 	return dw.dashboardContainer
+}
+
+func (dw *DiskWidget) refreshDashboardCardLayout() {
+	if dw == nil || dw.dashboardContainer == nil {
+		return
+	}
+	dw.dashboardContainer.Refresh()
 }
 
 // SetDashboardScriptFooter injects the shared script-run chip into the

@@ -28,6 +28,7 @@ type VirtualKeyboard struct {
 	toggleBtn      *widget.Button
 	isVisible      bool
 	onKeyPress     func(keyCode int, modifiers int)
+	onKeyHold      func(keyCode int, down bool)
 	onRuneTyped    func(r rune) // Sending each character to the host
 	parentWindow   fyne.Window
 	keyboardWindow fyne.Window
@@ -62,6 +63,9 @@ type VirtualKeyboard struct {
 	// landscape packing, Fn / F-key row). Set by createCompactKeysChrome.
 	rebuildCompactKeys func()
 	compactFnOn        bool
+	// onCompactLayoutChanged fires after Fn swaps the special-keys chrome
+	// so the header can re-measure without growing extra rows.
+	onCompactLayoutChanged func()
 	// onDismiss closes the special-keys + system IME stack (mobile header).
 	onDismiss func()
 
@@ -197,21 +201,25 @@ func (vk *VirtualKeyboard) toggleModifier(keyCode int) {
 		vk.ctrlPressed = !vk.ctrlPressed
 		vk.updateModifierButton(vk.ctrlBtn, "Ctrl", vk.ctrlPressed)
 		setCompactKeyActive(vk.ctrlPressed, vk.ctrlKey, vk.ctrlKeyR)
+		vk.sendKeyHold(keyCode, vk.ctrlPressed)
 		logrus.Infof("⌨️ Ctrl toggled: %v", vk.ctrlPressed)
 	case 226, 230: // Alt (Left/Right)
 		vk.altPressed = !vk.altPressed
 		vk.updateModifierButton(vk.altBtn, "Alt", vk.altPressed)
 		setCompactKeyActive(vk.altPressed, vk.altKey, vk.altKeyR)
+		vk.sendKeyHold(keyCode, vk.altPressed)
 		logrus.Infof("⌨️ Alt toggled: %v", vk.altPressed)
 	case 225, 229: // Shift (Left/Right)
 		vk.shiftPressed = !vk.shiftPressed
 		vk.updateModifierButton(vk.shiftBtn, "Shift", vk.shiftPressed)
 		setCompactKeyActive(vk.shiftPressed, vk.shiftKey, vk.shiftKeyR)
+		vk.sendKeyHold(keyCode, vk.shiftPressed)
 		logrus.Infof("⌨️ Shift toggled: %v", vk.shiftPressed)
 	case 227, 231: // Win/GUI (Left/Right)
 		vk.winPressed = !vk.winPressed
 		vk.updateModifierButton(vk.winBtn, "Win", vk.winPressed)
 		setCompactKeyActive(vk.winPressed, vk.winKey, vk.winKeyR)
+		vk.sendKeyHold(keyCode, vk.winPressed)
 		logrus.Infof("⌨️ Win toggled: %v", vk.winPressed)
 	case 57: // Caps Lock
 		vk.capsLockPressed = !vk.capsLockPressed
@@ -267,6 +275,43 @@ func (vk *VirtualKeyboard) handleKeyPress(keyCode int, modifiers int) {
 
 	if vk.onKeyPress != nil {
 		vk.onKeyPress(keyCode, currentModifiers)
+	}
+}
+
+func (vk *VirtualKeyboard) sendKeyHold(keyCode int, down bool) {
+	if vk == nil || vk.onKeyHold == nil {
+		return
+	}
+	vk.onKeyHold(keyCode, down)
+}
+
+func (vk *VirtualKeyboard) releaseLatchedModifiers() {
+	if vk == nil {
+		return
+	}
+	if vk.ctrlPressed {
+		vk.ctrlPressed = false
+		vk.updateModifierButton(vk.ctrlBtn, "Ctrl", false)
+		setCompactKeyActive(false, vk.ctrlKey, vk.ctrlKeyR)
+		vk.sendKeyHold(224, false)
+	}
+	if vk.altPressed {
+		vk.altPressed = false
+		vk.updateModifierButton(vk.altBtn, "Alt", false)
+		setCompactKeyActive(false, vk.altKey, vk.altKeyR)
+		vk.sendKeyHold(226, false)
+	}
+	if vk.shiftPressed {
+		vk.shiftPressed = false
+		vk.updateModifierButton(vk.shiftBtn, "Shift", false)
+		setCompactKeyActive(false, vk.shiftKey, vk.shiftKeyR)
+		vk.sendKeyHold(225, false)
+	}
+	if vk.winPressed {
+		vk.winPressed = false
+		vk.updateModifierButton(vk.winBtn, "Win", false)
+		setCompactKeyActive(false, vk.winKey, vk.winKeyR)
+		vk.sendKeyHold(227, false)
 	}
 }
 
@@ -379,6 +424,7 @@ func (vk *VirtualKeyboard) Hide() {
 	}
 
 	vk.isVisible = false
+	vk.releaseLatchedModifiers()
 
 	if vk.keyboardWindow != nil {
 		vk.persistKeyboardWindowSize()
@@ -427,6 +473,14 @@ func (vk *VirtualKeyboard) SetOnDismiss(fn func()) {
 	vk.onDismiss = fn
 }
 
+func (vk *VirtualKeyboard) SetOnKeyHold(fn func(keyCode int, down bool)) {
+	vk.onKeyHold = fn
+}
+
+func (vk *VirtualKeyboard) SetOnCompactLayoutChanged(fn func()) {
+	vk.onCompactLayoutChanged = fn
+}
+
 // SetVisibleState sets visibility state without showing a separate window.
 // Does not blur the IME entry — sticky system IME may remain open with the
 // special-keys overlay hidden (or vice versa).
@@ -439,6 +493,7 @@ func (vk *VirtualKeyboard) SetVisibleState(visible bool) {
 		vk.keyboard.Show()
 		return
 	}
+	vk.releaseLatchedModifiers()
 	vk.setIMEOffset(0)
 	vk.keyboard.Hide()
 }

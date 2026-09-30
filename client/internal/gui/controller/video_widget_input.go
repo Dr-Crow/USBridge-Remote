@@ -606,6 +606,58 @@ func hidKeyToVK(hid int) int16 {
 	}
 }
 
+func hidModifierWidgetMask(hid int) int32 {
+	switch hid {
+	case 224, 228:
+		return 1
+	case 225, 229:
+		return 2
+	case 226, 230:
+		return 4
+	case 227, 231:
+		return 8
+	default:
+		return 0
+	}
+}
+
+// handleVirtualKeyHold latches modifiers (Ctrl/Shift/Alt/Win) as real KeyDown
+// until the same key is tapped again. Tap keys still go through handleVirtualKeyPress.
+func (vw *VideoWidget) handleVirtualKeyHold(keyCode int, down bool) {
+	vk := hidKeyToVK(keyCode)
+	mask := hidModifierWidgetMask(keyCode)
+	if mask != 0 {
+		for {
+			current := vw.keyboardModifierState.Load()
+			var next int32
+			if down {
+				next = current | mask
+			} else {
+				next = current &^ mask
+			}
+			if vw.keyboardModifierState.CompareAndSwap(current, next) {
+				break
+			}
+		}
+	}
+	if down {
+		vw.moonlightTrackKeyDown(vk)
+	} else {
+		vw.moonlightTrackKeyUp(vk)
+	}
+	mi := vw.moonlightInput()
+	if mi == nil {
+		return
+	}
+	mods := widgetToMoonlightModifiers(int(vw.keyboardModifierState.Load()))
+	action := int8(service.LiKeyActionUp)
+	if down {
+		action = service.LiKeyActionDown
+	}
+	logrus.Infof("⌨️ Virtual keyboard hold: hid=%d vk=0x%02X down=%v mods=%d", keyCode, uint16(vk), down, mods)
+	vw.enqueueSend(func() { mi.SendMoonlightKey(vk, action, mods) })
+}
+
 // handleVirtualKeyPress handles virtual keyboard key presses via Moonlight.
 // Virtual keyboard buttons use USB HID keycodes; convert to Windows VK codes first.
 // A 200 ms per-key cooldown prevents turbo from OS key-repeat or widget duplicate events.

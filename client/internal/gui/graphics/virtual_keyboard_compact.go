@@ -294,31 +294,19 @@ func (vk *VirtualKeyboard) createCompactSpecialKeysPanel() fyne.CanvasObject {
 	return vk.createCompactKeysChrome()
 }
 
-// createCompactKeysChrome builds an adaptive special-keys panel: two compact
-// rows in portrait and landscape. Arrows are a single ← ↑ ↓ → cluster. Fn
-// toggles F1–F12 — in landscape that replaces the modifier rows (still two
-// rows total); in portrait F-keys stack above the modifiers.
+// createCompactKeysChrome builds a two-row special-keys panel. Fx swaps that
+// chrome in place for F1–F12 (still two rows) instead of stacking extra rows.
 func (vk *VirtualKeyboard) createCompactKeysChrome() fyne.CanvasObject {
 	host := container.NewMax()
 	var rebuild func()
 	rebuild = func() {
-		landscape := view.IsLandscape()
-		if landscape {
-			if vk.compactFnOn {
-				// F1–F12 + dismiss in two squeezed rows — do not stack on
-				// top of Esc/modifiers (that made three rows in landscape).
-				host.Objects = []fyne.CanvasObject{vk.buildLandscapeCompactFKeys(rebuild)}
-			} else {
-				host.Objects = []fyne.CanvasObject{vk.buildLandscapeCompactKeys(rebuild)}
-			}
+		var panel fyne.CanvasObject
+		if vk.compactFnOn {
+			panel = vk.buildCompactFKeysPanel(rebuild)
 		} else {
-			body := vk.buildPortraitCompactKeys(rebuild)
-			if vk.compactFnOn {
-				host.Objects = []fyne.CanvasObject{container.NewVBox(vk.buildCompactFKeysRow(rebuild), body)}
-			} else {
-				host.Objects = []fyne.CanvasObject{body}
-			}
+			panel = vk.buildPortraitCompactKeys(rebuild)
 		}
+		host.Objects = []fyne.CanvasObject{panel}
 		host.Refresh()
 	}
 	vk.rebuildCompactKeys = rebuild
@@ -342,6 +330,9 @@ func (vk *VirtualKeyboard) newCompactFnKey(rebuild func()) *compactKey {
 		fnKey.SetActive(vk.compactFnOn)
 		if rebuild != nil {
 			rebuild()
+		}
+		if vk.onCompactLayoutChanged != nil {
+			vk.onCompactLayoutChanged()
 		}
 	}
 	fnKey.SetActive(vk.compactFnOn)
@@ -477,13 +468,6 @@ func (l *specialKeysLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) 
 	place(objects[13], x7, row2Y, col7W, row2H)
 }
 
-func compactKeysSpreadRow(keys ...fyne.CanvasObject) fyne.CanvasObject {
-	if len(keys) == 0 {
-		return container.NewHBox()
-	}
-	return container.NewGridWithColumns(len(keys), keys...)
-}
-
 func (vk *VirtualKeyboard) buildPortraitCompactKeys(rebuild func()) fyne.CanvasObject {
 	shiftKey, ctrlKey, winKey, altKey, fnKey := vk.buildCompactModifierKeys(rebuild)
 	escKey := newCompactKey(vk, "Esc", compactKeyNormal, 30, func() { vk.handleKeyPress(41, 0) })
@@ -521,75 +505,91 @@ func (vk *VirtualKeyboard) buildLandscapeCompactKeys(rebuild func()) fyne.Canvas
 	return vk.buildPortraitCompactKeys(rebuild)
 }
 
-func (vk *VirtualKeyboard) compactArrowKeys() []fyne.CanvasObject {
-	const aw = compactKeyHeight
-	return []fyne.CanvasObject{
-		padCompactKey(newCompactKey(vk, "←", compactKeyNormal, aw, func() { vk.handleKeyPress(80, 0) })),
-		padCompactKey(newCompactKey(vk, "↑", compactKeyNormal, aw, func() { vk.handleKeyPress(82, 0) })),
-		padCompactKey(newCompactKey(vk, "↓", compactKeyNormal, aw, func() { vk.handleKeyPress(81, 0) })),
-		padCompactKey(newCompactKey(vk, "→", compactKeyNormal, aw, func() { vk.handleKeyPress(79, 0) })),
-		padCompactKey(newCompactIconKey(vk, assets.KeyboardIconDismiss, aw, func() {
-			if vk.onDismiss != nil {
-				vk.onDismiss()
+type compactFKeysLayout struct {
+	gapX float32
+	gapY float32
+}
+
+func newCompactFKeysLayout() *compactFKeysLayout {
+	return &compactFKeysLayout{gapX: 2.5, gapY: 2}
+}
+
+func (l *compactFKeysLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	h := compactKeyHeight*2 + l.gapY
+	w := float32(30)*7 + float32(6)*l.gapX
+	return fyne.NewSize(w, h)
+}
+
+func (l *compactFKeysLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	if len(objects) < 14 {
+		return
+	}
+	w := size.Width
+	h := size.Height
+	if w <= 0 || h <= 0 {
+		return
+	}
+	rowH := (h - l.gapY) / 2
+	if rowH < 1 {
+		rowH = 1
+	}
+	row2Y := rowH + l.gapY
+	row2H := h - row2Y
+	if row2H < 1 {
+		row2H = rowH
+	}
+	gaps := float32(6) * l.gapX
+	keyW := (w - gaps) / 7
+	if keyW < 1 {
+		keyW = 1
+	}
+	place := func(obj fyne.CanvasObject, col int, y, height float32) {
+		if obj == nil {
+			return
+		}
+		x := float32(col) * (keyW + l.gapX)
+		width := keyW
+		if col == 6 {
+			width = w - x
+			if width < 1 {
+				width = keyW
 			}
-		})),
+		}
+		obj.Move(fyne.NewPos(x, y))
+		obj.Resize(fyne.NewSize(width, height))
+	}
+	for i := 0; i < 7; i++ {
+		place(objects[i], i, 0, rowH)
+		place(objects[i+7], i, row2Y, row2H)
 	}
 }
 
-func (vk *VirtualKeyboard) buildCompactFKeysRow(rebuild func()) fyne.CanvasObject {
+func (vk *VirtualKeyboard) buildCompactFKeysPanel(rebuild func()) fyne.CanvasObject {
 	labels := []string{"F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"}
 	codes := []int{58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69}
-	kw := float32(32)
-	makeKey := func(label string, code int) fyne.CanvasObject {
-		return padCompactKey(newCompactKey(vk, label, compactKeyNormal, kw, func() { vk.handleKeyPress(code, 0) }))
+	keys := make([]fyne.CanvasObject, 0, 14)
+	for i := range labels {
+		keys = append(keys, newCompactKey(vk, labels[i], compactKeyNormal, 30, func(code int) func() {
+			return func() { vk.handleKeyPress(code, 0) }
+		}(codes[i])))
 	}
-	row1 := compactKeysSpreadRow(
-		makeKey(labels[0], codes[0]), makeKey(labels[1], codes[1]), makeKey(labels[2], codes[2]),
-		makeKey(labels[3], codes[3]), makeKey(labels[4], codes[4]), makeKey(labels[5], codes[5]),
-		makeKey(labels[6], codes[6]),
-	)
-	row2 := compactKeysSpreadRow(
-		makeKey(labels[7], codes[7]), makeKey(labels[8], codes[8]), makeKey(labels[9], codes[9]),
-		makeKey(labels[10], codes[10]), makeKey(labels[11], codes[11]),
-		padCompactKey(newCompactKey(vk, "Back", compactKeyNormal, 48, func() {
-			vk.compactFnOn = false
-			if rebuild != nil {
-				rebuild()
-			}
-		})),
-	)
-	return container.NewVBox(row1, row2)
-}
-
-// buildLandscapeCompactFKeys packs F1–F12 + dismiss into two squeezed rows
-// so landscape special-keys stay at the same height as the modifier layout.
-func (vk *VirtualKeyboard) buildLandscapeCompactFKeys(rebuild func()) fyne.CanvasObject {
-	labels := []string{"F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"}
-	codes := []int{58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69}
-	const kw = float32(26)
-	makeKey := func(label string, code int) fyne.CanvasObject {
-		k := newCompactKey(vk, label, compactKeyNormal, kw, func() { vk.handleKeyPress(code, 0) })
-		k.minW = kw
-		return padCompactKey(k)
-	}
-	row1 := compactKeysSpreadRow(
-		makeKey(labels[0], codes[0]), makeKey(labels[1], codes[1]), makeKey(labels[2], codes[2]),
-		makeKey(labels[3], codes[3]), makeKey(labels[4], codes[4]), makeKey(labels[5], codes[5]),
-		makeKey(labels[6], codes[6]),
-	)
-	back := newCompactKey(vk, "⌫Fn", compactKeyNormal, 36, func() {
+	fnKey := newCompactKey(vk, "Fx", compactKeyNormal, 30, func() {
 		vk.compactFnOn = false
 		if rebuild != nil {
 			rebuild()
 		}
+		if vk.onCompactLayoutChanged != nil {
+			vk.onCompactLayoutChanged()
+		}
 	})
-	back.minW = 36
-	row2 := compactKeysSpreadRow(
-		makeKey(labels[7], codes[7]), makeKey(labels[8], codes[8]), makeKey(labels[9], codes[9]),
-		makeKey(labels[10], codes[10]), makeKey(labels[11], codes[11]),
-		padCompactKey(back),
-	)
-	return container.NewVBox(row1, row2)
+	fnKey.SetActive(true)
+	dismissKey := newCompactIconKey(vk, assets.KeyboardIconDismiss, 30, func() {
+		if vk.onDismiss != nil {
+			vk.onDismiss()
+		}
+	})
+	keys = append(keys, fnKey, dismissKey)
+	return container.New(newCompactFKeysLayout(), keys...)
 }
 
 // createCompactSpecialKeysLayout is the desktop mobile-preview special-keys

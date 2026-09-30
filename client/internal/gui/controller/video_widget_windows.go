@@ -469,7 +469,7 @@ func (vw *VideoWidget) startMetalVideoOnWindow(window fyne.Window, fullscreen bo
 		if service.VKVideoCreate(hwnd, x, y, w, h, vw.enableVSync) {
 			logrus.Infof("[Vulkan/Win] overlay active (fullscreen=%v) rect=(%d,%d,%dx%d)", fullscreen, x, y, w, h)
 			// If a Fyne overlay (popup/menu) is already open when we start, hide immediately.
-			if view.OverlayActive() || view.NavVideoHidden() {
+			if vw.fyneOverlaysOpen() || view.NavVideoHidden() {
 				service.VKVideoSetHidden(true)
 			} else {
 				// Same ShowWindow + HWND_TOPMOST poke that a Control-tab
@@ -561,7 +561,7 @@ func (vw *VideoWidget) revealNativeVideoOverlay() {
 		vw.RefreshViewportGeometry()
 		return
 	}
-	if view.OverlayActive() || view.NavVideoHidden() {
+	if vw.fyneOverlaysOpen() || view.NavVideoHidden() {
 		service.VKVideoSetHidden(true)
 		return
 	}
@@ -588,6 +588,9 @@ func (vw *VideoWidget) stopMetalVideo() {
 // updateMetalVideoFrame repositions the overlay and logs stats at 1 Hz.
 func (vw *VideoWidget) updateMetalVideoFrame() {
 	vw.syncCanvasOverlayHidden()
+	if vw.fyneOverlaysOpen() {
+		return
+	}
 
 	// When fullscreen is active the Vulkan child-window belongs to the fullscreen
 	// window. The main-window VideoWidget must not call VKVideoUpdateFrame or it

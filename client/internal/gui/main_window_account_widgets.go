@@ -57,7 +57,13 @@ func newAccountLicenseManagerStrip() fyne.CanvasObject {
 		hint := widget.NewLabel(i18n.Current.AccountLicenseManagerHint)
 		hint.Wrapping = fyne.TextWrapWord
 		hint.Alignment = fyne.TextAlignLeading
-		styledHint = wrapAccountField(hint, 11, muted)
+		lineH := fyne.MeasureText("Ag", 10, fyne.TextStyle{}).Height
+		if lineH < 1 {
+			lineH = 14
+		}
+		lock := canvas.NewRectangle(color.Transparent)
+		lock.SetMinSize(fyne.NewSize(0, lineH*2))
+		styledHint = container.NewStack(lock, wrapAccountField(hint, 10, muted))
 	} else {
 		// Single-line canvas text reports real height (unlike wrap Label),
 		// so the desktop Account panel can grow instead of scrolling.
@@ -85,9 +91,13 @@ func newAccountLicenseManagerStrip() fyne.CanvasObject {
 func newAccountLoginLicenseRow() fyne.CanvasObject {
 	inset := float32(14)
 	if accountDialogMobile() {
-		inset = 12
+		inset = 10
 	}
-	return newAccountCardInset(newAccountLicenseManagerStrip(), inset, inset, 6, 6)
+	topBottom := float32(6)
+	if accountDialogMobile() {
+		topBottom = 4
+	}
+	return newAccountCardInset(newAccountLicenseManagerStrip(), inset, inset, topBottom, topBottom)
 }
 
 // newAccountDivider is the thin low-contrast rule between a card's header
@@ -578,7 +588,11 @@ func newAccountAutoSyncRow(checked bool, onChange func(bool)) fyne.CanvasObject 
 		onChange: onChange,
 	}
 	row.ExtendBaseWidget(row)
-	return view.NewInset(row, 0, 0, 8, 2)
+	top := float32(8)
+	if accountDialogMobile() {
+		top = 2
+	}
+	return view.NewInset(row, 0, 0, top, 2)
 }
 
 func (r *accountCheckRow) Tapped(*fyne.PointEvent) {
