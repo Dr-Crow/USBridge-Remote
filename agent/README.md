@@ -9,15 +9,11 @@
 ![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)
 ![License: GPLv3](https://img.shields.io/badge/license-GPLv3-blue)
 
-![USBridge Agent](docs/assets/screenshot_agent.png)
+![USBridge Agent](docs/assets/agent-screenshot.svg)
 
 </div>
 
 One lightweight binary for Windows, macOS, and Linux. It shares the exact same codebase and high-performance protocol as the physical [USBridge KVM](https://usbridge.io). Install it on any machine, and the USBridge Client controls it just like it would a real, hardware USBridge device.
-
----
-
-> 💖 **Patreon Exclusive:** Early access to our custom **Rust-based streaming engine** (Rust-shine). This cutting-edge rewrite includes exclusive features—such as **WebRTC support for the Web Client**, **performance optimizations for macOS**, **working Linux login screens on NVIDIA**, and more—available to our supporters on [Patreon](https://www.patreon.com/USBridge_Technologies). *(Note: The standard upstream C++ Sunshine build does not support WebRTC, so the web client requires this Rust-based version).*
 
 ---
 
