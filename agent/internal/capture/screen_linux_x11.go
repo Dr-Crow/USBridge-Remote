@@ -4,6 +4,7 @@ package capture
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/kbinani/screenshot"
 	"usbridge_agent/internal/api"
