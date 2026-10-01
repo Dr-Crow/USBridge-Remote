@@ -56,6 +56,10 @@ type LocalizedStrings struct {
 	AWDLDisableInfoTitle string
 	USBPassthrough       string
 	USBAccess            string
+	// USBHardwareDongle is the USB Passthrough chip's granted-state label on
+	// macOS specifically, when a physical USB/IP dongle is plugged in and
+	// working -- "HW USB", not translated (a technical badge, not prose).
+	USBHardwareDongle    string
 	VirtualDisplayAccess string
 	InstallUSBDriver     string
 	GetUSBIPDriver       string
@@ -353,6 +357,7 @@ func EN() *LocalizedStrings {
 		AWDLDisableInfoTitle: "AWDL Streaming Optimization",
 		USBPassthrough:       "USB Passthrough Driver",
 		USBAccess:            "USB Passthrough",
+		USBHardwareDongle:    "HW USB",
 		VirtualDisplayAccess: "Virtual Display",
 		InstallUSBDriver:     "Install USB Driver",
 		GetUSBIPDriver:       "Get USB/IP Driver",

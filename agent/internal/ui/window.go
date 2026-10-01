@@ -1249,16 +1249,32 @@ func (w *Window) ShowAndRun(onClose func()) {
 	w.usbDriverRow = newStatusRow(usbDriverTitle, w.usbDriverBtn)
 	w.usbDriverRow.Hide()
 
-	if runtime.GOOS == "linux" || runtime.GOOS == "windows" {
+	if runtime.GOOS == "linux" || runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 		// Same chip as Input Control / Screen Capture: green check when
 		// granted, "· Grant" tap target otherwise. On Windows what's missing
-		// is a driver, not a permission, so the button reads "Download":
-		// USB opens usbip-win2's release page (it ships its own signed
-		// installer and UAC flow), Virtual Display runs the MttVDD install
-		// (vdisplay.GrantAccess, one UAC prompt).
+		// is a driver, not a permission, so the button reads "Download": USB
+		// opens usbip-win2's release page (it ships its own signed installer
+		// and UAC flow). macOS has no OS-level permission or driver of its
+		// own here (there is no VHCI to install) -- the only importer is the
+		// hardware USB/IP dongle, so "granted" means "a dongle answered"
+		// (usbPermGranted) and the granted button reads "HW USB" instead of
+		// "Granted" (usbGrantedLabel) to make clear this is a physical
+		// device doing the work, not a virtual driver. Not-granted there
+		// just means no dongle is plugged in right now; tapping it shows the
+		// same hint already computed for the Status panel rather than doing
+		// nothing.
 		w.usbAccessCheck = newPermStatusChip(loc().USBAccess, func() {
-			if runtime.GOOS == "windows" {
+			switch runtime.GOOS {
+			case "windows":
 				w.openUSBIPDriverDownload()
+				w.usbAccessCheck.requestDone()
+				return
+			case "darwin":
+				hint := w.usbLastStatus.DriverHint
+				if hint == "" {
+					hint = "Plug in the USBridge USB/IP dongle"
+				}
+				showErrorDialog(fmt.Errorf("%s", hint), win)
 				w.usbAccessCheck.requestDone()
 				return
 			}
@@ -1278,7 +1294,14 @@ func (w *Window) ShowAndRun(onClose func()) {
 			}()
 		})
 		permStatusRow.Add(w.usbAccessCheck)
+		w.usbAccessCheck.SetGrantedLabel(usbGrantedLabel(runtime.GOOS))
+		w.usbAccessCheck.SetChecked(usbPermGranted(runtime.GOOS, usbpass.Status{}, usbpass.USBIPDriverInstalled))
+	}
 
+	if runtime.GOOS == "linux" || runtime.GOOS == "windows" {
+		// Virtual Display runs the MttVDD install (vdisplay.GrantAccess, one
+		// UAC prompt) -- not offered on macOS, which has its own native
+		// virtual display support with nothing here to grant.
 		w.vdisplayAccessCheck = newPermStatusChip(loc().VirtualDisplayAccess, func() {
 			go func() {
 				err := vdisplay.GrantAccess()
@@ -1293,9 +1316,8 @@ func (w *Window) ShowAndRun(onClose func()) {
 		})
 		w.vdisplayAccessCheck.SetChecked(vdisplay.AccessGranted())
 		permStatusRow.Add(w.vdisplayAccessCheck)
-		w.usbAccessCheck.SetChecked(usbPermGranted(runtime.GOOS, usbpass.Status{}, usbpass.USBIPDriverInstalled))
-		w.refreshPermRequestLabels()
 	}
+	w.refreshPermRequestLabels()
 
 	permRule := canvas.NewRectangle(design.ColorDivider)
 	permRule.SetMinSize(fyne.NewSize(0, 1))

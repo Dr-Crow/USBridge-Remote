@@ -194,6 +194,11 @@ type permStatusChip struct {
 	// -- e.g. "Download" on Windows, where the missing piece is a driver
 	// to install rather than an OS permission. See SetRequestLabel.
 	requestLabel string
+	// grantedLabel replaces the granted button's "Granted" text when set --
+	// e.g. "HW USB" for the hardware USB/IP dongle on macOS, where "granted"
+	// really means "a physical dongle is plugged in and working" rather
+	// than an OS permission having been handed out. See SetGrantedLabel.
+	grantedLabel string
 	onRequest    func()
 	granted      bool
 	busy         bool
@@ -256,6 +261,16 @@ func (c *permStatusChip) SetRequestLabel(label string) {
 	c.refreshVisuals()
 }
 
+// SetGrantedLabel sets the granted button's text ("" restores the default
+// "Granted").
+func (c *permStatusChip) SetGrantedLabel(label string) {
+	if c == nil {
+		return
+	}
+	c.grantedLabel = label
+	c.refreshVisuals()
+}
+
 func (c *permStatusChip) SetChecked(on bool) {
 	if c == nil {
 		return
@@ -280,7 +295,11 @@ func (c *permStatusChip) refreshVisuals() {
 		if c.granted {
 			c.btn.Accent = false
 			c.btn.Disable()
-			c.btn.SetText(loc().PermGranted)
+			if c.grantedLabel != "" {
+				c.btn.SetText(c.grantedLabel)
+			} else {
+				c.btn.SetText(loc().PermGranted)
+			}
 		} else {
 			c.btn.Accent = true
 			c.btn.Enable()

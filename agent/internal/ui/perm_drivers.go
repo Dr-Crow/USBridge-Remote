@@ -14,12 +14,28 @@ const usbipWin2ReleasesURL = "https://github.com/vadimgrn/usbip-win2/releases/la
 // usbPermGranted is the USB Passthrough chip's tick: on Linux the one-time
 // polkit attach grant, on Windows whether usbip-win2's drivers are
 // installed (read directly, so it's right even before the broker consent
-// that Status().VhciDriver depends on).
+// that Status().VhciDriver depends on), on macOS (no OS-level permission or
+// driver of its own -- AttachAccessGranted is trivially always true there)
+// whether the hardware USB/IP dongle is actually plugged in and answering.
 func usbPermGranted(goos string, usb usbpass.Status, usbipInstalled func() bool) bool {
 	if goos == "windows" {
 		return usbipInstalled()
 	}
+	if goos == "darwin" {
+		return usb.Dongle != nil && usb.Dongle.Error == ""
+	}
 	return usb.AttachGranted
+}
+
+// usbGrantedLabel is the granted-state button text: the default "Granted"
+// everywhere except macOS, where it reads "HW USB" to make clear this is a
+// physical dongle doing the work, not a virtual driver (there is nothing to
+// grant on macOS -- see usbPermGranted).
+func usbGrantedLabel(goos string) string {
+	if goos == "darwin" {
+		return loc().USBHardwareDongle
+	}
+	return ""
 }
 
 // showUSBDriverRow decides the separate "USB Passthrough Driver" install
