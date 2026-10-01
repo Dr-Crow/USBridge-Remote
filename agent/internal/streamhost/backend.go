@@ -131,6 +131,20 @@ type CodecProbe interface {
 	// VirtualDisplaySupported reports whether this backend supports native
 	// virtual displays (creation and streaming) without external physical monitors.
 	VirtualDisplaySupported() bool
+	// RawHIDSupported reports whether this backend's streamer process
+	// understands LiSendRawHidEvent -- the USBridge-proprietary moonlight-
+	// common-c extension that carries a Wacom tablet's live input reports
+	// over the stream's control channel instead of USB/IP (see
+	// client/docs/TABLETS.md, "Over the video stream instead of USB/IP").
+	// Only rust-shine's own streamer rebuilds the tablet from that stream
+	// (usb-passthrough/src/virtual_rawhid.rs) -- Sunshine and Punktfunk have
+	// no such handler, so the client must not switch a tablet into stream
+	// mode against them: it would silently stop working (no USB/IP
+	// fallback kicks in once the client has committed to stream mode).
+	// The client learns this over MasterSyncResponse.RawHIDSupported
+	// (agent/internal/api/sync.go), refreshed on every sync, and gates
+	// DiskWidget.splitRawHID on it.
+	RawHIDSupported() bool
 }
 
 // Client is a Moonlight client paired with the streaming host.

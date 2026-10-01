@@ -217,6 +217,10 @@ func (b *sunshineBackend) VirtualDisplaySupported() bool {
 	return false
 }
 
+// RawHIDSupported is false: Sunshine has no LiSendRawHidEvent handler --
+// see CodecProbe's doc comment.
+func (b *sunshineBackend) RawHIDSupported() bool { return false }
+
 func (b *sunshineBackend) SupportedVideoCodecs(adminPort int) []string {
 	b.supportedCodecsCache.mu.Lock()
 	if !b.supportedCodecsCache.fetchedAt.IsZero() && time.Since(b.supportedCodecsCache.fetchedAt) < supportedCodecsCacheTTL {

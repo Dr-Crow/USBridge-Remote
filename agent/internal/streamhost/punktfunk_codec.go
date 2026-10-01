@@ -69,3 +69,9 @@ func (b *punktfunkBackend) HdrStatus() (active bool, available bool) { return fa
 // never scales a virtual display. Each session gets an output at the
 // client's WxH@Hz").
 func (b *punktfunkBackend) VirtualDisplaySupported() bool { return true }
+
+// RawHIDSupported is false: Punktfunk has no LiSendRawHidEvent handler --
+// this is a USBridge-proprietary moonlight-common-c extension, only
+// implemented host-side by rust-shine's own streamer. See CodecProbe's
+// doc comment (backend.go).
+func (b *punktfunkBackend) RawHIDSupported() bool { return false }

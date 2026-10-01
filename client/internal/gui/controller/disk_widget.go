@@ -168,25 +168,29 @@ type DiskWidget struct {
 	padSlots          gamepadSlots
 	rumbleOnce        sync.Once
 	moonlightProvider moonlightProvider
+	// rawHIDSupportedByHost mirrors the paired agent's
+	// MasterSyncResponse.RawHIDSupported, refreshed on every master sync --
+	// see SetRawHIDSupported (disk_widget_rawhid.go).
+	rawHIDSupportedByHost bool
 
 	// Pen/tablet capture (macOS and the web build -- see platform.ListPenTablets)
 	activePenCaptures map[string]penCaptureHandle
 
-	onStorageInfoUpdate   func(usedPct float64, available, total int64)
-	userImages            []*models.DiskInfo
-	allDrives             []DriveItem
-	mountedDevices        []*models.DeviceInfo
-	selectedDrive         *DriveItem
-	selectedItems         map[int]bool
-	selectedItemsMu       sync.RWMutex
-	devicesTraceBudget    int
-	lastDrivesTraceSig    string
+	onStorageInfoUpdate func(usedPct float64, available, total int64)
+	userImages          []*models.DiskInfo
+	allDrives           []DriveItem
+	mountedDevices      []*models.DeviceInfo
+	selectedDrive       *DriveItem
+	selectedItems       map[int]bool
+	selectedItemsMu     sync.RWMutex
+	devicesTraceBudget  int
+	lastDrivesTraceSig  string
 	// lastGamepadLogSig is the last logged EnumerateGamepads() result (see
 	// loadGamepadDevices) -- logged only when it changes, since the wasm
 	// build polls this every second for the widget's whole lifetime
 	// (browserGamepadPollInterval) and an unconditional log there spams
 	// "gamepads found: 0 []" forever whenever nothing is plugged in.
-	lastGamepadLogSig string
+	lastGamepadLogSig     string
 	preferredMouseMode    string
 	observedMouseMode     string
 	preferredDisplayIndex int // 0-based display index for absolute mouse (0 = first)

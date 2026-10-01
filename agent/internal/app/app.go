@@ -4021,6 +4021,21 @@ func (a *App) StreamerName() string {
 	return a.stream.DisplayName()
 }
 
+// RawHIDSupported reports whether the active streaming backend understands
+// LiSendRawHidEvent (a Wacom tablet sent over the stream's control channel
+// instead of USB/IP) -- see streamhost.CodecProbe's doc comment. Surfaced to
+// the remote client via MasterSyncResponse.RawHIDSupported
+// (agent/internal/api/sync.go), which gates DiskWidget.splitRawHID: without
+// this check the client would switch a tablet into stream mode against a
+// backend that cannot rebuild it, and the tablet would silently stop
+// working (no USB/IP fallback once stream mode is chosen).
+func (a *App) RawHIDSupported() bool {
+	if a.stream == nil {
+		return false
+	}
+	return a.stream.RawHIDSupported()
+}
+
 // StreamerRunning reports whether the active streaming host backend's own
 // child process is currently alive -- for the GUI's status traffic light
 // (see ui/window.go's streamerStatusDot), distinct from StreamerName (which
