@@ -120,11 +120,13 @@ type CodecProbe interface {
 	// docs). Always (false, false) on a backend with no such concept
 	// (Sunshine).
 	Color444Status() (active bool, available bool)
-	// HdrStatus mirrors Color444Status exactly, for the RustShine HDR color
+	// HdrStatus mirrors Color444Status's shape, for the RustShine HDR color
 	// upgrade (HEVC Main10, BT.2020 + PQ) instead of 4:4:4 chroma -- see
 	// gamestream-server's GameStreamConfig::hdr_supported/AppState::hdr_licensed
 	// docs, and rust-shine's docs/COLOR_MODES.md for why this is an
 	// independent axis (today: macOS-only, unlike 4:4:4 which is Linux-only).
+	// Unlike Color444Status, available here is hardware probe only -- HDR is
+	// free-tier, no license check.
 	HdrStatus() (active bool, available bool)
 	// VirtualDisplaySupported reports whether this backend supports native
 	// virtual displays (creation and streaming) without external physical monitors.

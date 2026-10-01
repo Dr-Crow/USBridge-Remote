@@ -69,9 +69,10 @@ type VideoStartDialog struct {
 	color444TitleText *canvas.Text
 	color444Available bool
 	// hdrCheck/hdrHint: the RustShine HDR color upgrade -- mirrors
-	// color444Check exactly, independent axis (see rust-shine's
+	// color444Check's row mechanics, independent axis (see rust-shine's
 	// docs/COLOR_MODES.md), gated on models.VideoStatus.HdrAvailable
-	// instead of Color444Available.
+	// instead of Color444Available. Unlike 4:4:4, free-tier -- HdrAvailable
+	// reflects hardware capability only, never a license check.
 	hdrCheck     *videoDialogCheckbox
 	hdrHint      *videoDialogWrapText
 	hdrTitleText *canvas.Text
@@ -1343,9 +1344,11 @@ func newVideoDialogRowTitle(text string) *canvas.Text {
 // stroke colors rather than pulling from the app theme.
 var videoDialogRobotSVG = fyne.NewStaticResource("video_dialog_robot.svg", []byte(`<svg xmlns="http://www.w3.org/2000/svg" fill="#c4e77a" viewBox="0 0 24 24"><path d="M9,15a1,1,0,1,0,1,1A1,1,0,0,0,9,15ZM2,14a1,1,0,0,0-1,1v2a1,1,0,0,0,2,0V15A1,1,0,0,0,2,14Zm20,0a1,1,0,0,0-1,1v2a1,1,0,0,0,2,0V15A1,1,0,0,0,22,14ZM17,7H13V5.72A2,2,0,0,0,14,4a2,2,0,0,0-4,0,2,2,0,0,0,1,1.72V7H7a3,3,0,0,0-3,3v9a3,3,0,0,0,3,3H17a3,3,0,0,0,3-3V10A3,3,0,0,0,17,7ZM13.72,9l-.5,2H10.78l-.5-2ZM18,19a1,1,0,0,1-1,1H7a1,1,0,0,1-1-1V10A1,1,0,0,1,7,9H8.22L9,12.24A1,1,0,0,0,10,13h4a1,1,0,0,0,1-.76L15.78,9H17a1,1,0,0,1,1,1Zm-3-4a1,1,0,1,0,1,1A1,1,0,0,0,15,15Z"/></svg>`))
 
-// videoDialogProColor is the purple used for the 4:4:4/HDR rows' star
-// icon and "Pro" badge -- must match the hex inlined into videoDialogStarSVG
-// below (SVG resources can't reference a Go color value).
+// videoDialogProColor is the purple used for the 4:4:4 row's "Pro" badge
+// (and shared, via videoDialogStarSVG, by both the 4:4:4 and HDR rows' star
+// icon -- HDR is free-tier and no longer uses this color for its own badge,
+// see hdrRow's construction) -- must match the hex inlined into
+// videoDialogStarSVG below (SVG resources can't reference a Go color value).
 var videoDialogProColor = design.ColorProSoft
 
 // videoDialogStarSVG is a small star glyph shown before the 4:4:4 row's
@@ -1704,11 +1707,14 @@ func (vsd *VideoStartDialog) createInterface() {
 		vsd.color444Hint,
 	)
 
-	// RustShine HDR color: mirrors color444Check exactly (see
+	// RustShine HDR color: mirrors color444Check's construction and
+	// H.265-only, tap-while-disabled-switches-codec behavior (see
 	// docs/COLOR_MODES.md in rust-shine: chroma and dynamic range are
 	// independent axes) -- gated on hdrAvailable/models.VideoStatus.HdrAvailable
-	// instead of color444Available, otherwise identical construction and
-	// same H.265-only, tap-while-disabled-switches-codec behavior.
+	// instead of color444Available. Unlike 4:4:4, HDR is free-tier
+	// server-side (rust-shine's AppState::hdr_licensed is always `true`),
+	// so hdrAvailable here only ever reflects hardware capability, never a
+	// license -- see hdrRow's badge below for the UI-side consequence.
 	vsd.hdrCheck = newVideoDialogCheckbox(false, func(on bool) {
 		if on && vsd.selectedModeID() != models.VideoModeH265 {
 			vsd.setSelectedModeID(models.VideoModeH265)
@@ -1734,7 +1740,10 @@ func (vsd *VideoStartDialog) createInterface() {
 	hdrRow := newVideoDialogToggleRow(
 		vsd.hdrCheck,
 		newVideoDialogIconTitleText(videoDialogStarSVG, vsd.hdrTitleText),
-		newVideoDialogBadge(i18n.Current.HdrBadge, videoDialogProColor),
+		// Free-tier, unlike 4:4:4 -- no "Pro" badge, so an empty badge text
+		// in the same neutral color the other non-Pro rows use (VSync/Net
+		// Graph/Frame Smoothing) instead of videoDialogProColor.
+		newVideoDialogBadge(i18n.Current.HdrBadge, design.ColorConnectionBadgeText),
 		vsd.hdrHint,
 	)
 

@@ -17,7 +17,7 @@ Technical reference for the USBridge Client — the cross-platform control app (
 * **[USB Passthrough](./USB_PASSTHROUGH.md)** — the client-side (device-holder) half of USB passthrough: raw libusb claim on Windows/Linux vs. the non-exclusive HID tap on macOS, why Windows needs a one-time Zadig/WinUSB rebind with no automated equivalent, and composite-device/interrupt-endpoint handling.
 * **[Wacom Pen Tablet Support (macOS)](./PEN_TABLET_SUPPORT.md)** — the semantic pen protocol vs. USB/IP passthrough, and which tablet models are cataloged for the former.
 * **[Native Video & Audio Pipeline](./NATIVE_VIDEO_AUDIO.md)** — the Vulkan/Metal zero-copy rendering stack.
-* **[HDR and 4:4:4 color](./COLOR_MODES.md)** — when the Pro color options are enabled, which hosts and clients support them, and what they cost on the host.
+* **[HDR and 4:4:4 color](./COLOR_MODES.md)** — when the color options are enabled (4:4:4 is Pro, HDR is free), which hosts and clients support them, and what they cost on the host.
 * **[NBD on Android](./NBD_ANDROID_USAGE.md)**
 * **[Android Video Testing](./ANDROID_VIDEO_TESTING.md)**
 * **[Android Logcat](./ANDROID_LOGCAT.md)**

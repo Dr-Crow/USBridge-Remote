@@ -134,12 +134,14 @@ type VideoStatus struct {
 	// streaming.
 	Color444Active    bool `json:"color_444_active"`
 	Color444Available bool `json:"color_444_available"`
-	// HdrActive/HdrAvailable mirror Color444Active/Color444Available
-	// exactly, for RustShine HDR (HEVC Main10, BT.2020 + PQ) instead of
-	// 4:4:4 chroma -- see rust-shine's docs/COLOR_MODES.md for why these
-	// are independent axes with independent availability (today: HDR is
-	// macOS-only, 4:4:4 is Linux-only, a given agent can report either,
-	// both, or neither true).
+	// HdrActive/HdrAvailable mirror Color444Active/Color444Available, for
+	// RustShine HDR (HEVC Main10, BT.2020 + PQ) instead of 4:4:4 chroma --
+	// see rust-shine's docs/COLOR_MODES.md for why these are independent
+	// axes with independent availability (today: HDR is macOS-only, 4:4:4
+	// is Linux-only, a given agent can report either, both, or neither
+	// true). Unlike Color444Available, HdrAvailable is hardware probe only
+	// -- HDR is free-tier, no license check (rust-shine's
+	// AppState::hdr_licensed is always `true`).
 	HdrActive               bool `json:"hdr_active"`
 	HdrAvailable            bool `json:"hdr_available"`
 	VirtualDisplaySupported bool `json:"virtual_display_supported"`

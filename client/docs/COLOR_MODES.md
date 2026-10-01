@@ -1,11 +1,12 @@
 # HDR and 4:4:4 color
 
-The video dialog has two Pro color options for H.265 streams from a RustShine
-host: **4:4:4 chroma** (full-resolution color, sharper text) and **HDR**
-(HEVC Main10, BT.2020 + PQ). They are independent. Encoding happens on the
-host, so availability depends on the host's GPU, the license, and whether
-this client can display the result. The streamer-side details, including how
-each mode was verified, are in rust-shine's `docs/COLOR_MODES.md`.
+The video dialog has two color options for H.265 streams from a RustShine
+host: **4:4:4 chroma** (full-resolution color, sharper text, Pro) and **HDR**
+(HEVC Main10, BT.2020 + PQ, free). They are independent. Encoding happens on
+the host, so availability depends on the host's GPU and -- 4:4:4 only -- the
+license; HDR needs no license, just hardware that can do it. The
+streamer-side details, including how each mode was verified, are in
+rust-shine's `docs/COLOR_MODES.md`.
 
 ## When the options are enabled
 
@@ -14,11 +15,12 @@ A row is enabled only when all of these hold:
 1. H.265 is selected (both are HEVC profiles).
 2. The agent reports it available (`color_444_available` / `hdr_available`
    from the streamer's `/api/status`, passed through unchanged by the agent).
-   That means the host hardware can encode it **and** the license is Pro or
-   Enterprise.
+   For 4:4:4 that means the host hardware can encode it **and** the license
+   is Pro or Enterprise; for HDR it means only that the host hardware can
+   encode it.
 3. HDR only: this client can display HDR (`service.HdrDisplaySupported`). If
    the host offers HDR but this client can't show it, the row says so instead
-   of the "requires Pro" hint.
+   of the hardware-unavailable hint.
 
 ## Host support (what the agent reports)
 

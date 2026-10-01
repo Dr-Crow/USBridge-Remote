@@ -584,7 +584,7 @@ type LocalizedStrings struct {
 	HdrUnavailableMessage                string // info dialog body when tapping the HDR warning triangle
 	HdrClientUnsupportedHint             string // hint when the agent offers HDR but this client can't display it (service.HdrDisplaySupported)
 	HdrRequiresH265Hint                  string // hint under the (disabled, unchecked) checkbox when the selected codec isn't H.265
-	HdrBadge                             string // badge next to the HDR title, mirrors Color444Badge
+	HdrBadge                             string // badge next to the HDR title -- empty: HDR is free-tier (unlike 4:4:4's "PRO"), see newVideoDialogBadge's caller
 	NetGraph                             string // "Net Graph" checkbox title, video parameters dialog -- live network/render HUD, pure local overlay like AI Vision
 	NetGraphHint                         string // hint shown under the Net Graph checkbox
 	NetGraphBadge                        string // small badge next to the Net Graph title, e.g. "MAC"
@@ -1228,11 +1228,11 @@ func EN() *LocalizedStrings {
 		Color444Badge:                        "Pro",
 		Hdr:                                  "HDR Color (USBridge)",
 		HdrHint:                              "Captures and streams high dynamic range video (BT.2020 color, PQ curve) instead of standard SDR -- brighter highlights and a wider color range on an HDR-capable display, at a higher bitrate cost.",
-		HdrUnavailableHint:                   "HDR encode is not offered on this remote host. It needs USBridge Pro and a host that can encode HEVC Main10: an Apple Silicon Mac, or a Windows/Linux PC with an NVIDIA GPU.",
-		HdrUnavailableMessage:                "HDR is a separate encode path from 4:4:4: the remote host must report HDR encode. Today that is an Apple Silicon Mac (VideoToolbox) or a Windows/Linux PC with an NVIDIA GPU (NVENC), with a USBridge Pro license. Intel/AMD Linux hosts and Sunshine will not enable this checkbox.",
+		HdrUnavailableHint:                   "HDR encode is not offered on this remote host. It needs a host that can encode HEVC Main10: an Apple Silicon Mac, or a Windows/Linux PC with an NVIDIA GPU.",
+		HdrUnavailableMessage:                "HDR is a separate encode path from 4:4:4: the remote host must report HDR encode. Today that is an Apple Silicon Mac (VideoToolbox) or a Windows/Linux PC with an NVIDIA GPU (NVENC). Intel/AMD Linux hosts and Sunshine will not enable this checkbox. That is a hardware limit, not a license issue -- HDR is free.",
 		HdrClientUnsupportedHint:             "The host can stream HDR, but this device can't display it yet (HDR playback is available on macOS).",
 		HdrRequiresH265Hint:                  "Only available with the H.265 codec -- select it above to use HDR.",
-		HdrBadge:                             "Pro",
+		HdrBadge:                             "",
 		NetGraph:                             "Net Graph",
 		NetGraphHint:                         "Shows a live TF2-style HUD in the corner of the video: latency, packet loss, FEC recovery, and render/decode timing.",
 		NetGraphBadge:                        "Mac",
@@ -1552,8 +1552,8 @@ func ES() *LocalizedStrings {
 	locale.Color444UnavailableMessage = "4:4:4 Color viene con USBridge Pro, pero esta GPU remota no puede codificar HEVC 4:4:4. Es un limite de hardware, no de licencia."
 	locale.Color444RequiresH265Hint = "Solo con codec H.265 -- seleccionalo arriba."
 	locale.HdrHint = "Flujo HDR (BT.2020, PQ) en vez de SDR: luces mas brillantes en pantalla HDR."
-	locale.HdrUnavailableHint = "Este host remoto no ofrece encode HDR. Requiere USBridge Pro y un host con HEVC Main10: Mac Apple Silicon o PC Windows/Linux con GPU NVIDIA."
-	locale.HdrUnavailableMessage = "HDR es un camino de encode distinto de 4:4:4: el host remoto debe ofrecer HDR. Hoy: Mac Apple Silicon (VideoToolbox) o PC Windows/Linux con GPU NVIDIA (NVENC), con licencia USBridge Pro. Hosts Linux Intel/AMD o Sunshine no activaran esta casilla."
+	locale.HdrUnavailableHint = "Este host remoto no ofrece encode HDR. Requiere un host con HEVC Main10: Mac Apple Silicon o PC Windows/Linux con GPU NVIDIA."
+	locale.HdrUnavailableMessage = "HDR es un camino de encode distinto de 4:4:4: el host remoto debe ofrecer HDR. Hoy: Mac Apple Silicon (VideoToolbox) o PC Windows/Linux con GPU NVIDIA (NVENC). Hosts Linux Intel/AMD o Sunshine no activaran esta casilla. Es un limite de hardware, no de licencia -- HDR es gratis."
 	locale.HdrClientUnsupportedHint = "El host puede enviar HDR, pero este dispositivo aun no puede mostrarlo (HDR disponible en macOS)."
 	locale.HdrRequiresH265Hint = "Solo con codec H.265 -- seleccionalo arriba."
 	locale.VideoJPEGRTPHint = "JPEG RTP: MJPEG se reenvia; YUYV se codifica a JPEG antes de enviar."
@@ -1940,8 +1940,8 @@ func UKProper() *LocalizedStrings {
 	locale.Color444UnavailableMessage = "4:4:4 Color входить у USBridge Pro, але цей віддалений GPU не кодує HEVC 4:4:4. Це обмеження обладнання, не підписки."
 	locale.Color444RequiresH265Hint = "Лише з кодеком H.265 — оберіть його вище."
 	locale.HdrHint = "HDR-потік (BT.2020, PQ) замість SDR — яскравіші світла на HDR-екрані."
-	locale.HdrUnavailableHint = "Цей віддалений хост не пропонує HDR encode. Потрібні USBridge Pro і хост з HEVC Main10: Mac на Apple Silicon або ПК Windows/Linux з GPU NVIDIA."
-	locale.HdrUnavailableMessage = "HDR — окремий шлях encode, не 4:4:4: хост має вміти HDR. Зараз це Mac на Apple Silicon (VideoToolbox) або ПК Windows/Linux з GPU NVIDIA (NVENC), з ліцензією USBridge Pro. Хости Linux з Intel/AMD або Sunshine цю галочку не ввімкнуть."
+	locale.HdrUnavailableHint = "Цей віддалений хост не пропонує HDR encode. Потрібен хост з HEVC Main10: Mac на Apple Silicon або ПК Windows/Linux з GPU NVIDIA."
+	locale.HdrUnavailableMessage = "HDR — окремий шлях encode, не 4:4:4: хост має вміти HDR. Зараз це Mac на Apple Silicon (VideoToolbox) або ПК Windows/Linux з GPU NVIDIA (NVENC). Хости Linux з Intel/AMD або Sunshine цю галочку не ввімкнуть. Це обмеження заліза, не ліцензії — HDR безкоштовний."
 	locale.HdrClientUnsupportedHint = "Хост може передавати HDR, але цей пристрій поки не вміє його показувати (HDR доступний на macOS)."
 	locale.HdrRequiresH265Hint = "Лише з кодеком H.265 — оберіть його вище."
 	locale.VideoJPEGRTPHint = "JPEG RTP: MJPEG іде напряму; YUYV кодується в JPEG перед відправкою."

@@ -67,8 +67,9 @@ type Application interface {
 	// chroma, available is whether this host could offer it right now
 	// (hardware AND license tier). Always (false, false) on Sunshine.
 	Color444Status() (active bool, available bool)
-	// HdrStatus mirrors Color444Status exactly, for the RustShine HDR color
-	// upgrade.
+	// HdrStatus mirrors Color444Status's shape, for the RustShine HDR color
+	// upgrade -- unlike Color444Status, available is hardware-only: HDR is
+	// free-tier, no license check.
 	HdrStatus() (active bool, available bool)
 	// VirtualDisplaySupported reports whether the current stream backend
 	// supports native virtual displays.

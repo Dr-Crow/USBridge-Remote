@@ -71,7 +71,7 @@ func TestRustshineCurrentVideoCodec_UnreachableDefaultsToH264(t *testing.T) {
 }
 
 // TestRustshineColorAndHdrStatus_PassThroughFromStatusAPI pins that the
-// RustShine Pro color-upgrade fields (4:4:4 chroma, HDR) are relayed
+// RustShine color-upgrade fields (4:4:4 chroma, Pro; HDR, free) are relayed
 // verbatim from gamestream-server's own report, not derived/guessed --
 // these directly gate the video settings popup's 4:4:4/HDR checkboxes (see
 // CodecProbe's doc comment in backend.go).
