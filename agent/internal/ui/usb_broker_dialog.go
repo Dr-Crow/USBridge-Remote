@@ -6,8 +6,6 @@ import (
 	"usbridge_agent/internal/usbpass"
 
 	"fyne.io/fyne/v2"
-	"fyne.io/fyne/v2/driver/desktop"
-	"fyne.io/fyne/v2/widget"
 )
 
 // showUSBBrokerDialog displays the branded confirmation modal when clicking
@@ -32,7 +30,7 @@ func showUSBBrokerDialog(parent fyne.Window, onResult func(bool)) {
 	showConfirmDialog(title, bodyText, onResult, parent)
 }
 
-// showUSBBrokerStatusDialog is what a tap on the USB Broker row shows once
+// showUSBBrokerStatusDialog is what the USB Broker Info button shows once
 // consent is given: running + port, or not running + the broker's own last
 // error line (usbpass.Status.BrokerLastExit).
 func showUSBBrokerStatusDialog(parent fyne.Window, st usbpass.Status) {
@@ -50,33 +48,4 @@ func showUSBBrokerStatusDialog(parent fyne.Window, st usbpass.Status) {
 		}
 	}
 	showInfoDialog(loc().USBBroker, body, parent)
-}
-
-// tappableBox is a simple container wrapper that intercepts taps and displays a pointer cursor.
-type tappableBox struct {
-	widget.BaseWidget
-	content fyne.CanvasObject
-	onTap   func()
-}
-
-func newTappableBox(content fyne.CanvasObject, onTap func()) *tappableBox {
-	b := &tappableBox{content: content, onTap: onTap}
-	b.ExtendBaseWidget(b)
-	return b
-}
-
-func (b *tappableBox) CreateRenderer() fyne.WidgetRenderer {
-	return widget.NewSimpleRenderer(b.content)
-}
-
-func (b *tappableBox) Tapped(*fyne.PointEvent) {
-	if b.onTap != nil {
-		b.onTap()
-	}
-}
-
-func (b *tappableBox) TappedSecondary(*fyne.PointEvent) {}
-
-func (b *tappableBox) Cursor() desktop.Cursor {
-	return desktop.PointerCursor
 }

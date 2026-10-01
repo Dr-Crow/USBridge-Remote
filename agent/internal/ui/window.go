@@ -260,19 +260,20 @@ type Window struct {
 	// usbDriverRow (which is about the *driver*, not the broker process).
 	// Two mutually exclusive states, switched by ConsentGiven
 	// (refreshUSBPassthroughUI): before consent, usbBrokerConsentBtn is the
-	// only thing shown (the proprietary binary must never run without an
+	// only action shown (the proprietary binary must never run without an
 	// explicit, one-time opt-in -- see App.EnableUSBBroker); after, the
-	// usual status dot/label take over. usbBrokerStatusDot is green while
-	// usbpass.Status.BrokerAlive (the broker process answered its own
-	// control-socket "status" query moments ago), red otherwise --
-	// staged-but-not-running and not-staged-at-all both read as red here,
-	// distinguished only by usbBrokerStatusLabel's text.
+	// status dot/label plus usbBrokerInfoBtn take over. usbBrokerStatusDot
+	// is green while usbpass.Status.BrokerAlive (the broker process
+	// answered its own control-socket "status" query moments ago), red
+	// otherwise -- staged-but-not-running and not-staged-at-all both read
+	// as red here, distinguished only by usbBrokerStatusLabel's text.
 	usbBrokerRow         *fyne.Container
 	usbBrokerStatusDot   *canvas.Circle
 	usbBrokerStatusLabel *canvas.Text
 	usbBrokerConsentBtn  *iconActionButton
-	// usbLastStatus is the latest status refreshUSBPassthroughUI saw, so a
-	// tap on the row (after consent) can show why the broker isn't running.
+	usbBrokerInfoBtn     *iconActionButton
+	// usbLastStatus is the latest status refreshUSBPassthroughUI saw, so the
+	// Info button (after consent) can show why the broker isn't running.
 	usbLastStatus usbpass.Status
 	// usbPortRow lists the address the USB broker actually listens on,
 	// next to the HTTP/Sunshine rows; shown only while the broker answers.
@@ -307,11 +308,13 @@ type Window struct {
 	// moonlightBtn shows the paired-device count; clicking opens the clients dialog.
 	moonlightBtn *iconActionButton
 
-	tsMeta    *tsMetaBlock
-	tsPeers   *fyne.Container
-	tsEmpty   *canvas.Text
-	tsAuthBtn *cardHeaderButton
-	tsToggle  *tailscaleHeaderToggle
+	tsMeta         *tsMetaBlock
+	tsPeers        *fyne.Container
+	tsEmpty        *canvas.Text
+	tsSessionsWell fyne.CanvasObject
+	tsAuthBtn      *cardHeaderButton
+	tsToggle       *tailscaleHeaderToggle
+	tsDialog       *widget.PopUp
 
 	autostartCheck *styledCheck
 
@@ -331,6 +334,7 @@ type Window struct {
 	permPanel        *themedPanel
 	statusPanel      *themedPanel
 	protocolPanel    *themedPanel
+	graphicsPanel    *themedPanel
 	autostartLang    *autostartRow
 	nvidiaPowerLabel *canvas.Text
 	gpuSettingsBox   *fyne.Container
@@ -356,6 +360,7 @@ type Window struct {
 	protocolRows    []*protocolPickRow
 	protocolChange  *cardHeaderButton
 	protocolBusy    *footerBusyHint
+	protocolSwitching bool
 	footerMsgGen    uint64
 
 	// streamerNameLabel / streamerKindLabel show StreamerName() split into
@@ -417,11 +422,12 @@ type Window struct {
 	// window anyway is the only way such a session could ever reach it.
 	startHidden bool
 
-	// tierBadge is the header chip next to the logo — Opensource / Free /
-	// Pro / Enterprise, kept in sync from entitlement.Status. headerLine
-	// is the hairline under the header; its color follows the same status.
-	tierBadge  *subscriptionBadge
+	// headerLine is the hairline under the header; color follows protocol.
 	headerLine *canvas.Rectangle
+
+	lastGoodWindowSize  fyne.Size
+	resizeGuardPending  bool
+	windowPlacementStop chan struct{}
 }
 
 var raiseMain atomic.Pointer[func()]
@@ -625,6 +631,9 @@ func (w *Window) refreshRustShineUI(st entitlement.Status) {
 			}
 		} else {
 			w.rustshineWebRTCRow.Hide()
+		}
+		if w.permPanel != nil {
+			w.permPanel.Refresh()
 		}
 	}
 
@@ -847,10 +856,16 @@ func (w *Window) refreshUSBPassthroughUI(st entitlement.Status, usb usbpass.Stat
 		if w.usbBrokerConsentBtn != nil {
 			w.usbBrokerConsentBtn.Show()
 		}
+		if w.usbBrokerInfoBtn != nil {
+			w.usbBrokerInfoBtn.Hide()
+		}
 		return
 	}
 	if w.usbBrokerConsentBtn != nil {
 		w.usbBrokerConsentBtn.Hide()
+	}
+	if w.usbBrokerInfoBtn != nil {
+		w.usbBrokerInfoBtn.Show()
 	}
 	setStatusDot(w.usbBrokerStatusDot, usb.BrokerAlive)
 	if w.usbBrokerStatusLabel != nil {
@@ -905,6 +920,11 @@ func (w *Window) ShowAndRun(onClose func()) {
 	raise := func() {
 		fyne.Do(func() {
 			win.Show()
+			if w.lastGoodWindowSize.Width > 0 && w.lastGoodWindowSize.Height > 0 {
+				win.Resize(w.lastGoodWindowSize)
+			} else {
+				w.applySavedWindowPlacement()
+			}
 			win.RequestFocus()
 		})
 	}
@@ -912,16 +932,21 @@ func (w *Window) ShowAndRun(onClose func()) {
 	win.SetPadded(false)
 	// Linux Permissions has more rows (USB/virtual display/KMS/…); start
 	// taller so the top cards can take their natural height instead of
-	// scrolling over Grant buttons. Other platforms keep the compact size.
-	winH := float32(460)
+	// scrolling over Grant buttons. Other platforms keep a shorter start.
+	winH := float32(defaultWindowHeight)
 	if runtime.GOOS == "linux" {
-		winH = 580
+		winH = defaultWindowHeightLinux
 	}
-	win.Resize(fyne.NewSize(640, winH))
-	win.CenterOnScreen()
+	startSize := fyne.NewSize(defaultWindowWidth, winH)
+	if lw, lh, ok := w.savedLogicalWindowSize(); ok {
+		startSize = fyne.NewSize(float32(lw), float32(lh))
+	}
+	win.Resize(startSize)
+	if !w.canRestoreWindowPlacement() {
+		win.CenterOnScreen()
+	}
 	w.loadChromePin()
 
-	w.tierBadge = newSubscriptionBadge()
 	tokenBtn := newIconActionButton("TOKEN", nil, func() {
 		w.showTokenDialog(win)
 	})
@@ -931,14 +956,18 @@ func (w *Window) ShowAndRun(onClose func()) {
 	settingsBtn = newHeaderIconButton(theme.SettingsIcon(), func() {
 		w.showSettingsMenu(win, settingsBtn)
 	})
-	w.tsToggle = newTailscaleHeaderToggle(func() { w.toggleTailscaleAuth() })
+	w.tsToggle = newTailscaleHeaderToggle(
+		func() { w.toggleTailscaleAuth() },
+		func() { w.showTailscaleDetailsDialog(win) },
+	)
+	moonlightHeader := w.newMoonlightHeader(win)
 	w.loginAvatar = newLoginAvatarButton(func() { w.openAccount(win, w.loginAvatar) })
 	if w.token != nil {
 		acc := w.token.AccountStatus()
 		w.loginAvatar.SetState(acc.LoggedIn, acc.Email)
 	}
-	headerLeft := container.New(&tightHBoxLayout{gap: 4}, newBrandLockup(), w.tierBadge)
-	headerRight := container.New(&tightHBoxLayout{gap: 6}, w.tsToggle, settingsBtn, tokenBtn,
+	headerLeft := newBrandLockup()
+	headerRight := container.New(&tightHBoxLayout{gap: 6}, w.tsToggle, moonlightHeader, settingsBtn, tokenBtn,
 		container.NewGridWrap(fyne.NewSize(loginAvatarHit, loginAvatarHit), w.loginAvatar))
 	var header fyne.CanvasObject
 	header, w.headerLine = newHeaderBar(headerLeft, headerRight)
@@ -1023,7 +1052,7 @@ func (w *Window) ShowAndRun(onClose func()) {
 
 	w.accessCheck = newPermStatusChip(accessLabelBase, onRequestAccess)
 	w.screenCaptureCheck = newPermStatusChip(loc().ScreenCapture, onRequestCapture)
-	permStatusRow := container.NewVBox(w.accessCheck, w.screenCaptureCheck)
+	permStatusRow := container.New(&tightVBoxLayout{gap: 2}, w.accessCheck, w.screenCaptureCheck)
 
 	// Autostart at Boot: installs the OS-native autostart mechanism (a
 	// system-wide systemd unit on Linux — so it starts at boot before any
@@ -1094,7 +1123,6 @@ func (w *Window) ShowAndRun(onClose func()) {
 		})
 		return check
 	}
-	var nvidiaRows []fyne.CanvasObject
 	if gpuClockSupported {
 		powerRow := w.newNvidiaPowerModeRow(win)
 		twoPassRow := newPermToggleRow(loc().NvencTwoPass, nvidiaToggle(w.token.NvencTwoPassEnabled(), w.token.SetNvencTwoPass))
@@ -1103,7 +1131,6 @@ func (w *Window) ShowAndRun(onClose func()) {
 		// refreshGPUSettings), so it's clear which card these apply to:
 		// the NVIDIA settings only ever affect NVIDIA cards.
 		w.gpuSettingsBox = container.New(&tightVBoxLayout{gap: 6}, gpuSettingsObjects(nil, powerRow, twoPassRow)...)
-		nvidiaRows = []fyne.CanvasObject{w.gpuSettingsBox}
 		go w.refreshGPUSettings(powerRow, twoPassRow)
 	}
 
@@ -1297,15 +1324,11 @@ func (w *Window) ShowAndRun(onClose func()) {
 		w.refreshPermRequestLabels()
 	}
 
-	permRule := canvas.NewRectangle(design.ColorDivider)
-	permRule.SetMinSize(fyne.NewSize(0, 1))
 	var permTop []fyne.CanvasObject
 	permTop = []fyne.CanvasObject{
 		permStatusRow,
-		permRule,
 		autostartRow,
 	}
-	permTop = append(permTop, nvidiaRows...)
 	if runtime.GOOS == "linux" {
 		permTop = append(permTop, w.clipboardToolRow)
 		w.refreshClipboardToolUI()
@@ -1313,54 +1336,20 @@ func (w *Window) ShowAndRun(onClose func()) {
 	if w.token != nil && w.token.AWDLDisableDuringStreamingSupported() {
 		permTop = append(permTop, w.awdlDisableRow)
 	}
-	permTop = append(permTop, w.rustshineWebRTCRow)
 	permTop = append(permTop, w.usbDriverRow)
-
-	// Moonlight Clients — add (+) opens PIN dialog; icon+count opens list; ✕ removes all.
-	moonlightAddBtn := newTinyGlyphButtonColored(theme.ContentAddIcon(), design.ColorNameMutedOlive, func() {
-		w.showMoonlightPINDialog(win)
-	})
-	w.moonlightBtn = newIconActionButton("0", theme.NewColoredResource(theme.AccountIcon(), design.ColorNameMutedOlive), func() {
-		w.showMoonlightClientsDialog(win)
-	})
-	w.moonlightBtn.Tiny = true
-	moonlightDeleteAllBtn := newDangerGlyphButton(func() {
-		showConfirmToast(loc().RemoveAllMoonlight, func(yes bool) {
-			if !yes || w.token == nil {
-				return
-			}
-			go func() {
-				clients, err := w.token.ListSunshineClients()
-				if err != nil {
-					return
-				}
-				for _, c := range clients {
-					_ = w.token.UnpairSunshineClient(c.UniqueID)
-				}
-				// Unpairing only blocks future reconnects — a client
-				// already mid-stream keeps going until the stream host
-				// itself is restarted (same reasoning as
-				// RegenerateMasterKey's own client wipe).
-				_ = w.token.RestartSunshine()
-				fyne.Do(func() {
-					if w.moonlightBtn != nil {
-						w.moonlightBtn.SetText("0")
-					}
-				})
-			}()
-		}, win)
-	})
-	mlLabel := canvas.NewText(loc().MoonlightClients, design.ColorSectionTitle)
-	w.mlClientsLang = mlLabel
-	mlLabel.TextSize = 11
-	moonlightRow := newStatusRow(
-		mlLabel, container.New(&tightHBoxLayout{gap: 4},
-			moonlightAddBtn, w.moonlightBtn, moonlightDeleteAllBtn))
-	permTop = append(permTop, moonlightRow)
+	permTop = append(permTop, w.rustshineWebRTCRow)
 	permContent := newTightVBox(permTop...)
 	permBlock := newPanel(panelIconPermissions, loc().Permissions, nil, permContent)
 	if p, ok := permBlock.(*themedPanel); ok {
 		w.permPanel = p
+	}
+
+	var graphicsBlock fyne.CanvasObject
+	if w.gpuSettingsBox != nil {
+		graphicsBlock = newPanel(panelIconGraphics, loc().Graphics, nil, w.gpuSettingsBox)
+		if p, ok := graphicsBlock.(*themedPanel); ok {
+			w.graphicsPanel = p
+		}
 	}
 
 	// Column 2: Stats & Tailscale
@@ -1400,7 +1389,7 @@ func (w *Window) ShowAndRun(onClose func()) {
 	// actually decides visibility, which of consentBtn/status-dot+label is
 	// shown, and the dot/label text on every tick.
 	w.usbBrokerStatusDot = newStatusDot()
-	w.usbBrokerStatusLabel = makeStatusValue("")
+	w.usbBrokerStatusLabel = makeStatusName("")
 	w.usbBrokerConsentBtn = newIconActionButton(loc().EnableUSBBroker, theme.WarningIcon(), func() {
 		w.showUSBBrokerDialog(win, func(confirmed bool) {
 			if !confirmed || w.token == nil {
@@ -1422,25 +1411,16 @@ func (w *Window) ShowAndRun(onClose func()) {
 		})
 	})
 	w.usbBrokerConsentBtn.Tiny = true
+	w.usbBrokerInfoBtn = newTinyGlyphButtonColored(theme.InfoIcon(), design.ColorNameMutedOlive, func() {
+		showUSBBrokerStatusDialog(win, w.usbLastStatus)
+	})
+	w.usbBrokerInfoBtn.Hide()
 	usbBrokerLeft := container.New(&tightHBoxLayout{gap: 6},
 		makeStatusLabel(loc().USBBroker), statusDotBox(w.usbBrokerStatusDot),
 		w.usbBrokerStatusLabel)
-	tappableBroker := newTappableBox(usbBrokerLeft, func() {
-		if w.usbBrokerConsentBtn != nil && w.usbBrokerConsentBtn.Visible() && !w.usbBrokerConsentBtn.Disabled() {
-			if w.usbBrokerConsentBtn.OnTapped != nil {
-				w.usbBrokerConsentBtn.OnTapped()
-			}
-		} else {
-			// Consent already given: re-showing the consent text here (its
-			// "other devices require Pro or Enterprise" line) read as "the
-			// broker needs a license" while the real problem was a crash.
-			// Show what's actually going on instead.
-			showUSBBrokerStatusDialog(win, w.usbLastStatus)
-		}
-	})
 	w.usbBrokerRow = newStatusRow(
-		tappableBroker,
-		w.usbBrokerConsentBtn,
+		usbBrokerLeft,
+		container.New(&tightHBoxLayout{gap: 4}, w.usbBrokerInfoBtn, w.usbBrokerConsentBtn),
 	)
 	w.usbBrokerRow.Hide()
 
@@ -1552,7 +1532,7 @@ func (w *Window) ShowAndRun(onClose func()) {
 	w.tsEmpty.Alignment = fyne.TextAlignCenter
 	wellFloor := canvas.NewRectangle(color.Transparent)
 	wellFloor.SetMinSize(fyne.NewSize(0, 72))
-	sessionsWell := newDarkWell(container.NewStack(
+	w.tsSessionsWell = newDarkWell(container.NewStack(
 		wellFloor,
 		container.NewCenter(w.tsEmpty),
 		newExactInset(w.tsPeers, 8, 8, 8, 8),
@@ -1592,17 +1572,18 @@ func (w *Window) ShowAndRun(onClose func()) {
 		})
 	}
 
-	tsPanel := newPanel(panelIconTailscale, "Tailscale", w.tsAuthBtn, container.NewBorder(
-		w.tsMeta.root, nil, nil, nil, sessionsWell,
-	))
-
 	protocolBlock := w.newProtocolPanel(win)
 
-	// 2x2: Tailscale | Permissions on top, Protocol | Status below.
-	// Cards keep their content height; leftover window space stays empty
-	// below the grid instead of stretching the cards.
-	cards := container.New(&cardGridLayout{gap: 16, topInset: 0, bottomInset: 0},
-		tsPanel, permBlock, protocolBlock, statsBlock)
+	// Protocol full-width on top. With a GPU card: Permissions | Status,
+	// Graphics half-width under Permissions. Without: Permissions | Status.
+	var cards fyne.CanvasObject
+	if graphicsBlock != nil {
+		cards = container.New(&cardGridLayout{gap: 16, topInset: 0, bottomInset: 0},
+			protocolBlock, permBlock, statsBlock, graphicsBlock)
+	} else {
+		cards = container.New(&cardGridLayout{gap: 16, topInset: 0, bottomInset: 0},
+			protocolBlock, permBlock, statsBlock)
+	}
 
 	content := cards
 
@@ -1627,8 +1608,9 @@ func (w *Window) ShowAndRun(onClose func()) {
 	footer := newAppFooter(appVersion, w.protocolBusy, w.themeBtn, func() {
 		showWhatsNewDialog(win)
 	})
-	body := container.NewBorder(header, footer, nil, nil, newExactInset(content, 16, 16, 8, 8))
-	win.SetContent(container.NewStack(bg, body))
+	body := container.NewBorder(header, footer, nil, nil,
+		container.NewVScroll(newExactInset(content, 16, 16, 8, 8)))
+	win.SetContent(w.wrapWithResizeGuard(container.NewStack(bg, body)))
 
 	// attachTray must run before wiring our own close intercept below:
 	// desktop.App.SetSystemTrayWindow (called inside attachTray) installs
@@ -1639,6 +1621,7 @@ func (w *Window) ShowAndRun(onClose func()) {
 	w.refreshAutostartChrome()
 
 	win.SetCloseIntercept(func() {
+		w.persistWindowPlacement()
 		if w.tray != nil {
 			log.Printf("[ui] window close intercepted -- minimizing to tray")
 			win.Hide()
@@ -1669,8 +1652,11 @@ func (w *Window) ShowAndRun(onClose func()) {
 		win.Hide()
 	} else {
 		win.Show()
+		w.scheduleWindowPlacementRestore()
 	}
+	w.startWindowPlacementAutosave()
 	w.app.Run()
+	w.stopWindowPlacementAutosave()
 }
 
 // promptForUpdate runs the mandatory startup update check and, if a newer
@@ -1742,37 +1728,13 @@ func (w *Window) updateTrayStatus(entStatus entitlement.Status, status uiStatus)
 // Pro subscribers hide it unless they pick Enterprise (Buy Enterprise).
 // Unpaid machines still see Buy Pro; it accents when that pick needs a purchase.
 func (w *Window) refreshSupportButton(st entitlement.Status) {
-	if w.supportBtn == nil {
-		return
-	}
-	acc := account.Status{}
-	if w.token != nil {
-		acc = w.token.AccountStatus()
-	}
-	paid := protocolPaidTier(st, acc)
-	needsBuy := protocolNeedsPurchase(w.protocolPick, st, acc)
-	ownsPaid := accountHasPaidLicense(acc) || paid != ""
-	switch {
-	case needsBuy && w.protocolPick == protocolEnterprise:
-		w.supportBtn.SetText(loc().BuyEnterprise)
-		w.supportBtn.Show()
-	case ownsPaid:
+	if w.supportBtn != nil {
 		w.supportBtn.Hide()
-	default:
-		w.supportBtn.SetText(loc().BuyPro)
-		w.supportBtn.Show()
 	}
-	pending := needsBuy && !st.LinkInProgress && !st.DownloadInProgress &&
-		w.protocolPick != "" && w.protocolPick != w.protocolApplied
-	w.supportBtn.SetAccent(pending)
-	w.supportBtn.Refresh()
 }
 
 func (w *Window) refreshTierBadge(st entitlement.Status) {
 	w.dropProChromePinIfNeeded(st)
-	if w.tierBadge != nil {
-		w.tierBadge.SetStatus(st)
-	}
 	setChromeKind(protocolKeyFromStatus(st))
 	if w.headerLine == nil {
 		return
@@ -1967,10 +1929,6 @@ func (w *Window) applyLanguage() {
 	if w.rustshineWebRTCRow != nil {
 		w.rustshineWebRTCRow.SetLabel(c.WebRTCToggle)
 	}
-	if w.mlClientsLang != nil {
-		w.mlClientsLang.Text = c.MoonlightClients
-		w.mlClientsLang.Refresh()
-	}
 	if w.usbDriverLang != nil {
 		w.usbDriverLang.Text = c.USBPassthrough
 		w.usbDriverLang.Refresh()
@@ -2009,6 +1967,9 @@ func (w *Window) applyLanguage() {
 	}
 	if w.protocolPanel != nil {
 		w.protocolPanel.SetTitle(c.Protocol)
+	}
+	if w.graphicsPanel != nil {
+		w.graphicsPanel.SetTitle(c.Graphics)
 	}
 	if w.token != nil {
 		st := w.token.EntitlementStatus()
@@ -2656,6 +2617,7 @@ func (w *Window) refreshTailscaleWithStatus(status *tailscale.Status) {
 		w.setTailscaleInfo(loc().TokenUnavail, loc().TokenUnavail, loc().TokenUnavail)
 		w.setTailscaleSessions(nil)
 		w.setTailscaleLoggedIn(false)
+		w.closeTailscaleDialog()
 		return
 	}
 
@@ -2663,6 +2625,7 @@ func (w *Window) refreshTailscaleWithStatus(status *tailscale.Status) {
 		w.setTailscaleInfo(loc().SignedOut, loc().SignInRequired, loc().SignInToPublish)
 		w.setTailscaleSessions(nil)
 		w.setTailscaleLoggedIn(false)
+		w.closeTailscaleDialog()
 		return
 	}
 
@@ -2680,6 +2643,9 @@ func (w *Window) refreshTailscaleWithStatus(status *tailscale.Status) {
 		fmt.Sprintf("%s (embedded)", endpoint),
 	)
 	w.setTailscaleLoggedIn(true)
+	if w.tsToggle != nil {
+		w.tsToggle.SetIP(endpoint)
+	}
 
 	// Update active sessions
 	var activePeers []tsActivePeer
@@ -2742,6 +2708,9 @@ func newTSPeerRow(p tsActivePeer) fyne.CanvasObject {
 }
 
 func (w *Window) setTailscaleSessions(peers []tsActivePeer) {
+	if w.tsToggle != nil {
+		w.tsToggle.SetPeerCount(len(peers))
+	}
 	if w.tsEmpty != nil {
 		if len(peers) == 0 {
 			w.tsEmpty.Show()
@@ -2780,6 +2749,58 @@ func (w *Window) setTailscaleLoggedIn(on bool) {
 	if w.tsToggle != nil {
 		w.tsToggle.SetOn(on)
 	}
+}
+
+func (w *Window) closeTailscaleDialog() {
+	if w.tsDialog != nil {
+		w.tsDialog.Hide()
+	}
+}
+
+func (w *Window) showTailscaleDetailsDialog(parent fyne.Window) {
+	if parent == nil || w.tsMeta == nil || w.tsSessionsWell == nil {
+		return
+	}
+	if w.tsDialog != nil {
+		if w.tsDialog.Visible() {
+			return
+		}
+		beginOverlay()
+		watchOverlayPopup(parent, w.tsDialog)
+		w.tsDialog.Show()
+		return
+	}
+
+	var popup *widget.PopUp
+	closeDialog := func() {
+		if popup != nil {
+			popup.Hide()
+		}
+	}
+
+	body := container.NewBorder(
+		w.tsMeta.root, nil, nil, nil,
+		w.tsSessionsWell,
+	)
+	var footer fyne.CanvasObject
+	if w.tsAuthBtn != nil {
+		footer = container.NewCenter(w.tsAuthBtn)
+	}
+	panel := newBrandedDialogPanelInsets("Tailscale", 380, 20, 10, body, footer, closeDialog)
+	popup = showOverlayPopup(parent, overlayPopupSpec{
+		Panel: panel,
+		PanelSize: func(canvasSize fyne.Size, panel fyne.CanvasObject) fyne.Size {
+			min := overlayDefaultPanelSize(canvasSize, panel)
+			if min.Height < 280 {
+				min.Height = fyne.Min(280, canvasSize.Height)
+			}
+			if min.Height > canvasSize.Height*0.85 {
+				min.Height = canvasSize.Height * 0.85
+			}
+			return min
+		},
+	})
+	w.tsDialog = popup
 }
 
 func (w *Window) setTailscaleBusy(busy bool) {
@@ -3498,6 +3519,8 @@ func newPermToggleRow(label string, check *styledCheck) *permToggleRow {
 var (
 	panelIconTailscale = fyne.NewStaticResource("panel-tailscale.svg", []byte(
 		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#41e0c3" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>`))
+	panelIconGraphics = fyne.NewStaticResource("panel-graphics.svg", []byte(
+		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#41e0c3" d="M21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h7v2H8v2h8v-2h-2v-2h7c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 14H3V5h18v12z"/></svg>`))
 	panelIconPermissions = fyne.NewStaticResource("panel-permissions.svg", []byte(
 		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#41e0c3" d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></svg>`))
 	panelIconProtocol = fyne.NewStaticResource("panel-protocol.svg", []byte(
@@ -3574,6 +3597,74 @@ func newHeaderBar(left fyne.CanvasObject, right fyne.CanvasObject) (fyne.CanvasO
 	row := container.NewBorder(nil, nil, leftBox, rightBox, nil)
 	inner := newExactInset(row, 8, 10, 4, 4)
 	return container.New(&overlayEdgeLineLayout{}, container.NewStack(bg, inner), hairline), hairline
+}
+
+func (w *Window) newMoonlightHeader(win fyne.Window) fyne.CanvasObject {
+	quiet := func(label string, icon fyne.Resource, tapped func()) *iconActionButton {
+		b := newIconActionButton(label, icon, tapped)
+		b.Quiet = true
+		return b
+	}
+	moonlightAddBtn := quiet("", theme.NewColoredResource(theme.ContentAddIcon(), design.ColorNameMutedOlive), func() {
+		w.showMoonlightPINDialog(win)
+	})
+	w.moonlightBtn = quiet("0", theme.NewColoredResource(theme.AccountIcon(), design.ColorNameMutedOlive), func() {
+		w.showMoonlightClientsDialog(win)
+	})
+	moonlightDeleteAllBtn := quiet("", headerCancelIcon, func() {
+		showConfirmToast(loc().RemoveAllMoonlight, func(yes bool) {
+			if !yes || w.token == nil {
+				return
+			}
+			go func() {
+				clients, err := w.token.ListSunshineClients()
+				if err != nil {
+					return
+				}
+				for _, c := range clients {
+					_ = w.token.UnpairSunshineClient(c.UniqueID)
+				}
+				_ = w.token.RestartSunshine()
+				fyne.Do(func() {
+					if w.moonlightBtn != nil {
+						w.moonlightBtn.SetText("0")
+					}
+				})
+			}()
+		}, win)
+	})
+	moonlightDeleteAllBtn.Danger = true
+	title := canvas.NewText(loc().MoonlightHeader, design.ColorTailscaleChipLabel)
+	title.TextSize = 10
+	title.TextStyle = fyne.TextStyle{Bold: true}
+	title.Alignment = fyne.TextAlignLeading
+	actions := container.New(&tightHBoxLayout{gap: 0},
+		moonlightAddBtn, w.moonlightBtn, moonlightDeleteAllBtn)
+	inner := container.New(&tightHBoxLayout{gap: 4},
+		moonlightHeaderLogo(), title, actions)
+	bg := canvas.NewRectangle(design.ColorGray950)
+	bg.CornerRadius = 12
+	border := canvas.NewRectangle(color.Transparent)
+	border.CornerRadius = 12
+	border.StrokeWidth = 1
+	border.StrokeColor = design.ColorTailscaleChipBorder
+	return container.NewStack(bg, border, newExactInset(inner, 4, 4, 0, 0))
+}
+
+func moonlightHeaderLogo() fyne.CanvasObject {
+	const side float32 = 16
+	img := canvas.NewImageFromResource(assets.MoonlightIcon)
+	img.FillMode = canvas.ImageFillContain
+	img.SetMinSize(fyne.NewSize(side, side))
+	return container.NewGridWrap(fyne.NewSize(side, side), img)
+}
+
+func nvidiaHeaderLogo() fyne.CanvasObject {
+	const h, w float32 = 14, 72
+	img := canvas.NewImageFromResource(assets.NvidiaLogo)
+	img.FillMode = canvas.ImageFillContain
+	img.SetMinSize(fyne.NewSize(w, h))
+	return container.NewGridWrap(fyne.NewSize(w, h), img)
 }
 
 func newAppFooter(version string, busy fyne.CanvasObject, themeBtn fyne.CanvasObject, onVersion func()) fyne.CanvasObject {
@@ -4099,7 +4190,9 @@ type iconActionButton struct {
 	Tiny             bool
 	Accent           bool
 	CTA              bool
+	Soft             bool
 	Danger           bool
+	Quiet            bool
 	hovered          bool
 	blockChromeHover bool
 }
@@ -4134,7 +4227,12 @@ func (b *iconActionButton) CreateRenderer() fyne.WidgetRenderer {
 	}
 
 	textSize := float32(12)
-	if b.Tiny {
+	if b.Quiet {
+		textSize = 10
+		bg.CornerRadius = 6
+		bg.StrokeWidth = 0
+		bg.StrokeColor = color.Transparent
+	} else if b.Tiny {
 		textSize = 10
 		bg.CornerRadius = 4
 	} else if b.Compact {
@@ -4255,6 +4353,9 @@ func (r *iconActionButtonRenderer) Layout(size fyne.Size) {
 
 func iconActionMetrics(b *iconActionButton) (iconSize, gap, paddingX float32) {
 	iconSize, gap, paddingX = 20, 8, 14
+	if b.Quiet {
+		return 12, 2, 2
+	}
 	if b.Tiny {
 		return 10, 3, 6
 	}
@@ -4271,7 +4372,9 @@ func (r *iconActionButtonRenderer) MinSize() fyne.Size {
 	hasText := strings.TrimSpace(r.button.Text) != ""
 	iconSize, gap, paddingX := iconActionMetrics(r.button)
 	paddingY := float32(10)
-	if r.button.Tiny {
+	if r.button.Quiet {
+		paddingY = 6
+	} else if r.button.Tiny {
 		paddingY = 0
 	} else if r.button.Compact {
 		paddingY = 6
@@ -4294,7 +4397,14 @@ func (r *iconActionButtonRenderer) MinSize() fyne.Size {
 	if hasIcon && iconSize+paddingY*2 > height {
 		height = iconSize + paddingY*2
 	}
-	if r.button.Tiny {
+	if r.button.Quiet {
+		height = 24
+		if !hasText {
+			width = fyne.Max(width, 16)
+		} else if width < 22 {
+			width = 22
+		}
+	} else if r.button.Tiny {
 		height = tinyActionSize
 		if !hasText {
 			width = tinyActionSize
@@ -4312,15 +4422,46 @@ func (r *iconActionButtonRenderer) Objects() []fyne.CanvasObject {
 func (r *iconActionButtonRenderer) Refresh() {
 	r.text.Text = r.button.Text
 	switch {
-	case r.button.Tiny:
+	case r.button.Soft:
+		r.text.TextSize = 8
+	case r.button.Quiet, r.button.Tiny:
 		r.text.TextSize = 10
 	case r.button.Compact:
 		r.text.TextSize = 11
 	}
-	if r.button.Disabled() {
+	if r.button.Soft {
+		r.text.TextSize = 8
+		r.text.Color = design.ColorCTA
+		r.bg.FillColor = color.Transparent
+		r.bg.StrokeColor = color.Transparent
+		r.bg.StrokeWidth = 0
+		r.bg.CornerRadius = 8
+	} else if r.button.CTA {
+		r.text.Color = design.ColorCTALabel
+		fill := design.ColorCTA
+		if r.button.hovered && !r.button.Disabled() {
+			fill = design.ColorCTAHover
+		}
+		r.bg.FillColor = fill
+		r.bg.StrokeColor = fill
+		r.bg.StrokeWidth = 0
+		r.bg.CornerRadius = 8
+	} else if r.button.Disabled() {
 		r.bg.FillColor = design.ColorSurface
 		r.bg.StrokeColor = design.ColorChromeOlive
 		r.text.Color = design.ColorBorder
+	} else if r.button.Quiet {
+		r.bg.FillColor = color.Transparent
+		r.bg.StrokeColor = color.Transparent
+		r.bg.StrokeWidth = 0
+		r.text.Color = design.ColorMutedOlive
+		if r.button.hovered {
+			if r.button.Danger {
+				r.text.Color = design.ColorLogoutHoverLabel
+			} else {
+				r.text.Color = design.ColorTextLight
+			}
+		}
 	} else if r.button.Accent {
 		ch := currentChrome()
 		r.bg.StrokeColor = color.Transparent
@@ -4353,7 +4494,7 @@ func (r *iconActionButtonRenderer) Refresh() {
 		r.bg.StrokeColor = design.ColorChromeOlive
 		r.text.Color = design.ColorMutedOlive
 	}
-	if r.icon != nil && r.button.Icon != nil && r.button.Compact {
+	if r.icon != nil && r.button.Icon != nil && (r.button.Compact || r.button.Quiet) {
 		tint := design.ColorNameMutedOlive
 		switch {
 		case r.button.Disabled():
@@ -4578,102 +4719,6 @@ func (r *supportButtonRenderer) Refresh() {
 	r.text.Refresh()
 	r.icon.Refresh()
 	r.Layout(r.button.Size())
-}
-
-type subscriptionBadge struct {
-	widget.BaseWidget
-	label  string
-	fg     color.Color
-	stroke color.Color
-}
-
-func newSubscriptionBadge() *subscriptionBadge {
-	b := &subscriptionBadge{
-		label:  "Opensource",
-		fg:     design.ColorMutedOlive,
-		stroke: design.ColorChromeOlive,
-	}
-	b.ExtendBaseWidget(b)
-	return b
-}
-
-func (b *subscriptionBadge) SetStatus(st entitlement.Status) {
-	label, fg, stroke := subscriptionBadgeStyle(st)
-	if b.label == label && b.fg == fg && b.stroke == stroke {
-		return
-	}
-	b.label = label
-	b.fg = fg
-	b.stroke = stroke
-	b.Refresh()
-}
-
-func subscriptionBadgeStyle(st entitlement.Status) (string, color.Color, color.Color) {
-	if st.ActiveBackend != "rustshine" {
-		return "Opensource", design.ColorMutedOlive, design.ColorChromeOlive
-	}
-	switch strings.ToLower(st.Tier) {
-	case "pro":
-		return "Pro", design.ColorProSoft, design.ColorProSoft
-	case "enterprise":
-		return "Enterprise", design.ColorProSoft, design.ColorProSoft
-	default:
-		return "Free", design.ColorTeal, design.ColorTeal
-	}
-}
-
-func (b *subscriptionBadge) CreateRenderer() fyne.WidgetRenderer {
-	bg := canvas.NewRectangle(color.Transparent)
-	bg.StrokeWidth = 1
-	bg.StrokeColor = b.stroke
-	text := canvas.NewText(b.label, b.fg)
-	text.TextSize = 8
-	text.TextStyle.Bold = true
-	text.Alignment = fyne.TextAlignCenter
-	return &subscriptionBadgeRenderer{badge: b, bg: bg, text: text, objects: []fyne.CanvasObject{bg, text}}
-}
-
-type subscriptionBadgeRenderer struct {
-	badge   *subscriptionBadge
-	bg      *canvas.Rectangle
-	text    *canvas.Text
-	objects []fyne.CanvasObject
-}
-
-func (r *subscriptionBadgeRenderer) Destroy() {}
-
-func (r *subscriptionBadgeRenderer) Layout(size fyne.Size) {
-	r.bg.Resize(size)
-	r.bg.CornerRadius = size.Height / 2
-	ts := r.text.MinSize()
-	r.text.Resize(ts)
-	// canvas.Text's MinSize sits the glyph low in the box; nudge up so it
-	// reads optically centered in the pill.
-	y := (size.Height-ts.Height)/2 - 0.5
-	if y < 0 {
-		y = 0
-	}
-	r.text.Move(fyne.NewPos((size.Width-ts.Width)/2, y))
-}
-
-func (r *subscriptionBadgeRenderer) MinSize() fyne.Size {
-	ts := r.text.MinSize()
-	h := fyne.Max(16, ts.Height+6)
-	return fyne.NewSize(ts.Width+14, h)
-}
-
-func (r *subscriptionBadgeRenderer) Objects() []fyne.CanvasObject {
-	return r.objects
-}
-
-func (r *subscriptionBadgeRenderer) Refresh() {
-	r.text.Text = r.badge.label
-	r.text.Color = r.badge.fg
-	r.bg.StrokeColor = r.badge.stroke
-	r.bg.CornerRadius = r.badge.Size().Height / 2
-	r.bg.Refresh()
-	r.text.Refresh()
-	r.Layout(r.badge.Size())
 }
 
 type cardHeaderButton struct {
@@ -4962,27 +5007,24 @@ func newAutostartRow(label string, check *styledCheck, win fyne.Window) *autosta
 	hint := canvas.NewText("", design.ColorEmptyHint)
 	hint.TextSize = 8
 	hint.Hide()
-	mark := newCheckImage(crossGlyphRed)
-	info := newIconActionButton("", theme.InfoIcon(), func() {
+	mark := canvas.NewImageFromResource(assets.TimeIcon)
+	mark.FillMode = canvas.ImageFillContain
+	mark.SetMinSize(fyne.NewSize(12, 12))
+	info := newTinyGlyphButtonColored(theme.InfoIcon(), design.ColorNameMutedOlive, func() {
 		showAutostartInfoDialog(win)
 	})
-	info.Tiny = true
 	r := &autostartRow{mark: mark, label: t, hint: hint, check: check}
-	left := container.New(&tightHBoxLayout{gap: 6}, container.New(&checkNudgeLayout{dy: -1}, mark), t, hint, info)
+	left := container.New(&tightHBoxLayout{gap: 8}, container.NewGridWrap(fyne.NewSize(12, 12), mark), t, hint, info)
 	r.inner = container.New(&flushEndsLayout{}, left, check)
 	r.ExtendBaseWidget(r)
 	return r
 }
 
 func (r *autostartRow) SetEnabled(on bool) {
-	if r == nil {
+	if r == nil || r.mark == nil {
 		return
 	}
-	if on {
-		r.mark.Resource = checkGlyphLime
-	} else {
-		r.mark.Resource = crossGlyphRed
-	}
+	r.mark.Resource = assets.TimeIcon
 	r.mark.Refresh()
 }
 
@@ -5106,6 +5148,12 @@ func gpuSettingsObjects(gpus []config.GPUInfo, nvidiaRows ...fyne.CanvasObject) 
 		t.TextStyle.Bold = true
 		return t
 	}
+	nvidiaHeading := func(s string) fyne.CanvasObject {
+		t := canvas.NewText(s, design.ColorTeal)
+		t.TextSize = 10
+		t.TextStyle.Bold = true
+		return container.New(&tightHBoxLayout{gap: 6}, nvidiaHeaderLogo(), t)
+	}
 	note := func(s string) fyne.CanvasObject {
 		t := canvas.NewText(s, design.ColorEmptyHint)
 		t.TextSize = 9
@@ -5129,12 +5177,12 @@ func gpuSettingsObjects(gpus []config.GPUInfo, nvidiaRows ...fyne.CanvasObject) 
 		}
 	}
 	if len(nvidia) == 0 && len(gpus) == 0 {
-		out = append(out, heading("NVIDIA"))
+		out = append(out, nvidiaHeading("NVIDIA"))
 		out = append(out, nvidiaRows...)
 		return out
 	}
 	for _, n := range nvidia {
-		out = append(out, heading(n))
+		out = append(out, nvidiaHeading(n))
 	}
 	if len(nvidia) > 0 {
 		out = append(out, nvidiaRows...)

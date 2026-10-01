@@ -39,8 +39,8 @@ func TestWhatsNewKindColors(t *testing.T) {
 	if whatsNewKindLabel(whatsNewKindPro) != "Pro" {
 		t.Fatal("pro label")
 	}
-	if whatsNewKindLabel("") != "Other" {
-		t.Fatal("empty kind should be Other")
+	if whatsNewKindLabel("") != "Included" {
+		t.Fatal("empty kind should be Included")
 	}
 	if whatsNewKindLabel(whatsNewKindEnterprise) != "Enterprise" {
 		t.Fatal("enterprise label")

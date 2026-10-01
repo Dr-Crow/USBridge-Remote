@@ -10,6 +10,7 @@ import (
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/widget"
 
+	"usbridge_agent/assets"
 	"usbridge_agent/internal/ui/design"
 )
 
@@ -204,12 +205,13 @@ type permStatusChip struct {
 // once it is; with a nil onRequest (nothing actionable on this platform) the
 // button is omitted.
 func newPermStatusChip(label string, onRequest func()) *permStatusChip {
-	mark := newCheckImage(checkGlyphLime)
-	mark.SetMinSize(fyne.NewSize(11, 11))
+	mark := canvas.NewImageFromResource(assets.ConfirmOnIcon)
+	mark.FillMode = canvas.ImageFillContain
+	mark.SetMinSize(fyne.NewSize(12, 12))
 	labelT := canvas.NewText(label, design.ColorSectionTitle)
 	labelT.TextSize = 11
 	c := &permStatusChip{mark: mark, labelT: labelT, baseLabel: label, onRequest: onRequest}
-	left := container.New(&tightHBoxLayout{gap: 6}, container.New(&checkNudgeLayout{dy: -1}, mark), labelT)
+	left := container.New(&tightHBoxLayout{gap: 8}, container.NewGridWrap(fyne.NewSize(12, 12), mark), labelT)
 	var right fyne.CanvasObject
 	if onRequest != nil {
 		c.btn = newIconActionButton(loc().PermGrant, nil, func() {
@@ -262,7 +264,7 @@ func (c *permStatusChip) SetChecked(on bool) {
 	}
 	c.granted = on
 	if on {
-		c.mark.Resource = checkGlyphLime
+		c.mark.Resource = assets.ConfirmOnIcon
 	} else {
 		c.mark.Resource = crossGlyphRed
 	}
@@ -279,9 +281,13 @@ func (c *permStatusChip) refreshVisuals() {
 	if c.btn != nil {
 		if c.granted {
 			c.btn.Accent = false
+			c.btn.CTA = false
+			c.btn.Soft = true
 			c.btn.Disable()
 			c.btn.SetText(loc().PermGranted)
 		} else {
+			c.btn.Soft = false
+			c.btn.CTA = false
 			c.btn.Accent = true
 			c.btn.Enable()
 			if c.requestLabel != "" {
