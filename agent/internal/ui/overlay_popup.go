@@ -255,8 +255,8 @@ func newBrandedDialogPanelChromeExtra(title, subtitle string, titleExtra fyne.Ca
 		sub := canvas.NewText(subtitle, design.ColorMutedOlive)
 		sub.TextSize = 8
 		headerInner = container.New(&tightVBoxLayout{gap: 4}, titleRow, sub)
-		headerBandH = 61
-		headerPadT, headerPadB = 10, 17
+		headerBandH = 52
+		headerPadT, headerPadB = 10, 10
 	}
 
 	headerSep := canvas.NewRectangle(design.ColorDialogSep)

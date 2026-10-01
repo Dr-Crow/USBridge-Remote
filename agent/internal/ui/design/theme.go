@@ -57,6 +57,7 @@ var (
 	ColorCTA             = color.NRGBA{R: 0xC4, G: 0xE7, B: 0x7A, A: 0xFF}
 	ColorCTAHover        = color.NRGBA{R: 0xD6, G: 0xF7, B: 0x9C, A: 0xFF}
 	ColorCTALabel        = color.NRGBA{R: 0x4C, G: 0x68, B: 0x03, A: 0xFF}
+	ColorCTASoft         = color.NRGBA{R: 0xC4, G: 0xE7, B: 0x7A, A: 0x40}
 
 	// Status-card traffic lights (Streamer / USB Broker) — same lime as
 	// the logged-in avatar and the header Tailscale switch, rose when off.

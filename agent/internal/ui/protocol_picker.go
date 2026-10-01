@@ -3,7 +3,6 @@ package ui
 import (
 	"fmt"
 	"image/color"
-	"net/url"
 	"strings"
 
 	"fyne.io/fyne/v2"
@@ -13,7 +12,6 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
-	"usbridge_agent/assets"
 	"usbridge_agent/internal/account"
 	"usbridge_agent/internal/entitlement"
 	"usbridge_agent/internal/ui/design"
@@ -35,6 +33,16 @@ type protocolOption struct {
 	icon      fyne.Resource
 }
 
+func protocolBadgeFill(c color.Color) color.Color {
+	n, ok := c.(color.NRGBA)
+	if !ok {
+		rr, gg, bb, _ := c.RGBA()
+		n = color.NRGBA{R: uint8(rr >> 8), G: uint8(gg >> 8), B: uint8(bb >> 8), A: 0xFF}
+	}
+	n.A = 0x33
+	return n
+}
+
 func protocolBadgeColors(key string) (fg color.Color, line color.Color) {
 	switch key {
 	case protocolOpensource:
@@ -53,11 +61,20 @@ func protocolBadgeColors(key string) (fg color.Color, line color.Color) {
 }
 
 var protocolOptions = []protocolOption{
-	{protocolOpensource, "Sunshine", "Opensource", design.ColorMutedOlive, design.ColorChromeOlive, nil},
+	{protocolOpensource, "Sunshine", "Open Source", design.ColorWhite, design.ColorWhite, nil},
 	{protocolFree, "USBridge Streamer", "Free", design.ColorTeal, design.ColorTeal, nil},
-	{protocolPro, "USBridge Streamer", "Pro", design.ColorProSoft, design.ColorProSoft, assets.StarProIcon},
-	{protocolEnterprise, "USBridge Streamer", "Enterprise", design.ColorProSoft, design.ColorProSoft, assets.StarProIcon},
+	{protocolPro, "USBridge Streamer", "Pro", design.ColorProSoft, design.ColorProSoft, nil},
 }
+
+func protocolPickerKey(key string) string {
+	if key == protocolEnterprise {
+		return protocolPro
+	}
+	return key
+}
+
+var protocolLockIcon = fyne.NewStaticResource("protocol-lock.svg", []byte(
+	`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#9a9d8c" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg>`))
 
 func protocolKeyFromStatus(st entitlement.Status) string {
 	return st.Protocol()
@@ -204,6 +221,20 @@ func protocolHoverHighlights(hover, paid, key string) bool {
 	return key == protocolFree || key == protocolPro
 }
 
+func (w *Window) restoreProtocolSelection() {
+	st, _ := w.protocolStatus()
+	w.protocolApplied = protocolKeyFromStatus(st)
+	w.protocolPick = w.protocolApplied
+	w.protocolHover = ""
+	for _, row := range w.protocolRows {
+		if row == nil {
+			continue
+		}
+		row.hovered = false
+	}
+	w.refreshProtocolPickerVisuals(false)
+}
+
 func (w *Window) newProtocolPanel(parent fyne.Window) fyne.CanvasObject {
 	st := entitlement.Status{}
 	if w.token != nil {
@@ -213,37 +244,36 @@ func (w *Window) newProtocolPanel(parent fyne.Window) fyne.CanvasObject {
 	w.protocolPick = w.protocolApplied
 
 	w.protocolRows = make([]*protocolPickRow, 0, len(protocolOptions))
-	rows := make([]fyne.CanvasObject, 0, len(protocolOptions))
+	tiles := make([]fyne.CanvasObject, 0, len(protocolOptions))
 	for _, opt := range protocolOptions {
 		opt := opt
-		row := newProtocolPickRow(opt, opt.key == w.protocolPick, func() {
+		row := newProtocolPickRow(opt, protocolPickerKey(opt.key) == protocolPickerKey(w.protocolPick), func() {
+			if opt.key == protocolPro || opt.key == protocolEnterprise {
+				w.restoreProtocolSelection()
+				w.showTariffPickerDialog(parent, opt.key)
+				return
+			}
 			w.selectProtocolPick(opt.key)
+			w.applySelectedProtocol(parent)
+		}, func() {
+			w.showTariffPickerDialog(parent, opt.key)
 		}, func(on bool) {
 			w.setProtocolHover(opt.key, on)
 		})
 		w.protocolRows = append(w.protocolRows, row)
-		info := newTinyGlyphButtonColored(theme.InfoIcon(), design.ColorNameMutedOlive, func() {
-			w.showTariffPickerDialog(parent, opt.key)
-		})
-		rows = append(rows, container.New(&flushEndsLayout{}, row, info))
+		tiles = append(tiles, row)
 	}
 
-	w.protocolChange = newCardHeaderButton(loc().Change, headerChangeIcon, func() {
-		w.applySelectedProtocol(parent)
-	})
+	w.protocolChange = nil
+	w.protocolPanel = nil
 	w.refreshProtocolPickerVisuals(st.LinkInProgress || st.DownloadInProgress)
 
-	headerBits := []fyne.CanvasObject{}
-	if w.supportBtn != nil {
-		headerBits = append(headerBits, w.supportBtn)
-	}
-	headerBits = append(headerBits, w.protocolChange)
-	headerBtns := container.New(&tightHBoxLayout{gap: 4}, headerBits...)
-	panel := newPanel(panelIconProtocol, loc().Protocol, headerBtns, container.New(&tightVBoxLayout{gap: 4}, rows...))
-	if p, ok := panel.(*themedPanel); ok {
-		w.protocolPanel = p
-	}
-	return panel
+	rule := canvas.NewRectangle(design.ColorDivider)
+	rule.SetMinSize(fyne.NewSize(0, 1))
+	return container.New(&tightVBoxLayout{gap: 12},
+		container.New(&equalHBoxLayout{gap: 8}, tiles...),
+		rule,
+	)
 }
 
 func (w *Window) protocolStatus() (entitlement.Status, account.Status) {
@@ -271,6 +301,9 @@ func (w *Window) onProtocolBuyClicked(parent fyne.Window) {
 }
 
 func (w *Window) selectProtocolPick(key string) {
+	if w.protocolSwitching {
+		return
+	}
 	st, acc := w.protocolStatus()
 	w.protocolPick = protocolNormalizePick(key, w.protocolApplied, protocolPaidTier(st, acc))
 	w.refreshProtocolPickerVisuals(false)
@@ -299,16 +332,19 @@ func (w *Window) setProtocolHover(key string, on bool) {
 func (w *Window) refreshProtocolPickerVisuals(busy bool) {
 	st, acc := w.protocolStatus()
 	paid := protocolPaidTier(st, acc)
+	if acc.RebindInProgress || w.protocolSwitching {
+		busy = true
+	}
 	for _, row := range w.protocolRows {
 		if row == nil {
 			continue
 		}
-		row.SetChecked(row.key == w.protocolPick)
+		display := protocolPickerKey(w.protocolPick)
+		row.SetChecked(protocolPickerKey(row.key) == display)
+		row.SetLocked(protocolNeedsPurchase(row.key, st, acc) && protocolPickerKey(row.key) != display)
 		row.SetIncluded(protocolRowIncluded(w.protocolApplied, w.protocolPick, row.key))
 		row.SetPreview(protocolHoverHighlights(w.protocolHover, paid, row.key))
-	}
-	if acc.RebindInProgress {
-		busy = true
+		row.SetDisabled(busy)
 	}
 	needsBuy := protocolNeedsPurchase(w.protocolPick, st, acc)
 	if w.protocolChange != nil {
@@ -347,23 +383,30 @@ func (w *Window) maybeFinishPendingTierSwitch(st entitlement.Status) {
 }
 
 func (w *Window) applySelectedProtocol(parent fyne.Window) {
-	if w.token == nil || w.protocolPick == "" {
+	if w.protocolSwitching || w.token == nil || w.protocolPick == "" {
 		return
 	}
 	st := w.token.EntitlementStatus()
 	acc := w.token.AccountStatus()
 	w.protocolPick = protocolNormalizePick(w.protocolPick, w.protocolApplied, protocolPaidTier(st, acc))
-	if w.protocolPick == w.protocolApplied || protocolNeedsPurchase(w.protocolPick, st, acc) {
+	if w.protocolPick == w.protocolApplied {
 		w.refreshProtocolPickerVisuals(false)
 		return
 	}
 	key := w.protocolPick
+	if key == protocolPro || key == protocolEnterprise || protocolNeedsPurchase(key, st, acc) {
+		w.protocolPick = w.protocolApplied
+		w.refreshProtocolPickerVisuals(false)
+		w.showTariffPickerDialog(parent, key)
+		return
+	}
 
 	if key != protocolOpensource && !st.RustShineStaged && parent != nil {
+		w.startProtocolBusy()
 		w.showStreamerConsentDialog(parent, func(confirmed bool) {
 			if !confirmed {
 				w.protocolPick = w.protocolApplied
-				w.refreshProtocolPickerVisuals(false)
+				w.finishProtocolSwitch()
 				return
 			}
 			w.proceedProtocolSwitch(parent, key, st, acc)
@@ -377,11 +420,11 @@ func (w *Window) proceedProtocolSwitch(parent fyne.Window, key string, st entitl
 	if w.protocolChange != nil {
 		w.protocolChange.Disable()
 	}
+	w.startProtocolBusy()
 	done := w.finishProtocolSwitch
 
 	switch key {
 	case protocolOpensource:
-		w.startProtocolBusy()
 		go func() {
 			_ = w.token.SetStreamBackend("sunshine")
 			fyne.Do(done)
@@ -447,36 +490,15 @@ func (w *Window) requestPaidTier(parent fyne.Window, st entitlement.Status, tier
 		fyne.Do(done)
 		return
 	}
-	showConfirmDialog(
-		fmt.Sprintf(loc().SubscribeTitle, tierDisplayName(tier)),
-		fmt.Sprintf(loc().SubscribeBody, tierDisplayName(tier)),
-		func(confirmed bool) {
-			if !confirmed {
-				w.protocolPick = w.protocolApplied
-				done()
-				return
-			}
-			w.pendingTierSwitch = tier
-			go func() {
-				checkoutURL, err := w.token.StartPurchase(tier)
-				if err != nil {
-					fyne.Do(done)
-					return
-				}
-				parsed, parseErr := url.Parse(checkoutURL)
-				openErr := parseErr
-				if parseErr == nil && w.app != nil {
-					openErr = w.app.OpenURL(parsed)
-				}
-				if openErr != nil {
-					showInfoDialog(loc().CheckoutTitle,
-						loc().CouldntOpenBrowserBuy+"\n"+checkoutURL, parent)
-				}
-				fyne.Do(done)
-			}()
-		},
-		parent,
-	)
+	pick := protocolPro
+	if tier == "enterprise" {
+		pick = protocolEnterprise
+	}
+	w.protocolPick = w.protocolApplied
+	if done != nil {
+		done()
+	}
+	w.showTariffPickerDialog(parent, pick)
 }
 
 func (w *Window) applyAccountLicense(identifier, tier string, done func()) {
@@ -519,12 +541,17 @@ type protocolPickRow struct {
 	checked   bool
 	included  bool
 	preview   bool
+	locked    bool
+	disabled  bool
 	hovered   bool
 	onTap     func()
+	onInfo    func()
 	onHover   func(bool)
+	infoHitX  float32
+	infoHitW  float32
 }
 
-func newProtocolPickRow(opt protocolOption, checked bool, onTap func(), onHover func(bool)) *protocolPickRow {
+func newProtocolPickRow(opt protocolOption, checked bool, onTap, onInfo func(), onHover func(bool)) *protocolPickRow {
 	r := &protocolPickRow{
 		key:       opt.key,
 		label:     opt.label,
@@ -534,6 +561,7 @@ func newProtocolPickRow(opt protocolOption, checked bool, onTap func(), onHover 
 		icon:      opt.icon,
 		checked:   checked,
 		onTap:     onTap,
+		onInfo:    onInfo,
 		onHover:   onHover,
 	}
 	r.ExtendBaseWidget(r)
@@ -565,54 +593,86 @@ func (r *protocolPickRow) SetPreview(on bool) {
 	r.Refresh()
 }
 
-func (r *protocolPickRow) CreateRenderer() fyne.WidgetRenderer {
-	box := canvas.NewRectangle(color.Transparent)
-	box.CornerRadius = 3
-	box.StrokeWidth = 1
-	mark := newCheckImage(checkGlyphOnTeal)
-	star := canvas.NewImageFromResource(r.icon)
-	star.FillMode = canvas.ImageFillStretch
-	if r.icon == nil {
-		star.Hide()
+func (r *protocolPickRow) SetLocked(on bool) {
+	if r.locked == on {
+		return
 	}
-	text := canvas.NewText(r.label, design.ColorSectionTitle)
-	text.TextSize = 11
-	pillBg := canvas.NewRectangle(color.Transparent)
-	pillBg.StrokeWidth = 1
-	pillBg.StrokeColor = r.badgeLine
-	pillTxt := canvas.NewText(r.badge, r.badgeClr)
-	pillTxt.TextSize = 8
-	pillTxt.TextStyle.Bold = true
+	r.locked = on
+	r.Refresh()
+}
+
+func (r *protocolPickRow) SetDisabled(on bool) {
+	if r.disabled == on {
+		return
+	}
+	r.disabled = on
+	if on {
+		r.hovered = false
+	}
+	r.Refresh()
+}
+
+func (r *protocolPickRow) CreateRenderer() fyne.WidgetRenderer {
+	bg := canvas.NewRectangle(design.ColorGray900)
+	bg.CornerRadius = design.RadiusMD
+	border := canvas.NewRectangle(color.Transparent)
+	border.CornerRadius = design.RadiusMD
+	border.StrokeWidth = 1
+	border.StrokeColor = design.ColorChromeOlive
+
+	radio := canvas.NewCircle(color.Transparent)
+	radio.StrokeWidth = 1.5
+	radio.StrokeColor = design.ColorChromeOlive
+	dot := canvas.NewCircle(design.ColorCTA)
+
+	title := canvas.NewText(r.label, design.ColorTextLight)
+	title.TextSize = 12
+	title.TextStyle.Bold = true
+	sub := canvas.NewText(r.badge, r.badgeClr)
+	sub.TextSize = 9
+	sub.TextStyle.Bold = true
+	badgeBg := canvas.NewRectangle(protocolBadgeFill(r.badgeClr))
+	badgeBg.CornerRadius = 6
+	badgeBg.StrokeWidth = 1
+	badgeBg.StrokeColor = r.badgeLine
+
+	lock := canvas.NewImageFromResource(protocolLockIcon)
+	lock.FillMode = canvas.ImageFillStretch
+	lock.SetMinSize(fyne.NewSize(14, 14))
+
+	info := canvas.NewImageFromResource(theme.NewColoredResource(theme.InfoIcon(), design.ColorNameMutedOlive))
+	info.FillMode = canvas.ImageFillStretch
+	info.SetMinSize(fyne.NewSize(14, 14))
+
 	return &protocolPickRowRenderer{
 		row:     r,
-		box:     box,
-		mark:    mark,
-		star:    star,
-		text:    text,
-		pillBg:  pillBg,
-		pillTxt: pillTxt,
-		objects: []fyne.CanvasObject{box, mark, star, text, pillBg, pillTxt},
+		bg:      bg,
+		border:  border,
+		radio:   radio,
+		dot:     dot,
+		title:   title,
+		sub:     sub,
+		badgeBg: badgeBg,
+		lock:    lock,
+		info:    info,
+		objects: []fyne.CanvasObject{bg, border, radio, dot, title, badgeBg, sub, lock, info},
 	}
 }
 
 func (r *protocolPickRow) MinSize() fyne.Size {
-	return protocolPickRowMinSize(r.label, r.badge, r.icon != nil)
+	return fyne.NewSize(168, 56)
 }
 
-func protocolPickRowMinSize(label, badge string, hasIcon bool) fyne.Size {
-	t := canvas.NewText(label, design.ColorSectionTitle)
-	t.TextSize = 11
-	p := canvas.NewText(badge, design.ColorMutedOlive)
-	p.TextSize = 8
-	p.TextStyle.Bold = true
-	w := float32(20) + t.MinSize().Width + 6 + p.MinSize().Width + 12
-	if hasIcon {
-		w += 16
+func (r *protocolPickRow) Tapped(e *fyne.PointEvent) {
+	if r.disabled {
+		return
 	}
-	return fyne.NewSize(w, 22)
-}
-
-func (r *protocolPickRow) Tapped(*fyne.PointEvent) {
+	if e != nil && r.infoHitW > 0 && e.Position.X >= r.infoHitX && e.Position.X < r.infoHitX+r.infoHitW {
+		if r.onInfo != nil {
+			r.onInfo()
+		}
+		return
+	}
 	if r.onTap != nil {
 		r.onTap()
 	}
@@ -621,6 +681,9 @@ func (r *protocolPickRow) Tapped(*fyne.PointEvent) {
 func (r *protocolPickRow) TappedSecondary(*fyne.PointEvent) {}
 
 func (r *protocolPickRow) MouseIn(ev *desktop.MouseEvent) {
+	if r.disabled {
+		return
+	}
 	if ev != nil {
 		noteChromeHoverIn(ev.AbsolutePosition)
 	}
@@ -646,101 +709,198 @@ func (r *protocolPickRow) MouseMoved(ev *desktop.MouseEvent) {
 	}
 }
 
-func (r *protocolPickRow) Cursor() desktop.Cursor { return desktop.PointerCursor }
+func (r *protocolPickRow) Cursor() desktop.Cursor {
+	if r.disabled {
+		return desktop.DefaultCursor
+	}
+	return desktop.PointerCursor
+}
 
 type protocolPickRowRenderer struct {
 	row     *protocolPickRow
-	box     *canvas.Rectangle
-	mark    *canvas.Image
-	star    *canvas.Image
-	text    *canvas.Text
-	pillBg  *canvas.Rectangle
-	pillTxt *canvas.Text
+	bg      *canvas.Rectangle
+	border  *canvas.Rectangle
+	radio   *canvas.Circle
+	dot     *canvas.Circle
+	title   *canvas.Text
+	sub     *canvas.Text
+	badgeBg *canvas.Rectangle
+	lock    *canvas.Image
+	info    *canvas.Image
 	objects []fyne.CanvasObject
 }
 
 func (r *protocolPickRowRenderer) Layout(size fyne.Size) {
-	const boxSide float32 = 14
-	const markSide float32 = 11
-	const starSide float32 = 12
-	const pillH float32 = 14
-	r.box.Resize(fyne.NewSize(boxSide, boxSide))
-	r.box.Move(fyne.NewPos(0, (size.Height-boxSide)/2))
-	placeSquareIcon(r.mark, fyne.NewPos((boxSide-markSide)/2, (size.Height-markSide)/2-0.5), markSide)
-	x := float32(20)
-	if r.row.icon != nil {
-		placeSquareIcon(r.star, fyne.NewPos(x, (size.Height-starSide)/2), starSide)
-		x += starSide + 4
+	r.bg.Move(fyne.NewPos(0, 0))
+	r.bg.Resize(size)
+	r.border.Move(fyne.NewPos(0, 0))
+	r.border.Resize(size)
+
+	const padL float32 = 12
+	const radioSide float32 = 16
+	const innerSide float32 = 8
+	const infoSide float32 = 14
+	const padR float32 = 10
+	radioY := (size.Height - radioSide) / 2
+	r.radio.Move(fyne.NewPos(padL, radioY))
+	r.radio.Resize(fyne.NewSize(radioSide, radioSide))
+	innerOff := (radioSide - innerSide) / 2
+	r.dot.Move(fyne.NewPos(padL+innerOff, radioY+innerOff))
+	r.dot.Resize(fyne.NewSize(innerSide, innerSide))
+
+	infoX := size.Width - padR - infoSide
+	infoY := (size.Height - infoSide) / 2
+	placeSquareIcon(r.info, fyne.NewPos(infoX, infoY), infoSide)
+	r.row.infoHitX = infoX - 4
+	r.row.infoHitW = infoSide + 8
+
+	trailX := infoX - 8
+	if r.row.locked && !r.row.checked {
+		const lk float32 = 14
+		trailX -= lk
+		placeSquareIcon(r.lock, fyne.NewPos(trailX, (size.Height-lk)/2), lk)
+		r.lock.Show()
+	} else {
+		r.lock.Hide()
 	}
-	ts := r.text.MinSize()
-	r.text.Resize(ts)
-	r.text.Move(fyne.NewPos(x, (size.Height-ts.Height)/2))
-	x += ts.Width + 6
-	ps := r.pillTxt.MinSize()
-	pillW := ps.Width + 10
-	r.pillBg.Resize(fyne.NewSize(pillW, pillH))
-	r.pillBg.CornerRadius = pillH / 2
-	r.pillBg.Move(fyne.NewPos(x, (size.Height-pillH)/2))
-	r.pillTxt.Resize(ps)
-	py := (size.Height-ps.Height)/2 - 1
-	if py < 0 {
-		py = 0
+
+	textX := padL + radioSide + 10
+	textW := trailX - 8 - textX
+	if textW < 0 {
+		textW = 0
 	}
-	r.pillTxt.Move(fyne.NewPos(x+(pillW-ps.Width)/2, py))
+	titleH := float32(16)
+	subH := float32(16)
+	blockH := titleH + 4 + subH
+	textY := (size.Height - blockH) / 2
+	r.title.Move(fyne.NewPos(textX, textY))
+	r.title.Resize(fyne.NewSize(textW, titleH))
+	chipPadX := float32(6)
+	chipPadY := float32(2)
+	subSize := r.sub.MinSize()
+	chipW := subSize.Width + chipPadX*2
+	chipH := subSize.Height + chipPadY*2
+	if chipW > textW && textW > 0 {
+		chipW = textW
+	}
+	r.badgeBg.Move(fyne.NewPos(textX, textY+titleH+4))
+	r.badgeBg.Resize(fyne.NewSize(chipW, chipH))
+	r.sub.Move(fyne.NewPos(textX+chipPadX, textY+titleH+4+chipPadY-0.5))
+	r.sub.Resize(subSize)
 }
 
 func (r *protocolPickRowRenderer) MinSize() fyne.Size { return r.row.MinSize() }
 
 func (r *protocolPickRowRenderer) Refresh() {
-	ch := currentChrome()
-	switch {
-	case r.row.checked:
-		r.box.FillColor = ch.Accent
-		r.box.StrokeColor = ch.Accent
-		r.mark.Resource = checkGlyphOnTeal
-		r.mark.Show()
-		r.text.Color = ch.Accent
-	case r.row.included:
-		r.box.FillColor = color.Transparent
-		r.box.StrokeColor = design.ColorChromeOlive
-		r.mark.Resource = checkGlyphMuted
-		r.mark.Show()
-		r.text.Color = design.ColorEmptyHint
-	default:
-		r.box.FillColor = color.Transparent
-		r.box.StrokeColor = design.ColorChromeOlive
-		r.mark.Hide()
-		r.text.Color = design.ColorSectionTitle
-	}
-	if (r.row.hovered || r.row.preview) && !r.row.checked && !r.row.included {
-		r.box.StrokeColor = ch.Accent
-		r.text.Color = ch.Accent
-	}
-	fg, line := protocolBadgeColors(r.row.key)
-	r.pillTxt.Color = fg
-	r.pillBg.StrokeColor = line
-	if r.row.icon != nil {
-		r.star.Show()
+	accent := r.row.badgeClr
+	var titleClr color.Color = design.ColorMutedOlive
+	subClr := accent
+	var radioStroke color.Color = design.ColorChromeOlive
+	var borderClr color.Color = design.ColorChromeOlive
+	if r.row.checked {
+		titleClr = design.ColorTextLight
+		radioStroke = accent
+		borderClr = accent
+		r.dot.FillColor = accent
+		r.dot.Show()
+		r.lock.Hide()
+	} else if r.row.locked {
+		titleClr = design.ColorEmptyHint
+		subClr = design.ColorEmptyHint
+		r.dot.Hide()
+		r.lock.Show()
 	} else {
-		r.star.Hide()
+		r.dot.Hide()
+		r.lock.Hide()
 	}
-	r.box.Refresh()
-	r.mark.Refresh()
-	r.star.Refresh()
-	r.text.Refresh()
-	r.pillBg.Refresh()
-	r.pillTxt.Refresh()
+	if (r.row.hovered || r.row.preview) && !r.row.disabled {
+		borderClr = accent
+		if !r.row.checked && !r.row.locked {
+			radioStroke = accent
+		}
+	}
+	if r.row.disabled && !r.row.checked {
+		titleClr = design.ColorEmptyHint
+		subClr = design.ColorEmptyHint
+		borderClr = design.ColorChromeOlive
+		radioStroke = design.ColorChromeOlive
+	}
+	r.bg.FillColor = design.ColorGray900
+	r.border.StrokeColor = borderClr
+	r.radio.StrokeColor = radioStroke
+	r.radio.FillColor = color.Transparent
+	r.title.Color = titleClr
+	r.sub.Color = subClr
+	r.badgeBg.StrokeColor = subClr
+	r.badgeBg.FillColor = protocolBadgeFill(subClr)
+	r.bg.Refresh()
+	r.border.Refresh()
+	r.radio.Refresh()
+	r.dot.Refresh()
+	r.title.Refresh()
+	r.badgeBg.Refresh()
+	r.sub.Refresh()
+	r.lock.Refresh()
+	r.info.Refresh()
 	r.Layout(r.row.Size())
 }
 
 func (r *protocolPickRowRenderer) Objects() []fyne.CanvasObject { return r.objects }
 func (r *protocolPickRowRenderer) Destroy()                     {}
 
-// cardGridLayout is a 2x2 of cards. Each card is laid out at its own
-// MinSize height (not stretched to the cell or its neighbour) so leftover
-// window space stays empty below the grid. Fyne Border/VBox theme padding
-// is avoided at this layer — stretching + theme.Padding()*scale is what
-// made paddings jump when dragging the window between monitors.
+type equalHBoxLayout struct {
+	gap float32
+}
+
+func (l *equalHBoxLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
+	n := 0
+	for _, o := range objects {
+		if o != nil && o.Visible() {
+			n++
+		}
+	}
+	if n == 0 {
+		return
+	}
+	col := (size.Width - l.gap*float32(n-1)) / float32(n)
+	if col < 0 {
+		col = 0
+	}
+	x := float32(0)
+	for _, o := range objects {
+		if o == nil || !o.Visible() {
+			continue
+		}
+		o.Move(fyne.NewPos(x, 0))
+		o.Resize(fyne.NewSize(col, size.Height))
+		x += col + l.gap
+	}
+}
+
+func (l *equalHBoxLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
+	var maxW, maxH float32
+	n := 0
+	for _, o := range objects {
+		if o == nil || !o.Visible() {
+			continue
+		}
+		min := o.MinSize()
+		if min.Width > maxW {
+			maxW = min.Width
+		}
+		if min.Height > maxH {
+			maxH = min.Height
+		}
+		n++
+	}
+	if n == 0 {
+		return fyne.NewSize(0, 0)
+	}
+	return fyne.NewSize(maxW*float32(n)+l.gap*float32(n-1), maxH)
+}
+
+// cardGridLayout lays Protocol full-width on top, then Permissions|Status.
+// A 4th card (Graphics) sits under Permissions at half width.
 type cardGridLayout struct {
 	gap         float32
 	topInset    float32
@@ -748,28 +908,14 @@ type cardGridLayout struct {
 }
 
 func (l *cardGridLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
-	if len(objects) < 4 {
+	n := len(objects)
+	if n < 3 {
 		return
 	}
 	gap := l.gap
-	topH := fyne.Max(objects[0].MinSize().Height, objects[1].MinSize().Height)
-	botH := fyne.Max(objects[2].MinSize().Height, objects[3].MinSize().Height)
-	need := topH + botH + gap
-	if size.Height > 0 && need > size.Height {
-		avail := size.Height - gap
-		if avail < 0 {
-			avail = 0
-		}
-		// Prefer keeping Tailscale|Permissions at their natural shared
-		// height (Linux Permissions is the tall driver). Squeeze
-		// Protocol|Status first; only shrink the top row if even that
-		// is not enough.
-		if topH <= avail {
-			botH = avail - topH
-		} else {
-			botH = 0
-			topH = avail
-		}
+	place := func(obj fyne.CanvasObject, x, y, w, h float32) {
+		obj.Move(fyne.NewPos(x, y))
+		obj.Resize(fyne.NewSize(w, h))
 	}
 	topW := size.Width - l.topInset*2
 	botW := size.Width - l.bottomInset*2
@@ -779,35 +925,45 @@ func (l *cardGridLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
 	if botW < 0 {
 		botW = 0
 	}
-	topCol := (topW - gap) / 2
-	botCol := (botW - gap) / 2
-	if topCol < 0 {
-		topCol = 0
+	col := (botW - gap) / 2
+	if col < 0 {
+		col = 0
 	}
-	if botCol < 0 {
-		botCol = 0
+
+	protoH := objects[0].MinSize().Height
+	permH := objects[1].MinSize().Height
+	statH := objects[2].MinSize().Height
+	var gfxH float32
+	if n >= 4 {
+		gfxH = objects[3].MinSize().Height
 	}
-	place := func(obj fyne.CanvasObject, x, y, w, h float32) {
-		obj.Move(fyne.NewPos(x, y))
-		obj.Resize(fyne.NewSize(w, h))
+
+	place(objects[0], l.topInset, 0, topW, protoH)
+	place(objects[1], l.bottomInset, protoH+gap, col, permH)
+	place(objects[2], l.bottomInset+col+gap, protoH+gap, col, statH)
+	if n >= 4 {
+		place(objects[3], l.bottomInset, protoH+gap+permH+gap, col, gfxH)
 	}
-	// Top row (Tailscale | Permissions) shares one height so the cards
-	// line up; Permissions growth pulls Tailscale with it via topH =
-	// max(mins). Extra space inside a shorter card sits below its last
-	// row (viewportFillLayout), not as padding between every row.
-	place(objects[0], l.topInset, 0, topCol, topH)
-	place(objects[1], l.topInset+topCol+gap, 0, topCol, topH)
-	place(objects[2], l.bottomInset, topH+gap, botCol, fyne.Min(objects[2].MinSize().Height, botH))
-	place(objects[3], l.bottomInset+botCol+gap, topH+gap, botCol, fyne.Min(objects[3].MinSize().Height, botH))
 }
 
 func (l *cardGridLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
-	if len(objects) < 4 {
+	n := len(objects)
+	if n < 3 {
 		return fyne.NewSize(0, 0)
 	}
-	topH := fyne.Max(objects[0].MinSize().Height, objects[1].MinSize().Height)
-	botH := fyne.Max(objects[2].MinSize().Height, objects[3].MinSize().Height)
-	topW := objects[0].MinSize().Width + objects[1].MinSize().Width + l.gap + l.topInset*2
-	botW := objects[2].MinSize().Width + objects[3].MinSize().Width + l.gap + l.bottomInset*2
-	return fyne.NewSize(fyne.Max(topW, botW), topH+botH+l.gap)
+	protoH := objects[0].MinSize().Height
+	permH := objects[1].MinSize().Height
+	statH := objects[2].MinSize().Height
+	leftH := permH
+	if n >= 4 {
+		leftH = permH + l.gap + objects[3].MinSize().Height
+	}
+	pairH := fyne.Max(leftH, statH)
+	topW := objects[0].MinSize().Width + l.topInset*2
+	botW := objects[1].MinSize().Width + objects[2].MinSize().Width + l.gap + l.bottomInset*2
+	if n >= 4 {
+		gfxW := objects[3].MinSize().Width + objects[2].MinSize().Width + l.gap + l.bottomInset*2
+		botW = fyne.Max(botW, gfxW)
+	}
+	return fyne.NewSize(fyne.Max(topW, botW), protoH+pairH+l.gap)
 }

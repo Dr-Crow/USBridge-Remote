@@ -200,7 +200,9 @@ func (w *Window) showFooterIdle(hint string, d time.Duration) {
 }
 
 func (w *Window) startProtocolBusy() {
+	w.protocolSwitching = true
 	w.startFooterBusy(loc().ChangingProtocol)
+	w.refreshProtocolPickerVisuals(true)
 }
 
 func (w *Window) stopProtocolBusy() {
@@ -208,6 +210,7 @@ func (w *Window) stopProtocolBusy() {
 }
 
 func (w *Window) finishProtocolSwitch() {
+	w.protocolSwitching = false
 	w.stopProtocolBusy()
 	if w.token != nil {
 		w.syncProtocolPicker(w.token.EntitlementStatus())

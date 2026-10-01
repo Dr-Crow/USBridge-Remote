@@ -348,6 +348,9 @@ func (cm *ConnectionManager) RefreshList() {
 	if cm == nil {
 		return
 	}
+	if view.PopupActive() {
+		return
+	}
 	cm.refreshConnectionsList()
 }
 

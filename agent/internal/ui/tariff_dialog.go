@@ -110,6 +110,7 @@ func (w *Window) showTariffPickerDialog(parent fyne.Window, initialKey string) {
 		if popup != nil {
 			popup.Hide()
 		}
+		w.restoreProtocolSelection()
 	}
 
 	selected := tariffIndexForKey(initialKey)
@@ -178,6 +179,7 @@ func (w *Window) showTariffPickerDialog(parent fyne.Window, initialKey string) {
 	panel := newTariffDialogPanel(w.tariffDialogVersion(), body, footerSlot, closeDialog)
 	popup = showOverlayPopup(parent, overlayPopupSpec{
 		Panel: panel,
+		OnOutsideTap: closeDialog,
 		PanelSize: func(canvasSize fyne.Size, _ fyne.CanvasObject) fyne.Size {
 			width := tariffDialogWidth
 			height := tariffDialogHeight

@@ -39,6 +39,16 @@ var (
 	LogoUSBridgeLockup     = LogoUSBridgeLockupFree
 )
 
+//go:embed Moonlight.png
+var moonlightPNG []byte
+
+var MoonlightIcon = fyne.NewStaticResource("Moonlight.png", moonlightPNG)
+
+//go:embed NVIDIA_logo.svg.png
+var nvidiaLogoPNG []byte
+
+var NvidiaLogo = fyne.NewStaticResource("NVIDIA_logo.svg.png", nvidiaLogoPNG)
+
 //go:embed github-svgrepo-com.svg
 var githubSVG []byte
 
@@ -71,6 +81,7 @@ const (
 	chipIconFill   = "#c3c6b4"
 	proIconFill    = "#b39ef1"
 	onProIconFill  = "#0b0f12"
+	ctaIconFill    = "#c4e77a"
 )
 
 // settingsGearSVG is a filled gear so tintedSVG can recolor it the same
@@ -90,8 +101,29 @@ var (
 	SettingsIconLight     = tintedSVG("settings-light.svg", settingsGearSVG, chipIconFill)
 )
 
-// GoogleLogo is the colorful G for the Account "Log in with Google" chip.
 var GoogleLogo = fyne.NewStaticResource("google-logo.webp", googleLogoBytes)
+
+//go:embed confirm-o-svgrepo-com.svg
+var confirmOSVG []byte
+
+var ConfirmOnIcon = tintedSVG("confirm-on.svg", confirmOSVG, ctaIconFill)
+
+//go:embed time-svgrepo-com.svg
+var timeSVG []byte
+
+var TimeIcon = tintedStrokeSVG("time-gray.svg", timeSVG, chipIconFill)
+
+//go:embed usb-svgrepo-com.svg
+var usbSVG []byte
+
+//go:embed cloud-upload-svgrepo-com.svg
+var cloudUploadSVG []byte
+
+// USBGlyphIcon / CloudUploadIcon are What’s New row glyphs (muted chrome).
+var (
+	USBGlyphIcon    = tintedSVG("usb-glyph.svg", usbSVG, chipIconFill)
+	CloudUploadIcon = tintedSVG("cloud-upload.svg", cloudUploadSVG, chipIconFill)
+)
 
 // StarProIcon is the Protocol-card Pro/Enterprise glyph (#b39ef1).
 // StarChipIcon matches Change-chip chrome; StarOnProIcon is the Buy fill.
@@ -109,10 +141,17 @@ var (
 	LinuxIcon   = tintedSVG("linux.svg", linuxSVG, headerIconFill)
 )
 
+func tintedStrokeSVG(name string, src []byte, stroke string) fyne.Resource {
+	s := string(src)
+	s = strings.ReplaceAll(s, `stroke="#000000"`, `stroke="`+stroke+`"`)
+	return fyne.NewStaticResource(name, []byte(s))
+}
+
 func tintedSVG(name string, src []byte, fill string) fyne.Resource {
 	s := string(src)
 	s = strings.ReplaceAll(s, `fill="#000000"`, `fill="`+fill+`"`)
 	s = strings.ReplaceAll(s, `fill="#0F0F0F"`, `fill="`+fill+`"`)
+	s = strings.ReplaceAll(s, `fill="black"`, `fill="`+fill+`"`)
 	return fyne.NewStaticResource(name, []byte(s))
 }
 

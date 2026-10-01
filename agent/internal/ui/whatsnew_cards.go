@@ -40,9 +40,19 @@ const (
 )
 
 type whatsNewPoint struct {
+	Glyph whatsNewGlyph
 	Title whatsNewCopy
 	Body  whatsNewCopy
 }
+
+type whatsNewGlyph string
+
+const (
+	whatsNewGlyphUSB     whatsNewGlyph = "usb"
+	whatsNewGlyphDisplay whatsNewGlyph = "display"
+	whatsNewGlyphCloud   whatsNewGlyph = "cloud"
+	whatsNewGlyphMetrics whatsNewGlyph = "metrics"
+)
 
 // whatsNewItem is one plaque. Several Points share the same Kind so they
 // stay in one card instead of stacking duplicate protocol plaques.
@@ -54,6 +64,7 @@ type whatsNewItem struct {
 // whatsNewCard is one post-update appeal. Newest first in the catalog.
 type whatsNewCard struct {
 	Version string
+	Date    string
 	Items   []whatsNewItem
 }
 
@@ -87,11 +98,13 @@ func sortWhatsNewItems(items []whatsNewItem) []whatsNewItem {
 func whatsNewCatalog() []whatsNewCard {
 	return []whatsNewCard{
 		{
-			Version: "2.4.45",
+			Version: "3.0.45",
+			Date:    "September 2026",
 			Items: []whatsNewItem{
 				{
 					Kind: whatsNewKindPro,
 					Points: []whatsNewPoint{{
+						Glyph: whatsNewGlyphUSB,
 						Title: whatsNewCopy{
 							EN: "USB emulation support",
 							ES: "Soporte de emulacion USB",
@@ -107,6 +120,7 @@ func whatsNewCatalog() []whatsNewCard {
 				{
 					Kind: whatsNewKindFree,
 					Points: []whatsNewPoint{{
+						Glyph: whatsNewGlyphDisplay,
 						Title: whatsNewCopy{
 							EN: "Virtual Display",
 							ES: "Virtual Display",
@@ -123,6 +137,7 @@ func whatsNewCatalog() []whatsNewCard {
 					Kind: whatsNewKindOther,
 					Points: []whatsNewPoint{
 						{
+							Glyph: whatsNewGlyphCloud,
 							Title: whatsNewCopy{
 								EN: "USBridge protocol auto-update",
 								ES: "Autoactualizacion del protocolo USBridge",

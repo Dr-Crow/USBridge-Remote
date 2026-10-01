@@ -49,7 +49,7 @@ func ShowMobileSettingsMenu(anchor fyne.CanvasObject, mode string, onViewMode fu
 	content := container.NewVBox(
 		NewInset(toggle, 2, 2, 2, 6),
 		rule,
-		row("Hardware Agent", assets.HardwareAgentIconTeal, onHardwareAgent),
+		newMobileSettingsExternalRow("Hardware Agent", assets.HardwareAgentIconTeal, func() { hideThen(onHardwareAgent) }),
 		row("Software Agent", assets.SoftwareAgentIconTeal, onSoftwareAgent),
 		row(i18n.Current.WhatsNewTitle, assets.WhatsNewIconTeal, func() {
 			ShowWhatsNewDialog(whatsNewParentWindow())
@@ -81,7 +81,7 @@ func ShowMobileControlSettingsMenu(anchor fyne.CanvasObject, onPowerReset, onHar
 
 	content := container.NewVBox(
 		newMobileSettingsRow(i18n.Current.MenuPowerReset, assets.PowerResetIconTeal, func() { hideThen(onPowerReset) }),
-		newMobileSettingsRow("Hardware Agent", assets.HardwareAgentIconTeal, func() { hideThen(onHardwareAgent) }),
+		newMobileSettingsExternalRow("Hardware Agent", assets.HardwareAgentIconTeal, func() { hideThen(onHardwareAgent) }),
 		newMobileSettingsRow("Software Agent", assets.SoftwareAgentIconTeal, func() { hideThen(onSoftwareAgent) }),
 		newMobileSettingsRow(i18n.Current.MenuInfo, assets.QuestionIconTeal, func() { hideThen(onInfo) }),
 		newMobileSettingsRow(i18n.Current.MenuCommunity, assets.DiscordIconTeal, func() { hideThen(onCommunity) }),
@@ -104,6 +104,13 @@ func newMobileSettingsRow(label string, icon fyne.Resource, onTap func()) *dropd
 	item.minHeight = 38
 	item.iconRes = icon
 	item.iconSide = 16
+	return item
+}
+
+func newMobileSettingsExternalRow(label string, icon fyne.Resource, onTap func()) *dropdownItem {
+	item := newMobileSettingsRow(label, icon, onTap)
+	item.trailingIconRes = assets.OpenExternalIconTeal
+	item.trailingIconSide = 12
 	return item
 }
 

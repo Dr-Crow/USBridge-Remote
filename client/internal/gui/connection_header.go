@@ -156,7 +156,7 @@ func newHeaderSettingsMenuButton(actions headerSettingsMenuActions) fyne.CanvasO
 					actions.OnPowerReset()
 				}
 			}},
-			{Label: "Hardware Agent", Icon: assets.HardwareAgentIconTeal, OnTap: func() {
+			{Label: "Hardware Agent", Icon: assets.HardwareAgentIconTeal, TrailingIcon: assets.OpenExternalIconTeal, OnTap: func() {
 				if actions.OnOpenHardwareAgent != nil {
 					actions.OnOpenHardwareAgent()
 				}

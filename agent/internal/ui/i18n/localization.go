@@ -24,6 +24,7 @@ type LocalizedStrings struct {
 	Permissions string
 	Status      string
 	Protocol    string
+	Graphics    string
 	Change      string
 
 	// Permissions
@@ -64,6 +65,7 @@ type LocalizedStrings struct {
 	InstallUSBDriver     string
 	GetUSBIPDriver       string
 	MoonlightClients     string
+	MoonlightHeader      string
 	RemoveAllMoonlight   string
 	WebRTCToggle         string
 
@@ -83,7 +85,7 @@ type LocalizedStrings struct {
 	EnableUSBBroker       string
 	USBBrokerConsentTitle string
 	USBBrokerConsentBody  string
-	// Tap on the USB Broker row after consent (showUSBBrokerStatusDialog).
+	// USB Broker Info button after consent (showUSBBrokerStatusDialog).
 	USBBrokerRunningOnPort string // %d = URB port
 	USBBrokerFreeTierNote  string
 	USBBrokerNotRunning    string
@@ -252,6 +254,8 @@ type LocalizedStrings struct {
 	WhatsNewTitle       string
 	WhatsNewGotIt       string
 	WhatsNewBadge       string
+	WhatsNewSubtitle    string
+	WhatsNewGitHub      string
 
 	// Tray
 	TrayOpen         string
@@ -326,6 +330,7 @@ func EN() *LocalizedStrings {
 		Permissions: "Permissions",
 		Status:      "Status",
 		Protocol:    "Protocol",
+		Graphics:    "Graphics",
 		Change:      "Change",
 
 		Accessibility:        "Accessibility",
@@ -362,6 +367,7 @@ func EN() *LocalizedStrings {
 		InstallUSBDriver:     "Install USB Driver",
 		GetUSBIPDriver:       "Get USB/IP Driver",
 		MoonlightClients:     "Moonlight Clients",
+		MoonlightHeader:      "Moonlight client",
 		RemoveAllMoonlight:   "Remove all paired Moonlight devices?",
 		WebRTCToggle:         "USBridge-streamer Web (WebRTC)",
 
@@ -533,6 +539,8 @@ func EN() *LocalizedStrings {
 		WhatsNewTitle:       "What's new",
 		WhatsNewGotIt:       "Got it",
 		WhatsNewBadge:       "New",
+		WhatsNewSubtitle:    "The latest agent features, USB passthrough, and streaming updates.",
+		WhatsNewGitHub:      "View Full Changelog on GitHub",
 
 		TrayOpen:         "Open USBridge Agent",
 		TrayRestart:      "Restart Streaming",
@@ -572,6 +580,7 @@ func ES() *LocalizedStrings {
 	locale.Permissions = "Permisos"
 	locale.Status = "Estado"
 	locale.Protocol = "Protocolo"
+	locale.Graphics = "Gráficos"
 	locale.Change = "Cambiar"
 
 	locale.Accessibility = "Accesibilidad"
@@ -605,6 +614,7 @@ func ES() *LocalizedStrings {
 	locale.InstallUSBDriver = "Instalar driver USB"
 	locale.GetUSBIPDriver = "Obtener driver USB/IP"
 	locale.MoonlightClients = "Clientes Moonlight"
+	locale.MoonlightHeader = "Cliente Moonlight"
 	locale.RemoveAllMoonlight = "Quitar todos los dispositivos Moonlight emparejados?"
 	locale.WebRTCToggle = "USBridge-streamer Web (WebRTC)"
 
@@ -766,6 +776,8 @@ func ES() *LocalizedStrings {
 	locale.WhatsNewTitle = "Novedades"
 	locale.WhatsNewGotIt = "Entendido"
 	locale.WhatsNewBadge = "Nuevo"
+	locale.WhatsNewSubtitle = "Las ultimas funciones del agente, passthrough USB y actualizaciones de streaming."
+	locale.WhatsNewGitHub = "Ver changelog completo en GitHub"
 
 	locale.TrayOpen = "Abrir USBridge Agent"
 	locale.TrayRestart = "Reiniciar streaming"
@@ -804,6 +816,7 @@ func UK() *LocalizedStrings {
 	locale.Permissions = "Дозволи"
 	locale.Status = "Статус"
 	locale.Protocol = "Протокол"
+	locale.Graphics = "Графіка"
 	locale.Change = "Змінити"
 
 	locale.Accessibility = "Спеціальні можливості"
@@ -837,6 +850,7 @@ func UK() *LocalizedStrings {
 	locale.InstallUSBDriver = "Встановити USB driver"
 	locale.GetUSBIPDriver = "Отримати USB/IP Driver"
 	locale.MoonlightClients = "Клієнти Moonlight"
+	locale.MoonlightHeader = "Клієнт Moonlight"
 	locale.RemoveAllMoonlight = "Від’єднати всі спарені пристрої Moonlight?"
 	locale.WebRTCToggle = "USBridge-streamer Web (WebRTC)"
 
@@ -998,6 +1012,8 @@ func UK() *LocalizedStrings {
 	locale.WhatsNewTitle = "Що нового"
 	locale.WhatsNewGotIt = "Зрозуміло"
 	locale.WhatsNewBadge = "Нове"
+	locale.WhatsNewSubtitle = "Нові функції агента, прокидання USB і оновлення стрімінгу."
+	locale.WhatsNewGitHub = "Повний changelog на GitHub"
 
 	locale.TrayOpen = "Відкрити USBridge Agent"
 	locale.TrayRestart = "Перезапустити стрім"

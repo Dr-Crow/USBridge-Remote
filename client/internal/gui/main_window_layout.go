@@ -1877,6 +1877,9 @@ func (mw *MainWindow) refreshMainHeaderLayout() {
 	if mw.mainContent != nil {
 		mw.mainContent.Refresh()
 	}
+	if view.PopupActive() {
+		return
+	}
 	if content := mw.window.Content(); content != nil {
 		mw.window.Canvas().Refresh(content)
 	}
