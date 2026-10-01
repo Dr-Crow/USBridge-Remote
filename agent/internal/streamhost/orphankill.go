@@ -10,8 +10,8 @@ import (
 // name either backend's launcher can ever produce. Used to guarantee a
 // clean slate before Start() trusts a reachable admin port -- see
 // killOrphanStreamerProcesses's doc comment.
-var streamerProcessNamesUnix = []string{"gamestream-server", "usbridge-streamer", "sunshine"}
-var streamerProcessNamesWindows = []string{"gamestream-server.exe", "usbridge-streamer.exe", "sunshine.exe"}
+var streamerProcessNamesUnix = []string{"gamestream-server", "usbridge-streamer", "sunshine", "punktfunk-host"}
+var streamerProcessNamesWindows = []string{"gamestream-server.exe", "usbridge-streamer.exe", "sunshine.exe", "punktfunk-host.exe"}
 
 // killOrphanStreamerProcesses kills, by name, every process either backend
 // could have left running without this Go process holding a live handle to
