@@ -16,6 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"usbridge_agent/internal/hwid"
@@ -372,11 +373,48 @@ func tailFile(path string, n int) []string {
 
 func (s *Service) Stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.cmd != nil && s.cmd.Process != nil {
-		_ = s.cmd.Process.Kill()
+	cmd := s.cmd
+	s.mu.Unlock()
+	if cmd == nil || cmd.Process == nil {
+		return
 	}
-	s.cmd = nil
+	// A hard Kill() (SIGKILL on Unix, TerminateProcess on Windows) gives the
+	// broker no chance to detach a hardware dongle it has a device cloned
+	// onto. Confirmed live on macOS: leaving the clone enumerated like that
+	// can wedge the Mac's own USB HID stack badly enough that even the
+	// built-in trackpad and keyboard stop responding, until something
+	// reopens the dongle's port and detaches it. Ask nicely first --
+	// rust-shine's main.rs handles SIGTERM by detaching before it exits --
+	// and only fall back to an unconditional kill if that doesn't work
+	// (Windows has no equivalent of SIGTERM Process.Signal can deliver, so
+	// this falls through to Kill() immediately there).
+	if err := cmd.Process.Signal(syscall.SIGTERM); err == nil {
+		exited := make(chan struct{})
+		go func() {
+			for {
+				s.mu.Lock()
+				stillOurs := s.cmd == cmd
+				s.mu.Unlock()
+				if !stillOurs {
+					close(exited)
+					return
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+		}()
+		select {
+		case <-exited:
+			return
+		case <-time.After(3 * time.Second):
+			log.Printf("[usbpass] broker did not exit within 3s of SIGTERM, killing it")
+		}
+	}
+	_ = cmd.Process.Kill()
+	s.mu.Lock()
+	if s.cmd == cmd {
+		s.cmd = nil
+	}
+	s.mu.Unlock()
 }
 
 func (s *Service) control(cmd string, extra map[string]any) (map[string]any, error) {
