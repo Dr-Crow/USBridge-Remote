@@ -130,9 +130,11 @@ func (d *HeaderDropdown) CreateRenderer() fyne.WidgetRenderer {
 		d.label.TextStyle.Monospace = true
 	}
 
-	var res fyne.Resource = coloredArrowDown(d.IconColor)
+	var res fyne.Resource
 	if d.IconOnly && d.TriggerIcon != nil {
 		res = d.TriggerIcon
+	} else {
+		res = coloredArrowDown(d.IconColor)
 	}
 	d.icon = canvas.NewImageFromResource(res)
 	d.icon.FillMode = canvas.ImageFillContain

@@ -586,14 +586,24 @@ func (cm *ConnectionManager) SetConnectionPending(pending bool) {
 	// connect (see HandleFormEdited/SetFormTextSilently) -- once that bug
 	// stopped moving activeIndex around, this one was fully exposed: the
 	// toast stopped closing at all once a session actually connected.
-	activeIndex := cm.selectedIndex
-	if cm.selectedIndex < 0 || cm.selectedIndex >= len(cm.connections) {
-		activeIndex = -1
+	// Keep the connecting row when already pending. refreshConnectionControls
+	// re-calls this with selectedIndex on every layout pass; swapping
+	// activeIndex (or rebuilding the cards) made the mobile Cloud/protocol
+	// glyphs flash between disabled and idle during Connect.
+	activeIndex := cm.activeConnectionIndex
+	if !cm.connectionPending {
+		activeIndex = cm.selectedIndex
+		if cm.selectedIndex < 0 || cm.selectedIndex >= len(cm.connections) {
+			activeIndex = -1
+		}
 	}
 	cm.setConnectionPendingState(pending, activeIndex)
 }
 
 func (cm *ConnectionManager) setConnectionPendingState(pending bool, activeIndex int) {
+	if activeIndex < 0 || activeIndex >= len(cm.connections) {
+		activeIndex = -1
+	}
 	// wasPending/wasActiveIndex let the connectingStateSink call below fire
 	// only on an actual transition -- refreshConnectionControls
 	// (main_window_layout.go) redundantly calls SetConnectionPending(true)
@@ -603,6 +613,9 @@ func (cm *ConnectionManager) setConnectionPendingState(pending bool, activeIndex
 	// it) even though nothing about the pending state actually changed.
 	wasPending := cm.connectionPending
 	wasActiveIndex := cm.activeConnectionIndex
+	if pending == wasPending && activeIndex == wasActiveIndex {
+		return
+	}
 
 	cm.connectionPending = pending
 	cm.activeConnectionIndex = activeIndex
@@ -610,7 +623,7 @@ func (cm *ConnectionManager) setConnectionPendingState(pending bool, activeIndex
 	if cm.ui != nil {
 		fyne.Do(func() {
 			cm.ui.SetActionButtonsDisabled(pending)
-			cm.refreshConnectionsList()
+			cm.refreshConnectionsListNow()
 		})
 	}
 

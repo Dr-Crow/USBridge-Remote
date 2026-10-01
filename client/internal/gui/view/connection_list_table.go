@@ -513,7 +513,7 @@ var (
 )
 
 func newMobileSyncIconDropdown(badge string, options []string, syncEnabled, disabled bool, onChange func(string), onLocked func()) *HeaderDropdown {
-	dropdown := newConnectionSyncDropdown(badge, options, syncEnabled, disabled, onChange, onLocked)
+	dropdown := newConnectionSyncDropdown(badge, options, syncEnabled, false, onChange, onLocked)
 	dropdown.IconOnly = true
 	dropdown.CornerRadius = 5
 	if connectionSyncIsCloud(badge) {
@@ -521,6 +521,7 @@ func newMobileSyncIconDropdown(badge string, options []string, syncEnabled, disa
 	} else {
 		dropdown.TriggerIcon = connectionSyncCloudOffIcon
 	}
+	dropdown.SetDisabled(disabled)
 	dropdown.updateMinWidth()
 	return dropdown
 }

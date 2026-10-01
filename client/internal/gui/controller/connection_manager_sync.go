@@ -35,8 +35,9 @@ const syncPushDebounce = 3 * time.Second
 // blob for connections pushed from elsewhere. Without this, new/updated
 // cloud rows only appear after app restart or an account-state change
 // (login / passphrase / logout). Meta is cheap; a full Pull runs only when
-// the remote version advanced.
-const syncPullPollInterval = 15 * time.Second
+// the remote version advanced. One minute is enough while the connections
+// page is open without hammering the backend.
+const syncPullPollInterval = time.Minute
 
 // connectionSyncKey identifies "the same saved connection" across devices.
 // The QR master key is the stable identity (LAN vs Tailscale host often

@@ -73,8 +73,8 @@ func newMobileConnectionGridCard(data ConnectionCardData, state ConnectionRowSta
 	protocolDropdown.TextSize = 10
 	protocolDropdown.HoverBorderColor = design.ColorConnectionBadgeText
 	protocolDropdown.HoverFillColor = design.ColorGray900
-	protocolDropdown.SetSelected(data.ProtocolBadge)
 	protocolDropdown.SetDisabled(state.Disabled)
+	protocolDropdown.SetSelected(data.ProtocolBadge)
 
 	syncDropdown := newMobileSyncIconDropdown(data.SyncBadge, data.SyncOptions, data.SyncEnabled, state.Disabled, actions.OnSyncChange, actions.OnSyncLocked)
 

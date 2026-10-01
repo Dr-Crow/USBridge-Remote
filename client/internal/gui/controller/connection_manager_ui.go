@@ -355,6 +355,17 @@ func (cm *ConnectionManager) RefreshList() {
 }
 
 func (cm *ConnectionManager) refreshConnectionsList() {
+	if cm != nil && cm.connectionPending {
+		// Rebuilding cards while Connect is in flight recreates the Cloud
+		// and protocol dropdowns; on Android the first frame still shows
+		// the chevron / enabled colors, so the row looks like it is
+		// toggling in and out of "connecting".
+		return
+	}
+	cm.refreshConnectionsListNow()
+}
+
+func (cm *ConnectionManager) refreshConnectionsListNow() {
 	if cm.ui == nil {
 		// Guards a ConnectionManager built without going through
 		// NewConnectionManager's createInterface() step -- every real
