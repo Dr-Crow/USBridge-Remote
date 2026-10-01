@@ -65,7 +65,7 @@ if the client is killed in between, the nodes are restored at the next start.
 | --- | --- | --- |
 | Linux (kernel `wacom` over vhci) | binds; pen, pressure, hover, touch, both pen buttons and all four ExpressKeys arrive | ✅ CTL-4100 |
 | Windows (Wacom driver over usbip-win2, loopback) | binds as Wacom Pointer / pen / digitizer; the cursor follows the pen | ✅ CTL-4100 |
-| macOS | not tried | 🧪 |
+| macOS (agent with the [USB/IP dongle](https://github.com/itsme228/esp32-usbip): macOS has no USB/IP driver, the dongle imports the tablet and shows it on a real USB port) | not tried on macOS; the dongle itself is ✅ on a Linux host with the CTL-4100 (kernel `wacom` binds, 133 reports/s) | 🧪 |
 
 ## Tried on hardware
 

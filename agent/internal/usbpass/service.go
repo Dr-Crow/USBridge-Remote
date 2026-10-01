@@ -58,6 +58,43 @@ type Status struct {
 	// UI shows the consent button instead of the usual status row while
 	// this is false.
 	ConsentGiven bool `json:"consent_given"`
+	// Dongle is the USBridge USB/IP dongle (hardware importer, see
+	// rust-shine's usb_passthrough::dongle) as the broker sees it; nil when
+	// none is plugged in. It stands in for the OS VHCI driver, and is the
+	// only importer there is on macOS.
+	Dongle *DongleStatus `json:"dongle,omitempty"`
+}
+
+type DongleStatus struct {
+	Firmware      string `json:"fw,omitempty"`
+	Serial        string `json:"serial,omitempty"`
+	Attached      bool   `json:"attached"`
+	USBConfigured bool   `json:"usb_configured"`
+	BusID         string `json:"bus_id,omitempty"`
+	VID           string `json:"vid,omitempty"`
+	PID           string `json:"pid,omitempty"`
+	// Error is set when something answers on the dongle's address but
+	// cannot be used (e.g. firmware speaking another protocol version).
+	Error string `json:"error,omitempty"`
+}
+
+func parseDongleStatus(v any) *DongleStatus {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	str := func(k string) string { s, _ := m[k].(string); return s }
+	flag := func(k string) bool { b, _ := m[k].(bool); return b }
+	return &DongleStatus{
+		Firmware:      str("fw"),
+		Serial:        str("serial"),
+		Attached:      flag("attached"),
+		USBConfigured: flag("usb_configured"),
+		BusID:         str("bus_id"),
+		VID:           str("vid"),
+		PID:           str("pid"),
+		Error:         str("error"),
+	}
 }
 
 type Device struct {
@@ -374,9 +411,11 @@ func (s *Service) Status() Status {
 		ConfiguredPort: s.basePort,
 	}
 	st.AttachGranted = AttachAccessGranted()
-	if !st.Available {
-		st.DriverHint = "USB passthrough v1 is Windows/Linux only"
-		return st
+	// Without an OS VHCI (macOS) the only importer is the hardware dongle,
+	// which the broker finds -- so keep going and ask it.
+	nativeVHCI := st.Available
+	if !nativeVHCI {
+		st.DriverHint = "plug in the USBridge USB/IP dongle (this OS has no USB/IP driver)"
 	}
 	if runtime.GOOS == "linux" {
 		// Go-side check rather than the broker's own "status" reply --
@@ -414,6 +453,15 @@ func (s *Service) Status() Status {
 		}
 		if !st.VhciDriver {
 			st.DriverHint = "install attested usbip-win VHCI via pnputil"
+		}
+	}
+	if st.Dongle = parseDongleStatus(resp["dongle"]); st.Dongle != nil && st.Dongle.Error == "" {
+		st.Available = true
+		// The dongle is the importer, so no driver is missing; the broker
+		// uses it whenever the OS VHCI is absent.
+		if !st.VhciDriver {
+			st.VhciDriver = true
+			st.DriverHint = ""
 		}
 	}
 	if arr, ok := resp["sessions"].([]any); ok {
