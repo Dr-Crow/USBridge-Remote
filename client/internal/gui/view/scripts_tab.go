@@ -226,8 +226,7 @@ func newScriptsColumnHeader(title, subtitle string, badge, action fyne.CanvasObj
 		row = container.NewHBox(container.NewCenter(left), layout.NewSpacer())
 	}
 
-	accentLine := canvas.NewRectangle(design.ColorConnectionsSectionUnderline)
-	accentLine.SetMinSize(fyne.NewSize(1, 0.5))
+	accentLine := NewHairline(design.ColorConnectionsSectionUnderline)
 	underlineRightGap := canvas.NewRectangle(color.Transparent)
 	underlineRightGap.SetMinSize(fyne.NewSize(connectionsHeaderUnderlineRightPullback, 1))
 	underline := container.NewBorder(nil, nil, nil, underlineRightGap, accentLine)

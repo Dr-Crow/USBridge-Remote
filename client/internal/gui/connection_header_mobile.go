@@ -64,10 +64,7 @@ func newMobileConnectionHeader(actions connectionHeaderActions) (*fyne.Container
 	)
 	bg := canvas.NewRectangle(design.ColorGray900)
 	paddedRow := view.NewInsetExact(row, 13, 13, 5, 5)
-
-	accentLine := canvas.NewRectangle(design.ColorHeaderAccentLine)
-	accentLine.SetMinSize(fyne.NewSize(1, 0.5))
-	content := view.NewBottomLine(paddedRow, accentLine)
+	content := view.NewBottomLine(paddedRow, view.NewHeaderAccentLine())
 	return container.NewStack(bg, content), handle
 }
 

@@ -63,8 +63,7 @@ func newMobileScriptsColumnHeader(title, subtitle string, badge, action fyne.Can
 		row = left
 	}
 
-	accentLine := canvas.NewRectangle(design.ColorConnectionsSectionUnderline)
-	accentLine.SetMinSize(fyne.NewSize(1, 0.5))
+	accentLine := NewHairline(design.ColorConnectionsSectionUnderline)
 	underlineRightGap := canvas.NewRectangle(color.Transparent)
 	underlineRightGap.SetMinSize(fyne.NewSize(connectionsHeaderUnderlineRightPullback, 1))
 	underline := container.NewBorder(nil, nil, nil, underlineRightGap, accentLine)

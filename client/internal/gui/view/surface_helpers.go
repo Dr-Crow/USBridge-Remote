@@ -3,6 +3,7 @@ package view
 import (
 	"image/color"
 	"reflect"
+	"runtime"
 	"strings"
 
 	"usbridge-client/internal/gui/design"
@@ -133,6 +134,9 @@ func (l *bottomLineLayout) Layout(objects []fyne.CanvasObject, size fyne.Size) {
 	}
 	content, line := objects[0], objects[1]
 	lineHeight := line.MinSize().Height
+	if h := HeaderAccentLineHeight(); lineHeight > 0 && lineHeight < h {
+		lineHeight = h
+	}
 	content.Move(fyne.NewPos(0, 0))
 	content.Resize(size)
 	y := size.Height - lineHeight
@@ -154,6 +158,28 @@ func (l *bottomLineLayout) MinSize(objects []fyne.CanvasObject) fyne.Size {
 // adding layout height -- see bottomLineLayout.
 func NewBottomLine(content, line fyne.CanvasObject) *fyne.Container {
 	return container.New(&bottomLineLayout{}, content, line)
+}
+
+// HeaderAccentLineHeight is the hairline under app/section headers.
+// iOS Metal skips rectangles shorter than 1dp, so iPhone uses 1 while
+// Android/desktop keep the 0.5 hairline.
+func HeaderAccentLineHeight() float32 {
+	if runtime.GOOS == "ios" {
+		return 1
+	}
+	return 0.5
+}
+
+// NewHeaderAccentLine is the brand line under the window header.
+func NewHeaderAccentLine() *canvas.Rectangle {
+	return NewHairline(design.ColorHeaderAccentLine)
+}
+
+// NewHairline is a 0.5dp (1dp on iOS) full-width separator.
+func NewHairline(clr color.Color) *canvas.Rectangle {
+	line := canvas.NewRectangle(clr)
+	line.SetMinSize(fyne.NewSize(1, HeaderAccentLineHeight()))
+	return line
 }
 
 // topLineLayout is NewTopLine's own layout -- a thin line (its own
@@ -466,10 +492,7 @@ func NewHeaderBand(title string, content fyne.CanvasObject) *fyne.Container {
 	// missing here, the one visible difference once Control's header
 	// (createMainAddressBar, this function's only caller) started reusing
 	// that header's own accessory menu.
-	accentLine := canvas.NewRectangle(design.ColorHeaderAccentLine)
-	accentLine.SetMinSize(fyne.NewSize(1, 0.5))
-
-	return container.NewStack(bg, NewBottomLine(body, accentLine))
+	return container.NewStack(bg, NewBottomLine(body, NewHeaderAccentLine()))
 }
 
 // NewSpecialKeysHeaderBand is the mobile keyboard-stack header: special keys
@@ -478,9 +501,7 @@ func NewHeaderBand(title string, content fyne.CanvasObject) *fyne.Container {
 func NewSpecialKeysHeaderBand(content fyne.CanvasObject) *fyne.Container {
 	bg := canvas.NewRectangle(design.ColorGray900)
 	body := NewInsetExact(content, 4, 4, 2, 0)
-	accentLine := canvas.NewRectangle(design.ColorHeaderAccentLine)
-	accentLine.SetMinSize(fyne.NewSize(1, 0.5))
-	return container.NewStack(bg, NewBottomLine(body, accentLine))
+	return container.NewStack(bg, NewBottomLine(body, NewHeaderAccentLine()))
 }
 
 // MobileFooterBottomInset adds padding to the bottom of the container on mobile devices
