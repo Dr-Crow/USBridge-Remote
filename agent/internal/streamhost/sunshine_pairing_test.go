@@ -188,3 +188,58 @@ func TestSubmitPINReportsARejectedPIN(t *testing.T) {
 		t.Fatalf("SubmitPIN error = %v, want the rejected-PIN error", err)
 	}
 }
+
+// TestSessionActive_ReportsActiveFromSunshineAdminAPI pins that
+// sunshineBackend.SessionActive reads the itsme228/Sunshine fork's
+// /api/session-status route (rtsp_stream::session_count() under the hood)
+// rather than its log scrape, when that route is reachable.
+func TestSessionActive_ReportsActiveFromSunshineAdminAPI(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/session-status" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"session_active": true})
+	}))
+	t.Cleanup(srv.Close)
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := &sunshineBackend{adminPort: port}
+	if !b.SessionActive() {
+		t.Error("SessionActive() = false with session_active:true from the admin API, want true")
+	}
+}
+
+// TestSessionActive_FallsBackToLogWhenAdminAPIRouteMissing covers an
+// already-staged Sunshine build from before /api/session-status existed
+// (served 404, same as stock Sunshine predating the fork's CSRF endpoint --
+// see fetchSunshineSessionStatus's doc comment): SessionActive must still
+// fall back to the log scrape rather than going permanently blind.
+func TestSessionActive_FallsBackToLogWhenAdminAPIRouteMissing(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logPath := writeTestLog(t, `[2026-09-29 18:26:36.700]: Info: New streaming session started [active sessions: 1]
+[2026-09-29 18:26:36.730]: Info: CLIENT CONNECTED`)
+	b := &sunshineBackend{adminPort: port, logPath: logPath}
+	if !b.SessionActive() {
+		t.Error("SessionActive() = false after falling back to the log scrape, want true (log shows an active session)")
+	}
+}

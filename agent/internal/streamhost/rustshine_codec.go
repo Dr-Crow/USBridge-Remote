@@ -11,10 +11,12 @@ import (
 )
 
 // statusResponse mirrors gamestream-server's confirmed GET /api/status JSON
-// shape: {"active_video_codec": "h264"|"h265", "active_pixel_format": "...",
-// "active_chroma_444": bool, "color_444_available": bool, "active_hdr": bool,
-// "hdr_available": bool} -- see gamestream_proto::http::admin::StatusInfo.
+// shape: {"session_active": bool, "active_video_codec": "h264"|"h265",
+// "active_pixel_format": "...", "active_chroma_444": bool,
+// "color_444_available": bool, "active_hdr": bool, "hdr_available": bool}
+// -- see gamestream_proto::http::admin::StatusInfo.
 type statusResponse struct {
+	SessionActive     bool   `json:"session_active"`
 	ActiveVideoCodec  string `json:"active_video_codec"`
 	ActiveChroma444   bool   `json:"active_chroma_444"`
 	Color444Available bool   `json:"color_444_available"`
@@ -78,8 +80,29 @@ func (b *rustshineBackend) fetchStatus() *statusResponse {
 		log.Printf("[rustshine] /api/status decode failed: %v", err)
 		return nil
 	}
-	log.Printf("🎯 [CODEC-TRACE] [rustshine] GET %s -> active_video_codec=%q chroma444=%v hdr=%v", url, status.ActiveVideoCodec, status.ActiveChroma444, status.ActiveHdr)
+	log.Printf("🎯 [CODEC-TRACE] [rustshine] GET %s -> session_active=%v active_video_codec=%q chroma444=%v hdr=%v", url, status.SessionActive, status.ActiveVideoCodec, status.ActiveChroma444, status.ActiveHdr)
 	return &status
+}
+
+// SessionActive reports whether a Moonlight client currently has a
+// launched/resumed session open -- read straight from gamestream-server's
+// own AppState::active_session via /api/status, not grepped from this
+// process's log. A prior version of this method scanned the stdout log for
+// Sunshine-style "CLIENT CONNECTED"/"CLIENT DISCONNECTED" lines, which (a)
+// this server doesn't actually emit -- confirmed via `strings` on a real
+// build, those literals aren't in the binary at all -- and (b) even when
+// matched against stale lines left over from a prior Sunshine run, only
+// ever scanned a fixed tail window that a long session's own telemetry
+// volume pushes the opening marker out of within under a minute (see
+// session_active.go's sessionActiveTracker, which still backs
+// sunshineBackend -- Sunshine has no equivalent admin API to read instead).
+// Both bugs together meant awdlWatchdog (app/awdl.go) silently stopped
+// reasserting awdl0 down during any real RustShine session. Defaults to
+// false if the server isn't reachable yet, matching CurrentVideoCodec's own
+// "assume nothing special" default.
+func (b *rustshineBackend) SessionActive() bool {
+	status := b.fetchStatus()
+	return status != nil && status.SessionActive
 }
 
 // CurrentVideoCodec reports which codec the most recent (or current)

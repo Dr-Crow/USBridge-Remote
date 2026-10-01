@@ -84,6 +84,41 @@ func fetchCSRFToken(adminPort int, user, pass string) (string, error) {
 	return result.CSRFToken, nil
 }
 
+// fetchSunshineSessionStatus reports whether the itsme228/Sunshine fork
+// running on adminPort has an active Moonlight streaming session, read from
+// its /api/session-status admin route (confighttp.cpp::getSessionStatus,
+// backed directly by rtsp_stream::session_count()) rather than grepped from
+// this process's log -- see sunshineBackend.SessionActive's doc comment for
+// why that log scrape is unreliable on a long-running session. ok is false
+// (not an error) both when the endpoint doesn't exist yet (an
+// already-staged Sunshine build that predates this route -- same
+// "treat 404 as absent, not fatal" contract fetchCSRFToken established) and
+// on any other failure to reach it; callers should fall back to the log
+// scrape in either case rather than guessing.
+func fetchSunshineSessionStatus(adminPort int, user, pass string) (active bool, ok bool) {
+	url := fmt.Sprintf("https://%s:%d/api/session-status", adminHost(), adminPort)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return false, false
+	}
+	req.SetBasicAuth(user, pass)
+	resp, err := sunshineAdminHTTPClient.Do(req)
+	if err != nil {
+		return false, false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, false
+	}
+	var result struct {
+		SessionActive bool `json:"session_active"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return false, false
+	}
+	return result.SessionActive, true
+}
+
 // ListClients returns the Moonlight clients currently paired with the
 // Sunshine instance running on adminPort. Requires valid admin credentials
 // to have been bootstrapped first.

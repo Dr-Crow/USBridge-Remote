@@ -209,6 +209,12 @@ type sunshineBackend struct {
 	capExecPath string
 	logPath     string
 	proc        sunshineProcess
+	// adminPort is set by Start; SessionActive needs it despite taking no
+	// args itself -- mirrors rustshineBackend.adminPort exactly.
+	adminPort int
+	// sessionTracker is SessionActive's fallback for a staged Sunshine build
+	// that predates /api/session-status (see SessionActive's doc comment).
+	sessionTracker sessionActiveTracker
 	// watchdog is only used on macOS (see sunshine_process_other.go) — a
 	// detached helper process that kills Sunshine if the agent disappears.
 	// Left nil, and never referenced, on Linux/Windows where the OS itself
@@ -560,6 +566,7 @@ func (b *sunshineBackend) Pid() int {
 func (b *sunshineBackend) Start(adminPort int) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.adminPort = adminPort
 	if b.proc != nil {
 		if handled, err := b.recoverHungLocked(adminPort); handled {
 			return err

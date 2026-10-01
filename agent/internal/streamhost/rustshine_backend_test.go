@@ -40,6 +40,30 @@ func newRustshineStatusStub(t *testing.T, status statusResponse) *rustshineBacke
 	return &rustshineBackend{adminPort: port}
 }
 
+// TestRustshineSessionActive_ReportsActiveFromStatusAPI pins that
+// rustshineBackend.SessionActive reads gamestream-server's own
+// AppState::active_session via /api/status, not a log scrape -- see that
+// method's doc comment for the live bug this replaced (the server doesn't
+// even emit the log lines the old scrape looked for).
+func TestRustshineSessionActive_ReportsActiveFromStatusAPI(t *testing.T) {
+	active := newRustshineStatusStub(t, statusResponse{SessionActive: true})
+	if !active.SessionActive() {
+		t.Error("SessionActive() = false with session_active:true from the API, want true")
+	}
+
+	inactive := newRustshineStatusStub(t, statusResponse{SessionActive: false})
+	if inactive.SessionActive() {
+		t.Error("SessionActive() = true with session_active:false from the API, want false")
+	}
+}
+
+func TestRustshineSessionActive_UnreachableDefaultsToFalse(t *testing.T) {
+	b := &rustshineBackend{adminPort: 1}
+	if b.SessionActive() {
+		t.Error("SessionActive() = true with no server reachable, want false")
+	}
+}
+
 // TestRustshineCurrentVideoCodec_ReportsActiveCodec is the RustShine-backend
 // half of the "does the agent correctly report back which codec actually
 // ended up running" contract that sunshine_backend_test.go already pins for
