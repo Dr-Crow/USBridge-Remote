@@ -141,6 +141,8 @@ func (mw *MainWindow) showBenchmarkSetup(available []string, mons []api.BenchMon
 	}
 	codecSel := view.NewDialogPicker(benchCodecLabels(), benchCodecs[0].label(), nil)
 	fields = append(fields, view.NewDialogField(i18n.Current.BenchCodec, codecSel))
+	resSel := view.NewDialogPicker(benchResolutionLabels(), benchResolutions[0].label(), nil)
+	fields = append(fields, view.NewDialogField(i18n.Current.BenchResolution, resSel))
 	fields = append(fields, view.NewDialogField(i18n.Current.BenchDuration, durSel))
 
 	bodyKids := []fyne.CanvasObject{
@@ -195,7 +197,13 @@ func (mw *MainWindow) showBenchmarkSetup(available []string, mons []api.BenchMon
 					codec = c.mode
 				}
 			}
-			mw.startBenchmark(picked, monitor, codec, window)
+			resWidth, resHeight := 0, 0
+			for _, r := range benchResolutions {
+				if r.label() == resSel.Selected {
+					resWidth, resHeight = r.width, r.height
+				}
+			}
+			mw.startBenchmark(picked, monitor, codec, resWidth, resHeight, window)
 		},
 	})
 }
@@ -221,6 +229,34 @@ func benchCodecLabels() []string {
 	var out []string
 	for _, c := range benchCodecs {
 		out = append(out, c.label())
+	}
+	return out
+}
+
+// benchResolution is one entry of the setup dialog's resolution pick: the
+// saved resolution (0x0), or one forced for every streamer so both are
+// compared at the same resolution -- the benchmark's test content
+// (agent/internal/benchvideo) is itself native 1080p60, so picking above
+// that upscales the source rather than testing a sharper one; the point is
+// forcing both streamers to the same capture/encode resolution, not a
+// higher-fidelity test clip.
+type benchResolution struct {
+	width, height int
+}
+
+func (r benchResolution) label() string {
+	if r.width == 0 || r.height == 0 {
+		return i18n.Current.BenchResolutionSaved
+	}
+	return fmt.Sprintf("%dx%d", r.width, r.height)
+}
+
+var benchResolutions = []benchResolution{{0, 0}, {1280, 720}, {1920, 1080}, {2560, 1440}, {3840, 2160}}
+
+func benchResolutionLabels() []string {
+	var out []string
+	for _, r := range benchResolutions {
+		out = append(out, r.label())
 	}
 	return out
 }
@@ -307,7 +343,7 @@ func (mw *MainWindow) setBenchmarkFooterBusy(on bool, hint string) {
 	}
 }
 
-func (mw *MainWindow) startBenchmark(backends []string, monitor, codec string, window time.Duration) {
+func (mw *MainWindow) startBenchmark(backends []string, monitor, codec string, width, height int, window time.Duration) {
 	// No progress popup: the setup dialog closes on Start and nothing else
 	// opens until the results. Any Fyne overlay over the stream hides the
 	// native video (black picture on Windows, see
@@ -319,7 +355,7 @@ func (mw *MainWindow) startBenchmark(backends []string, monitor, codec string, w
 	fyne.Do(func() { mw.setBenchmarkFooterBusy(true, i18n.Current.BenchFooterBusy) })
 
 	go func() {
-		res, err := benchmarkRunFn(mw, ctx, backends, monitor, codec, window, func(text string, f float64) {
+		res, err := benchmarkRunFn(mw, ctx, backends, monitor, codec, width, height, window, func(text string, f float64) {
 			service.SetNetGraphBanner(fmt.Sprintf("%s  %.0f%%", text, math.Min(math.Max(f, 0), 1)*100))
 			hint := strings.TrimSpace(text)
 			if hint == "" {

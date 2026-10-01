@@ -46,8 +46,10 @@ type benchmarkProgress func(text string, fraction float64)
 // every exit path.
 // monitor (a host monitor ID, "" to leave each streamer's own) pins both
 // streamers' capture and the test video to one monitor for the whole run.
-// codec ("" for the saved one) is the codec every run streams with.
-func (mw *MainWindow) runBenchmark(ctx context.Context, backends []string, monitor, codec string, window time.Duration, progress benchmarkProgress) (*benchmarkResult, error) {
+// codec ("" for the saved one) is the codec every run streams with. width/
+// height (0, 0 for the saved resolution) is the resolution every run
+// streams at.
+func (mw *MainWindow) runBenchmark(ctx context.Context, backends []string, monitor, codec string, width, height int, window time.Duration, progress benchmarkProgress) (*benchmarkResult, error) {
 	client := mw.usbClient
 	vw := mw.videoWidget
 	if client == nil || vw == nil {
@@ -69,12 +71,17 @@ func (mw *MainWindow) runBenchmark(ctx context.Context, backends []string, monit
 	if codec != "" {
 		logrus.Infof("📈 [Benchmark] streaming with codec %s", codec)
 	}
+	controller.SetBenchmarkResolution(width, height)
+	if width > 0 && height > 0 {
+		logrus.Infof("📈 [Benchmark] streaming at %dx%d", width, height)
+	}
 
 	var recorder service.BenchRecorder
 	defer func() {
 		recorder.Stop()
 		// Before the restore below restarts the user's own stream.
 		controller.SetBenchmarkCodec("")
+		controller.SetBenchmarkResolution(0, 0)
 		_ = client.BenchVideoStop()
 		if !netGraphWas {
 			service.SetNetGraphEnabled(false)

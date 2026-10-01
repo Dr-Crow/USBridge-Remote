@@ -87,6 +87,8 @@ type LocalizedStrings struct {
 	BenchMonitor                      string // label of the benchmark's host monitor pick
 	BenchCodec                        string // label of the benchmark's codec pick
 	BenchCodecSaved                   string // codec pick entry: keep the saved codec
+	BenchResolution                   string // label of the benchmark's resolution pick
+	BenchResolutionSaved              string // resolution pick entry: keep the saved resolution
 	BenchMonitorPrimary               string // suffix marking the host's primary monitor
 	BenchNotInstalled                 string
 	BenchNeedOne                      string
@@ -738,6 +740,8 @@ func EN() *LocalizedStrings {
 		BenchMonitor:                      "Host monitor (capture + test video)",
 		BenchCodec:                        "Codec",
 		BenchCodecSaved:                   "As in video settings",
+		BenchResolution:                   "Resolution",
+		BenchResolutionSaved:              "As in video settings",
 		BenchMonitorPrimary:               "primary",
 		BenchNotInstalled:                 "not installed on the host",
 		BenchNeedOne:                      "Select at least one streamer.",
@@ -1621,6 +1625,8 @@ func ES() *LocalizedStrings {
 	locale.BenchMonitor = "Monitor del host (captura + vídeo de prueba)"
 	locale.BenchCodec = "Códec"
 	locale.BenchCodecSaved = "Como en los ajustes de vídeo"
+	locale.BenchResolution = "Resolución"
+	locale.BenchResolutionSaved = "Como en los ajustes de vídeo"
 	locale.BenchMonitorPrimary = "principal"
 	locale.BenchNotInstalled = "no instalado en el host"
 	locale.BenchNeedOne = "Selecciona al menos un streamer."
@@ -2008,6 +2014,8 @@ func UKProper() *LocalizedStrings {
 	locale.BenchMonitor = "Монітор хоста (захоплення + тестове відео)"
 	locale.BenchCodec = "Кодек"
 	locale.BenchCodecSaved = "Як у налаштуваннях відео"
+	locale.BenchResolution = "Роздільна здатність"
+	locale.BenchResolutionSaved = "Як у налаштуваннях відео"
 	locale.BenchMonitorPrimary = "основний"
 	locale.BenchNotInstalled = "не встановлено на хості"
 	locale.BenchNeedOne = "Виберіть хоча б один стрімер."

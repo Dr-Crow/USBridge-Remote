@@ -99,10 +99,26 @@ var benchmarkCodec atomic.Value // string
 // Nothing is saved: the user's own codec pick is left as it was.
 func SetBenchmarkCodec(codec string) { benchmarkCodec.Store(codec) }
 
+// benchmarkResolution, when both dimensions are positive, replaces the
+// saved resolution for every stream started while the benchmark runs
+// (SetBenchmarkResolution). Mirrors benchmarkCodec above.
+var benchmarkResolution atomic.Value // [2]int{width, height}
+
+// SetBenchmarkResolution forces the streams the benchmark starts to one
+// resolution, or (0, 0) goes back to the saved one. Nothing is saved: the
+// user's own resolution pick is left as it was.
+func SetBenchmarkResolution(width, height int) {
+	benchmarkResolution.Store([2]int{width, height})
+}
+
 func loadSavedVideoDeviceConfig(devicePath, deviceName string) models.VideoDeviceConfig {
 	cfg := loadSavedVideoDeviceConfigRaw(devicePath, deviceName)
 	if codec, _ := benchmarkCodec.Load().(string); codec != "" {
 		cfg.VideoMode = codec
+	}
+	if wh, ok := benchmarkResolution.Load().([2]int); ok && wh[0] > 0 && wh[1] > 0 {
+		cfg.VideoWidth = wh[0]
+		cfg.VideoHeight = wh[1]
 	}
 	return cfg
 }
