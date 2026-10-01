@@ -113,6 +113,18 @@ var timeSVG []byte
 
 var TimeIcon = tintedStrokeSVG("time-gray.svg", timeSVG, chipIconFill)
 
+//go:embed usb-svgrepo-com.svg
+var usbSVG []byte
+
+//go:embed cloud-upload-svgrepo-com.svg
+var cloudUploadSVG []byte
+
+// USBGlyphIcon / CloudUploadIcon are What’s New row glyphs (muted chrome).
+var (
+	USBGlyphIcon    = tintedSVG("usb-glyph.svg", usbSVG, chipIconFill)
+	CloudUploadIcon = tintedSVG("cloud-upload.svg", cloudUploadSVG, chipIconFill)
+)
+
 // StarProIcon is the Protocol-card Pro/Enterprise glyph (#b39ef1).
 // StarChipIcon matches Change-chip chrome; StarOnProIcon is the Buy fill.
 var (
@@ -139,6 +151,7 @@ func tintedSVG(name string, src []byte, fill string) fyne.Resource {
 	s := string(src)
 	s = strings.ReplaceAll(s, `fill="#000000"`, `fill="`+fill+`"`)
 	s = strings.ReplaceAll(s, `fill="#0F0F0F"`, `fill="`+fill+`"`)
+	s = strings.ReplaceAll(s, `fill="black"`, `fill="`+fill+`"`)
 	return fyne.NewStaticResource(name, []byte(s))
 }
 

@@ -13,6 +13,7 @@ import (
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/widget"
 
+	"usbridge_agent/assets"
 	"usbridge_agent/internal/ui/design"
 )
 
@@ -30,6 +31,8 @@ const (
 )
 
 var whatsNewCardStroke = color.NRGBA{R: 0x3f, G: 0x3f, B: 0x3f, A: 0xff}
+// Slightly above ColorGray900 so feature rows lift off the dialog fill.
+var whatsNewCardFill = color.NRGBA{R: 0x22, G: 0x26, B: 0x29, A: 0xff}
 
 type whatsNewKindChrome struct {
 	Fill   color.NRGBA
@@ -62,12 +65,8 @@ var (
 
 var whatsNewMetricsSVG = fyne.NewStaticResource("whatsnew_metrics.svg", []byte(
 	`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#c5c8b5" stroke-width="1.8" stroke-linecap="round"><path d="M5 19V11M10 19V6M15 19v-8M20 19V8"/></svg>`))
-var whatsNewUSBSVG = fyne.NewStaticResource("whatsnew_usb.svg", []byte(
-	`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#c5c8b5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v11M8 8l4-4 4 4M10 13h4v4H10zM7 17h10v5H7z"/></svg>`))
 var whatsNewDisplaySVG = fyne.NewStaticResource("whatsnew_display.svg", []byte(
 	`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#c5c8b5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>`))
-var whatsNewCloudSVG = fyne.NewStaticResource("whatsnew_cloud.svg", []byte(
-	`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#c5c8b5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18h10a4 4 0 0 0 .6-7.95A6 6 0 0 0 6.1 9.1 4.5 4.5 0 0 0 7 18z"/></svg>`))
 
 func showWhatsNewDialog(parent fyne.Window) {
 	if parent == nil {
@@ -141,7 +140,7 @@ func showWhatsNewDialog(parent fyne.Window) {
 	gotIt := newDialogCTA(loc().WhatsNewGotIt, closeDialog)
 	github := newWhatsNewGitHubLink()
 	footer := container.NewBorder(nil, nil, github, gotIt)
-	panel := newBrandedDialogPanelChromeExtra(loc().WhatsNewTitle, loc().WhatsNewSubtitle, titleExtra, whatsNewDialogWidth, 20, 12, 8, 10, body, footer, closeDialog)
+	panel := newBrandedDialogPanelChromeExtra(loc().WhatsNewTitle, loc().WhatsNewSubtitle, titleExtra, whatsNewDialogWidth, 20, 8, 8, 10, body, footer, closeDialog)
 	popup = showOverlayPopup(parent, overlayPopupSpec{
 		Panel:        panel,
 		OnOutsideTap: closeDialog,
@@ -289,7 +288,7 @@ func newWhatsNewFeatureRow(kind whatsNewKind, pt whatsNewPoint, rowW float32) fy
 	}
 	body := whatsNewText(strings.TrimSpace(pt.Body.String()), 9, design.ColorEmptyHint, fyne.TextStyle{}, textW)
 	row := container.New(&whatsNewFeatureLayout{}, icon, title, badge, body)
-	bg := canvas.NewRectangle(design.ColorGray950)
+	bg := canvas.NewRectangle(whatsNewCardFill)
 	bg.CornerRadius = design.RadiusMD
 	bg.StrokeColor = whatsNewCardStroke
 	bg.StrokeWidth = 1
@@ -304,7 +303,11 @@ func (l *whatsNewFeatureLayout) Layout(objects []fyne.CanvasObject, size fyne.Si
 	}
 	icon, title, badge, body := objects[0], objects[1], objects[2], objects[3]
 	icon.Resize(fyne.NewSize(whatsNewIconSize, whatsNewIconSize))
-	icon.Move(fyne.NewPos(0, 0))
+	iconY := (size.Height - whatsNewIconSize) / 2
+	if iconY < 0 {
+		iconY = 0
+	}
+	icon.Move(fyne.NewPos(0, iconY))
 	textX := whatsNewIconSize + whatsNewIconGap
 	textW := size.Width - textX
 	if textW < 0 {
@@ -384,11 +387,11 @@ func whatsNewGlyphResource(glyph whatsNewGlyph, accent color.Color) fyne.Resourc
 	hex := whatsNewHex(accent)
 	switch glyph {
 	case whatsNewGlyphUSB:
-		return whatsNewRecolor(whatsNewUSBSVG, "#c5c8b5", hex)
+		return whatsNewRecolor(assets.USBGlyphIcon, "#c3c6b4", hex)
 	case whatsNewGlyphDisplay:
 		return whatsNewRecolor(whatsNewDisplaySVG, "#c5c8b5", hex)
 	case whatsNewGlyphCloud:
-		return whatsNewRecolor(whatsNewCloudSVG, "#c5c8b5", hex)
+		return whatsNewRecolor(assets.CloudUploadIcon, "#c3c6b4", hex)
 	case whatsNewGlyphMetrics:
 		return whatsNewRecolor(whatsNewMetricsSVG, "#c5c8b5", hex)
 	default:

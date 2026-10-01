@@ -99,7 +99,7 @@ func whatsNewCatalog() []whatsNewCard {
 	return []whatsNewCard{
 		{
 			Version: "3.0.45",
-			Date:    "2026-03-20",
+			Date:    "September 2026",
 			Items: []whatsNewItem{
 				{
 					Kind: whatsNewKindPro,
