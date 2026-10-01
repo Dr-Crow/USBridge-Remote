@@ -48,3 +48,9 @@ func (w *MoonlightCgoWrapper) SendMoonlightPenEvent(
 	rotation uint16, tilt uint8,
 ) {
 }
+
+func (w *MoonlightCgoWrapper) RawHIDEpoch() uint64 { return 0 }
+
+func (w *MoonlightCgoWrapper) SendMoonlightRawHID(kind, slot, endpoint uint8, total, offset uint16, data []byte, reliable bool) bool {
+	return false
+}

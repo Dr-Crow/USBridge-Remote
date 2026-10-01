@@ -32,6 +32,10 @@ extern void do_send_utf8_text(const char *text, unsigned int len);
 extern void do_send_pen(unsigned char eventType, unsigned char toolType, unsigned char penButtons,
                         float x, float y, float pressureOrDistance,
                         unsigned short rotation, unsigned char tilt);
+extern int do_host_supports_raw_hid(void);
+extern int do_send_raw_hid(unsigned char kind, unsigned char slot, unsigned char endpoint,
+                           unsigned short total, unsigned short offset,
+                           const unsigned char *data, unsigned short length, int reliable);
 extern void do_get_rtp_video_stats(uint32_t *out);
 extern int do_get_estimated_rtt_info(uint32_t *out);
 extern uint16_t do_get_last_host_latency_tenths_ms(void);
@@ -366,6 +370,7 @@ func (w *MoonlightCgoWrapper) StartStream(
 		// streaming fine. This goroutine's own do_li_start really did just
 		// succeed, so the store is always correct and idempotent here.
 		liStartConnectionActive.Store(true)
+		liRawHIDEpoch.Add(1)
 		startRTPStatsLoggerIfEnabled(activeStreamDone)
 
 		<-activeStreamDone
@@ -496,6 +501,29 @@ func (w *MoonlightCgoWrapper) SendMoonlightPenEvent(
 
 func (w *MoonlightCgoWrapper) IsInputActive() bool {
 	return liStartConnectionActive.Load()
+}
+
+func (w *MoonlightCgoWrapper) RawHIDEpoch() uint64 {
+	if !liStartConnectionActive.Load() || C.do_host_supports_raw_hid() == 0 {
+		return 0
+	}
+	return liRawHIDEpoch.Load()
+}
+
+func (w *MoonlightCgoWrapper) SendMoonlightRawHID(kind, slot, endpoint uint8, total, offset uint16, data []byte, reliable bool) bool {
+	if !liStartConnectionActive.Load() {
+		return false
+	}
+	var p *C.uchar
+	if len(data) > 0 {
+		p = (*C.uchar)(unsafe.Pointer(&data[0]))
+	}
+	rel := C.int(0)
+	if reliable {
+		rel = 1
+	}
+	return C.do_send_raw_hid(C.uchar(kind), C.uchar(slot), C.uchar(endpoint),
+		C.ushort(total), C.ushort(offset), p, C.ushort(len(data)), rel) == 0
 }
 
 func (w *MoonlightCgoWrapper) SendMoonlightUtf8Text(text string) {

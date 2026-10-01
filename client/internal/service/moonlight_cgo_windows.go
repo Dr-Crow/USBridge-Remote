@@ -973,6 +973,17 @@ static void do_send_pen(unsigned char eventType, unsigned char toolType, unsigne
 {
     LiSendPenEvent(eventType, toolType, penButtons, x, y, pressureOrDistance, 0.0f, 0.0f, rotation, tilt);
 }
+// Raw HID devices rebuilt by a USBridge host (see moonlight_rawhid.go).
+static int do_host_supports_raw_hid(void)
+{
+    return (LiGetHostFeatureFlags() & LI_FF_USBRIDGE_RAW_HID) != 0;
+}
+static int do_send_raw_hid(unsigned char kind, unsigned char slot, unsigned char endpoint,
+                           unsigned short total, unsigned short offset,
+                           const unsigned char *data, unsigned short length, int reliable)
+{
+    return LiSendRawHidEvent(kind, slot, endpoint, total, offset, data, length, reliable != 0);
+}
 */
 import "C"
 
@@ -1153,6 +1164,7 @@ func (w *MoonlightCgoWrapper) StartStream(
 		// streaming fine. This goroutine's own do_li_start really did just
 		// succeed, so the store is always correct and idempotent here.
 		liStartConnectionActive.Store(true)
+		liRawHIDEpoch.Add(1)
 
 		<-activeStreamDone
 
@@ -1263,6 +1275,29 @@ func (w *MoonlightCgoWrapper) SendMoonlightPenEvent(
 }
 
 func (w *MoonlightCgoWrapper) IsInputActive() bool { return liStartConnectionActive.Load() }
+
+func (w *MoonlightCgoWrapper) RawHIDEpoch() uint64 {
+	if !liStartConnectionActive.Load() || C.do_host_supports_raw_hid() == 0 {
+		return 0
+	}
+	return liRawHIDEpoch.Load()
+}
+
+func (w *MoonlightCgoWrapper) SendMoonlightRawHID(kind, slot, endpoint uint8, total, offset uint16, data []byte, reliable bool) bool {
+	if !liStartConnectionActive.Load() {
+		return false
+	}
+	var p *C.uchar
+	if len(data) > 0 {
+		p = (*C.uchar)(unsafe.Pointer(&data[0]))
+	}
+	rel := C.int(0)
+	if reliable {
+		rel = 1
+	}
+	return C.do_send_raw_hid(C.uchar(kind), C.uchar(slot), C.uchar(endpoint),
+		C.ushort(total), C.ushort(offset), p, C.ushort(len(data)), rel) == 0
+}
 
 // NegotiatedVideoCodecName returns the codec moonlight-common-c actually
 // negotiated with the server for the current session (from dr_setup's

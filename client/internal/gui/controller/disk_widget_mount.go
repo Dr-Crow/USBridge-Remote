@@ -1464,73 +1464,100 @@ func (dw *DiskWidget) mountUSBPassthrough(items []DriveItem) {
 		if len(devices) == 0 {
 			return
 		}
-		// Go client owns the USB/IP server (export). rust-shine on the agent
-		// is the USB/IP client (win2 VHCI).
-		exportPort := 3240
-		if _, err := usbpass.StartSession(fmt.Sprintf("0.0.0.0:%d", exportPort), devices); err != nil {
-			dw.showUSBPassthroughErrorAsync(fmt.Errorf("USB/IP export: %w", err))
-			return
-		}
-		sessResp, err := dw.usbClient.OpenUSBPassthroughSession()
-		if err != nil {
-			usbpass.StopSession()
+		// A mount replaces whatever was mounted before.
+		usbpass.StopSession()
+		// Tablets go over the video stream when one is up (see
+		// usbpass/rawhid.go); everything else is a USB/IP export.
+		rawDevices, devices := dw.splitRawHID(devices)
+		if len(devices) > 0 {
+			if !dw.exportUSBPassthrough(devices) {
+				return
+			}
+		} else if _, err := dw.usbClient.OpenUSBPassthroughSession(); err != nil {
+			// Opening the session checks the licence and starts the agent's
+			// broker, which plugs the tablet into the agent's USB.
 			dw.showErrorAsync(fmt.Errorf("%s: %w", i18n.Current.USBPassthroughProHint, err))
 			return
 		}
-		base := dw.usbClient.GetBaseURL()
-		u, err := url.Parse(base)
-		if err != nil {
-			usbpass.StopSession()
-			dw.showErrorAsync(err)
-			return
-		}
-		port := 8090
-		if dw.config != nil && dw.config.USBPassthroughPort > 0 {
-			port = dw.config.USBPassthroughPort
-		}
-		// usbpass.Attach's AES control-plane connection is a plain TCP dial
-		// by default, which can't route to a 100.x tailnet address any more
-		// than moonlight-common-c's own kernel sockets can (see
-		// moonlight_tsnet_proxy.go) -- route it through the same embedded
-		// tsnet stack when the agent address actually is one.
-		var dialer func(ctx context.Context, network, addr string) (net.Conn, error)
-		if dw.tailscaleSvc != nil && service.IsLikelyTailnetHost(u.Hostname()) {
-			dialer = dw.tailscaleSvc.Dial
-		} else if lp := sessionListenPort(sessResp); lp > 0 {
-			// Direct/LAN: the agent's broker may have fallen back off the
-			// configured port because an unrelated local process holds it
-			// (usbpass.Service.pickURBPort on the agent). The tailnet path
-			// keeps the configured port -- the agent's tsnet relay listens
-			// there and forwards to wherever the broker actually is.
-			port = lp
-		}
-		addr := net.JoinHostPort(u.Hostname(), strconv.Itoa(port))
-		secret := string(dw.usbClient.APISecret())
-		for _, d := range devices {
-			inst := d.InstanceID
-			if inst == "" {
-				inst = d.BusID
-			}
-			if err := usbpass.Attach(usbpass.AttachOptions{
-				AgentAddr:     addr,
-				Secret:        secret,
-				InstanceID:    inst,
-				USBIPBusID:    d.BusID,
-				VID:           d.VID,
-				PID:           d.PID,
-				ExportService: strconv.Itoa(exportPort),
-				Dialer:        dialer,
-			}); err != nil {
+		if len(rawDevices) > 0 {
+			if err := usbpass.StartRawHIDSession(rawHIDStreamLink{dw}, rawDevices); err != nil {
 				usbpass.StopSession()
-				if errors.Is(err, usbpass.ErrAgentLicenseRequired) {
-					dw.showErrorAsync(fmt.Errorf("%s", i18n.Current.USBPassthroughProHint))
-				} else {
-					dw.showErrorAsync(err)
-				}
-				return
+				dw.showUSBPassthroughErrorAsync(fmt.Errorf("tablet over the stream: %w", err))
 			}
 		}
 	}()
+}
+
+// exportUSBPassthrough exports devices over USB/IP and has the agent attach
+// them. It reports false after showing the error.
+func (dw *DiskWidget) exportUSBPassthrough(devices []models.USBPassthroughDevice) bool {
+	// Go client owns the USB/IP server (export). rust-shine on the agent
+	// is the USB/IP client (win2 VHCI).
+	exportPort := 3240
+	if _, err := usbpass.StartSession(fmt.Sprintf("0.0.0.0:%d", exportPort), devices); err != nil {
+		dw.showUSBPassthroughErrorAsync(fmt.Errorf("USB/IP export: %w", err))
+		return false
+	}
+	sessResp, err := dw.usbClient.OpenUSBPassthroughSession()
+	if err != nil {
+		usbpass.StopSession()
+		dw.showErrorAsync(fmt.Errorf("%s: %w", i18n.Current.USBPassthroughProHint, err))
+		return false
+	}
+	base := dw.usbClient.GetBaseURL()
+	u, err := url.Parse(base)
+	if err != nil {
+		usbpass.StopSession()
+		dw.showErrorAsync(err)
+		return false
+	}
+	port := 8090
+	if dw.config != nil && dw.config.USBPassthroughPort > 0 {
+		port = dw.config.USBPassthroughPort
+	}
+	// usbpass.Attach's AES control-plane connection is a plain TCP dial
+	// by default, which can't route to a 100.x tailnet address any more
+	// than moonlight-common-c's own kernel sockets can (see
+	// moonlight_tsnet_proxy.go) -- route it through the same embedded
+	// tsnet stack when the agent address actually is one.
+	var dialer func(ctx context.Context, network, addr string) (net.Conn, error)
+	if dw.tailscaleSvc != nil && service.IsLikelyTailnetHost(u.Hostname()) {
+		dialer = dw.tailscaleSvc.Dial
+	} else if lp := sessionListenPort(sessResp); lp > 0 {
+		// Direct/LAN: the agent's broker may have fallen back off the
+		// configured port because an unrelated local process holds it
+		// (usbpass.Service.pickURBPort on the agent). The tailnet path
+		// keeps the configured port -- the agent's tsnet relay listens
+		// there and forwards to wherever the broker actually is.
+		port = lp
+	}
+	addr := net.JoinHostPort(u.Hostname(), strconv.Itoa(port))
+	secret := string(dw.usbClient.APISecret())
+	for _, d := range devices {
+		inst := d.InstanceID
+		if inst == "" {
+			inst = d.BusID
+		}
+		if err := usbpass.Attach(usbpass.AttachOptions{
+			AgentAddr:     addr,
+			Secret:        secret,
+			InstanceID:    inst,
+			USBIPBusID:    d.BusID,
+			VID:           d.VID,
+			PID:           d.PID,
+			ExportService: strconv.Itoa(exportPort),
+			Dialer:        dialer,
+		}); err != nil {
+			usbpass.StopSession()
+			if errors.Is(err, usbpass.ErrAgentLicenseRequired) {
+				dw.showErrorAsync(fmt.Errorf("%s", i18n.Current.USBPassthroughProHint))
+			} else {
+				dw.showErrorAsync(err)
+			}
+			return false
+		}
+	}
+	return true
 }
 
 // sessionListenPort extracts the agent broker's actual URB port from the

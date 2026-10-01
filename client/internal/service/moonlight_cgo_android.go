@@ -933,6 +933,13 @@ func (w *MoonlightCgoWrapper) SetAudioMuted(m bool) {
 func (w *MoonlightCgoWrapper) GetAudioMuted() bool { return w.audioMuted }
 func (w *MoonlightCgoWrapper) IsInputActive() bool { return liStartConnectionActive.Load() }
 
+// Raw HID (moonlight_rawhid.go) is not wired on Android: its USB devices go
+// through USB/IP.
+func (w *MoonlightCgoWrapper) RawHIDEpoch() uint64 { return 0 }
+func (w *MoonlightCgoWrapper) SendMoonlightRawHID(kind, slot, endpoint uint8, total, offset uint16, data []byte, reliable bool) bool {
+	return false
+}
+
 // NegotiatedVideoCodecName is not yet wired on Android: dr_setup here uses
 // its fmt parameter locally to pick the AMediaCodec MIME type but never
 // reports it back to Go (unlike the shared macOS/Linux dr_setup in

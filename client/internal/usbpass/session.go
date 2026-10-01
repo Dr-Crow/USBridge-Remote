@@ -145,43 +145,35 @@ func claimDevice(ed *ExportedDevice, ref usbDevRef) (use *ExportedDevice, abando
 }
 
 // ActiveBusIDs returns Linux busids currently exported by the local session
-// (empty when nothing is mounted). Used by the Devices UI for the green
+// or sent over the stream (empty when nothing is mounted). Used by the Devices UI for the green
 // "mounted" marker — gadget devices come from GetDeviceInfo, passthrough
 // does not.
 func ActiveBusIDs() []string {
 	sessionMu.Lock()
 	s := active
 	sessionMu.Unlock()
+	out := rawHIDBusIDs()
 	if s == nil {
-		return nil
+		return out
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]string, len(s.busIDs))
-	copy(out, s.busIDs)
-	return out
+	return append(out, s.busIDs...)
 }
 
-// StartSession exports the given passthrough devices on listenAddr
-// (default 0.0.0.0:3240) and stores the session globally.
-func StartSession(listenAddr string, devices []models.USBPassthroughDevice) (*Session, error) {
-	if listenAddr == "" {
-		listenAddr = "0.0.0.0:3240"
-	}
-	// Drop previous export/attach first so remount does not stack VHCI
-	// sessions and so libusb can re-claim the stick.
-	StopSession()
-
+// claimForExport claims the given passthrough devices and returns them ready
+// to answer URBs, with their bus ids. On error nothing stays claimed.
+func claimForExport(devices []models.USBPassthroughDevice) ([]*ExportedDevice, []string, error) {
 	var exported []*ExportedDevice
 	var accessRefs []usbDevRef
 	var busIDs []string
 	for _, d := range devices {
 		if d.Protected {
-			return nil, fmt.Errorf("refusing protected device %s:%s", d.VID, d.PID)
+			return nil, nil, fmt.Errorf("refusing protected device %s:%s", d.VID, d.PID)
 		}
 		vid, pid, err := ParseVIDPID(d.VID, d.PID)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		busID := d.BusID
 		if busID == "" {
@@ -196,7 +188,7 @@ func StartSession(listenAddr string, devices []models.USBPassthroughDevice) (*Se
 		busIDs = append(busIDs, busID)
 	}
 	if len(exported) == 0 {
-		return nil, fmt.Errorf("no devices to export")
+		return nil, nil, fmt.Errorf("no devices to export")
 	}
 
 	// Linux: only pkexec when usbfs nodes are not openable / udev rule missing.
@@ -204,7 +196,7 @@ func StartSession(listenAddr string, devices []models.USBPassthroughDevice) (*Se
 	// then RequestUSBAccess (unbind) on failure. That removes the "pkexec
 	// dialog while nothing is exporting yet" race on every remount.
 	if err := EnsureUSBAccess(accessRefs); err != nil {
-		return nil, fmt.Errorf("USB access: %w", err)
+		return nil, nil, fmt.Errorf("USB access: %w", err)
 	}
 	for i, ed := range exported {
 		used, abandoned, err := claimDevice(ed, accessRefs[i])
@@ -225,10 +217,28 @@ func StartSession(listenAddr string, devices []models.USBPassthroughDevice) (*Se
 			} else {
 				closeExported(exported)
 			}
-			return nil, err
+			return nil, nil, err
 		}
 		logrus.Infof("usbpass: live libusb claim for %s (busnum=%d devnum=%d)", used.BusID, used.Busnum, used.Devnum)
 		probeHIDUsage(used)
+	}
+	return exported, busIDs, nil
+}
+
+// StartSession exports the given passthrough devices on listenAddr
+// (default 0.0.0.0:3240) and stores the session globally.
+func StartSession(listenAddr string, devices []models.USBPassthroughDevice) (*Session, error) {
+	if listenAddr == "" {
+		listenAddr = "0.0.0.0:3240"
+	}
+	// Drop previous export/attach first so remount does not stack VHCI
+	// sessions and so libusb can re-claim the stick. Devices sent over the
+	// stream (rawhid.go) are not part of this export and stay.
+	stopExportSession()
+
+	exported, busIDs, err := claimForExport(devices)
+	if err != nil {
+		return nil, err
 	}
 
 	srv, err := StartExport(usbipLoopbackExportAddr, exported)
@@ -248,8 +258,14 @@ func StartSession(listenAddr string, devices []models.USBPassthroughDevice) (*Se
 	return s, nil
 }
 
-// StopSession tears down the active export and kills a pending Attach.
+// StopSession tears down everything mounted: the active export with its
+// pending Attach, and the devices sent over the stream (rawhid.go).
 func StopSession() {
+	stopExportSession()
+	StopRawHIDSession()
+}
+
+func stopExportSession() {
 	StopAttach()
 	sessionMu.Lock()
 	s := active

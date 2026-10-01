@@ -14,6 +14,9 @@ the whole matrix is in [Supported input devices](./INPUT_DEVICES.md).
 | **USB export** (this page) | the original USB tablet, with its own VID/PID, descriptors and serial | the vendor's own driver (Wacom's on Windows, the kernel `wacom` driver on Linux); **no Zadig / WinUSB** on the client | the table below |
 | Pen over the stream ([macOS only](./PEN_TABLET_SUPPORT.md)) | a Moonlight pen event | nothing | the IntuosV2 family |
 
+The USB export has two transports: USB/IP, and, while a video stream is up, the stream
+itself ([below](#over-the-video-stream-instead-of-usbip)). The host sees the same tablet either way.
+
 Switching a tablet on in **Devices → HID & Input Hub** starts the USB export. For Wacom tablets
 this works in every build, with or without libusb (the HID bridge is on by default for
 vendor `056A`; `USBRIDGE_HID_BRIDGE=0` turns it off, `=1` turns it on for other devices too). It
@@ -44,6 +47,41 @@ The tablet's own device and configuration descriptors and its strings are read f
 tablet itself (Windows: through its USB hub, no driver change), so serial number and
 firmware version are the real ones. A tablet that is not in the table is exported the
 generic way (from the OS's reconstructed descriptor), which a vendor driver may not accept.
+
+### Over the video stream instead of USB/IP
+
+With USB/IP every poll of the host's driver is a round trip to the client over TCP, and
+one lost segment holds back everything behind it, so the pen lags, worst on Wi-Fi. When a
+video stream to a USBridge host is up, a Wacom tablet therefore does not go over USB/IP
+at all:
+
+```
+tablet ──► client ──► model (once) + every input report ──► stream control channel (ENet/UDP)
+                                                                 │
+                              host driver ◄── virtual USB device ◄┘  built by the streamer
+```
+
+The client plays the USB host itself: it reads the descriptors and feature reports once,
+sends them as a model, then pushes each input report as the tablet produces it, on the
+same channel as keyboard, mouse and gamepads (`internal/usbpass/rawhid.go`,
+`LiSendRawHidEvent` in the moonlight-common-c fork). The streamer rebuilds the tablet as
+a virtual USB device and answers the driver's polls and requests on the host
+(`usb-passthrough/src/virtual_rawhid.rs` in rust-shine), so nothing waits on the network
+but the reports themselves. Reports of a pen in motion are sent unreliably (a lost one is
+replaced by the next, 5 ms later); the last report before a pause is repeated reliably,
+so a lifted pen or a released button is never lost.
+
+This is picked automatically when the tablet is switched on while the stream runs;
+without a stream, or with `USBRIDGE_RAW_HID=0`, the tablet is exported over USB/IP as
+before. The model is sent again after every stream reconnect. What the host's driver
+writes to the tablet stays on the host; the client makes the one write a Wacom tablet
+needs (the switch to tablet mode) itself.
+
+| | Status |
+| --- | --- |
+| Client side and host side without the stream (`cmd/rawhidprobe` to rust-shine's `rawhid_bridge` example), Linux client (libusb claim), Linux host (kernel `wacom` over vhci) | ✅ CTL-4100: binds as "Wacom Intuos S Pen/Pad", position, hover distance and both pen buttons arrive |
+| The same through a real stream (`LiSendRawHidEvent` to the streamer) | 🧪 |
+| Windows / macOS clients (HID bridge), Windows host (usbip-win2), macOS host (dongle) | 🧪 |
 
 ### Local input while exported (Windows)
 
