@@ -49,10 +49,16 @@ func showUSBDriverRow(goos string, usb usbpass.Status) bool {
 }
 
 // permRequestLabel is the not-granted button text for the driver-backed
-// chips: "Download" on Windows, the default "Grant" ("") elsewhere.
+// chips: "Download" on Windows, "Info" on macOS (there is nothing to grant
+// there -- tapping it just explains that a hardware dongle is needed, see
+// usbPermGranted/the usbAccessCheck onRequest handler), the default "Grant"
+// ("") elsewhere.
 func permRequestLabel(goos, download string) string {
-	if goos == "windows" {
+	switch goos {
+	case "windows":
 		return download
+	case "darwin":
+		return loc().Info
 	}
 	return ""
 }
