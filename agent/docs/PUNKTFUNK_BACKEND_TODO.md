@@ -313,3 +313,19 @@ Windows.
 
 Run the client's benchmark against an agent built from this branch with
 Punktfunk picked, then work down "What's still open".
+
+## PyroWave over the GameStream plane (2026-10-03)
+
+The Punktfunk fork (Streamers-Forks `punktfunk/`) now offers PyroWave to a
+USBridge client over GameStream, the same USBridge extension rust-shine
+implements: `ServerCodecModeSupport` bit `0x01000000` (what
+`punktfunkBackend.SupportedVideoCodecs` reads from `/serverinfo` and the
+agent turns into a "pyrowave" codec mode) and the DESCRIBE line
+`a=rtpmap:99 PYROWAVE/90000`; the client answers `bitStreamFormat` 3.
+
+Found on the way: the fork's packetizer advanced `streamPacketIndex` on
+parity shards. moonlight-common-c strips parity before its depacketizer and
+treats a gap between FEC blocks as a corrupt frame, so every frame bigger
+than one FEC block (each PyroWave frame above ~40 Mb/s at packet size 1024,
+and large H.26x IDRs) was dropped. Fixed in the same fork commit; verified
+live at 150 and 300 Mb/s with no corrupt frames.
