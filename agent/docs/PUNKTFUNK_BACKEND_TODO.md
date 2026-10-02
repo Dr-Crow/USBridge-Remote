@@ -194,9 +194,24 @@ Found:
   connector name in `<config>/usbridge-capture-monitor` and Start passes it
   as `PUNKTFUNK_CAPTURE_MONITOR` (mirror that monitor instead of a virtual
   display per session).
-- `App.SetStreamBackend("punktfunk")`; with no monitor picked it pins the
-  primary one, so the benchmark's test video is in the picture. Not saved as
-  `PreferredBackend` -- startup only knows Sunshine and RustShine.
+- `App.SetStreamBackend("punktfunk")` no longer force-pins a physical
+  monitor when none is picked (removed `pinPunktfunkMonitor` -- it defeated
+  the point of benchmarking Punktfunk's actual default path). With no
+  `PUNKTFUNK_CAPTURE_MONITOR` set, no console display policy configured (a
+  fresh managed config dir never has one) and no `PUNKTFUNK_COMPOSITOR` pin,
+  punktfunk's own `effective_topology`/`resolve_topology`
+  (`pf-vdisplay/src/lib.rs`) resolves `Auto` to `Exclusive` on Linux: the
+  per-session virtual display becomes the *sole* display, physicals turn
+  off for the session's duration. The benchmark's video player (started
+  with no monitor target when the dialog's own monitor pick is empty) then
+  has nowhere else to open but that one remaining display -- confirmed from
+  `docs-site/.../virtual-displays.md`'s "Your monitors while streaming"
+  table and the `Topology` enum doc comments in
+  `crates/pf-vdisplay/src/vdisplay/policy.rs`, not guessed. Explicitly
+  picking a monitor in the benchmark dialog still works exactly as before
+  (`SetBenchMonitor` -> `applyBenchMonitor` -> `SetOutputName`), unaffected
+  by this change. Not saved as `PreferredBackend` -- startup only knows
+  Sunshine and RustShine.
 - `BenchStreamBackends` lists it when a binary is found; the client's
   benchmark dialog shows the row only then.
 

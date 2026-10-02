@@ -1556,7 +1556,6 @@ func (a *App) SetStreamBackend(kind string) error {
 		applyStreamUSBPassBridgeAddr(next, a.usbPassBridgeAddr)
 	case "punktfunk":
 		next = streamhost.NewPunktfunk(a.exeDir, a.cfg.StateDir, a.logPath)
-		pinPunktfunkMonitor(next)
 	default:
 		next = streamhost.NewSunshine(a.exeDir, a.cfg.StateDir, a.logPath)
 	}
@@ -1614,34 +1613,6 @@ func (a *App) SetStreamBackend(kind string) error {
 	return nil
 }
 
-// pinPunktfunkMonitor has a Punktfunk backend with no monitor picked yet
-// stream a physical monitor (the primary one, else the first), the way
-// Sunshine and RustShine do. Left alone, Punktfunk gives every session a
-// virtual display of its own -- an empty desktop next to the real one, so
-// neither what's on the user's screen nor the benchmark's test video would
-// be in the picture.
-func pinPunktfunkMonitor(b streamhost.Backend) {
-	if b.OutputName() != "" {
-		return
-	}
-	devices := b.ListCaptureDevices()
-	if len(devices) == 0 {
-		log.Printf("[app] punktfunk reports no monitors -- it will stream a virtual display")
-		return
-	}
-	pick := devices[0]
-	for _, d := range devices {
-		if d.Primary {
-			pick = d
-			break
-		}
-	}
-	if err := b.SetOutputName(pick.OutputName); err != nil {
-		log.Printf("[app] pinning punktfunk to monitor %s: %v", pick.OutputName, err)
-		return
-	}
-	log.Printf("[app] punktfunk streams monitor %s (%s)", pick.OutputName, pick.DisplayName)
-}
 
 // streamReadyTimeout bounds how long a backend (re)start waits for the
 // backend to bind its listeners before telling clients it's up. WaitReady

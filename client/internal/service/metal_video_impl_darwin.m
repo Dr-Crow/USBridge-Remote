@@ -654,6 +654,20 @@ static void metal_render_main_with_buf(CVPixelBufferRef buf, double latencyMs) {
         return;
     }
 
+    // Stutter Profiler: how long THIS call itself takes on the main thread.
+    // Pinning CADisplayLink's preferredFrameRateRange didn't recover the
+    // fire rate in the field (still ~23-29Hz with the pin in place), which
+    // means the OS isn't throttling the link's own scheduling -- something
+    // in this call (IOSurface import, metal_spike_render, or the
+    // CATransaction commit below) is itself slow enough to push the next
+    // tick out, which a fixed preferredFrameRateRange can't fix because it
+    // only picks a target cadence, it can't make a slow handler return
+    // faster. This brackets the same window the "AppKit/DisplayLink
+    // stalled" check measures, so the two can be directly compared in the
+    // log to tell "render call is slow" apart from "something else on the
+    // main thread between calls is slow".
+    double renderCallStart = mono_sec();
+
     int w = (int)CVPixelBufferGetWidth(buf);
     int h = (int)CVPixelBufferGetHeight(buf);
 
@@ -699,6 +713,15 @@ static void metal_render_main_with_buf(CVPixelBufferRef buf, double latencyMs) {
 
     // Release the caller's ref (g_lastRenderedBuf holds its own).
     CVPixelBufferRelease(buf);
+
+    double renderCallMs = (mono_sec() - renderCallStart) * 1000.0;
+    if (renderCallMs > 20.0) {
+        char msg[128];
+        snprintf(msg, sizeof(msg),
+                 "⚠️ [Profiler] Metal render call itself took %.1f ms (main-thread render stall)",
+                 renderCallMs);
+        goMetalLog(msg, 2); // warn
+    }
 
     // ── Logging ──────────────────────────────────────────────────────────────
     int64_t n = ++g_renderCount;
@@ -832,6 +855,18 @@ static MetalDisplayLinkTarget *g_dl_target = nil;
 
 int metal_video_is_active(void) {
     return atomic_load(&g_active);
+}
+
+// Running count of frames actually presented (g_renderCount, incremented in
+// metal_render_main_with_buf on the main thread) -- the streamer
+// benchmark's client-side render-fps counter (see bench_recorder.go's
+// benchRenderedFramesFn) diffs this between ticks instead of relying on
+// metal_video_last_fps's own 2s window, same as the Linux/Windows
+// VKVideoGetStats().Rendered equivalent. Read cross-thread without a lock,
+// same tolerated race as g_submitCount above: a plain monotonic counter,
+// never torn in practice on this platform's int64 alignment.
+int64_t metal_video_rendered_count(void) {
+    return g_renderCount;
 }
 
 // Returns the Metal render FPS from the current measurement window.
@@ -1271,6 +1306,23 @@ int metal_video_create(uintptr_t nsWinPtr, float x, float y, float w, float h) {
         g_display_link = [ov displayLinkWithTarget:g_dl_target
                                           selector:@selector(displayLinkFired:)];
         atomic_fetch_add(&g_display_link_created_count, 1);
+
+        // Pin min==max==preferred to the display's own refresh rate. Without
+        // this, CADisplayLink's adaptive duty-cycle picks its own rate from
+        // observed commit cadence -- and a long gap with nothing to present
+        // (e.g. a slow host-switch leaving the stream frame-less for 2+
+        // seconds, as seen with a Punktfunk backend switch) makes it latch
+        // onto a low fire rate (observed: ~23Hz) that never climbs back to
+        // 60Hz even once frames resume arriving at full rate. A fixed range
+        // leaves the OS nothing to adapt, so it can't get stuck low again.
+        CGFloat maxFPS = 60.0;
+        if (ov.window && ov.window.screen) {
+            NSInteger screenMax = ov.window.screen.maximumFramesPerSecond;
+            if (screenMax > 0) maxFPS = (CGFloat)screenMax;
+        }
+        g_display_link.preferredFrameRateRange =
+            (CAFrameRateRange){.minimum = (float)maxFPS, .maximum = (float)maxFPS, .preferred = (float)maxFPS};
+
         [g_display_link addToRunLoop:[NSRunLoop mainRunLoop]
                              forMode:NSRunLoopCommonModes];
 

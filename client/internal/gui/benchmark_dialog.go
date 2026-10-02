@@ -387,8 +387,19 @@ func (mw *MainWindow) startBenchmark(backends []string, monitor, codec string, w
 			logrus.Warnf("📈 [Benchmark] saving results: %v", err)
 		}
 		for _, m := range res.Metrics {
-			logrus.Infof("📈 [Benchmark] %s: startup %.0f+%.0fms, %.1f fps (1%% low %.1f), %d stalls (%d loss/%d host/%d net), host %.1fms p95 %.1fms, net jitter p95 %.1fms, rtt %.1fms, loss %.2f%%, recovery avg %.0fms (idr %d, rfi %d)",
-				m.Backend, m.SwitchMs, m.StartupMs, m.AvgFPS, m.Low1FPS, m.StallCount, m.StallLoss, m.StallHost, m.StallNetwork,
+			// AvgFPS/Low1FPS count frames handed to the decoder (delivery),
+			// not frames actually drawn to the screen -- a renderer-side
+			// stall (e.g. the display link itself ticking slower than the
+			// decoder feeds it) can leave this number looking fine while the
+			// viewer sees a slideshow. RenderFPS is the real presented-frame
+			// counter; call it out here too, not just in the results table,
+			// so that gap is visible at a glance in the log.
+			renderPart := "render fps n/a"
+			if m.RenderValid {
+				renderPart = fmt.Sprintf("render %.1f fps", m.RenderFPS)
+			}
+			logrus.Infof("📈 [Benchmark] %s: startup %.0f+%.0fms, %.1f fps (1%% low %.1f, %s), %d stalls (%d loss/%d host/%d net), host %.1fms p95 %.1fms, net jitter p95 %.1fms, rtt %.1fms, loss %.2f%%, recovery avg %.0fms (idr %d, rfi %d)",
+				m.Backend, m.SwitchMs, m.StartupMs, m.AvgFPS, m.Low1FPS, renderPart, m.StallCount, m.StallLoss, m.StallHost, m.StallNetwork,
 				m.HostLatencyAvg, m.HostLatencyP95, m.NetJitterP95, m.RTTAvg, m.PacketLossPct, m.RecoveryAvgMs, m.RecoveredByIDR, m.RecoveredByRFI)
 		}
 		fyne.Do(func() { mw.showBenchmarkResults(res, dir) })

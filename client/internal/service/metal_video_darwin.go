@@ -11,6 +11,7 @@ package service
 
 // Implemented in metal_video_impl_darwin.m (compiled as a separate translation unit).
 extern int  metal_video_is_active(void);
+extern int64_t metal_video_rendered_count(void);
 extern int  metal_video_try_submit(CVImageBufferRef img);
 extern int  metal_video_create(uintptr_t nsWinPtr, float x, float y, float w, float h);
 extern void metal_video_update_frame(float x, float y, float w, float h);
@@ -74,6 +75,7 @@ func init() {
 	}
 	netGraphRenderFPS = MetalVideoLastFPS
 	netGraphDecodeMs = MetalVideoLastDecodeMs
+	benchRenderedFramesFn = MetalVideoRenderedCount
 
 	// UpscaleMode (upscale_mode.go's cross-platform SetUpscaleMode) -- see
 	// that file's own doc comment for why this hook indirection exists.
@@ -187,6 +189,17 @@ func MetalVideoIsActive() bool {
 // Returns 0 if not enough frames yet.
 func MetalVideoLastFPS() float64 {
 	return float64(C.metal_video_last_fps())
+}
+
+// MetalVideoRenderedCount is benchRenderedFramesFn's darwin implementation --
+// the streamer benchmark's client-side render-fps counter (bench_recorder.go
+// diffs this between polling ticks). Valid only while the overlay is active,
+// same convention as the Linux/Windows VKVideoGetStats().Rendered equivalent.
+func MetalVideoRenderedCount() (int64, bool) {
+	if !MetalVideoIsActive() {
+		return 0, false
+	}
+	return int64(C.metal_video_rendered_count()), true
 }
 
 // MetalVideoGetLastFrameRGBA returns the last rendered VT frame as an image.RGBA.
