@@ -97,6 +97,7 @@ The Agent runs on the target machine — the server or PC you want to access rem
       <i>Rust based Stream Engine</i><br><br>
       ✓ Instant-connect custom remote protocol<br>
       ✓ Adaptive streaming optimized for Wi-Fi stability<br>
+      ✓ HDR10<br>
       ✓ Headless virtual display management<br>
       ✓ Low-latency gamepad controller passthrough<br>
       ✓ Web browser client access (no installation required)<br>
