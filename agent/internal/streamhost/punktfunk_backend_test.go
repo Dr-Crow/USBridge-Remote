@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -313,5 +314,173 @@ func TestPunktfunkBinaryLookup(t *testing.T) {
 	}
 	if got := punktfunkBinaryPath(exeDir); got != bundled {
 		t.Fatalf("bundled copy must win: %q, want %q", got, bundled)
+	}
+}
+
+// fakePunktfunkHost writes a stand-in punktfunk-host whose probe-compositor
+// succeeds only once the .desktop file RequestCapture installs names it --
+// KWin's own rule, see RequestCapture's doc comment.
+func fakePunktfunkHost(t *testing.T, home string) string {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("KWin authorization is Linux-only")
+	}
+	bin := filepath.Join(t.TempDir(), "punktfunk-host")
+	script := "#!/bin/sh\n" +
+		"PATH=/usr/bin:/bin\n" + // the test empties PATH for the backend's own lookups
+		"[ \"$1\" = probe-compositor ] || exit 0\n" +
+		"grep -qx \"Exec=" + bin + "\" \"" + filepath.Join(home, ".local", "share", "applications", punktfunkDesktopFile) + "\" 2>/dev/null\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+// With Punktfunk active the agent's Screen capture row used to check a KMS
+// grant Punktfunk never uses, so it showed "Grant" forever and the button
+// did nothing. The row now asks the backend, and Grant installs the
+// .desktop file KWin wants.
+func TestPunktfunkCaptureGrant(t *testing.T) {
+	home := t.TempDir()
+	bin := fakePunktfunkHost(t, home)
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", t.TempDir()) // no kbuildsycoca, no other punktfunk-host
+	t.Setenv(punktfunkBinEnv, bin)
+	punktfunkCaptureCache.Lock()
+	punktfunkCaptureCache.at = time.Time{}
+	punktfunkCaptureCache.Unlock()
+
+	b := NewPunktfunk(t.TempDir(), t.TempDir(), "")
+	ca, ok := b.(CaptureAccess)
+	if !ok {
+		t.Fatal("the punktfunk backend must report its own capture permission")
+	}
+	if ca.CaptureGranted() {
+		t.Fatal("granted before KWin was told about the binary")
+	}
+	if err := ca.RequestCapture(); err != nil {
+		t.Fatalf("RequestCapture: %v", err)
+	}
+	if !ca.CaptureGranted() {
+		t.Fatal("still not granted after RequestCapture")
+	}
+	entry, err := os.ReadFile(filepath.Join(home, ".local", "share", "applications", punktfunkDesktopFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Exec=" + bin + "\n", "zkde_screencast_unstable_v1", "org_kde_kwin_fake_input"} {
+		if !strings.Contains(string(entry), want) {
+			t.Errorf(".desktop file lacks %q:\n%s", want, entry)
+		}
+	}
+}
+
+// Sunshine and RustShine must keep going through the KMS grant.
+func TestOnlyPunktfunkReportsCompositorCapture(t *testing.T) {
+	for name, b := range map[string]Backend{
+		"sunshine":  NewSunshine(t.TempDir(), t.TempDir(), ""),
+		"rustshine": NewRustshine(t.TempDir(), t.TempDir(), ""),
+	} {
+		if _, ok := b.(CaptureAccess); ok {
+			t.Errorf("%s must not implement CaptureAccess", name)
+		}
+	}
+}
+
+// Punktfunk has no macOS host, so a Mac agent must never offer it -- not in
+// the streamer picker, not in the benchmark -- even when a file with the
+// right name is lying around or the override points at one.
+func TestPunktfunkUnavailableOffLinuxAndWindows(t *testing.T) {
+	if runtime.GOOS == "linux" || runtime.GOOS == "windows" {
+		t.Skip("punktfunk-host exists for this OS")
+	}
+	exeDir := t.TempDir()
+	bundled := filepath.Join(exeDir, "punktfunk", "punktfunk-host")
+	if err := os.MkdirAll(filepath.Dir(bundled), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bundled, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(punktfunkBinEnv, bundled)
+	t.Setenv("PATH", filepath.Dir(bundled))
+	if PunktfunkAvailable(exeDir) {
+		t.Fatalf("Punktfunk reported available on %s", runtime.GOOS)
+	}
+}
+
+// fakePunktfunkMonitors points the backend at a stand-in punktfunk-host
+// that lists one monitor, HDMI-A-1.
+func fakePunktfunkMonitors(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("list-monitors is Linux-only")
+	}
+	bin := filepath.Join(t.TempDir(), "punktfunk-host")
+	script := "#!/bin/sh\n" +
+		"[ \"$1\" = list-monitors ] || exit 0\n" +
+		"echo 'Kwin:'\n" +
+		"echo '  HDMI-A-1      3840x2160@60 at +0,+0  scale 2  Some Panel'\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(punktfunkBinEnv, bin)
+	t.Setenv("PATH", t.TempDir())
+}
+
+// The agent's device and virtual-display APIs hand every backend the same
+// names. Punktfunk must take its own connector (also out of RustShine's
+// "card|connector" form) and a "virtual:" spec, and refuse anything else:
+// it fails every session on a monitor name that matches nothing.
+func TestPunktfunkSetOutputNameAcceptsOnlyWhatItCanStream(t *testing.T) {
+	fakePunktfunkMonitors(t)
+	b := NewPunktfunk(t.TempDir(), t.TempDir(), "")
+
+	for _, tc := range []struct{ in, want string }{
+		{"HDMI-A-1", "HDMI-A-1"},
+		{"/dev/dri/card1|HDMI-A-1", "HDMI-A-1"},
+		{"virtual:1920x1080@60", "virtual:1920x1080@60"},
+	} {
+		if err := b.SetOutputName(tc.in); err != nil {
+			t.Fatalf("SetOutputName(%q): %v", tc.in, err)
+		}
+		if got := b.OutputName(); got != tc.want {
+			t.Fatalf("SetOutputName(%q) stored %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	for _, bad := range []string{"0", "DP-9", "/dev/dri/card1|DP-9"} {
+		if err := b.SetOutputName(bad); err == nil {
+			t.Errorf("SetOutputName(%q) was accepted", bad)
+		}
+	}
+	if got := b.OutputName(); got != "virtual:1920x1080@60" {
+		t.Fatalf("a refused name replaced the stored one: %q", got)
+	}
+}
+
+// The benchmark asks the backend where a session's picture comes from: a
+// virtual-display pick means the test video must be moved onto Punktfunk's
+// own display, a mirrored monitor means it is already in the picture.
+func TestPunktfunkVirtualOutputPrefix(t *testing.T) {
+	fakePunktfunkMonitors(t)
+	b := NewPunktfunk(t.TempDir(), t.TempDir(), "")
+	v, ok := b.(interface{ VirtualOutputPrefix() string })
+	if !ok {
+		t.Fatal("the punktfunk backend must say which display it streams")
+	}
+	if got := v.VirtualOutputPrefix(); got != "" {
+		t.Fatalf("nothing picked: prefix %q, want none", got)
+	}
+	if err := b.SetOutputName("HDMI-A-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := v.VirtualOutputPrefix(); got != "" {
+		t.Fatalf("mirrored monitor: prefix %q, want none", got)
+	}
+	if err := b.SetOutputName("virtual:1920x1080@60"); err != nil {
+		t.Fatal(err)
+	}
+	if got := v.VirtualOutputPrefix(); got != "Virtual-punktfunk" {
+		t.Fatalf("virtual display: prefix %q, want Virtual-punktfunk", got)
 	}
 }

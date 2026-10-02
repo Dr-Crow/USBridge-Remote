@@ -417,6 +417,10 @@ func (s *Service) Stop() {
 	s.mu.Unlock()
 }
 
+// controlTimeout bounds one control round trip. The slowest honest answer
+// is a status that probes a plugged-in dongle (a couple of seconds).
+var controlTimeout = 5 * time.Second
+
 func (s *Service) control(cmd string, extra map[string]any) (map[string]any, error) {
 	payload := map[string]any{"cmd": cmd}
 	for k, v := range extra {
@@ -428,6 +432,13 @@ func (s *Service) control(cmd string, extra map[string]any) (map[string]any, err
 		return nil, err
 	}
 	defer conn.Close()
+	// Without a deadline a broker that accepts the connection and then
+	// never answers held this call forever -- and with it the GUI's whole
+	// refresh (ui.Window.performRefresh waits on Status), so every
+	// permission showed as missing and its Grant button seemed dead.
+	// Confirmed live: the broker's status handler starved on a lock its
+	// own dongle reader held across a sleep.
+	_ = conn.SetDeadline(time.Now().Add(controlTimeout))
 	_, _ = conn.Write(append(raw, '\n'))
 	reader := bufio.NewReader(conn)
 	line, err := reader.ReadBytes('\n')

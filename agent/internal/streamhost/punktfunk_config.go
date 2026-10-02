@@ -2,6 +2,7 @@ package streamhost
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -109,9 +110,24 @@ func (b *punktfunkBackend) outputNamePath() string {
 	return filepath.Join(dir, "usbridge-capture-monitor")
 }
 
-// SetOutputName pins capture to a physical monitor by connector name (see
-// ListCaptureDevices), or with "" goes back to Punktfunk's default, a
-// virtual display per session. Takes effect on the next Start.
+// punktfunkVirtualPrefix marks an output name that asks for a virtual
+// display rather than a monitor -- the "virtual:WxH@FPS" spec the agent's
+// virtual-display API hands every backend (see api.Server's
+// virtualDisplayCreate). Punktfunk needs none of the spec: left unpinned it
+// creates a display of its own for each session, at whatever mode that
+// client asks for.
+const punktfunkVirtualPrefix = "virtual:"
+
+// SetOutputName picks what Punktfunk streams, effective on the next Start:
+// a physical monitor by connector name (see ListCaptureDevices), mirrored as
+// it is; a "virtual:" spec for Punktfunk's own per-session virtual display;
+// or "" for Punktfunk's default, a virtual display of its own per session.
+//
+// A monitor has to be one Punktfunk itself lists. The other backends' names
+// reach this through the same API -- RustShine's "/dev/dri/card1|HDMI-A-1",
+// Sunshine's bare index -- and Punktfunk fails every session outright on a
+// PUNKTFUNK_CAPTURE_MONITOR that matches nothing. The "card|connector" form
+// is accepted for its connector.
 func (b *punktfunkBackend) SetOutputName(name string) error {
 	path := b.outputNamePath()
 	if path == "" {
@@ -124,10 +140,44 @@ func (b *punktfunkBackend) SetOutputName(name string) error {
 		}
 		return nil
 	}
+	if !strings.HasPrefix(name, punktfunkVirtualPrefix) {
+		if _, connector, ok := strings.Cut(name, "|"); ok {
+			name = connector
+		}
+		// Nothing listed means the compositor can't be asked right now
+		// (agent started before the desktop); the name is taken on trust.
+		if devices := b.ListCaptureDevices(); len(devices) > 0 {
+			known := false
+			for _, d := range devices {
+				if d.OutputName == name {
+					known = true
+					break
+				}
+			}
+			if !known {
+				return fmt.Errorf("punktfunk has no monitor %q", name)
+			}
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	return os.WriteFile(path, []byte(name+"\n"), 0o644)
+}
+
+// punktfunkManagedOutputPrefix starts the name of every display Punktfunk
+// creates on KWin ("Virtual-punktfunk", "Virtual-punktfunk-<id>") --
+// MANAGED_PREFIX in its pf-vdisplay/kwin.rs.
+const punktfunkManagedOutputPrefix = "Virtual-punktfunk"
+
+// VirtualOutputPrefix is the name prefix of the display a session is
+// streamed from when a virtual display is picked, "" when a monitor is
+// mirrored. The benchmark plays its test video there (app.BenchVideoOutput).
+func (b *punktfunkBackend) VirtualOutputPrefix() string {
+	if strings.HasPrefix(b.OutputName(), punktfunkVirtualPrefix) {
+		return punktfunkManagedOutputPrefix
+	}
+	return ""
 }
 
 // OutputName is the pinned monitor's connector name, "" for none.

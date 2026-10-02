@@ -25,6 +25,10 @@ type benchApplication interface {
 	BenchMonitor() string
 	SetBenchMonitor(id string, deferRestart bool) error
 	LastBackendSwitch() BackendSwitchTiming
+	// BenchVideoOutput names (by prefix) the compositor output the test
+	// video has to play on because the active streamer shows only that
+	// one, "" when it shows a monitor the video opens on anyway.
+	BenchVideoOutput() string
 }
 
 // BackendSwitchTiming splits a bench/backend switch for the benchmark's
@@ -178,7 +182,7 @@ func (s *Server) benchVideoStart(w http.ResponseWriter, r *http.Request) {
 		}
 		target = &m
 	}
-	info, err := b.BenchPlayer().Start(ctx, target)
+	info, err := b.BenchPlayer().Start(ctx, target, b.BenchVideoOutput())
 	if err != nil {
 		log.Printf("[api] bench video start failed: %v", err)
 		s.fail(w, http.StatusInternalServerError, "bench_video_failed", err)

@@ -184,7 +184,13 @@ func (p *Player) cachedContent() (string, bool) {
 // (nil: the player's default monitor). If the trailer can't be fetched it
 // falls back to ffplay's built-in testsrc2 pattern (still full-motion
 // 60fps), which only ffplay can generate.
-func (p *Player) Start(ctx context.Context, target *monitors.Monitor) (Info, error) {
+//
+// output, when set, is the start of the name of a compositor output the
+// player's window must be moved to: a streamer that shows a virtual display
+// of its own (Punktfunk's "Virtual-punktfunk*") never sees a video that
+// opened on the physical monitor, and the client would measure an empty
+// desktop. Failing to get it there fails the start for the same reason.
+func (p *Player) Start(ctx context.Context, target *monitors.Monitor, output string) (Info, error) {
 	p.Stop()
 
 	content, prepErr := p.Prepare(ctx)
@@ -218,7 +224,15 @@ func (p *Player) Start(ctx context.Context, target *monitors.Monitor) (Info, err
 	}
 
 	info := Info{Player: player, Content: label, Playing: true, StartedAt: time.Now(), ContentPath: content}
-	if target != nil {
+	if output != "" {
+		name, err := moveToOutput(proc.Pid(), output, placementTimeout)
+		if err != nil {
+			_ = proc.Kill()
+			return Info{}, fmt.Errorf("putting the test video on the streamed display: %w", err)
+		}
+		log.Printf("[bench] test video moved to %s", name)
+		info.RequestedMonitor, info.Monitor = name, name
+	} else if target != nil {
 		info.RequestedMonitor = target.ID
 		info.Monitor = ensureOnMonitor(proc.Pid(), *target)
 	}

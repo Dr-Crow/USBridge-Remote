@@ -31,6 +31,16 @@ func (a *App) BenchStreamBackends() (active string, available []string) {
 	return a.currentStreamKind(), available
 }
 
+// BenchVideoOutput is the virtual display the active streamer streams
+// instead of a monitor, by name prefix ("" for none) -- where the
+// benchmark's test video has to be moved for it to be in the picture.
+func (a *App) BenchVideoOutput() string {
+	if v, ok := a.stream.(interface{ VirtualOutputPrefix() string }); ok {
+		return v.VirtualOutputPrefix()
+	}
+	return ""
+}
+
 // BenchMonitors lists the host's monitors for the benchmark's monitor pick,
 // named after what the streamers themselves report where they do (Sunshine
 // logs each monitor's model name; Windows alone mostly says "Generic PnP

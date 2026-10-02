@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -328,9 +329,16 @@ func (b *punktfunkBackend) Start(adminPort int) error {
 	if dir != "" {
 		env = append(env, punktfunkConfigDirEnv+"="+dir)
 	}
-	if monitor := b.OutputName(); monitor != "" {
+	if monitor := b.OutputName(); monitor != "" && !strings.HasPrefix(monitor, punktfunkVirtualPrefix) {
 		env = append(env, punktfunkCaptureMonitorEnv+"="+monitor)
 	}
+	// One line a second while a client streams: frames sent, how many were
+	// new ones (uniq) rather than repeats, and the slowest capture/encode/
+	// send of that second. Without it the host log says nothing about the
+	// frame rate it actually delivered, which is the first thing to look at
+	// when a benchmark run comes out slow. RustShine logs the same kind of
+	// line unasked ("frame stage timing sample").
+	env = append(env, "PUNKTFUNK_PERF=1")
 	cmd.Env = env
 	if launchDir := filepath.Dir(bin); launchDir != "" && launchDir != "." {
 		cmd.Dir = launchDir

@@ -599,10 +599,17 @@ func New() (*App, error) {
 			}
 		}
 	}
+	// Punktfunk needs no entitlement, only its binary; without one (it was
+	// uninstalled since) the agent comes back on Sunshine.
+	if cfg.PreferredBackend == "punktfunk" && streamhost.PunktfunkAvailable(instance.exeDir) {
+		instance.setStreamKind("punktfunk")
+	}
 	if instance.streamKind == "rustshine" {
 		instance.stream = streamhost.NewRustshine(instance.exeDir, cfg.StateDir, instance.logPath)
 		applyStreamSharedSecret(instance.stream, masterKeyBytes)
 		applyStreamWebRTCEnabled(instance.stream, !cfg.RustShineWebRTCDisabled)
+	} else if instance.streamKind == "punktfunk" {
+		instance.stream = streamhost.NewPunktfunk(instance.exeDir, cfg.StateDir, instance.logPath)
 	} else {
 		instance.stream = streamhost.NewDefault(instance.exeDir, cfg.StateDir, instance.logPath)
 	}
@@ -1599,16 +1606,10 @@ func (a *App) SetStreamBackend(kind string) error {
 	}
 	a.restartStreamProxy()
 
-	// Punktfunk is only ever switched to for a benchmark run (nothing at
-	// startup knows how to bring it back, see New), so it never replaces
-	// the saved preference: an agent restarted mid-benchmark comes back on
-	// the streamer the user actually chose.
-	if kind != "punktfunk" {
-		saved := a.cfg
-		saved.PreferredBackend = kind
-		if err := a.SaveConfig(saved); err != nil {
-			log.Printf("[app] warning: failed to persist preferred stream backend: %v", err)
-		}
+	saved := a.cfg
+	saved.PreferredBackend = kind
+	if err := a.SaveConfig(saved); err != nil {
+		log.Printf("[app] warning: failed to persist preferred stream backend: %v", err)
 	}
 	return nil
 }
@@ -1733,6 +1734,7 @@ func (a *App) EntitlementStatus() entitlement.Status {
 	a.entMu.Unlock()
 	st.ActiveBackend = a.currentStreamKind()
 	st.RustShineStaged = a.rustshineStaged()
+	st.PunktfunkAvailable = streamhost.PunktfunkAvailable(a.exeDir)
 	st.RustShineVersion = entitlement.StagedVersion(a.cfg.StateDir)
 	st.WebRTCEnabled = !a.cfg.RustShineWebRTCDisabled
 	st.RustShineAvailableVersion = pending
@@ -3469,6 +3471,12 @@ func (a *App) rustshineLauncherPathFor(b streamhost.Backend) string {
 // KMSCaptureGranted reports whether the file KMS capture actually needs
 // CAP_SYS_ADMIN on for the active backend (see kmsCaptureTarget) has it.
 func (a *App) KMSCaptureGranted() bool {
+	// A streamer that captures through the compositor (Punktfunk) has no
+	// KMS grant to check; without this the row asked permissions.Service
+	// about an empty launcher path and showed a Grant that did nothing.
+	if ca, ok := a.compositorCapture(); ok {
+		return ca.CaptureGranted()
+	}
 	if a.perms == nil {
 		return false
 	}
@@ -3484,11 +3492,32 @@ func (a *App) KMSCaptureGranted() bool {
 	return a.perms.KMSCaptureGranted(a.kmsCaptureTarget())
 }
 
+// compositorCapture is the active backend's own capture-permission check,
+// for the one that has it (see streamhost.CaptureAccess).
+// Read without streamMu, like KMSCaptureGranted's own look at a.stream: the
+// GUI asks on every refresh, and a backend switch holds that lock for as
+// long as the switch takes.
+func (a *App) compositorCapture() (streamhost.CaptureAccess, bool) {
+	ca, ok := a.stream.(streamhost.CaptureAccess)
+	return ca, ok
+}
+
 // RequestKMSCapture grants CAP_SYS_ADMIN to whichever file KMS capture
 // actually needs it on for the active backend (see kmsCaptureTarget) —
 // prompts for elevation via pkexec — then restarts the stream host so the
 // newly-granted capability is actually picked up.
 func (a *App) RequestKMSCapture() bool {
+	if ca, ok := a.compositorCapture(); ok {
+		if err := ca.RequestCapture(); err != nil {
+			log.Printf("[app] screen capture for %s: %v", a.StreamerName(), err)
+			return false
+		}
+		// A streamer that was refused at startup keeps that answer.
+		if err := a.RestartSunshine(); err != nil {
+			log.Printf("[app] failed to restart %s after granting screen capture: %v", a.StreamerName(), err)
+		}
+		return true
+	}
 	if a.perms == nil {
 		return false
 	}
