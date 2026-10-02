@@ -70,8 +70,10 @@ func (b *punktfunkBackend) HdrStatus() (active bool, available bool) { return fa
 // client's WxH@Hz").
 func (b *punktfunkBackend) VirtualDisplaySupported() bool { return true }
 
-// RawHIDSupported is false: Punktfunk has no LiSendRawHidEvent handler --
-// this is a USBridge-proprietary moonlight-common-c extension, only
-// implemented host-side by rust-shine's own streamer. See CodecProbe's
-// doc comment (backend.go).
-func (b *punktfunkBackend) RawHIDSupported() bool { return false }
+// RawHIDSupported is true only for a punktfunk-host built with the USBridge
+// patch, which hands LiSendRawHidEvent to the USB broker (see
+// punktfunkBrokerEnv). Stock Punktfunk has no handler for it. Whether a
+// tablet is really built is the broker's call (license, and a broker new
+// enough to know hid_stream): the host only sets LI_FF_USBRIDGE_RAW_HID
+// when the broker says yes, and the client checks that flag as well.
+func (b *punktfunkBackend) RawHIDSupported() bool { return punktfunkHasBridge(b.binaryPath()) }

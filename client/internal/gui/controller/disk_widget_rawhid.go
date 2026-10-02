@@ -38,11 +38,11 @@ func (l rawHIDStreamLink) SendRawHID(kind, slot, endpoint uint8, total, offset u
 
 // SetRawHIDSupported records whether the paired agent's active streaming
 // backend understands LiSendRawHidEvent (MasterSyncResponse.RawHIDSupported,
-// refreshed on every master sync -- see main_window_sync_v2.go). Only
-// rust-shine's own streamer implements the host side (see
-// streamhost.CodecProbe.RawHIDSupported's doc comment in the agent repo);
-// Sunshine and Punktfunk do not, so splitRawHID must not pick stream mode
-// against them.
+// refreshed on every master sync -- see main_window_sync_v2.go).
+// rust-shine's own streamer and a punktfunk-host with the USBridge patch
+// implement the host side (see streamhost.CodecProbe.RawHIDSupported's doc
+// comment in the agent repo); Sunshine and stock Punktfunk do not, so
+// splitRawHID must not pick stream mode against them.
 func (dw *DiskWidget) SetRawHIDSupported(v bool) {
 	dw.rawHIDSupportedByHost = v
 }
@@ -51,7 +51,7 @@ func (dw *DiskWidget) SetRawHIDSupported(v bool) {
 // are exported over USB/IP. A device goes over the stream only while a
 // stream is up (RawHIDEpoch != 0) whose host's streamer actually understands
 // LiSendRawHidEvent (rawHIDSupportedByHost) -- without the latter check, a
-// Sunshine or Punktfunk stream looks exactly like a rust-shine one from the
+// Sunshine or stock Punktfunk stream looks exactly like a rust-shine one from the
 // epoch alone, the client would switch a Wacom tablet into stream mode
 // against a host that cannot rebuild it, and the tablet would silently stop
 // working: once stream mode is chosen there is no USB/IP fallback.

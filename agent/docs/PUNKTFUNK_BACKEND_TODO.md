@@ -210,17 +210,27 @@ Found:
   `crates/pf-vdisplay/src/vdisplay/policy.rs`, not guessed. Explicitly
   picking a monitor in the benchmark dialog still works exactly as before
   (`SetBenchMonitor` -> `applyBenchMonitor` -> `SetOutputName`), unaffected
-  by this change. Not saved as `PreferredBackend` -- startup only knows
-  Sunshine and RustShine.
+  by this change.
 - `BenchStreamBackends` lists it when a binary is found; the client's
   benchmark dialog shows the row only then.
+
+## Agent GUI wiring (2026-10-02)
+
+- `entitlement.Status.PunktfunkAvailable`; the streamer picker
+  (`ui/protocol_picker.go`) shows a fourth tile, on a second row, only then.
+- Saved as `PreferredBackend` like the other two and restored in `New()`
+  when the binary is still there (else Sunshine).
+- The client still sees `agent_protocol: "opensource"`; the picker has its
+  own key (`protocolPunktfunk`).
+- Not looked at: the Status card's streamer version line and the legacy
+  license dropdown, which only know Sunshine and RustShine.
 
 ## What's still open
 
 1. **A real video session through the USBridge client** (RTSP, video, audio,
    input) -- the benchmark run itself. Everything up to `/launch` is tested.
-2. **Backend selection outside the benchmark** (preference persistence,
-   tray/GUI entries, startup) was not touched.
+2. **The picker's fourth tile has not been looked at on screen** -- built
+   and unit-tested only.
 3. **No bundled `punktfunk-host` anywhere**, and see the KDE finding above
    for why the AppImage can't simply carry one.
 4. `CurrentVideoCodec`/`SupportedVideoCodecs`/`Color444Status`/`HdrStatus`
@@ -257,6 +267,41 @@ a from-scratch UMDF2 virtual-XInput driver (pf-xusb's README documents the
 exact IOCTLs, wire formats and shared-memory layout, verified live against a
 real RTX test box) -- worth reading before writing the C++/Rust equivalent for
 Sunshine, regardless of whether Punktfunk itself ever becomes a backend.
+
+## USB with Punktfunk as the streamer (2026-10-02)
+
+USB works the same way under Punktfunk as under RustShine, because none of it
+is the streamer's job:
+
+- **USB/IP passthrough** (any device, TCP) is the USB broker alone -- the
+  agent starts it whichever backend is active.
+- **A HID device over the stream** (a Wacom tablet sent with
+  `LiSendRawHidEvent` on the ENet control channel, for input latency) needs
+  the host to take that packet. Stock Punktfunk drops it. The patch in
+  `agent/patches/punktfunk/` adds `gamestream/usbridge.rs`: when
+  `USBRIDGE_USB_BROKER_CONTROL` is set (the agent sets it, see
+  `streamhost/punktfunk_usbridge.go`), the host forwards the packet body to
+  the broker's `hid_stream` control command, and the broker rebuilds the
+  device on a USB/IP port -- the same `RawHidHub` RustShine's streamer runs
+  in-process. The host advertises `LI_FF_USBRIDGE_RAW_HID` only when the
+  broker answers that it would build a tablet (a Pro license on its side).
+- **Gamepads**: on Windows the patched host sends them to the same
+  `hid_stream`, and the broker presents each as an Xbox 360 pad on usbip-win2
+  (what RustShine does; the agent does not install Punktfunk's `pf-xusb`
+  drivers). On Linux Punktfunk's own uinput/uhid pads stay.
+  `USBRIDGE_PAD_BRIDGE=1|0` forces either.
+
+The agent tells the client raw HID is available (`RawHIDSupported`) only for
+a punktfunk-host that answers `punktfunk-host usbridge-bridge`, i.e. one built
+with the patch. Needs a broker with `hid_stream` (rust-shine after 0.3.115)
+and, on Linux, the polkit rule that allows `usbip --tcp-port N attach` --
+an older rule shows the USB permission as not granted until Grant is pressed
+again.
+
+Verified: unit tests on all three sides; live, a pad sent to a lab broker's
+`hid_stream` is exported as `045e:028e` (`usbip list`). **Not yet run:** a
+real client session against the patched host (tablet or pad), and anything on
+Windows.
 
 ## Next step when resumed
 
