@@ -19,7 +19,7 @@
 
 ---
 
-**USBridge Remote** — це об'єднаний високопродуктивний клієнт для управління віддаленими машинами. Розроблений для поєднання **доступу до BIOS на апаратному рівні** (через пристрої USBridge KVM) та **віддаленого робочого столу на програмному рівні** в одному, спрощеному інтерфейсі.
+**USBridge Remote** — це єдиний високопродуктивний клієнт для управління віддаленими машинами. Розроблений для поєднання **доступу до BIOS на апаратному рівні** (через пристрої USBridge KVM) та **програмного віддаленого робочого столу** в одному, спрощеному інтерфейсі.
 
 <div align="center">
   <img src="./assets/Functions.svg" width="1400" alt="USBridge Remote">
@@ -36,13 +36,13 @@
 | **x86_64** | [Завантажити](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Windows-x86_64.zip) | — | [Завантажити](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Linux-x86_64.AppImage) | — | — | [Відкрити додаток](https://web.usbridge.io) |
 | **ARM64** | — | [Завантажити](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-macOS-arm64.dmg) | — | [Google Play](https://play.google.com/store/apps/details?id=io.usbridge.client) | [App Store](https://apps.apple.com/us/app/usbridge-client/id6787665935) | [Відкрити додаток](https://web.usbridge.io) |
 
-Вам потрібен прямий APK без облікового запису Play Store? Також публікується самовідновлювальна збірка на [останній версії](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
+Вам потрібен прямий APK без облікового запису Play Store? Автоматично оновлювана збірка також публікується на [останній версії](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
 
-🌐 **Веб-клієнт без установки**: Установка не потрібна. Просто відкрийте [web.usbridge.io](https://web.usbridge.io), щоб підключитися миттєво. *(Примітка: Веб-клієнт працює з деякими обмеженнями функцій та продуктивності через безпеку браузера та обмеження WebRTC. Для повноцінного досвіду використовуйте рідні додатки).* На свіжозапущеному агенті може знадобитися до хвилини, щоб стати доступним вперше (або після зміни мережі), поки він забезпечує собі довірений HTTPS сертифікат — дивіться рядок **Статус → Сертифікат** агента або [документацію агента](agent/docs/README.md#platform-notes-from-the-top-level-readme) для деталей.
+🌐 **Веб-клієнт без установки**: Установка не потрібна. Просто відкрийте [web.usbridge.io](https://web.usbridge.io), щоб підключитися миттєво. *(Примітка: Веб-клієнт працює з деякими обмеженнями функцій та продуктивності через безпеку браузера та обмеження WebRTC. Для повного досвіду без компромісів використовуйте рідні додатки).* На свіжозапущеному агенті може знадобитися до хвилини, щоб стати доступним вперше (або після зміни мережі), поки він забезпечує собі довірений HTTPS сертифікат — дивіться рядок **Статус → Сертифікат** агента або [документацію агента](agent/docs/README.md#platform-notes-from-the-top-level-readme) для деталей.
 
 ## Агент
 
-Агент працює на цільовій машині — сервері або ПК, до якого ви хочете отримати віддалений доступ. Він обробляє захоплення екрана, ін'єкцію введення та мережу Tailscale.
+Агент працює на цільовій машині — сервері або ПК, до якого ви хочете отримати віддалений доступ. Він обробляє захоплення екрану, введення даних та мережу Tailscale.
 
 <table>
   <tr>
@@ -76,30 +76,31 @@
   </tr>
 </table>
 
-## Функції
+## Особливості
 
 <table>
   <tr>
     <td width="33%" valign="top">
       <code>БАЗОВА ФУНКЦІОНАЛЬНІСТЬ</code><br><br>
       <b>SUNSHINE OPEN-SOURCE</b><br>
-      <i>Стандартний геймерський стрімінг</i><br><br>
-      ✓ Вбудований стример з відкритим кодом Sunshine<br>
+      <i>Стандартний ігровий стрімінг</i><br><br>
+      ✓ Вбудований open-source стример Sunshine<br>
       ✓ Доступ до робочого столу та ігор з низькою затримкою<br>
       ✓ Двосторонній обмін файлами та текстовим буфером<br>    
       ✓ Перемикання між кількома моніторами<br>
-      ✓ Інтегрована P2P-мережа Tailscale<br>
+      ✓ Інтегрована P2P мережа Tailscale<br>
       ✓ Підтримка Wayland (захоплення без запитів)
     </td>
     <td width="33%" valign="top">
       <code>+ БАЗОВІ ФУНКЦІЇ</code><br><br>
       <b>USBRIDGE FREE</b><br>
-      <i>Двигун стрімінгу на базі Rust</i><br><br>
+      <i>Rust на основі Stream Engine</i><br><br>
       ✓ Миттєве підключення через власний протокол<br>
       ✓ Адаптивний стрімінг, оптимізований для стабільності Wi-Fi<br>
-      ✓ Управління безголовим віртуальним дисплеєм<br>
+      ✓ HDR10<br>
+      ✓ Управління віртуальним дисплеєм без голови<br>
       ✓ Проходження контролера ігрового джойстика з низькою затримкою<br>
-      ✓ Доступ до веб-браузера (установка не потрібна)<br>
+      ✓ Доступ до веб-браузера (без установки)<br>
       ✓ Доступ до Windows перед входом (безпечний ввід облікових даних)
     </td>
     <td width="33%" valign="top">
@@ -107,7 +108,7 @@
       <b>USBRIDGE PRO</b><br>
       <i>Професійні робочі процеси</i><br><br>
       ✓ Безвтратна точність кольору 4:4:4<br>
-      ✓ Проходження USB-периферійних пристроїв у сирому вигляді<br>
+      ✓ Проходження USB периферійних пристроїв у сирому вигляді<br>
       ✓ Підтримка планшетів Wacom з тиском та нахилом<br><br>
     </td>
   </tr>
@@ -125,19 +126,24 @@
   <img src="./assets/QuickStart.svg" width="1400" alt="USBridge Remote">
 </div>
 
-## Інтеграція апаратного забезпечення
+## Інтеграція з апаратним забезпеченням
 
 <table>
   <tr>
-   <td width="50%" valign="top">
+   <td width="33%" valign="top">
       <b>Контроль BIOS на апаратному рівні</b><br>
-      USBridge Remote інтегрується на рівні з пристроєм USBridge-KVM 2.0 для управління безпосередньо перед завантаженням ОС.<br><br>
+      USBridge Remote інтегрується безпосередньо з пристроєм USBridge-KVM 2.0 для управління безпосередньо перед завантаженням ОС.<br><br>
       <a href="https://www.usbridge.io/hardware-agent#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Купити USBridge-KVM 2.0"></a>
     </td>
-    <td width="50%" valign="top">
+    <td width="33%" valign="top">
       <b>DIY IP-KVM ПЗУ</b><br>
-      Встановіть офіційне ПЗУ на сумісний SBC (наприклад, Radxa Zero 3W/3E, Cubie A7) з USB-інтерфейсом захоплення для створення власного KVM-вузла.<br><br>
+      Розгорніть офіційне ПЗУ на сумісному SBC (наприклад, Radxa Zero 3W/3E, Cubie A7) з USB-інтерфейсом захоплення для створення власного KVM-вузла.<br><br>
       <a href="https://www.usbridge.io/hardware-agent"><img src="https://img.shields.io/badge/DOWNLOAD-DIY_FIRMWARE-007ec6?style=for-the-badge" alt="Отримати ПЗУ"></a>
+    </td>
+    <td width="33%" valign="top">
+      <b>USB/IP Апаратний ключ (ESP32-S3)</b><br>
+      Програмне проходження USB стикається з проблемами на macOS: немає драйвера VHCI, до якого можна підключитися, тому віддалений планшет Wacom (або інший USB-пристрій) не може бути представлений як реальне апаратне забезпечення. Цей ключ підключається до Mac і виконує в апаратному забезпеченні те, що <code>vhci-hcd</code> робить в програмному забезпеченні в інших місцях — експортований пристрій перераховується зі своїм VID/PID, прив'язаним до драйвера macOS.<br><br>
+      <a href="esp32-acm/README.md"><img src="https://img.shields.io/badge/Open_Hardware-esp32--acm-f59e0b?style=for-the-badge" alt="ПЗУ та документація esp32-acm"></a>
     </td>
   </tr>
 </table>
@@ -154,14 +160,14 @@
     <td width="33%" valign="top">
       <b>Посилання на проект</b><br>
       <ul>
-        <li><a href="https://usbridge.io">Офіційний веб-сайт</a></li>
+        <li><a href="https://usbridge.io">Офіційний вебсайт</a></li>
         <li><a href="https://discord.com/invite/xqQ6ybkfWS">Discord (бета-тестування та помилки)</a></li>
         <li><a href="https://www.patreon.com/USBridge_Technologies">Підтримка на Patreon</a></li>
       </ul>
     </td>
     <td width="33%" valign="top">
       <b>Ліцензія (GPLv3)</b><br>
-      Цей проект ліцензований під <b>GPLv3</b>. Клієнт для кількох платформ включає кодову базу з <code>moonlight-common-c</code> (також GPLv3).<br><br>
+      Цей проект ліцензовано під <b>GPLv3</b>. Клієнт для кількох платформ містить код з <code>moonlight-common-c</code> (також GPLv3).<br><br>
       <a href="LICENSE">Переглянути файл ліцензії</a>
     </td>
   </tr>

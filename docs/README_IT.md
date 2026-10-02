@@ -19,7 +19,7 @@
 
 ---
 
-**USBridge Remote** è un client unificato ad alte prestazioni per la gestione di macchine remote. Progettato per combinare **accesso al BIOS a livello hardware** (tramite dispositivi USBridge KVM) e **desktop remoto basato su software** in un'unica interfaccia semplificata.
+**USBridge Remote** è un client unificato ad alte prestazioni per la gestione di macchine remote. Progettato per combinare l'**accesso al BIOS a livello hardware** (tramite dispositivi USBridge KVM) e il **desktop remoto basato su software** in un'unica interfaccia semplificata.
 
 <div align="center">
   <img src="./assets/Functions.svg" width="1400" alt="USBridge Remote">
@@ -29,20 +29,20 @@
 ## Download
 
 ### Client
-Il Client è l'interfaccia di controllo — installata sulla tua workstation o laptop (o eseguita direttamente nel tuo browser). Gestisce connessioni, desktop remoto live, passthrough di dispositivi virtuali e registrazione degli snapshot.
+Il Client è l'interfaccia di controllo — installata sulla tua workstation o laptop (o eseguita direttamente nel tuo browser). Gestisce le connessioni, il desktop remoto live, il passthrough dei dispositivi virtuali e il registro degli snapshot.
 
 | Architettura | Windows | macOS | Linux | Android | iOS | Browser Web |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **x86_64** | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Windows-x86_64.zip) | — | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Linux-x86_64.AppImage) | — | — | [Apri App](https://web.usbridge.io) |
-| **ARM64** | — | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-macOS-arm64.dmg) | — | [Google Play](https://play.google.com/store/apps/details?id=io.usbridge.client) | [App Store](https://apps.apple.com/us/app/usbridge-client/id6787665935) | [Apri App](https://web.usbridge.io) |
+| **x86_64** | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Windows-x86_64.zip) | — | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Linux-x86_64.AppImage) | — | — | [Open App](https://web.usbridge.io) |
+| **ARM64** | — | [Download](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-macOS-arm64.dmg) | — | [Google Play](https://play.google.com/store/apps/details?id=io.usbridge.client) | [App Store](https://apps.apple.com/us/app/usbridge-client/id6787665935) | [Open App](https://web.usbridge.io) |
 
-Preferisci un APK diretto senza un account Play Store? Una build auto-aggiornante è anche pubblicata nella [ultima release](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
+Preferisci un APK diretto senza un account Play Store? Una build auto-aggiornante è anche pubblicata nell'[ultima release](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
 
-🌐 **Client Web Zero-Install**: Nessuna installazione richiesta. Basta aprire [web.usbridge.io](https://web.usbridge.io) per connettersi istantaneamente. *(Nota: Il client web opera con alcune limitazioni di funzionalità e prestazioni a causa della sandbox di sicurezza del browser e delle restrizioni di WebRTC. Per un'esperienza completa e senza compromessi, utilizza le app native).* Su un Agente appena avviato, potrebbe richiedere fino a un minuto per diventare raggiungibile la prima volta (o dopo un cambiamento di rete) mentre provvede a un certificato HTTPS di fiducia per se stesso — vedere la riga **Stato → Certificato** dell'Agente, o la [documentazione dell'Agente](agent/docs/README.md#platform-notes-from-the-top-level-readme) per dettagli.
+🌐 **Client Web Zero-Install**: Nessuna installazione richiesta. Basta aprire [web.usbridge.io](https://web.usbridge.io) per connettersi istantaneamente. *(Nota: Il client web opera con alcune limitazioni di funzionalità e prestazioni a causa della sandbox di sicurezza del browser e delle restrizioni di WebRTC. Per un'esperienza completa e senza compromessi, utilizza le app native).* Su un Agente appena avviato, potrebbe richiedere fino a un minuto per diventare raggiungibile la prima volta (o dopo un cambiamento di rete) mentre provvede a un certificato HTTPS fidato per se stesso — consulta la riga **Status → Certificate** dell'Agente, o la [documentazione dell'Agente](agent/docs/README.md#platform-notes-from-the-top-level-readme) per dettagli.
 
-## Agente
+## Agent
 
-L'Agente gira sulla macchina target — il server o PC che desideri accedere in remoto. Gestisce la cattura dello schermo, l'iniezione di input e il networking Tailscale.
+L'Agente gira sulla macchina target — il server o PC a cui desideri accedere in remoto. Gestisce la cattura dello schermo, l'iniezione degli input e il networking Tailscale.
 
 <table>
   <tr>
@@ -71,84 +71,90 @@ L'Agente gira sulla macchina target — il server o PC che desideri accedere in 
     </td>
     <!-- Right Column: Image -->
     <td valign="middle" width="450">
-      <img src="./assets/agent-screenshot.svg" alt="Interfaccia Agente USBridge" width="100%">
+      <img src="./assets/agent-screenshot.svg" alt="USBridge Agent Interface" width="100%">
     </td>
   </tr>
 </table>
 
-## Caratteristiche
+## Features
 
 <table>
   <tr>
     <td width="33%" valign="top">
-      <code>FUNZIONALITÀ DI BASE</code><br><br>
+      <code>BASIC FUNCTIONALITY</code><br><br>
       <b>SUNSHINE OPEN-SOURCE</b><br>
       <i>Streaming di Gioco Standard</i><br><br>
       ✓ Streamer Sunshine open-source integrato<br>
       ✓ Accesso desktop e gaming a bassa latenza<br>
-      ✓ Appunti di file e testo bidirezionali<br>    
-      ✓ Commutazione display multi-monitor<br>
+      ✓ Appunti file e testo bidirezionali<br>    
+      ✓ Cambio di visualizzazione multi-monitor<br>
       ✓ Networking P2P Tailscale integrato<br>
       ✓ Supporto nativo Wayland (cattura senza prompt)
     </td>
     <td width="33%" valign="top">
-      <code>+ FUNZIONALITÀ DI BASE</code><br><br>
+      <code>+ BASIC FEATURES</code><br><br>
       <b>USBRIDGE FREE</b><br>
       <i>Motore di Streaming basato su Rust</i><br><br>
       ✓ Protocollo remoto personalizzato per connessione istantanea<br>
       ✓ Streaming adattivo ottimizzato per stabilità Wi-Fi<br>
-      ✓ Gestione display virtuale headless<br>
+      ✓ HDR10<br>
+      ✓ Gestione display virtuali senza testa<br>
       ✓ Passthrough controller gamepad a bassa latenza<br>
       ✓ Accesso client browser web (nessuna installazione richiesta)<br>
       ✓ Accesso pre-login Windows (inserimento credenziali sicuro)
     </td>
     <td width="33%" valign="top">
-      <code>+ FUNZIONALITÀ DI BASE</code> <code>+ FUNZIONALITÀ GRATUITE</code><br><br>
+      <code>+ BASIC FEATURES</code> <code>+ FREE FEATURES</code><br><br>
       <b>USBRIDGE PRO</b><br>
-      <i>Flussi di lavoro professionali</i><br><br>
+      <i>Flussi di lavoro Professionali</i><br><br>
       ✓ Accuratezza del colore chroma 4:4:4 senza perdita<br>
-      ✓ Passthrough di dispositivi periferici USB raw<br>
-      ✓ Supporto per tablet Wacom con pressione e inclinazione<br><br>
+      ✓ Passthrough dispositivo periferico USB raw<br>
+      ✓ Supporto tablet Wacom con pressione e inclinazione<br><br>
     </td>
   </tr>
 </table>
 
-## Avvio Veloce
+## Quick Start
 
 1. **Installa l'Agente** sulla macchina che desideri accedere in remoto. Avvialo — mostrerà un token di connessione e un indirizzo Tailscale. Collega Tailscale se hai bisogno di accesso su Internet.
 
 2. **Installa il Client** sulla tua workstation, laptop o telefono.
 
-3. **Aggiungi una connessione** — inserisci l'indirizzo IP o Tailscale mostrato nella finestra dell'Agente. Ecco fatto.
+3. **Aggiungi una connessione** — inserisci l'indirizzo IP o Tailscale mostrato nella finestra dell'Agente. Questo è tutto.
 
 <div align="center">
   <img src="./assets/QuickStart.svg" width="1400" alt="USBridge Remote">
 </div>
 
-## Integrazione Hardware
+## Hardware Integration
 
 <table>
   <tr>
-   <td width="50%" valign="top">
-      <b>Controllo BIOS a livello Hardware</b><br>
+   <td width="33%" valign="top">
+      <b>Controllo BIOS a Livello Hardware</b><br>
       USBridge Remote si integra nativamente con l'apparecchiatura USBridge-KVM 2.0 per la gestione out-of-band, bare-metal prima dell'avvio del sistema operativo.<br><br>
-      <a href="https://www.usbridge.io/hardware-agent#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Compra USBridge-KVM 2.0"></a>
+      <a href="https://www.usbridge.io/hardware-agent#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Buy USBridge-KVM 2.0"></a>
     </td>
-    <td width="50%" valign="top">
-      <b>Firmware IP-KVM Fai-da-te</b><br>
+    <td width="33%" valign="top">
+      <b>Firmware IP-KVM Fai da Te</b><br>
       Distribuisci il firmware ufficiale su un SBC compatibile (ad es., Radxa Zero 3W/3E, Cubie A7) con un'interfaccia di cattura USB per fornire un nodo KVM personalizzato.<br><br>
-      <a href="https://www.usbridge.io/hardware-agent"><img src="https://img.shields.io/badge/DOWNLOAD-DIY_FIRMWARE-007ec6?style=for-the-badge" alt="Ottieni il Firmware"></a>
+      <a href="https://www.usbridge.io/hardware-agent"><img src="https://img.shields.io/badge/DOWNLOAD-DIY_FIRMWARE-007ec6?style=for-the-badge" alt="Get the Firmware"></a>
+    </td>
+    <td width="33%" valign="top">
+      <b>Dongle Hardware USB/IP (ESP32-S3)</b><br>
+      Il passthrough USB software incontra un limite su macOS: non esiste un driver VHCI a cui collegarsi, quindi un tablet Wacom remoto (o altro dispositivo USB) non può essere presentato come hardware reale. Questo dongle si collega al Mac e fa in hardware ciò che <code>vhci-hcd</code> fa in software altrove — il dispositivo esportato si enumera con il proprio VID/PID, vincolato dal driver di macOS stesso.<br><br>
+      <a href="esp32-acm/README.md"><img src="https://img.shields.io/badge/Open_Hardware-esp32--acm-f59e0b?style=for-the-badge" alt="esp32-acm firmware & docs"></a>
     </td>
   </tr>
 </table>
 
-## Risorse & Licenza
+## Resources & License
 
 <table>
   <tr>
     <td width="33%" valign="top">
       <b>Sviluppo & Roadmap</b><br>
-      Mantengo un dashboard pubblico per tracciare tutte le funzionalità pianificate, aggiornamenti architettonici e programmi di rilascio.<br><br>
+      Mantengo un dashboard pubblico per tracciare tutte le funzionalità pianificate, gli aggiornamenti architettonici e i programmi di rilascio.<br><br>
       <a href="https://github.com/orgs/USBridge-Technologies/projects/3">Visualizza Roadmap Live</a>
     </td>
     <td width="33%" valign="top">
@@ -161,7 +167,7 @@ L'Agente gira sulla macchina target — il server o PC che desideri accedere in 
     </td>
     <td width="33%" valign="top">
       <b>Licenza (GPLv3)</b><br>
-      Questo progetto è concesso in licenza sotto la <b>GPLv3</b>. Il client multi-piattaforma incorpora codice da <code>moonlight-common-c</code> (anch'esso GPLv3).<br><br>
+      Questo progetto è concesso in licenza sotto la <b>GPLv3</b>. Il client multi-piattaforma incorpora il codice sorgente da <code>moonlight-common-c</code> (anch'esso GPLv3).<br><br>
       <a href="LICENSE">Visualizza il file LICENSE</a>
     </td>
   </tr>

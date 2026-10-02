@@ -19,7 +19,7 @@
 
 ---
 
-**USBridge Remote** es un cliente unificado de alto rendimiento para gestionar máquinas remotas. Diseñado para combinar **acceso a BIOS a nivel de hardware** (a través de dispositivos USBridge KVM) y **escritorio remoto basado en software** en una única interfaz simplificada.
+**USBridge Remote** es un cliente unificado de alto rendimiento para gestionar máquinas remotas. Diseñado para combinar el **acceso al BIOS a nivel de hardware** (a través de dispositivos USBridge KVM) y el **escritorio remoto basado en software** en una única interfaz simplificada.
 
 <div align="center">
   <img src="./assets/Functions.svg" width="1400" alt="USBridge Remote">
@@ -29,7 +29,7 @@
 ## Descargar
 
 ### Cliente
-El Cliente es la interfaz de control — instalada en su estación de trabajo o laptop (o ejecutada directamente en su navegador). Gestiona conexiones, escritorio remoto en vivo, paso a través de dispositivos virtuales y registro de instantáneas.
+El Cliente es la interfaz de control — instalada en su estación de trabajo o portátil (o ejecutada directamente en su navegador). Gestiona conexiones, escritorio remoto en vivo, paso a través de dispositivos virtuales y registro de instantáneas.
 
 | Arquitectura | Windows | macOS | Linux | Android | iOS | Navegador Web |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
@@ -38,11 +38,11 @@ El Cliente es la interfaz de control — instalada en su estación de trabajo o 
 
 ¿Prefiere un APK directo sin una cuenta de Play Store? También se publica una versión autactualizable en la [última versión](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
 
-🌐 **Cliente Web Sin Instalación**: No se requiere instalación. Simplemente abra [web.usbridge.io](https://web.usbridge.io) para conectarse al instante. *(Nota: El cliente web opera con algunas limitaciones de características y rendimiento debido a la seguridad del navegador y las restricciones de WebRTC. Para la experiencia completa sin compromisos, use las aplicaciones nativas).* En un Agente recién iniciado, puede tardar hasta un minuto en ser accesible por primera vez (o después de un cambio de red) mientras provisiona un certificado HTTPS de confianza para sí mismo — consulte la fila **Estado → Certificado** del Agente, o la [documentación del Agente](agent/docs/README.md#platform-notes-from-the-top-level-readme) para más detalles.
+🌐 **Cliente Web Sin Instalación**: No se requiere instalación. Simplemente abra [web.usbridge.io](https://web.usbridge.io) para conectarse al instante. *(Nota: El cliente web opera con algunas limitaciones de características y rendimiento debido a la seguridad del navegador y las restricciones de WebRTC. Para la experiencia completa sin compromisos, use las aplicaciones nativas).* En un Agente recién iniciado puede tardar hasta un minuto en ser accesible la primera vez (o después de un cambio de red) mientras provisiona un certificado HTTPS confiable para sí mismo — consulte la fila **Estado → Certificado** del Agente, o la [documentación del Agente](agent/docs/README.md#platform-notes-from-the-top-level-readme) para más detalles.
 
 ## Agente
 
-El Agente se ejecuta en la máquina objetivo — el servidor o PC al que desea acceder de forma remota. Maneja la captura de pantalla, inyección de entrada y redes Tailscale.
+El Agente se ejecuta en la máquina objetivo — el servidor o PC al que desea acceder de forma remota. Maneja la captura de pantalla, la inyección de entrada y la red de Tailscale.
 
 <table>
   <tr>
@@ -85,10 +85,10 @@ El Agente se ejecuta en la máquina objetivo — el servidor o PC al que desea a
       <b>SUNSHINE CÓDIGO ABIERTO</b><br>
       <i>Transmisión de Juegos Estándar</i><br><br>
       ✓ Transmisor Sunshine de código abierto integrado<br>
-      ✓ Acceso a escritorio y juegos de baja latencia<br>
+      ✓ Acceso de escritorio y juegos de baja latencia<br>
       ✓ Portapapeles de archivos y texto bidireccional<br>    
       ✓ Cambio de visualización de múltiples monitores<br>
-      ✓ Redes P2P Tailscale integradas<br>
+      ✓ Red P2P Tailscale integrada<br>
       ✓ Soporte nativo de Wayland (captura sin aviso)
     </td>
     <td width="33%" valign="top">
@@ -97,6 +97,7 @@ El Agente se ejecuta en la máquina objetivo — el servidor o PC al que desea a
       <i>Motor de Transmisión basado en Rust</i><br><br>
       ✓ Protocolo remoto personalizado de conexión instantánea<br>
       ✓ Transmisión adaptativa optimizada para estabilidad Wi-Fi<br>
+      ✓ HDR10<br>
       ✓ Gestión de visualización virtual sin cabeza<br>
       ✓ Paso a través de controladores de gamepad de baja latencia<br>
       ✓ Acceso al cliente del navegador web (sin instalación requerida)<br>
@@ -115,11 +116,11 @@ El Agente se ejecuta en la máquina objetivo — el servidor o PC al que desea a
 
 ## Inicio Rápido
 
-1. **Instale el Agente** en la máquina a la que desea acceder de forma remota. Inícielo — mostrará un token de conexión y una dirección Tailscale. Conéctese a Tailscale si necesita acceso a través de Internet.
+1. **Instale el Agente** en la máquina a la que desea acceder de forma remota. Inícielo — mostrará un token de conexión y una dirección de Tailscale. Conecte Tailscale si necesita acceso a través de Internet.
 
-2. **Instale el Cliente** en su estación de trabajo, laptop o teléfono.
+2. **Instale el Cliente** en su estación de trabajo, portátil o teléfono.
 
-3. **Agregue una conexión** — ingrese la dirección IP o Tailscale mostrada en la ventana del Agente. Eso es todo.
+3. **Agregue una conexión** — ingrese la dirección IP o de Tailscale que se muestra en la ventana del Agente. Eso es todo.
 
 <div align="center">
   <img src="./assets/QuickStart.svg" width="1400" alt="USBridge Remote">
@@ -129,15 +130,20 @@ El Agente se ejecuta en la máquina objetivo — el servidor o PC al que desea a
 
 <table>
   <tr>
-   <td width="50%" valign="top">
+   <td width="33%" valign="top">
       <b>Control de BIOS a Nivel de Hardware</b><br>
-      USBridge Remote se integra de forma nativa con el dispositivo USBridge-KVM 2.0 para gestión fuera de banda, a nivel de hardware, antes del arranque del sistema operativo.<br><br>
+      USBridge Remote se integra de forma nativa con el dispositivo USBridge-KVM 2.0 para gestión fuera de banda y a nivel de hardware antes del arranque del SO.<br><br>
       <a href="https://www.usbridge.io/hardware-agent#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Comprar USBridge-KVM 2.0"></a>
     </td>
-    <td width="50%" valign="top">
+    <td width="33%" valign="top">
       <b>Firmware IP-KVM DIY</b><br>
       Despliegue el firmware oficial en un SBC compatible (por ejemplo, Radxa Zero 3W/3E, Cubie A7) con una interfaz de captura USB para provisionar un nodo KVM personalizado.<br><br>
       <a href="https://www.usbridge.io/hardware-agent"><img src="https://img.shields.io/badge/DOWNLOAD-DIY_FIRMWARE-007ec6?style=for-the-badge" alt="Obtener el Firmware"></a>
+    </td>
+    <td width="33%" valign="top">
+      <b>Dongle de Hardware USB/IP (ESP32-S3)</b><br>
+      El paso a través de USB por software encuentra un límite en macOS: no hay un controlador VHCI al que adjuntarse, por lo que una tableta Wacom remota (u otro dispositivo USB) no puede presentarse como hardware real. Este dongle se conecta al Mac y hace en hardware lo que <code>vhci-hcd</code> hace en software en otros lugares — el dispositivo exportado se enumera con su propio VID/PID, vinculado por el propio controlador de macOS.<br><br>
+      <a href="esp32-acm/README.md"><img src="https://img.shields.io/badge/Open_Hardware-esp32--acm-f59e0b?style=for-the-badge" alt="firmware y docs esp32-acm"></a>
     </td>
   </tr>
 </table>
@@ -156,7 +162,7 @@ El Agente se ejecuta en la máquina objetivo — el servidor o PC al que desea a
       <ul>
         <li><a href="https://usbridge.io">Sitio Web Oficial</a></li>
         <li><a href="https://discord.com/invite/xqQ6ybkfWS">Discord (Pruebas Beta y Errores)</a></li>
-        <li><a href="https://www.patreon.com/USBridge_Technologies">Soporte en Patreon</a></li>
+        <li><a href="https://www.patreon.com/USBridge_Technologies">Soporte de Patreon</a></li>
       </ul>
     </td>
     <td width="33%" valign="top">
