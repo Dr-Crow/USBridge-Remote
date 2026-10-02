@@ -283,8 +283,9 @@ is the streamer's job:
   `streamhost/punktfunk_usbridge.go`), the host forwards the packet body to
   the broker's `hid_stream` control command, and the broker rebuilds the
   device on a USB/IP port -- the same `RawHidHub` RustShine's streamer runs
-  in-process. The host advertises `LI_FF_USBRIDGE_RAW_HID` only when the
-  broker answers that it would build a tablet (a Pro license on its side).
+  in-process. The host advertises `LI_FF_USBRIDGE_RAW_HID` when the broker
+  has `hid_stream`. Raw HID devices are free except a Wacom tablet (VID
+  `056a`), which the broker builds only with a Pro license.
 - **Gamepads**: on Windows the patched host sends them to the same
   `hid_stream`, and the broker presents each as an Xbox 360 pad on usbip-win2
   (what RustShine does; the agent does not install Punktfunk's `pf-xusb`
@@ -293,7 +294,7 @@ is the streamer's job:
 
 The agent tells the client raw HID is available (`RawHIDSupported`) only for
 a punktfunk-host that answers `punktfunk-host usbridge-bridge`, i.e. one built
-with the patch. Needs a broker with `hid_stream` (rust-shine after 0.3.115)
+with the patch. Needs a broker with `hid_stream` (rust-shine 0.3.117 or later)
 and, on Linux, the polkit rule that allows `usbip --tcp-port N attach` --
 an older rule shows the USB permission as not granted until Grant is pressed
 again.

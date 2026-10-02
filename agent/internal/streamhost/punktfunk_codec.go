@@ -72,8 +72,8 @@ func (b *punktfunkBackend) VirtualDisplaySupported() bool { return true }
 
 // RawHIDSupported is true only for a punktfunk-host built with the USBridge
 // patch, which hands LiSendRawHidEvent to the USB broker (see
-// punktfunkBrokerEnv). Stock Punktfunk has no handler for it. Whether a
-// tablet is really built is the broker's call (license, and a broker new
-// enough to know hid_stream): the host only sets LI_FF_USBRIDGE_RAW_HID
-// when the broker says yes, and the client checks that flag as well.
+// punktfunkBrokerEnv). Stock Punktfunk has no handler for it. The host
+// sets LI_FF_USBRIDGE_RAW_HID only when the broker is new enough to know
+// hid_stream, and the client checks that flag as well. Whether a device is
+// really built is the broker's call: a Wacom tablet needs a Pro license.
 func (b *punktfunkBackend) RawHIDSupported() bool { return punktfunkHasBridge(b.binaryPath()) }
