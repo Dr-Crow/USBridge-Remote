@@ -610,6 +610,8 @@ func videoFormatCodecName(format int32) (string, bool) {
 	switch {
 	case format < 0:
 		return "", false
+	case format&0x10000 != 0: // VIDEO_FORMAT_PYROWAVE
+		return models.VideoModePyroWave, true
 	case format&0x0F00 != 0:
 		return models.VideoModeH265, true
 	case format&0xF000 != 0:

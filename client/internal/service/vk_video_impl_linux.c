@@ -145,10 +145,16 @@ static volatile int     g_dmabuf_ready = 0;
 // g_nv12_pending with g_nv12_front under the lock and uploads from front.
 // Each buffer is tightly packed Y (w*h) followed by interleaved UV
 // (cw*2 * ch) at nv12_uv_offset(). Capacity 1, drop-on-full like the others.
-typedef struct { uint8_t *p; size_t cap; int w, h; } Nv12Buf;
+typedef struct { uint8_t *p; size_t cap; int w, h; int bt709; } Nv12Buf;
 static Nv12Buf          g_nv12_bufs[3];
 static int              g_nv12_back = 0, g_nv12_pending = 1, g_nv12_front = 2;
 static volatile int     g_nv12_ready = 0;
+
+// YCbCr matrix of the NV12 frames being submitted: 0 = BT.601 (the H.26x/AV1 decode
+// paths), 1 = BT.709 (PyroWave). Set by the decoder thread before it submits; each
+// queued frame carries its own copy so the render thread rebuilds the sampler
+// conversion exactly when the stream's matrix changes.
+static atomic_int       g_nv12_submit_bt709;
 
 static pthread_mutex_t  g_mu     = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t        g_thread = 0;
@@ -607,6 +613,7 @@ static VkDescriptorPool         g_ydpool       = VK_NULL_HANDLE;
 static VkDescriptorSet          g_ydset        = VK_NULL_HANDLE;
 static VkImageView              g_ydset_bound_view = VK_NULL_HANDLE; // NV12 path's view g_ydset currently points at (NULL = something else)
 static int                      g_ypipeline_ok = 0; // 0=not tried, 1=ready, -1=failed (don't retry)
+static int                      g_yconv_bt709  = 0; // matrix g_yconv is (to be) created with
 
 // Previous zero-copy frame's per-frame resources (fresh VkImage/VkDeviceMemory
 // /VkImageView every frame, since the underlying VASurfaceID's contents
@@ -642,7 +649,8 @@ static int vk_ycbcr_ensure_pipeline(void) {
 
     VkSamplerYcbcrConversionCreateInfo convCI = { VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_CREATE_INFO };
     convCI.format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
-    convCI.ycbcrModel = VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601;
+    convCI.ycbcrModel = g_yconv_bt709 ? VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709
+                                      : VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601;
     convCI.ycbcrRange = VK_SAMPLER_YCBCR_RANGE_ITU_NARROW;
     convCI.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
     convCI.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -757,6 +765,21 @@ static int vk_ycbcr_ensure_pipeline(void) {
     g_ypipeline_ok = 1;
     goVKLog("vk: zero-copy dma-buf NV12 pipeline ready", 0);
     return 1;
+}
+
+// vk_ycbcr_destroy_pipeline tears down everything vk_ycbcr_ensure_pipeline built, so
+// the next call rebuilds it. The caller must have waited g_fence and destroyed every
+// image view created against g_yconv.
+static void vk_ycbcr_destroy_pipeline(void) {
+    if (g_ydset)     { /* freed with pool below */ g_ydset = VK_NULL_HANDLE; }
+    if (g_ydpool)    { vkDestroyDescriptorPool(g_dev, g_ydpool, NULL); g_ydpool = VK_NULL_HANDLE; }
+    if (g_ypipeline) { vkDestroyPipeline(g_dev, g_ypipeline, NULL); g_ypipeline = VK_NULL_HANDLE; }
+    if (g_yplayout)  { vkDestroyPipelineLayout(g_dev, g_yplayout, NULL); g_yplayout = VK_NULL_HANDLE; }
+    if (g_ydsl)      { vkDestroyDescriptorSetLayout(g_dev, g_ydsl, NULL); g_ydsl = VK_NULL_HANDLE; }
+    if (g_ysampler)  { vkDestroySampler(g_dev, g_ysampler, NULL); g_ysampler = VK_NULL_HANDLE; }
+    if (g_yconv)     { vkDestroySamplerYcbcrConversion(g_dev, g_yconv, NULL); g_yconv = VK_NULL_HANDLE; }
+    g_ydset_bound_view = VK_NULL_HANDLE;
+    g_ypipeline_ok = 0;
 }
 
 // vk_dmabuf_release_prev tears down the previous zero-copy frame's VkImage/
@@ -1199,7 +1222,6 @@ static int vk_nv12_ensure_image(int w, int h) {
 
 static int vk_render_frame_nv12(const Nv12Buf *fb) {
     if (!g_dev || !g_swap) return 0;
-    if (!vk_ycbcr_ensure_pipeline()) { g_nv12_supported = 0; return 0; }
     char dbg[128];
     int fw = fb->w, fh = fb->h;
     size_t total = nv12_total_size(fw, fh);
@@ -1213,6 +1235,16 @@ static int vk_render_frame_nv12(const Nv12Buf *fb) {
     }
     // Any dma-buf frame deferred from a previous mode switch is retired now.
     vk_dmabuf_release_prev();
+
+    // A stream with a different YCbCr matrix than the pipeline was built for (PyroWave
+    // is BT.709, the other decode paths BT.601): rebuild the conversion. Nothing is in
+    // flight after the fence wait above, and the NV12 view is the only one bound to it.
+    if (g_ypipeline_ok > 0 && g_yconv_bt709 != fb->bt709) {
+        vk_nv12_destroy_image();
+        vk_ycbcr_destroy_pipeline();
+    }
+    if (!g_ypipeline_ok) g_yconv_bt709 = fb->bt709;
+    if (!vk_ycbcr_ensure_pipeline()) { g_nv12_supported = 0; g_render_stage = 1; return 0; }
 
     g_render_stage = 2;
     if (!vk_ensure_staging(total))     { g_render_stage = 1; return 0; }
@@ -1368,6 +1400,10 @@ static int vk_render_frame_nv12(const Nv12Buf *fb) {
 
 int vk_video_nv12_supported(void) { return g_nv12_supported; }
 
+// vk_video_set_nv12_bt709 selects the YCbCr matrix of the NV12 frames submitted from
+// now on (see g_nv12_submit_bt709). Called by the decoder thread.
+void vk_video_set_nv12_bt709(int bt709) { atomic_store(&g_nv12_submit_bt709, bt709 ? 1 : 0); }
+
 // vk_video_try_submit_nv12 queues one NV12 frame (arbitrary strides) for the
 // render thread. The copy into the back buffer happens outside g_mu.
 // Must only be called from the (single) decoder thread.
@@ -1399,6 +1435,7 @@ int vk_video_try_submit_nv12(const uint8_t *y, int y_stride,
             memcpy(uvdst + (size_t)r * uvrow, uv + (size_t)r * uv_stride, uvrow);
     }
     b->w = width; b->h = height;
+    b->bt709 = atomic_load(&g_nv12_submit_bt709);
 
     pthread_mutex_lock(&g_mu);
     if (!atomic_load(&g_active)) { pthread_mutex_unlock(&g_mu); return 0; }
@@ -1803,14 +1840,8 @@ static void vk_full_cleanup(void) {
             if (g_dmabuf_pending.release_fn) g_dmabuf_pending.release_fn(g_dmabuf_pending.release_ctx);
             g_dmabuf_ready = 0;
         }
-        if (g_ydset)     { /* freed with pool below */ g_ydset = VK_NULL_HANDLE; }
-        if (g_ydpool)    { vkDestroyDescriptorPool(g_dev, g_ydpool, NULL); g_ydpool = VK_NULL_HANDLE; }
-        if (g_ypipeline) { vkDestroyPipeline(g_dev, g_ypipeline, NULL); g_ypipeline = VK_NULL_HANDLE; }
-        if (g_yplayout)  { vkDestroyPipelineLayout(g_dev, g_yplayout, NULL); g_yplayout = VK_NULL_HANDLE; }
-        if (g_ydsl)      { vkDestroyDescriptorSetLayout(g_dev, g_ydsl, NULL); g_ydsl = VK_NULL_HANDLE; }
-        if (g_ysampler)  { vkDestroySampler(g_dev, g_ysampler, NULL); g_ysampler = VK_NULL_HANDLE; }
-        if (g_yconv)     { vkDestroySamplerYcbcrConversion(g_dev, g_yconv, NULL); g_yconv = VK_NULL_HANDLE; }
-        g_ypipeline_ok = 0;
+        vk_ycbcr_destroy_pipeline();
+        g_yconv_bt709 = 0;
         g_zerocopy_supported = 0;
         g_nv12_supported = 0;
         g_ycbcr_supported = 0;

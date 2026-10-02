@@ -1991,6 +1991,10 @@ func (vsd *VideoStartDialog) Configure(info *models.VideoInfoData, defaultWidth,
 	// Only Moonlight-compatible encodings are supported; filter out legacy JPEG/RAW modes
 	// that older server versions may still advertise.
 	moonlightEncodings := map[string]bool{"h264": true, "h265": true, "av1": true}
+	// PyroWave is offered only where this client can decode it.
+	if service.PyroWaveDecodeSupported() {
+		moonlightEncodings[models.VideoModePyroWave] = true
+	}
 	if info != nil {
 		for _, m := range info.SupportedModes {
 			if moonlightEncodings[m.Encoding] {
@@ -2466,6 +2470,8 @@ func videoCodecButtonLabel(modeID string) string {
 		return "H.265"
 	case models.VideoModeAV1:
 		return "AV1"
+	case models.VideoModePyroWave:
+		return "PyroWave"
 	default:
 		return "H.264"
 	}
@@ -2664,24 +2670,27 @@ func allowedModesForPixelFormat(format string) map[string]bool {
 	switch normalizePixelFormat(format) {
 	case "MJPG", "MJPEG", "JPEG":
 		return map[string]bool{
-			models.VideoModeH264:    true,
-			models.VideoModeH265:    true,
-			models.VideoModeAV1:     true,
-			models.VideoModeJPEGRTP: true,
+			models.VideoModeH264:     true,
+			models.VideoModeH265:     true,
+			models.VideoModeAV1:      true,
+			models.VideoModePyroWave: true,
+			models.VideoModeJPEGRTP:  true,
 		}
 	case "YUYV", "YUYV422", "YUY2":
 		return map[string]bool{
-			models.VideoModeH264:    true,
-			models.VideoModeH265:    true,
-			models.VideoModeAV1:     true,
-			models.VideoModeJPEGRTP: true,
-			models.VideoModeRawYUYV: true,
+			models.VideoModeH264:     true,
+			models.VideoModeH265:     true,
+			models.VideoModeAV1:      true,
+			models.VideoModePyroWave: true,
+			models.VideoModeJPEGRTP:  true,
+			models.VideoModeRawYUYV:  true,
 		}
 	default:
 		return map[string]bool{
-			models.VideoModeH264: true,
-			models.VideoModeH265: true,
-			models.VideoModeAV1:  true,
+			models.VideoModeH264:     true,
+			models.VideoModeH265:     true,
+			models.VideoModeAV1:      true,
+			models.VideoModePyroWave: true,
 		}
 	}
 }

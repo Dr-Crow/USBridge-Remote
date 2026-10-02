@@ -585,7 +585,9 @@ func mergeVideoConfigWithInfo(cfg models.VideoDeviceConfig, info *models.VideoIn
 	// auto-adopt av1 this way; require the user to pick it explicitly via
 	// the device-settings dialog. h264/h265 are unaffected -- both have the
 	// zero-copy path and are safe to inherit.
-	if enc := strings.TrimSpace(info.Encoding); enc != "" && enc != models.VideoModeAV1 {
+	// PyroWave is never inherited either: only some clients decode it, and it
+	// is a deliberate choice for a fast local link.
+	if enc := strings.TrimSpace(info.Encoding); enc != "" && enc != models.VideoModeAV1 && enc != models.VideoModePyroWave {
 		cfg.VideoMode = enc
 	}
 	return cfg

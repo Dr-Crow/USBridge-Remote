@@ -1079,6 +1079,14 @@ func moonlightVideoFormat(mode string, color444, hdr bool) int {
 		}
 	case models.VideoModeAV1:
 		return 0x1000 // VIDEO_FORMAT_AV1_MAIN8
+	case models.VideoModePyroWave:
+		// A saved "pyrowave" on a client that cannot decode it streams H.264.
+		if !PyroWaveDecodeSupported() {
+			return 0x0001
+		}
+		// VIDEO_FORMAT_PYROWAVE (USBridge extension), with H.264 as what
+		// RtspConnection.c falls back to against a host that does not offer it.
+		return 0x10000 | 0x0001
 	default:
 		return 0x0001 // VIDEO_FORMAT_H264
 	}

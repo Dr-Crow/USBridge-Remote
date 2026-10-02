@@ -47,10 +47,17 @@ func (b *punktfunkBackend) SessionActive() bool {
 // backend's best-effort hint when it has nothing to report.
 func (b *punktfunkBackend) CurrentVideoCodec() string { return "" }
 
-// SupportedVideoCodecs has no confirmed Punktfunk endpoint yet (not among
-// the 96 routes read from api/openapi.json this pass). Empty means
-// "unknown" -- callers already treat that as "don't show a codec picker".
-func (b *punktfunkBackend) SupportedVideoCodecs(adminPort int) []string { return nil }
+// SupportedVideoCodecs reads the GameStream plane's own /serverinfo, as the
+// other backends do: its ServerCodecModeSupport is probed against the GPU,
+// and carries the USBridge PyroWave bit when the host can encode it.
+// Punktfunk's GameStream ports are fixed (HTTP 47989), whatever port its
+// management API was moved to.
+func (b *punktfunkBackend) SupportedVideoCodecs(adminPort int) []string {
+	return fetchSupportedVideoCodecs(punktfunkGameStreamHTTPPort + 1)
+}
+
+// punktfunkGameStreamHTTPPort is HTTP_PORT in punktfunk's gamestream/mod.rs.
+const punktfunkGameStreamHTTPPort = 47989
 
 // Color444Status: no confirmed Punktfunk concept (RustShine Pro-only color
 // upgrade) -- always (false, false), same contract CodecProbe documents for

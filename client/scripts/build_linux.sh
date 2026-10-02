@@ -16,6 +16,7 @@
 #   build fails outright (pkg-config libva/libva-drm are required, not
 #   optional) rather than silently losing the feature.
 #   Moonlight core:       opus openssl pkg-config cmake
+#   PyroWave decode:      cmake + a C++17 compiler (third_party/pyrowave, vendored)
 #   USB passthrough:      libusb-1.0-0-dev (enables -tags usbpass_gousb claim path)
 #   Optional:             python3 (pip) -- fetches the local ui.parse/AI
 #                          Vision ONNX runtime lib (see fetch_onnxruntime.sh);
@@ -45,6 +46,9 @@ NC='\033[0m'
 
 echo -e "${YELLOW}=> Building Moonlight Core...${NC}"
 "$SCRIPT_DIR/build_moonlight.sh" || { echo -e "${RED}❌ Failed to build Moonlight Core${NC}"; exit 1; }
+
+echo -e "${YELLOW}=> Building PyroWave...${NC}"
+"$SCRIPT_DIR/build_pyrowave.sh" || { echo -e "${RED}❌ Failed to build PyroWave${NC}"; exit 1; }
 
 if [ -z "${USBRIDGE_LOGGING_ACTIVE:-}" ]; then
   export USBRIDGE_LOGGING_ACTIVE=1
