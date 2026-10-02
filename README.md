@@ -129,15 +129,20 @@ The Agent runs on the target machine — the server or PC you want to access rem
 
 <table>
   <tr>
-   <td width="50%" valign="top">
+   <td width="33%" valign="top">
       <b>Hardware-Level BIOS Control</b><br>
       USBridge Remote integrates natively with the USBridge-KVM 2.0 appliance for out-of-band, bare-metal management before OS boot.<br><br>
       <a href="https://www.usbridge.io/hardware-agent#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Buy USBridge-KVM 2.0"></a>
     </td>
-    <td width="50%" valign="top">
+    <td width="33%" valign="top">
       <b>DIY IP-KVM Firmware</b><br>
       Deploy the official firmware on a compatible SBC (e.g., Radxa Zero 3W/3E, Cubie A7) with a USB capture interface to provision a custom KVM node.<br><br>
       <a href="https://www.usbridge.io/hardware-agent"><img src="https://img.shields.io/badge/DOWNLOAD-DIY_FIRMWARE-007ec6?style=for-the-badge" alt="Get the Firmware"></a>
+    </td>
+    <td width="33%" valign="top">
+      <b>USB/IP Hardware Dongle (ESP32-S3)</b><br>
+      Software USB passthrough hits a wall on macOS: there is no VHCI driver to attach to, so a remote Wacom tablet (or other USB device) can't be presented as real hardware. This dongle plugs into the Mac and does in hardware what <code>vhci-hcd</code> does in software elsewhere — the exported device enumerates with its own VID/PID, bound by macOS's own driver.<br><br>
+      <a href="esp32-acm/README.md"><img src="https://img.shields.io/badge/Open_Hardware-esp32--acm-f59e0b?style=for-the-badge" alt="esp32-acm firmware & docs"></a>
     </td>
   </tr>
 </table>
