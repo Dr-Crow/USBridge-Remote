@@ -41,6 +41,8 @@ func BenchBackendColor(backend string) color.RGBA {
 		return color.RGBA{0xff, 0xb3, 0x47, 0xff}
 	case "rustshine":
 		return color.RGBA{0x3d, 0xd6, 0xc6, 0xff}
+	case "punktfunk":
+		return color.RGBA{0xc8, 0x5a, 0xff, 0xff}
 	}
 	return color.RGBA{0xc8, 0x5a, 0xff, 0xff}
 }
@@ -52,6 +54,8 @@ func BenchBackendLabel(backend string) string {
 		return "Sunshine"
 	case "rustshine":
 		return "USBridge Streamer"
+	case "punktfunk":
+		return "Punktfunk"
 	}
 	return backend
 }

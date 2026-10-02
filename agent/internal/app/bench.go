@@ -25,6 +25,9 @@ func (a *App) BenchStreamBackends() (active string, available []string) {
 	if a.rustshineStaged() {
 		available = append(available, "rustshine")
 	}
+	if streamhost.PunktfunkAvailable(a.exeDir) {
+		available = append(available, "punktfunk")
+	}
 	return a.currentStreamKind(), available
 }
 
@@ -154,9 +157,12 @@ func (a *App) restoreBenchOutputs(deferRestart bool) error {
 	for kind, orig := range a.benchOrigOutput {
 		b := a.stream
 		if kind != a.streamKind || b == nil {
-			if kind == "rustshine" {
+			switch kind {
+			case "rustshine":
 				b = streamhost.NewRustshine(a.exeDir, a.cfg.StateDir, a.logPath)
-			} else {
+			case "punktfunk":
+				b = streamhost.NewPunktfunk(a.exeDir, a.cfg.StateDir, a.logPath)
+			default:
 				b = streamhost.NewSunshine(a.exeDir, a.cfg.StateDir, a.logPath)
 			}
 		}

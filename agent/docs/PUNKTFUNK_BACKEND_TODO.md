@@ -9,11 +9,9 @@ also cross-compiles clean for windows and linux/CGO_ENABLED=0). The native
 punktfunk/1 plane and app-level backend-selection UI wiring are explicitly
 deferred -- see "What's done" / "What's still open" below.**
 
-Not yet run against a real `punktfunk-host` binary: that's a Linux/Windows-
-only Rust build (no macOS host), not attempted from this dev machine. The
-unit tests are the verification available here -- they assert the exact
-request/response shapes this backend sends and expects, confirmed line-by-
-line against `api/openapi.json` and `mgmt/clients.rs`, not guessed.
+**Field-tested 2026-10-02 against a real `punktfunk-host` 0.42.0** (built from
+source on Linux, KDE Wayland, NVIDIA) -- see "Field test" below. Still not
+done: a full video session through the USBridge client, and the native plane.
 
 ## What
 
@@ -148,27 +146,71 @@ is phase 2, together with client-side changes, once the client supports it.
   cross-compile fails on this dev machine for unrelated cgo-toolchain
   reasons, not this code).
 
+## Field test (2026-10-02)
+
+Driven through `streamhost.NewPunktfunk` itself, with the client's own
+`moonlight.Client` as the Moonlight side, in private net+pid namespaces (the
+GameStream ports are compile-time constants in punktfunk, so it can't run
+next to another streamer; and Start/Stop's `killall`-by-name cleanup would
+otherwise hit the box's live streamer).
+
+Works: settings CLI before first start (`max_fps`, unknown id rejected);
+Start + WaitReady (~0.3-0.5 s); SessionActive; ListClients; SubmitPIN with
+and without a pending ceremony; the full PIN pairing from the client;
+`/applist`, `/launch`, `/cancel` over the paired HTTPS port; pairing survives
+a restart (config dir pinned under stateDir); UnpairClient; an external
+SIGKILL fires onExit and the next Start recovers; mirroring a physical
+monitor (`mirror-test`, 3840x2160 frames).
+
+Found:
+
+- **KDE needs a .desktop file naming the binary's exact path.** KWin only
+  gives `zkde_screencast_unstable_v1` to a punktfunk-host whose executable
+  path is the `Exec=` of an installed .desktop listing it in
+  `X-KDE-Wayland-Interfaces` (punktfunk ships
+  `packaging/linux/io.unom.Punktfunk.Host.desktop` for `/usr/bin`). Without
+  it every session fails at capture. A user-level copy in
+  `~/.local/share/applications` naming the real path works (after
+  `kbuildsycoca6`). A binary inside an AppImage's per-run mount point can
+  never match one, so bundling Punktfunk into the Linux AppImage won't work
+  on KDE; it has to live at a stable path.
+- **No KMS capture.** Punktfunk captures through the compositor only
+  (PipeWire via KWin/Mutter/portal, wlroots capture). Nothing to map the
+  agent's "kms" capture mode onto.
+- **The GameStream ports can't be moved** (47984/47989/47998-48000/48010 are
+  constants), so `Ports(basePort)` is only right for the default
+  `sunshine_port`.
+- `/host` reports `codecs` and `/display/monitors` the monitors and the pin
+  -- the sources for `SupportedVideoCodecs` and a device list without the
+  CLI.
+- An unpaired client's `/applist` gets HTTP 200 with a GameStream error
+  body, which the client's `GetAppList` reads as an empty list.
+
+## Benchmark wiring (2026-10-02)
+
+- `punktfunkBinaryPath`: bundled `<exeDir>/punktfunk/`, then
+  `$USBRIDGE_PUNKTFUNK_HOST`, then `punktfunk-host` on PATH.
+- `ListCaptureDevices` parses `list-monitors`; `SetOutputName` keeps a
+  connector name in `<config>/usbridge-capture-monitor` and Start passes it
+  as `PUNKTFUNK_CAPTURE_MONITOR` (mirror that monitor instead of a virtual
+  display per session).
+- `App.SetStreamBackend("punktfunk")`; with no monitor picked it pins the
+  primary one, so the benchmark's test video is in the picture. Not saved as
+  `PreferredBackend` -- startup only knows Sunshine and RustShine.
+- `BenchStreamBackends` lists it when a binary is found; the client's
+  benchmark dialog shows the row only then.
+
 ## What's still open
 
-1. **Not run against a real `punktfunk-host` binary.** No Linux/Windows box
-   in this environment; the Rust workspace wasn't built. Needs a real field
-   test before shipping.
-2. **App-level wiring** (how a user actually selects Punktfunk as the active
-   backend -- preference persistence, tray/GUI entries, `NewPunktfunk`
-   wired into `factory.go`/`app.go` the way `NewRustshine` is) was not
-   touched. `NewPunktfunk(exeDir, stateDir, logPath) Backend` exists and
-   compiles against `Backend`, but nothing in `app`/`api`/`ui` constructs
-   one yet.
-3. **No bundled `punktfunk-host` binary anywhere** -- `binaryPath()` looks
-   for `<exeDir>/punktfunk/punktfunk-host[.exe]`, a layout convention
-   guessed to mirror Sunshine's own bundling, not confirmed against any real
-   packaging output (Punktfunk's own `packaging/` tree wasn't read this
-   pass). Nothing bundles that tree into the agent's build yet.
+1. **A real video session through the USBridge client** (RTSP, video, audio,
+   input) -- the benchmark run itself. Everything up to `/launch` is tested.
+2. **Backend selection outside the benchmark** (preference persistence,
+   tray/GUI entries, startup) was not touched.
+3. **No bundled `punktfunk-host` anywhere**, and see the KDE finding above
+   for why the AppImage can't simply carry one.
 4. `CurrentVideoCodec`/`SupportedVideoCodecs`/`Color444Status`/`HdrStatus`
-   and the five `ConfigStore` typed setters remain unconfirmed/no-op (see
-   "What's done" above) -- `RuntimeStatus`'s full schema and
-   `/api/v1/stats/capture/status` are the next places to look, plus
-   `pf-host-config`'s actual setting-id registry for the setters.
+   and the `ConfigStore` setters other than the output name remain
+   unconfirmed/no-op.
 5. Native `punktfunk/1` support is a distinct, later phase, paired with
    client-side work -- explicitly out of scope here, not forgotten.
 
@@ -203,10 +245,5 @@ Sunshine, regardless of whether Punktfunk itself ever becomes a backend.
 
 ## Next step when resumed
 
-See "What's still open" above. In rough priority order: (1) get a real
-`punktfunk-host` build onto a Linux or Windows box and field-test Start/
-WaitReady/pairing/SessionActive against it; (2) decide and wire the bundling
-convention (`binaryPath()`'s guessed layout) against Punktfunk's actual
-`packaging/` output; (3) wire `NewPunktfunk` into `factory.go`/app-level
-backend selection; (4) fill in the remaining `CodecProbe`/`ConfigStore`
-unknowns once real endpoints/setting-ids are confirmed.
+Run the client's benchmark against an agent built from this branch with
+Punktfunk picked, then work down "What's still open".

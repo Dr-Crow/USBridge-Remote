@@ -156,7 +156,7 @@ type App struct {
 	// click racing the entitlement watchdog's own downgrade, say) --
 	// a.stream/a.streamKind must only ever be read/written while held.
 	streamMu   sync.Mutex
-	streamKind string // "sunshine" | "rustshine" -- bookkeeping only, mirrors which concrete type a.stream currently is
+	streamKind string // "sunshine" | "rustshine" | "punktfunk" -- bookkeeping only, mirrors which concrete type a.stream currently is
 	// streamKindView mirrors streamKind for readers that must not wait on
 	// streamMu: SetStreamBackend holds it through the new backend's whole
 	// startup (~25-40 s for Sunshine), and currentStreamKind used to take
@@ -1493,8 +1493,8 @@ func (a *App) RestartSunshineStartOnly() error {
 }
 
 // SetStreamBackend switches the active streamhost.Backend at runtime
-// between "sunshine" and "rustshine" -- stops whichever is running, builds
-// the other, and starts it. No-op if kind is already active. "rustshine"
+// between "sunshine", "rustshine" and "punktfunk" -- stops whichever is
+// running, builds the other, and starts it. No-op if kind is already active. "rustshine"
 // requires the binary to already be staged (see entitlement.StageRustShine)
 // -- this method never downloads it itself, so callers (the GUI's license
 // dialog) must download-then-switch, not switch-then-download.
@@ -1503,7 +1503,7 @@ func (a *App) RestartSunshineStartOnly() error {
 // (see New()'s local, offline re-derivation of the initial backend) without
 // needing to ask the entitlement backend again just to boot.
 func (a *App) SetStreamBackend(kind string) error {
-	if kind != "sunshine" && kind != "rustshine" {
+	if kind != "sunshine" && kind != "rustshine" && kind != "punktfunk" {
 		return fmt.Errorf("unknown stream backend %q", kind)
 	}
 
@@ -1531,6 +1531,9 @@ func (a *App) SetStreamBackend(kind string) error {
 			return fmt.Errorf("rustshine is not downloaded yet")
 		}
 	}
+	if kind == "punktfunk" && !streamhost.PunktfunkAvailable(a.exeDir) {
+		return fmt.Errorf("punktfunk-host is not installed")
+	}
 
 	stopStart := time.Now()
 	if a.stream != nil {
@@ -1545,12 +1548,16 @@ func (a *App) SetStreamBackend(kind string) error {
 	defer func() { a.lastSwitch.StartMs = time.Since(startStart).Milliseconds() }()
 
 	var next streamhost.Backend
-	if kind == "rustshine" {
+	switch kind {
+	case "rustshine":
 		next = streamhost.NewRustshine(a.exeDir, a.cfg.StateDir, a.logPath)
 		applyStreamSharedSecret(next, []byte(a.cfg.MasterKey))
 		applyStreamWebRTCEnabled(next, !a.cfg.RustShineWebRTCDisabled)
 		applyStreamUSBPassBridgeAddr(next, a.usbPassBridgeAddr)
-	} else {
+	case "punktfunk":
+		next = streamhost.NewPunktfunk(a.exeDir, a.cfg.StateDir, a.logPath)
+		pinPunktfunkMonitor(next)
+	default:
 		next = streamhost.NewSunshine(a.exeDir, a.cfg.StateDir, a.logPath)
 	}
 	// Fully configure next before publishing it -- see syncCapExecTo.
@@ -1593,12 +1600,47 @@ func (a *App) SetStreamBackend(kind string) error {
 	}
 	a.restartStreamProxy()
 
-	saved := a.cfg
-	saved.PreferredBackend = kind
-	if err := a.SaveConfig(saved); err != nil {
-		log.Printf("[app] warning: failed to persist preferred stream backend: %v", err)
+	// Punktfunk is only ever switched to for a benchmark run (nothing at
+	// startup knows how to bring it back, see New), so it never replaces
+	// the saved preference: an agent restarted mid-benchmark comes back on
+	// the streamer the user actually chose.
+	if kind != "punktfunk" {
+		saved := a.cfg
+		saved.PreferredBackend = kind
+		if err := a.SaveConfig(saved); err != nil {
+			log.Printf("[app] warning: failed to persist preferred stream backend: %v", err)
+		}
 	}
 	return nil
+}
+
+// pinPunktfunkMonitor has a Punktfunk backend with no monitor picked yet
+// stream a physical monitor (the primary one, else the first), the way
+// Sunshine and RustShine do. Left alone, Punktfunk gives every session a
+// virtual display of its own -- an empty desktop next to the real one, so
+// neither what's on the user's screen nor the benchmark's test video would
+// be in the picture.
+func pinPunktfunkMonitor(b streamhost.Backend) {
+	if b.OutputName() != "" {
+		return
+	}
+	devices := b.ListCaptureDevices()
+	if len(devices) == 0 {
+		log.Printf("[app] punktfunk reports no monitors -- it will stream a virtual display")
+		return
+	}
+	pick := devices[0]
+	for _, d := range devices {
+		if d.Primary {
+			pick = d
+			break
+		}
+	}
+	if err := b.SetOutputName(pick.OutputName); err != nil {
+		log.Printf("[app] pinning punktfunk to monitor %s: %v", pick.OutputName, err)
+		return
+	}
+	log.Printf("[app] punktfunk streams monitor %s (%s)", pick.OutputName, pick.DisplayName)
 }
 
 // streamReadyTimeout bounds how long a backend (re)start waits for the

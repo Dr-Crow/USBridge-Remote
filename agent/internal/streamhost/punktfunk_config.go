@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 // punktfunkConfigDir is where this agent pins punktfunk-host's config
@@ -88,13 +89,65 @@ func (b *punktfunkBackend) ConfigKey(key string) string {
 	return string(raw)
 }
 
-// SetExternalIP, SetBindAddress, SetCaptureMode, SetAudioSink, and
-// SetOutputName are not yet wired to real pf-host-config setting IDs --
-// those weren't researched this pass (see
-// agent/docs/PUNKTFUNK_BACKEND_TODO.md). No-ops rather than guessed IDs that
-// could silently write the wrong setting: GameStream streaming still works
-// with Punktfunk's own auto-detection (capture monitor, audio sink) in the
-// meantime.
+// punktfunkCaptureMonitorEnv pins punktfunk-host's capture at a physical
+// monitor (its connector name, as `punktfunk-host list-monitors` prints it)
+// instead of a per-session virtual display -- confirmed from punktfunk's
+// configuration.md ("Linux: stream this physical monitor instead of a
+// virtual display, overriding the console"). The host snapshots it at
+// startup, so a change needs a restart, like the other backends' output_name.
+const punktfunkCaptureMonitorEnv = "PUNKTFUNK_CAPTURE_MONITOR"
+
+// outputNamePath is where the pinned monitor is kept between starts.
+// Punktfunk has no setting for it in host-settings.json (only the env
+// variable above and its console's own display policy), so it lives in a
+// file of this backend's own next to that store.
+func (b *punktfunkBackend) outputNamePath() string {
+	dir := b.punktfunkConfigDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "usbridge-capture-monitor")
+}
+
+// SetOutputName pins capture to a physical monitor by connector name (see
+// ListCaptureDevices), or with "" goes back to Punktfunk's default, a
+// virtual display per session. Takes effect on the next Start.
+func (b *punktfunkBackend) SetOutputName(name string) error {
+	path := b.outputNamePath()
+	if path == "" {
+		return nil
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(name+"\n"), 0o644)
+}
+
+// OutputName is the pinned monitor's connector name, "" for none.
+func (b *punktfunkBackend) OutputName() string {
+	path := b.outputNamePath()
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// SetExternalIP, SetBindAddress, SetCaptureMode, and SetAudioSink are not
+// yet wired to real pf-host-config setting IDs -- those weren't researched
+// (see agent/docs/PUNKTFUNK_BACKEND_TODO.md). No-ops rather than guessed IDs
+// that could silently write the wrong setting: GameStream streaming still
+// works with Punktfunk's own auto-detection (audio sink) in the meantime.
 func (b *punktfunkBackend) SetExternalIP(ip string) error    { return nil }
 func (b *punktfunkBackend) ExternalIP() string               { return "" }
 func (b *punktfunkBackend) SetBindAddress(ip string) error   { return nil }
@@ -103,5 +156,3 @@ func (b *punktfunkBackend) SetCaptureMode(mode string) error { return nil }
 func (b *punktfunkBackend) CaptureMode() string              { return "" }
 func (b *punktfunkBackend) SetAudioSink(sink string) error   { return nil }
 func (b *punktfunkBackend) AudioSink() string                { return "" }
-func (b *punktfunkBackend) SetOutputName(name string) error  { return nil }
-func (b *punktfunkBackend) OutputName() string               { return "" }

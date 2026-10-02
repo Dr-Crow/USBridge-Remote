@@ -103,9 +103,16 @@ func (mw *MainWindow) showBenchmarkSetup(available []string, mons []api.BenchMon
 	for _, b := range available {
 		has[b] = true
 	}
+	// Sunshine and USBridge Streamer are always listed (greyed out when the
+	// host lacks one); Punktfunk only where the host has it, since no agent
+	// ships it and a permanent "not installed" row would be noise.
+	kinds := []string{"sunshine", "rustshine"}
+	if has["punktfunk"] {
+		kinds = append(kinds, "punktfunk")
+	}
 	checks := map[string]view.DialogToggle{}
 	var rows []fyne.CanvasObject
-	for _, kind := range []string{"sunshine", "rustshine"} {
+	for _, kind := range kinds {
 		c := view.NewDialogToggle(has[kind], nil)
 		if !has[kind] {
 			c.Disable()
@@ -167,7 +174,7 @@ func (mw *MainWindow) showBenchmarkSetup(available []string, mons []api.BenchMon
 		},
 		OnApply: func() {
 			var picked []string
-			for _, kind := range []string{"sunshine", "rustshine"} {
+			for _, kind := range kinds {
 				if checks[kind].IsChecked() && !checks[kind].Disabled() {
 					picked = append(picked, kind)
 				}

@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"testing"
@@ -227,5 +230,88 @@ func TestPunktfunkRejectsAWrongBearerToken(t *testing.T) {
 
 	if _, err := b.ListClients(port); err == nil {
 		t.Error("ListClients with a wrong bearer token: want an error, got nil")
+	}
+}
+
+func TestParsePunktfunkMonitors(t *testing.T) {
+	out := "Kwin:\n" +
+		"  HDMI-A-1      3840x2160@60 at +0,+0  scale 2.69921875  Woodwind Communications Systems Inc SU13TO\n" +
+		"  DP-2          2560x1440@144 at +3840,+0  scale 1  Dell Inc. U2720Q  [primary, PINNED]\n" +
+		"  DP-3          1920x1080@60 at +0,+0  scale 1  Old Panel  [disabled]\n" +
+		"  Virtual-punktfunk-1  1920x1080@60 at +6400,+0  scale 1  punktfunk  [punktfunk virtual display]\n"
+	got := parsePunktfunkMonitors(out)
+	if len(got) != 2 {
+		t.Fatalf("got %d monitors, want the 2 enabled physical ones: %+v", len(got), got)
+	}
+	if d := got[0]; d.OutputName != "HDMI-A-1" || d.Width != 3840 || d.Height != 2160 || d.Primary ||
+		d.DisplayName != "Woodwind Communications Systems Inc SU13TO" {
+		t.Errorf("first monitor = %+v", d)
+	}
+	if d := got[1]; d.OutputName != "DP-2" || d.Width != 2560 || d.Height != 1440 || !d.Primary || d.DisplayName != "Dell Inc. U2720Q" {
+		t.Errorf("second monitor = %+v", d)
+	}
+	if got := parsePunktfunkMonitors("Kwin: no monitors\n"); len(got) != 0 {
+		t.Errorf("no monitors parsed as %+v", got)
+	}
+}
+
+func TestPunktfunkOutputNamePersists(t *testing.T) {
+	stateDir := t.TempDir()
+	b := NewPunktfunk("", stateDir, "")
+	if got := b.OutputName(); got != "" {
+		t.Fatalf("fresh OutputName = %q, want none", got)
+	}
+	if err := b.SetOutputName("HDMI-A-1"); err != nil {
+		t.Fatal(err)
+	}
+	// A second backend over the same state dir (what the benchmark's
+	// restore builds) must see the pin.
+	if got := NewPunktfunk("", stateDir, "").OutputName(); got != "HDMI-A-1" {
+		t.Fatalf("OutputName = %q, want HDMI-A-1", got)
+	}
+	if err := b.SetOutputName(""); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.OutputName(); got != "" {
+		t.Fatalf("cleared OutputName = %q, want none", got)
+	}
+	if err := b.SetOutputName(""); err != nil {
+		t.Fatalf("clearing an unset pin: %v", err)
+	}
+}
+
+func TestPunktfunkBinaryLookup(t *testing.T) {
+	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
+		t.Skip("punktfunk-host has Linux and Windows builds only")
+	}
+	name := "punktfunk-host"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv(punktfunkBinEnv, "")
+	exeDir := t.TempDir()
+	if PunktfunkAvailable(exeDir) {
+		t.Fatal("available with no binary anywhere")
+	}
+
+	external := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(external, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(punktfunkBinEnv, external)
+	if got := punktfunkBinaryPath(exeDir); got != external {
+		t.Fatalf("with %s set: %q, want %q", punktfunkBinEnv, got, external)
+	}
+
+	bundled := filepath.Join(exeDir, "punktfunk", name)
+	if err := os.MkdirAll(filepath.Dir(bundled), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bundled, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := punktfunkBinaryPath(exeDir); got != bundled {
+		t.Fatalf("bundled copy must win: %q, want %q", got, bundled)
 	}
 }

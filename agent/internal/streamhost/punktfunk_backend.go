@@ -151,28 +151,51 @@ func NewPunktfunk(exeDir, stateDir, logPath string) Backend {
 // plane is not in use by this agent yet (see package doc comment).
 func (b *punktfunkBackend) DisplayName() string { return "Punktfunk (GameStream)" }
 
-// binaryPath returns the path to the punktfunk-host binary, or "" if not
-// bundled on this OS/build. Punktfunk's own usage text ("punktfunk-host --
-// Linux streaming host") and architecture doc confirm Linux and Windows host
-// builds only -- no macOS host.
-func (b *punktfunkBackend) binaryPath() string {
+// punktfunkBinEnv names a punktfunk-host outside the agent's own bundle.
+const punktfunkBinEnv = "USBRIDGE_PUNKTFUNK_HOST"
+
+// punktfunkBinaryPath locates punktfunk-host, or returns "" when there is
+// none: the copy bundled next to the agent (<exeDir>/punktfunk/), then the
+// one punktfunkBinEnv names, then a system-installed one on PATH. Nothing
+// bundles Punktfunk into the agent's own build yet, so the last two are how
+// a host gets one today. On KDE the path matters beyond finding the binary:
+// KWin only lets a punktfunk-host capture when an installed .desktop file
+// names that exact executable path (see ListCaptureDevices' doc comment),
+// which a copy inside an AppImage's per-run mount point can never satisfy.
+// Punktfunk's own usage text ("punktfunk-host -- Linux streaming host") and
+// architecture doc confirm Linux and Windows host builds only -- no macOS
+// host.
+func punktfunkBinaryPath(exeDir string) string {
+	name := "punktfunk-host"
 	switch runtime.GOOS {
 	case "linux":
-		p := filepath.Join(b.exeDir, "punktfunk", "punktfunk-host")
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-		return ""
 	case "windows":
-		p := filepath.Join(b.exeDir, "punktfunk", "punktfunk-host.exe")
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-		return ""
+		name += ".exe"
 	default:
 		return ""
 	}
+	if exeDir != "" {
+		p := filepath.Join(exeDir, "punktfunk", name)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	if p := os.Getenv(punktfunkBinEnv); p != "" {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	if p, err := exec.LookPath(name); err == nil {
+		return p
+	}
+	return ""
 }
+
+// PunktfunkAvailable reports whether a punktfunk-host binary can be found
+// for an agent whose own executable lives in exeDir.
+func PunktfunkAvailable(exeDir string) bool { return punktfunkBinaryPath(exeDir) != "" }
+
+func (b *punktfunkBackend) binaryPath() string { return punktfunkBinaryPath(b.exeDir) }
 
 // BinaryPath returns the resolved path punktfunk-host is launched from, or
 // "" if not bundled on this OS.
@@ -304,6 +327,9 @@ func (b *punktfunkBackend) Start(adminPort int) error {
 	env := append(os.Environ(), punktfunkAdminTokenEnv+"="+token)
 	if dir != "" {
 		env = append(env, punktfunkConfigDirEnv+"="+dir)
+	}
+	if monitor := b.OutputName(); monitor != "" {
+		env = append(env, punktfunkCaptureMonitorEnv+"="+monitor)
 	}
 	cmd.Env = env
 	if launchDir := filepath.Dir(bin); launchDir != "" && launchDir != "." {
