@@ -186,7 +186,7 @@ build_sunshine_linux() {
     [[ "$arch" == "aarch64" ]] && asset_name="Sunshine-Linux-aarch64.tar.gz"
 
     # Fast path: download pre-built tarball from our fork's releases.
-    echo -e "${YELLOW}Fetching Sunshine fork (itsme228/Sunshine, web_bind_address patch)...${NC}"
+    echo -e "${YELLOW}Fetching Sunshine fork (Streamers-Forks)...${NC}"
     local url
     url="$(_sunshine_asset_url "$asset_name")"
 
@@ -259,7 +259,7 @@ fetch_sunshine_windows() {
     _sunshine_require curl "Install with: pacman -S --needed curl"
     _sunshine_require python "Install with: pacman -S --needed mingw-w64-ucrt-x86_64-python"
 
-    echo -e "${YELLOW}Fetching Sunshine fork (itsme228/Sunshine, web_bind_address patch)...${NC}"
+    echo -e "${YELLOW}Fetching Sunshine fork (Streamers-Forks)...${NC}"
     local url
     url="$(_sunshine_asset_url "Sunshine-Windows-x86_64-portable.zip")"
     if [[ -z "$url" ]]; then
@@ -315,7 +315,7 @@ build_sunshine_macos() {
     [[ "$arch" != "arm64" ]] && asset_name="Sunshine-macOS-x86_64.dmg"
 
     # Fast path: download pre-built DMG from our fork's releases.
-    echo -e "${YELLOW}Fetching Sunshine fork (itsme228/Sunshine, web_bind_address patch)...${NC}"
+    echo -e "${YELLOW}Fetching Sunshine fork (Streamers-Forks)...${NC}"
     local url
     url="$(_sunshine_asset_url "$asset_name")"
 
