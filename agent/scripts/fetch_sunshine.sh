@@ -156,7 +156,7 @@ _sunshine_staged_is_current() {
 }
 
 # fetch_sunshine_linux / build_sunshine_linux <dest_dir>
-# Stages itsme228/Sunshine (our fork with web_bind_address patch) under
+# Stages the Sunshine fork (Streamers-Forks, sunshine/) under
 # $dest_dir as a cmake install tree: $dest_dir/usr/bin/sunshine and
 # $dest_dir/usr/local/assets/. Built with SUNSHINE_BUILD_APPIMAGE=ON so
 # the binary uses relative asset paths (./usr/local/assets relative to cwd),
@@ -290,7 +290,7 @@ fetch_sunshine_windows() {
 }
 
 # fetch_sunshine_macos / build_sunshine_macos <dest_dir>
-# Stages itsme228/Sunshine (our fork with web_bind_address patch).
+# Stages the Sunshine fork (Streamers-Forks, sunshine/).
 # Fast path: download pre-built DMG from fork's GitHub Releases.
 # Slow path (fallback): clone fork and build from source via CMake.
 fetch_sunshine_macos() { build_sunshine_macos "$@"; }
