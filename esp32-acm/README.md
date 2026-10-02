@@ -28,10 +28,7 @@ The dongle is one composite USB device with two faces:
   and opens the one serial port TinyUSB enumerates it under. One channel
   carries the control protocol below; the other carries the raw USB/IP
   relay stream — the agent bridges that one to a real TCP connection to the
-  exporter, since the dongle itself has no network stack any more (an
-  ESP32-S3 generation ago this was CDC-NCM with its own IP address and DHCP
-  server; CDC-ACM has no equivalent link-up handshake for the host's driver
-  to race against on re-enumeration, which NCM did — see "What works").
+  exporter, since the dongle itself has no network stack.
 - **The cloned device** (only while attached). Its device descriptor,
   configuration, strings, BOS, HID report descriptors and HID feature reports
   are read from the exporter at attach time; every control request and every
@@ -55,11 +52,10 @@ A USB device cannot change what it is without re-enumerating, and the
 control pipe is part of that device, so it blinks on every attach and
 detach. Measured on Linux, from disconnect to the host having the port back:
 about 0.65 s (150 ms off the bus, the hub's connect debounce, reset,
-descriptors, the interface coming up). No DHCP/ARP step: CDC-ACM has no
-link-up handshake of its own, so the port is usable the moment the host's
-driver binds it — this also removes the macOS-specific flakiness CDC-NCM had
-here (see "What works"). Only a link that is not a function of the same USB
-device (a second USB controller, Wi-Fi) would remove the gap entirely.
+descriptors, the interface coming up). CDC-ACM has no link-up handshake of
+its own, so the port is usable the moment the host's driver binds it. Only a
+link that is not a function of the same USB device (a second USB controller,
+Wi-Fi) would remove the gap entirely.
 
 The host sets the cloned device up *during* that gap, and some hosts (Linux)
 do not finish binding every interface driver instantly. Requests that arrive
@@ -195,18 +191,14 @@ Checked on macOS (15, Apple Silicon), firmware 0.4.0, the agent being
 `usb-broker --vhci-backend dongle`: synthetic HID gamepad and the real Wacom
 Intuos S above (exported by a Linux box's native `usbipd`, relayed by the
 agent's TCP↔CDC-ACM bridge) both attach and hold `registered, matched,
-active` in `ioreg` indefinitely — the CDC-NCM version of this dongle could
-not get past this point reliably on macOS at all (see below). With the
+active` in `ioreg` indefinitely. With the
 official Wacom driver installed, Wacom Center recognizes the tablet through
 the clone and pen position, pressure and the pad buttons all work in a real
-app — once bug 3 below (interrupt-IN traffic silently dropped right after
+app — once bug 2 below (interrupt-IN traffic silently dropped right after
 attach) was fixed; before that fix the tablet was visible everywhere but
 produced no input at all.
 
-**Why CDC-ACM and not CDC-NCM**: the first version of this dongle (firmware
-≤0.3.0) used CDC-NCM for the control/relay link, matching Linux and Windows's
-in-box support. On macOS it turned out to be unreliable in two distinct ways
-neither visible on Linux:
+**macOS-specific fixes**: two issues showed up on macOS that Linux never hit:
 
 1. **USB accessory-trust prompt races the 10 s fallback.** Every attach
    gives the clone a different VID/PID than whatever was plugged in before,
@@ -217,19 +209,7 @@ neither visible on Linux:
    fallback fires first and the attach fails, unattended, every time. Fixed
    on the Mac (not in firmware): System Settings → Privacy & Security →
    Allow accessories to connect → Always.
-2. **The CDC-NCM link-up notification is flaky on a composite clone.**
-   Even past (1), `AppleUSBNCMData::updateLinkStatus: linkStatus 1` — the
-   signal the rest of the stack (DHCP, the agent's probe) waited on — simply
-   failed to arrive on roughly half of back-to-back attach attempts with an
-   otherwise identical composite descriptor; the *idle*, NCM-only descriptor
-   never showed this. Looked like a timing/race condition inside Apple's own
-   `com.apple.driver.usb.cdc.ncm`, not something fixable from the dongle's
-   side. `usb-broker`'s retry-the-whole-attach mitigation
-   (`DONGLE_ATTACH_RETRIES` in `dongle_attach`) papered over it well enough
-   to be usable, but CDC-ACM removes the failure mode structurally: a
-   CDC-ACM port has no analogous link-up handshake to race, so there is
-   nothing here for a flaky driver internal to desync.
-3. **A write right after reconnect can be dropped by the host before
+2. **A write right after reconnect can be dropped by the host before
    anything has reopened the new device node.** `tud_cdc_n_connected()`
    flips true the instant the USB bus reconfigures after the one-time
    re-enumeration attach causes, but on macOS the device node's name
