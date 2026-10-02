@@ -346,6 +346,7 @@ func TestPunktfunkCaptureGrant(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("PATH", t.TempDir()) // no kbuildsycoca, no other punktfunk-host
 	t.Setenv(punktfunkBinEnv, bin)
+	t.Setenv("XDG_CURRENT_DESKTOP", "KDE")
 	punktfunkCaptureCache.Lock()
 	punktfunkCaptureCache.at = time.Time{}
 	punktfunkCaptureCache.Unlock()
@@ -398,6 +399,31 @@ func TestPunktfunkCaptureInstalledBeforeStart(t *testing.T) {
 	if _, err := os.Stat(entry); err == nil {
 		t.Fatal("the KWin file must not be written outside a KDE session")
 	}
+	// Grant on GNOME writes nothing either and says what the host said.
+	resetCache()
+	err := b.RequestCapture()
+	if _, statErr := os.Stat(entry); statErr == nil {
+		t.Fatal("Grant must not write the KWin file outside a KDE session")
+	}
+	if err == nil || !strings.Contains(err.Error(), "cannot reach the desktop compositor") {
+		t.Errorf("a host that is not ready off KDE must be reported, got %v", err)
+	}
+
+	// A GNOME host is ready with nothing installed (Mutter's D-Bus API).
+	gnome := filepath.Join(t.TempDir(), "punktfunk-host")
+	if werr := os.WriteFile(gnome, []byte("#!/bin/sh\necho 'Mutter ready'\n"), 0o755); werr != nil {
+		t.Fatal(werr)
+	}
+	t.Setenv(punktfunkBinEnv, gnome)
+	resetCache()
+	if rerr := b.RequestCapture(); rerr != nil || !b.CaptureGranted() {
+		t.Errorf("a ready GNOME host must need nothing: err=%v", rerr)
+	}
+	b.ensureCapture()
+	if _, statErr := os.Stat(entry); statErr == nil {
+		t.Fatal("nothing is installed for a GNOME host")
+	}
+	t.Setenv(punktfunkBinEnv, bin)
 
 	t.Setenv("XDG_CURRENT_DESKTOP", "ubuntu:KDE")
 	resetCache()

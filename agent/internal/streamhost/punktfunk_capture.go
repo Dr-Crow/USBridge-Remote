@@ -58,9 +58,8 @@ func (b *punktfunkBackend) CaptureGranted() bool {
 	if c.bin == bin && time.Since(c.at) < punktfunkCaptureCacheTTL {
 		return c.granted
 	}
-	cmd := exec.Command(bin, "probe-compositor")
-	cmd.Env = append(os.Environ(), punktfunkConfigDirEnv+"="+b.punktfunkConfigDir())
-	c.bin, c.at, c.granted = bin, time.Now(), cmd.Run() == nil
+	_, ready := b.probeCompositor(bin)
+	c.bin, c.at, c.granted = bin, time.Now(), ready
 	return c.granted
 }
 
@@ -70,8 +69,14 @@ func (b *punktfunkBackend) CaptureGranted() bool {
 // X-KDE-Wayland-Interfaces. Punktfunk's packages install one for
 // /usr/bin/punktfunk-host; a binary anywhere else needs its own, which a
 // per-user file under ~/.local/share/applications satisfies (confirmed
-// live, no re-login needed for a path KWin hasn't seen yet). Other
-// compositors need no such file, so there is nothing to do for them here.
+// live, no re-login needed for a path KWin hasn't seen yet).
+//
+// Other compositors need no such file. On GNOME punktfunk-host talks to
+// Mutter's own D-Bus API (org.gnome.Mutter.RemoteDesktop/ScreenCast), which
+// asks for no grant, and its probe-compositor answers "ready" there without
+// anything installed; Sway, Hyprland and gamescope have no per-executable
+// rule either. So off KDE nothing is written, and a host that still cannot
+// capture is reported with its own reason.
 func (b *punktfunkBackend) RequestCapture() error {
 	if runtime.GOOS != "linux" {
 		return nil
@@ -79,6 +84,16 @@ func (b *punktfunkBackend) RequestCapture() error {
 	bin := b.binaryPath()
 	if bin == "" {
 		return fmt.Errorf("punktfunk-host is not installed")
+	}
+	if !kdeSession() {
+		reason, ready := b.probeCompositor(bin)
+		punktfunkCaptureCache.Lock()
+		punktfunkCaptureCache.bin, punktfunkCaptureCache.at, punktfunkCaptureCache.granted = bin, time.Now(), ready
+		punktfunkCaptureCache.Unlock()
+		if ready {
+			return nil
+		}
+		return fmt.Errorf("punktfunk-host cannot reach the desktop compositor: %s", reason)
 	}
 	// KWin compares against /proc/<pid>/exe, i.e. the path with every
 	// symlink resolved.
@@ -116,10 +131,21 @@ func (b *punktfunkBackend) RequestCapture() error {
 	return nil
 }
 
+// probeCompositor runs `punktfunk-host probe-compositor` and returns the
+// last line it printed along with whether it exited 0.
+func (b *punktfunkBackend) probeCompositor(bin string) (lastLine string, ready bool) {
+	cmd := exec.Command(bin, "probe-compositor")
+	cmd.Env = append(os.Environ(), punktfunkConfigDirEnv+"="+b.punktfunkConfigDir())
+	out, err := cmd.CombinedOutput()
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	return strings.TrimSpace(lines[len(lines)-1]), err == nil
+}
+
 // ensureCapture does RequestCapture's work before punktfunk-host starts, so
 // picking Punktfunk needs no Grant click: the file goes into the user's own
 // home, no password involved. Only on a KDE session -- no other compositor
-// reads it. It is never removed when another streamer is picked: it names
+// reads it, and none of the others needs anything installed (see
+// RequestCapture). It is never removed when another streamer is picked: it names
 // one executable and stays hidden, and KWin keeps its first answer for an
 // executable until the next login, so taking it away and putting it back
 // could leave capture refused until then.
