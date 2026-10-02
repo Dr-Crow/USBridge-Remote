@@ -150,6 +150,12 @@ func (b *rustshineBackend) VirtualDisplaySupported() bool {
 	return runtime.GOOS == "windows" || runtime.GOOS == "darwin" || runtime.GOOS == "linux"
 }
 
+// RawHIDSupported is true: rust-shine's own streamer is the only backend
+// that rebuilds a Wacom tablet from LiSendRawHidEvent chunks as a virtual
+// USB device (usb-passthrough/src/virtual_rawhid.rs) -- see CodecProbe's
+// doc comment.
+func (b *rustshineBackend) RawHIDSupported() bool { return true }
+
 // SupportedVideoCodecs reuses the exact same /serverinfo NvHTTP probe as
 // Sunshine's (fetchSupportedVideoCodecs, sunshine_codec.go) — confirmed
 // gamestream-server implements the identical ServerCodecModeSupport bitmask

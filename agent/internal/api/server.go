@@ -74,6 +74,9 @@ type Application interface {
 	// VirtualDisplaySupported reports whether the current stream backend
 	// supports native virtual displays.
 	VirtualDisplaySupported() bool
+	// RawHIDSupported reports whether the active stream backend understands
+	// LiSendRawHidEvent -- see app.App.RawHIDSupported's doc comment.
+	RawHIDSupported() bool
 	AudioSinks() ([]AudioSink, error)
 	CurrentAudioSink() (string, error)
 	SetAudioSink(sink string) error

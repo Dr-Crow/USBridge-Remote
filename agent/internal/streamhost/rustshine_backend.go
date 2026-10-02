@@ -572,6 +572,20 @@ func (b *rustshineBackend) Start(adminPort int) error {
 	if credsPath != "" {
 		args = append(args, "--credentials-path", credsPath)
 	}
+	// Persists the server's TLS identity and paired-client cert list under
+	// the same stateDir/rustshine/ directory already used for the
+	// entitlement token and TURN credentials below, so a Moonlight client
+	// that already paired stays paired across an agent/process restart
+	// instead of needing a fresh PIN every time. This used to be left
+	// unset deliberately (see git history) because of a reported hang on
+	// the first pairing request after loading a persisted identity -- that
+	// turned out to be a self-deadlock in rust-shine's own
+	// clientpairingsecret handler (double-locking a std::sync::Mutex via a
+	// match-scrutinee temporary that outlived the match arm), now fixed
+	// upstream and covered by a regression test
+	// (http::handlers::tests::clientpairingsecret_with_state_dir_does_not_deadlock),
+	// not an issue with passing this flag.
+	args = append(args, "--state-dir", filepath.Join(b.stateDir, "rustshine"))
 	// Path convention duplicated (not imported) from
 	// entitlement.TokenFilePath -- see that function's doc comment for why:
 	// this package stays entitlement-agnostic, entitlement stays

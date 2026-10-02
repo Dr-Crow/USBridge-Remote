@@ -25,6 +25,14 @@ type MasterSyncPayloadV2 struct {
 type MasterSyncResponseV2 struct {
 	TailscaleStatus *models.TailscaleStatus `json:"tailscale_status,omitempty"`
 	SunshineStatus  string                  `json:"sunshine_status"`
+	// RawHIDSupported mirrors the agent's app.App.RawHIDSupported(): whether
+	// the active streaming backend understands LiSendRawHidEvent (a Wacom
+	// tablet sent over the stream's control channel instead of USB/IP --
+	// see docs/TABLETS.md). Only rust-shine's own streamer implements the
+	// host side; DiskWidget.splitRawHID must not pick stream mode against a
+	// backend that answers false here, or the tablet silently stops working
+	// (no USB/IP fallback once stream mode is chosen).
+	RawHIDSupported bool `json:"raw_hid_supported"`
 }
 
 func (c *USBClient) MasterSyncV2(ctx context.Context, payload MasterSyncPayloadV2) (*MasterSyncResponseV2, error) {
