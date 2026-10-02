@@ -312,6 +312,8 @@ func (b *punktfunkBackend) Start(adminPort int) error {
 			log.Printf("[punktfunk] warning: could not create %s: %v", dir, err)
 		}
 	}
+	// A host KWin refused at startup keeps that answer, so this comes first.
+	b.ensureCapture()
 
 	token, err := generatePunktfunkToken()
 	if err != nil {

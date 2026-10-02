@@ -375,6 +375,44 @@ func TestPunktfunkCaptureGrant(t *testing.T) {
 	}
 }
 
+// Picking Punktfunk on KDE authorizes it with KWin without a Grant click;
+// on any other desktop nothing is written.
+func TestPunktfunkCaptureInstalledBeforeStart(t *testing.T) {
+	home := t.TempDir()
+	bin := fakePunktfunkHost(t, home)
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv(punktfunkBinEnv, bin)
+	entry := filepath.Join(home, ".local", "share", "applications", punktfunkDesktopFile)
+	resetCache := func() {
+		punktfunkCaptureCache.Lock()
+		punktfunkCaptureCache.at = time.Time{}
+		punktfunkCaptureCache.Unlock()
+	}
+	b := &punktfunkBackend{}
+
+	t.Setenv("KDE_FULL_SESSION", "")
+	t.Setenv("XDG_CURRENT_DESKTOP", "GNOME")
+	resetCache()
+	b.ensureCapture()
+	if _, err := os.Stat(entry); err == nil {
+		t.Fatal("the KWin file must not be written outside a KDE session")
+	}
+
+	t.Setenv("XDG_CURRENT_DESKTOP", "ubuntu:KDE")
+	resetCache()
+	b.ensureCapture()
+	if !b.CaptureGranted() {
+		t.Fatal("not granted after ensureCapture on KDE")
+	}
+	// Already granted: the file is left alone.
+	before, _ := os.Stat(entry)
+	b.ensureCapture()
+	if after, _ := os.Stat(entry); before == nil || after == nil || !after.ModTime().Equal(before.ModTime()) {
+		t.Error("an authorized host must not have its file rewritten")
+	}
+}
+
 // Sunshine and RustShine must keep going through the KMS grant.
 func TestOnlyPunktfunkReportsCompositorCapture(t *testing.T) {
 	for name, b := range map[string]Backend{

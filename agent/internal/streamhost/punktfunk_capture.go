@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -113,6 +114,37 @@ func (b *punktfunkBackend) RequestCapture() error {
 		return fmt.Errorf("the compositor still refuses %s -- log out and back in once (KWin remembers its first answer for an executable until then)", real)
 	}
 	return nil
+}
+
+// ensureCapture does RequestCapture's work before punktfunk-host starts, so
+// picking Punktfunk needs no Grant click: the file goes into the user's own
+// home, no password involved. Only on a KDE session -- no other compositor
+// reads it. It is never removed when another streamer is picked: it names
+// one executable and stays hidden, and KWin keeps its first answer for an
+// executable until the next login, so taking it away and putting it back
+// could leave capture refused until then.
+func (b *punktfunkBackend) ensureCapture() {
+	if runtime.GOOS != "linux" || !kdeSession() || b.CaptureGranted() {
+		return
+	}
+	if err := b.RequestCapture(); err != nil {
+		log.Printf("[punktfunk] screen capture authorization: %v", err)
+		return
+	}
+	log.Printf("[punktfunk] installed %s so KWin lets punktfunk-host capture", punktfunkDesktopFile)
+}
+
+// kdeSession reports whether the agent runs inside a KDE Plasma session.
+func kdeSession() bool {
+	if os.Getenv("KDE_FULL_SESSION") != "" {
+		return true
+	}
+	for _, d := range strings.Split(os.Getenv("XDG_CURRENT_DESKTOP"), ":") {
+		if strings.EqualFold(d, "KDE") {
+			return true
+		}
+	}
+	return false
 }
 
 func punktfunkDesktopEntry(exe string) string {
