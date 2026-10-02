@@ -297,9 +297,9 @@ because none of it is the streamer's job. Both hosts are built from
 The agent tells the client raw HID is available (`RawHIDSupported`) only for
 a host that answers `punktfunk-host usbridge-bridge` or
 `sunshine --usbridge-bridge`, i.e. one built from the fork. The Sunshine the
-agent bundles is still fetched from `itsme228/Sunshine` releases
-(`scripts/fetch_sunshine.sh`), which do not have the change: it reaches users
-once a release is cut from Streamers-Forks and that script points there. Needs a broker with `hid_stream` (rust-shine 0.3.117 or later)
+agent bundles comes from the Streamers-Forks releases
+(`scripts/fetch_sunshine.sh`; `v2026.1002.1.usbridge` is the first with the
+change). Needs a broker with `hid_stream` (rust-shine 0.3.117 or later)
 and, on Linux, the polkit rule that allows `usbip --tcp-port N attach` --
 an older rule shows the USB permission as not granted until Grant is pressed
 again.

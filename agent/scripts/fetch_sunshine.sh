@@ -4,10 +4,13 @@
 # video/audio/input capture for the Moonlight/Sunshine protocol; usbridge_agent
 # pairs with it and relays PINs.
 #
-# We use our own fork (itsme228/Sunshine) instead of the upstream LizardByte
-# release because it adds web_bind_address: a config key that lets the HTTPS
-# admin UI bind to a separate address (127.0.0.1) while streaming ports stay
-# bound to the VPN/LAN interface via bind_address.
+# We use our own fork (the sunshine/ directory of
+# USBridge-Technologies/Streamers-Forks; it used to be itsme228/Sunshine)
+# instead of the upstream LizardByte release because it adds web_bind_address
+# -- a config key that lets the HTTPS admin UI bind to a separate address
+# (127.0.0.1) while streaming ports stay bound to the VPN/LAN interface via
+# bind_address -- and hands the client's USB devices to the USB broker (see
+# agent/internal/streamhost/usb_broker_bridge.go).
 #
 # macOS and Linux are built from source (the fork's master branch).
 # Windows still uses a prebuilt release from upstream (the feature is not
@@ -21,7 +24,9 @@
 #                                (fork releases are already built with CUDA in CI)
 #   USBRIDGE_SUNSHINE_JOBS=n     parallel jobs for a source build (default: MemAvailable/2GB)
 
-_sunshine_repo="itsme228/Sunshine"
+_sunshine_repo="USBridge-Technologies/Streamers-Forks"
+# Where Sunshine sits inside that repository (a source build needs it).
+_sunshine_subdir="sunshine"
 
 _sunshine_require() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -207,10 +212,11 @@ build_sunshine_linux() {
     _sunshine_require cmake "Install with: sudo apt install cmake"
     _sunshine_require sudo "cmake install needs sudo for build deps"
 
-    local src_dir
-    src_dir="$(mktemp -d)"
+    local repo_dir src_dir
+    repo_dir="$(mktemp -d)"
     git clone --depth 1 --recurse-submodules --shallow-submodules \
-        "https://github.com/${_sunshine_repo}.git" "$src_dir"
+        "https://github.com/${_sunshine_repo}.git" "$repo_dir"
+    src_dir="$repo_dir/$_sunshine_subdir"
 
     local cuda_flag="OFF"
     [[ "${USBRIDGE_SUNSHINE_CUDA:-0}" == "1" ]] && cuda_flag="ON"
@@ -230,7 +236,7 @@ build_sunshine_linux() {
 
     rm -rf "$dest"
     DESTDIR="$dest" cmake --install "$src_dir/build" --prefix /usr
-    rm -rf "$src_dir"
+    rm -rf "$repo_dir"
     chmod +x "$dest/usr/bin/sunshine" 2>/dev/null || true
 
     _sunshine_clean_creds "$dest"
@@ -347,10 +353,11 @@ build_sunshine_macos() {
     brew install --quiet cmake node pkgconf "icu4c@78" miniupnpc "openssl@3" opus \
         2>&1 | grep -v "already installed" || true
 
-    local src_dir
-    src_dir="$(mktemp -d)"
+    local repo_dir src_dir
+    repo_dir="$(mktemp -d)"
     git clone --depth 1 --recurse-submodules --shallow-submodules \
-        "https://github.com/${_sunshine_repo}.git" "$src_dir"
+        "https://github.com/${_sunshine_repo}.git" "$repo_dir"
+    src_dir="$repo_dir/$_sunshine_subdir"
 
     cmake \
         -B "$src_dir/build" -S "$src_dir" \
@@ -369,7 +376,7 @@ build_sunshine_macos() {
     local dmg_file
     dmg_file="$(find "$src_dir/build" -name "*.dmg" | head -1)"
     if [[ -z "$dmg_file" ]]; then
-        rm -rf "$src_dir"
+        rm -rf "$repo_dir"
         echo -e "${RED}Sunshine source build failed — no .dmg produced${NC}"
         exit 1
     fi
@@ -383,7 +390,7 @@ build_sunshine_macos() {
     cp -R "$mount_point"/*.app "$dest/Sunshine.app"
 
     hdiutil detach -quiet "$mount_point"
-    rm -rf "$src_dir"
+    rm -rf "$repo_dir"
 
     xattr -dr com.apple.quarantine "$dest/Sunshine.app" 2>/dev/null || true
     _sunshine_clean_creds "$dest"
