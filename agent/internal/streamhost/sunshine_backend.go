@@ -727,6 +727,7 @@ func (b *sunshineBackend) Start(adminPort int) error {
 	} else {
 		cmd := exec.Command(launchExe, launchArgs...)
 		configureProcess(cmd)
+		cmd.Env = append(os.Environ(), usbBrokerEnviron())
 		if launchDir != "" && launchDir != "." {
 			cmd.Dir = launchDir
 		}

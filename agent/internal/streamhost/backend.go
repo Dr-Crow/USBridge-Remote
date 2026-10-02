@@ -137,12 +137,12 @@ type CodecProbe interface {
 	// over the stream's control channel instead of USB/IP (see
 	// client/docs/TABLETS.md, "Over the video stream instead of USB/IP").
 	// rust-shine's own streamer rebuilds the tablet from that stream
-	// (usb-passthrough/src/virtual_rawhid.rs), and a punktfunk-host with
-	// the USBridge patch hands it to the USB broker to rebuild (see
-	// punktfunkBrokerEnv). Sunshine and stock Punktfunk have no handler,
-	// so the client must not switch a tablet into stream mode against
-	// them: it would silently stop working (no USB/IP fallback kicks in
-	// once the client has committed to stream mode).
+	// (usb-passthrough/src/virtual_rawhid.rs), and a punktfunk-host or
+	// Sunshine with the USBridge patch hands it to the USB broker to
+	// rebuild (see usbBrokerEnv). Stock Sunshine and Punktfunk have no
+	// handler, so the client must not switch a tablet into stream mode
+	// against them: it would silently stop working (no USB/IP fallback
+	// kicks in once the client has committed to stream mode).
 	// The client learns this over MasterSyncResponse.RawHIDSupported
 	// (agent/internal/api/sync.go), refreshed on every sync, and gates
 	// DiskWidget.splitRawHID on it.

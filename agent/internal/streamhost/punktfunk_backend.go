@@ -339,7 +339,7 @@ func (b *punktfunkBackend) Start(adminPort int) error {
 	// when a benchmark run comes out slow. RustShine logs the same kind of
 	// line unasked ("frame stage timing sample").
 	env = append(env, "PUNKTFUNK_PERF=1")
-	env = append(env, punktfunkBrokerEnviron())
+	env = append(env, usbBrokerEnviron())
 	cmd.Env = env
 	if launchDir := filepath.Dir(bin); launchDir != "" && launchDir != "." {
 		cmd.Dir = launchDir

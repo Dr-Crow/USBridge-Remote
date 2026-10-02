@@ -268,19 +268,21 @@ exact IOCTLs, wire formats and shared-memory layout, verified live against a
 real RTX test box) -- worth reading before writing the C++/Rust equivalent for
 Sunshine, regardless of whether Punktfunk itself ever becomes a backend.
 
-## USB with Punktfunk as the streamer (2026-10-02)
+## USB with Punktfunk or Sunshine as the streamer (2026-10-02)
 
-USB works the same way under Punktfunk as under RustShine, because none of it
-is the streamer's job:
+USB works the same way under Punktfunk and Sunshine as under RustShine,
+because none of it is the streamer's job. Both hosts are built from
+`github.com/USBridge-Technologies/Streamers-Forks` (`punktfunk/`,
+`sunshine/`), which carries the same change for each:
 
 - **USB/IP passthrough** (any device, TCP) is the USB broker alone -- the
   agent starts it whichever backend is active.
 - **A HID device over the stream** (a Wacom tablet sent with
   `LiSendRawHidEvent` on the ENet control channel, for input latency) needs
-  the host to take that packet. Stock Punktfunk drops it. The patch in
-  `agent/patches/punktfunk/` adds `gamestream/usbridge.rs`: when
+  the host to take that packet. The stock hosts drop it. The forks add
+  `gamestream/usbridge.rs` (Punktfunk) and `src/usbridge.cpp` (Sunshine): when
   `USBRIDGE_USB_BROKER_CONTROL` is set (the agent sets it, see
-  `streamhost/punktfunk_usbridge.go`), the host forwards the packet body to
+  `streamhost/usb_broker_bridge.go`), the host forwards the packet body to
   the broker's `hid_stream` control command, and the broker rebuilds the
   device on a USB/IP port -- the same `RawHidHub` RustShine's streamer runs
   in-process. The host advertises `LI_FF_USBRIDGE_RAW_HID` when the broker
@@ -288,13 +290,16 @@ is the streamer's job:
   `056a`), which the broker builds only with a Pro license.
 - **Gamepads**: on Windows the patched host sends them to the same
   `hid_stream`, and the broker presents each as an Xbox 360 pad on usbip-win2
-  (what RustShine does; the agent does not install Punktfunk's `pf-xusb`
-  drivers). On Linux Punktfunk's own uinput/uhid pads stay.
+  (what RustShine does; the agent installs neither Punktfunk's `pf-xusb`
+  drivers nor ViGEmBus for Sunshine). On Linux the host's own pads stay.
   `USBRIDGE_PAD_BRIDGE=1|0` forces either.
 
 The agent tells the client raw HID is available (`RawHIDSupported`) only for
-a punktfunk-host that answers `punktfunk-host usbridge-bridge`, i.e. one built
-with the patch. Needs a broker with `hid_stream` (rust-shine 0.3.117 or later)
+a host that answers `punktfunk-host usbridge-bridge` or
+`sunshine --usbridge-bridge`, i.e. one built from the fork. The Sunshine the
+agent bundles is still fetched from `itsme228/Sunshine` releases
+(`scripts/fetch_sunshine.sh`), which do not have the change: it reaches users
+once a release is cut from Streamers-Forks and that script points there. Needs a broker with `hid_stream` (rust-shine 0.3.117 or later)
 and, on Linux, the polkit rule that allows `usbip --tcp-port N attach` --
 an older rule shows the USB permission as not granted until Grant is pressed
 again.

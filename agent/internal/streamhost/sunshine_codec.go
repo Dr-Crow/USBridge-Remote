@@ -217,9 +217,12 @@ func (b *sunshineBackend) VirtualDisplaySupported() bool {
 	return false
 }
 
-// RawHIDSupported is false: Sunshine has no LiSendRawHidEvent handler --
-// see CodecProbe's doc comment.
-func (b *sunshineBackend) RawHIDSupported() bool { return false }
+// RawHIDSupported is true only for a Sunshine built with the USBridge patch
+// (Streamers-Forks, src/usbridge.cpp), which hands LiSendRawHidEvent to the
+// USB broker -- see usbBrokerEnv. Stock Sunshine has no handler for it.
+func (b *sunshineBackend) RawHIDSupported() bool {
+	return streamerHasUSBBridge(b.launchPath, "--usbridge-bridge", configureProcess)
+}
 
 func (b *sunshineBackend) SupportedVideoCodecs(adminPort int) []string {
 	b.supportedCodecsCache.mu.Lock()
