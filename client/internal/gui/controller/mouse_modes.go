@@ -12,14 +12,16 @@ const (
 	mouseModeTouchPad      = "mouse"
 	mouseModeTouchScreen   = "touchscreen"
 	mouseModeAbsolute      = "absolute"
-	mouseModeVirtualCursor = "cursor" // Android-only: local cursor rendered in Vulkan
-	mouseModeGyroMouse     = "gyro"   // Android-only: cursor via gyroscope + swipes; volume=LMB/RMB
+	mouseModeVirtualCursor = "cursor"  // Android-only: local cursor rendered in Vulkan
+	mouseModeGyroMouse     = "gyro"    // Android-only: cursor via gyroscope + swipes; volume=LMB/RMB
+	mouseModeCapture       = "capture" // Desktop-only: OS-level raw relative capture (Moonlight-style)
 
 	MouseModeTouchPad      = mouseModeTouchPad
 	MouseModeTouchScreen   = mouseModeTouchScreen
 	MouseModeAbsolute      = mouseModeAbsolute
 	MouseModeVirtualCursor = mouseModeVirtualCursor
 	MouseModeGyroMouse     = mouseModeGyroMouse
+	MouseModeCapture       = mouseModeCapture
 )
 
 func defaultMouseMode() string {
@@ -42,10 +44,12 @@ func parseMouseMode(mode string) (string, bool) {
 		return mouseModeVirtualCursor, true
 	case strings.HasPrefix(mode, "gyro:"):
 		return mouseModeGyroMouse, true
+	case strings.HasPrefix(mode, "capture:"):
+		return mouseModeCapture, true
 	}
 
 	switch mode {
-	case mouseModeTouchPad, mouseModeTouchScreen, mouseModeAbsolute, mouseModeVirtualCursor, mouseModeGyroMouse:
+	case mouseModeTouchPad, mouseModeTouchScreen, mouseModeAbsolute, mouseModeVirtualCursor, mouseModeGyroMouse, mouseModeCapture:
 		return mode, true
 	case "double":
 		return mouseModeAbsolute, true
@@ -83,6 +87,12 @@ func mouseTransportType(mode string) string {
 	if normalized == mouseModeVirtualCursor || normalized == mouseModeGyroMouse {
 		return mouseModeAbsolute
 	}
+	// Capture is also client-only: it's touchpad's own relative wire path
+	// (LiSendMouseMoveEvent) fed by a native OS capture engine instead of
+	// Fyne drag events, so the gadget/agent side needs no new transport.
+	if normalized == mouseModeCapture {
+		return mouseModeTouchPad
+	}
 	return normalized
 }
 
@@ -98,16 +108,23 @@ func mouseModeFromDeviceType(deviceType string) string {
 	return defaultMouseMode()
 }
 
+// mouseConfigOptions lists the pointer modes offered in the mouse mode
+// pickers (device row, footer icon menu). Touchpad is mobile/touch-only --
+// on desktop there's no finger to lift-and-reposition, so only Absolute and
+// Capture are offered there.
 func mouseConfigOptions() []string {
-	opts := []string{
-		i18n.Current.DeviceTouchPad,
-		i18n.Current.DeviceAbsolute,
-	}
 	if fyne.CurrentDevice().IsMobile() {
-		opts = append(opts, i18n.Current.DeviceVirtualCursor)
-		opts = append(opts, i18n.Current.DeviceGyroMouse)
+		return []string{
+			i18n.Current.DeviceTouchPad,
+			i18n.Current.DeviceAbsolute,
+			i18n.Current.DeviceVirtualCursor,
+			i18n.Current.DeviceGyroMouse,
+		}
 	}
-	return opts
+	return []string{
+		i18n.Current.DeviceAbsolute,
+		i18n.Current.DeviceCapture,
+	}
 }
 
 func mouseConfigToLabel(mode string, dispIdx, dispCnt int) string {
@@ -118,6 +135,8 @@ func mouseConfigToLabel(mode string, dispIdx, dispCnt int) string {
 		return i18n.Current.DeviceVirtualCursor
 	case mouseModeGyroMouse:
 		return i18n.Current.DeviceGyroMouse
+	case mouseModeCapture:
+		return i18n.Current.DeviceCapture
 	default:
 		return i18n.Current.DeviceTouchPad
 	}
@@ -131,6 +150,8 @@ func mouseLabelToConfig(s string) (mode string, dispIdx, dispCnt int) {
 		return mouseModeVirtualCursor, 0, 1
 	case i18n.Current.DeviceGyroMouse:
 		return mouseModeGyroMouse, 0, 1
+	case i18n.Current.DeviceCapture:
+		return mouseModeCapture, 0, 1
 	default:
 		return mouseModeTouchPad, 0, 1
 	}

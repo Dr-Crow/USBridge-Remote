@@ -1509,6 +1509,10 @@ func (vw *VideoWidget) clearVideo() {
 	vw.clearVideoMu.Lock()
 	defer vw.clearVideoMu.Unlock()
 
+	// Never leave the system cursor captured/hidden across a stop/disconnect,
+	// however it happened (user stop, lost connection, device rebuild).
+	vw.stopMouseCapture()
+
 	vw.stopRenderTicker()
 
 	vw.frameMutex.Lock()

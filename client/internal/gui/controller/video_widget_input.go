@@ -779,6 +779,13 @@ func (vw *VideoWidget) IsAbsoluteLikeInputMode() bool {
 	return vw.GetMouseInputMode() == mouseModeAbsolute
 }
 
+// IsCaptureInputMode reports whether Capture mode is selected -- all input
+// in that mode comes from the native platform engine (mouse_capture_*.go),
+// not from Fyne's own pointer events.
+func (vw *VideoWidget) IsCaptureInputMode() bool {
+	return vw.GetMouseInputMode() == mouseModeCapture
+}
+
 // isPositionInContentRect reports whether the local widget position (px, py) falls
 // within the actual video content area, accounting for letterbox/pillarbox black bars.
 // Returns true when the content rect is not yet established (allows clicks through).
@@ -805,9 +812,15 @@ func (vw *VideoWidget) GetMouseInputMode() string {
 // SetMouseInputMode sets the pointer device type.
 func (vw *VideoWidget) SetMouseInputMode(mode string) {
 	mode = normalizeMouseMode(mode)
+	previous := vw.mouseInputMode
 	vw.mouseInputMode = mode
 	vw.SetShowMouseCursor(vw.GetShowMouseCursor())
 	vw.resetRelativeMoveAccumulator()
+	if previous != mouseModeCapture && mode == mouseModeCapture {
+		vw.startMouseCapture()
+	} else if previous == mouseModeCapture && mode != mouseModeCapture {
+		vw.stopMouseCapture()
+	}
 	if isVirtualCursorLikeMode(mode) {
 		// Centre the virtual cursor and set cursor scale for the current display.
 		vw.vcMu.Lock()

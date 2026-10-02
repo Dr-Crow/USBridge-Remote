@@ -77,6 +77,7 @@ type LocalizedStrings struct {
 	HotkeyFullscreen                  string
 	HotkeyStats                       string
 	HotkeyMouseMode                   string
+	HotkeyMouseRelease                string
 	HotkeyCursor                      string
 	HotkeyPaste                       string
 	HotkeyDisplays                    string
@@ -540,6 +541,7 @@ type LocalizedStrings struct {
 	DeviceAbsoluteRight2                 string // "Abs R/2" (absolute, right display of 2)
 	DeviceVirtualCursor                  string // "Cursor" (virtual cursor mode, Android only)
 	DeviceGyroMouse                      string // "GyroMouse" (gyroscope cursor mode, Android only)
+	DeviceCapture                        string // "Capture" (desktop-only raw relative mouse capture mode)
 	DeviceNetworkCard                    string // "Network Card (RNDIS)"
 	DeviceGamepad                        string // "Gamepad"
 	DeviceDirectInput                    string // "DirectInput"
@@ -729,7 +731,8 @@ func EN() *LocalizedStrings {
 		HotkeyQuit:                        "Stop the stream",
 		HotkeyFullscreen:                  "Toggle fullscreen",
 		HotkeyStats:                       "Show / hide the Net Graph statistics",
-		HotkeyMouseMode:                   "Switch mouse mode (touchpad / absolute)",
+		HotkeyMouseMode:                   "Switch mouse mode (absolute / capture)",
+		HotkeyMouseRelease:                "Release Capture mode back to absolute (only does anything while captured)",
 		HotkeyCursor:                      "Show / hide the host's mouse cursor",
 		HotkeyPaste:                       "Type the clipboard text into the host",
 		HotkeyDisplays:                    "Switch the host monitor (Sunshine)",
@@ -1190,6 +1193,7 @@ func EN() *LocalizedStrings {
 		DeviceAbsoluteRight2:                 "Abs R/2",
 		DeviceVirtualCursor:                  "Cursor",
 		DeviceGyroMouse:                      "GyroMouse",
+		DeviceCapture:                        "Capture",
 		DeviceNetworkCard:                    "Network Card (RNDIS)",
 		DeviceGamepad:                        "Gamepad",
 		DeviceDirectInput:                    "DirectInput",
@@ -1652,7 +1656,8 @@ func ES() *LocalizedStrings {
 	locale.HotkeyQuit = "Detener la transmisión"
 	locale.HotkeyFullscreen = "Pantalla completa"
 	locale.HotkeyStats = "Mostrar / ocultar estadísticas (Net Graph)"
-	locale.HotkeyMouseMode = "Cambiar modo de ratón (touchpad / absoluto)"
+	locale.HotkeyMouseMode = "Cambiar modo de ratón (absoluto / captura)"
+	locale.HotkeyMouseRelease = "Liberar el modo Captura al modo absoluto (solo hace algo si está capturado)"
 	locale.HotkeyCursor = "Mostrar / ocultar el cursor del host"
 	locale.HotkeyPaste = "Escribir el texto del portapapeles en el host"
 	locale.HotkeyDisplays = "Cambiar el monitor del host (Sunshine)"
@@ -2041,7 +2046,8 @@ func UKProper() *LocalizedStrings {
 	locale.HotkeyQuit = "Зупинити стрім"
 	locale.HotkeyFullscreen = "Повний екран"
 	locale.HotkeyStats = "Показати / сховати статистику (Net Graph)"
-	locale.HotkeyMouseMode = "Перемкнути режим миші (тачпад / абсолютний)"
+	locale.HotkeyMouseMode = "Перемкнути режим миші (абсолютний / захоплення)"
+	locale.HotkeyMouseRelease = "Звільнити режим захоплення назад в абсолютний (діє лише під час захоплення)"
 	locale.HotkeyCursor = "Показати / сховати курсор хоста"
 	locale.HotkeyPaste = "Надрукувати текст із буфера на хості"
 	locale.HotkeyDisplays = "Перемкнути монітор хоста (Sunshine)"

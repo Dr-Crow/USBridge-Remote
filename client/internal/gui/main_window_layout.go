@@ -2021,37 +2021,57 @@ func (mw *MainWindow) showMouseModeMenuAt(anchor fyne.CanvasObject) {
 
 	currentMode := mw.diskWidget.GetMouseMode()
 	showMouse := mw.app.Preferences().BoolWithFallback("show_mouse_cursor", false)
-	items := []view.StyledMenuItem{
-		{
-			Label:    i18n.Current.DeviceTouchPad,
-			Selected: currentMode == controller.MouseModeTouchPad,
-			OnTap: func() {
-				mw.diskWidget.SetMouseMode(controller.MouseModeTouchPad)
-			},
-		},
-		{
-			Label:    i18n.Current.DeviceAbsolute,
-			Selected: currentMode == controller.MouseModeAbsolute,
-			OnTap: func() {
-				mw.diskWidget.SetMouseMode(controller.MouseModeAbsolute)
-			},
-		},
-	}
+	// Touchpad is mobile/touch-only -- see mouseConfigOptions' own doc
+	// comment. Desktop only ever offers Absolute and Capture.
+	var items []view.StyledMenuItem
 	if view.IsMobile() {
-		items = append(items, view.StyledMenuItem{
-			Label:    i18n.Current.DeviceVirtualCursor,
-			Selected: currentMode == controller.MouseModeVirtualCursor,
-			OnTap: func() {
-				mw.diskWidget.SetMouseMode(controller.MouseModeVirtualCursor)
+		items = []view.StyledMenuItem{
+			{
+				Label:    i18n.Current.DeviceTouchPad,
+				Selected: currentMode == controller.MouseModeTouchPad,
+				OnTap: func() {
+					mw.diskWidget.SetMouseMode(controller.MouseModeTouchPad)
+				},
 			},
-		})
-		items = append(items, view.StyledMenuItem{
-			Label:    i18n.Current.DeviceGyroMouse,
-			Selected: currentMode == controller.MouseModeGyroMouse,
-			OnTap: func() {
-				mw.diskWidget.SetMouseMode(controller.MouseModeGyroMouse)
+			{
+				Label:    i18n.Current.DeviceAbsolute,
+				Selected: currentMode == controller.MouseModeAbsolute,
+				OnTap: func() {
+					mw.diskWidget.SetMouseMode(controller.MouseModeAbsolute)
+				},
 			},
-		})
+			{
+				Label:    i18n.Current.DeviceVirtualCursor,
+				Selected: currentMode == controller.MouseModeVirtualCursor,
+				OnTap: func() {
+					mw.diskWidget.SetMouseMode(controller.MouseModeVirtualCursor)
+				},
+			},
+			{
+				Label:    i18n.Current.DeviceGyroMouse,
+				Selected: currentMode == controller.MouseModeGyroMouse,
+				OnTap: func() {
+					mw.diskWidget.SetMouseMode(controller.MouseModeGyroMouse)
+				},
+			},
+		}
+	} else {
+		items = []view.StyledMenuItem{
+			{
+				Label:    i18n.Current.DeviceAbsolute,
+				Selected: currentMode == controller.MouseModeAbsolute,
+				OnTap: func() {
+					mw.diskWidget.SetMouseMode(controller.MouseModeAbsolute)
+				},
+			},
+			{
+				Label:    i18n.Current.DeviceCapture,
+				Selected: currentMode == controller.MouseModeCapture,
+				OnTap: func() {
+					mw.diskWidget.SetMouseMode(controller.MouseModeCapture)
+				},
+			},
+		}
 	}
 	items = append(items, view.StyledMenuItem{
 		Label:    i18n.Current.ShowMouseCursor,

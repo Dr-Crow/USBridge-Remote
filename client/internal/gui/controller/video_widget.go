@@ -206,10 +206,11 @@ type VideoWidget struct {
 	touchStartX        float32
 	touchStartY        float32
 	touchStartTime     time.Time
-	mousePollingQuit   chan bool // Channel for stopping the polling goroutine
-	mouseInputMode     string    // desired mode: "mouse" (touchpad), "touchscreen" or "absolute"
-	observedMouseMode  string    // actual transport reported by the server via /api/device/info
-	showMouseCursor    bool      // show the mouse cursor in the captured video
+	mousePollingQuit   chan bool          // Channel for stopping the polling goroutine
+	mouseInputMode     string             // desired mode: "mouse" (touchpad), "touchscreen", "absolute" or "capture"
+	observedMouseMode  string             // actual transport reported by the server via /api/device/info
+	captureEngine      mouseCaptureEngine // active OS-level raw capture engine, non-nil only while mouseInputMode == capture
+	showMouseCursor    bool               // show the mouse cursor in the captured video
 	agentOS            string
 	agentDisplay       string
 	cursorOverlayX     float32

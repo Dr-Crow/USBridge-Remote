@@ -233,6 +233,8 @@ func (dw *DiskWidget) configureDriveRow(id int, obj fyne.CanvasObject) {
 			nameText = fmt.Sprintf("TCH %s", nameText)
 		case mouseModeAbsolute:
 			nameText = fmt.Sprintf("ABS %s", nameText)
+		case mouseModeCapture:
+			nameText = fmt.Sprintf("CAP %s", nameText)
 		default:
 			nameText = fmt.Sprintf("PTR %s", nameText)
 		}

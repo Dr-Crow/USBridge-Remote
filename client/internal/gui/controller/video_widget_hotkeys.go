@@ -17,7 +17,11 @@ import (
 //	Q  stop the stream
 //	X  toggle fullscreen
 //	S  toggle the Net Graph statistics overlay
-//	M  toggle the mouse mode (touchpad <-> absolute)
+//	M  toggle the mouse mode -- touchpad <-> absolute on mobile (Capture
+//	   isn't offered there); absolute <-> capture on desktop (touchpad
+//	   isn't offered there -- see mouseConfigOptions)
+//	Z  release Capture mode to absolute specifically (Moonlight's own
+//	   mouse-mode hotkey letter) -- a no-op in any other mode, unlike M
 //	N  show/hide the host's mouse cursor (the "Show Mouse" setting)
 //	V  type the clipboard's text into the host
 
@@ -28,17 +32,23 @@ const (
 
 // Virtual-key codes of the hotkey letters.
 const (
-	vkHotkeyQuit       int16 = 0x51 // Q
-	vkHotkeyFullscreen int16 = 0x58 // X
-	vkHotkeyStats      int16 = 0x53 // S
-	vkHotkeyMouseMode  int16 = 0x4D // M
-	vkHotkeyCursor     int16 = 0x4E // N
-	vkHotkeyPaste      int16 = 0x56 // V
+	vkHotkeyQuit         int16 = 0x51 // Q
+	vkHotkeyFullscreen   int16 = 0x58 // X
+	vkHotkeyStats        int16 = 0x53 // S
+	vkHotkeyMouseMode    int16 = 0x4D // M
+	vkHotkeyMouseRelease int16 = 0x5A // Z
+	vkHotkeyCursor       int16 = 0x4E // N
+	vkHotkeyPaste        int16 = 0x56 // V
 )
 
 // HotkeyActions are the hotkeys that change main-window state.
 type HotkeyActions struct {
 	ToggleMouseMode func()
+	// ReleaseMouseCapture exits Capture mode back to absolute. It's a no-op
+	// when Capture isn't the current mode -- Ctrl+Alt+Shift+Z is a
+	// release-only shortcut (Moonlight's own mouse-mode hotkey letter),
+	// unlike M's full toggle.
+	ReleaseMouseCapture func()
 	// ToggleShowMouse flips the persisted Show Mouse setting and applies it
 	// through SetShowMouseCursor.
 	ToggleShowMouse func()
@@ -77,6 +87,10 @@ func (vw *VideoWidget) handleHotkeyDown(event *fyne.KeyEvent) bool {
 		service.SetNetGraphEnabled(!service.NetGraphEnabled())
 	case vkHotkeyMouseMode:
 		if fn := vw.hotkeyActions.ToggleMouseMode; fn != nil {
+			fyne.Do(fn)
+		}
+	case vkHotkeyMouseRelease:
+		if fn := vw.hotkeyActions.ReleaseMouseCapture; fn != nil {
 			fyne.Do(fn)
 		}
 	case vkHotkeyCursor:

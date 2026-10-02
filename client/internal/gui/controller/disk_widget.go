@@ -1038,6 +1038,16 @@ func (dw *DiskWidget) applyMouseModeSelection(rowID int, newMode string) {
 	if dw.onMouseTypeChanged != nil {
 		dw.onMouseTypeChanged(newMode)
 	}
+
+	// Capture is a client-only overlay on touchpad's own relative wire path
+	// (same mouseTransportType) -- switching to/from it must be instant, like
+	// Moonlight's own Ctrl+Alt+Shift+Z, not gated behind the "rebuild gadget"
+	// confirmation that an actual transport change (touchpad<->absolute) needs.
+	if mouseTransportType(previousMode) == mouseTransportType(newMode) {
+		dw.requestDevicesRefresh()
+		return
+	}
+
 	if !dw.isMouseMountedActual() {
 		dw.requestDevicesRefresh()
 		return
