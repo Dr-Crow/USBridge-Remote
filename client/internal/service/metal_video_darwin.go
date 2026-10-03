@@ -4,7 +4,7 @@ package service
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
-#cgo LDFLAGS: -framework AppKit -framework CoreVideo -framework QuartzCore -framework CoreFoundation -framework Metal
+#cgo LDFLAGS: -framework AppKit -framework CoreVideo -framework QuartzCore -framework CoreFoundation -framework Metal -framework AVFoundation -framework CoreMedia
 // PyroWave decode (pyrowave_decode_darwin.m): one static archive from
 // scripts/build_pyrowave_macos.sh that exports only the pyrowave_* C API.
 // Vulkan headers come from the vendored tree (pinned to what the bitstream was built

@@ -32,6 +32,13 @@ extern int metal_video_is_active(void);
 // platform_set_video_format below and that function's own doc comment.
 extern void metal_video_set_hdr(int enabled);
 
+// AVSampleBufferDisplayLayer video path -- macOS-only, see
+// metal_video_impl_darwin.m's g_avsbdl doc comment. Takes over the main
+// H.264/H.265 presentation path from platform_dr_submit below (the
+// VTDecompressionSession route further down stays compiled in, just
+// unreached for that codec pair now).
+extern int metal_video_submit_compressed_sample(CMSampleBufferRef sample);
+
 // PyroWave decode (pyrowave_decode_darwin.m) -- macOS-only, see that file's own
 // TARGET_OS_IPHONE-equivalent build tag (darwin && !ios).
 extern uint8_t *pyrowave_darwin_slot_begin(size_t total);
@@ -894,25 +901,58 @@ int platform_dr_submit(PDECODE_UNIT du) {
     int ret = DR_OK;
     size_t frameLen = CMBlockBufferGetDataLength(frameBuffer);
     if (!ctx.error && frameLen > 0 && g_vt_fmt_desc) {
+        // Real presentation time from the server, not a synthetic
+        // frame-count timestamp -- matches the official Moonlight client
+        // (VideoDecoderRenderer.m's own CMSampleTimingInfo). Doesn't drive
+        // scheduling here (see g_avsbdl's own doc comment: no
+        // controlTimebase is attached, same as official), but AVFoundation
+        // still uses valid monotonic timestamps internally for its own
+        // bookkeeping, so feed it the real one rather than a fake ~60Hz
+        // counter left over from the old VTDecompressionSession path.
+        g_vt_frame_count++; // kept for any other reader of this counter
         CMSampleTimingInfo timing = {
             .duration              = kCMTimeInvalid,
-            .presentationTimeStamp = CMTimeMake((int64_t)g_vt_frame_count++, 60),
+            .presentationTimeStamp = CMTimeMake((int64_t)du->presentationTimeUs, 1000000),
             .decodeTimeStamp       = kCMTimeInvalid,
         };
         CMSampleBufferRef sample = NULL;
         OSStatus s = CMSampleBufferCreate(kCFAllocatorDefault, frameBuffer, TRUE, NULL, NULL,
             g_vt_fmt_desc, 1, 1, &timing, 1, &frameLen, &sample);
         if (s == noErr) {
+#if TARGET_OS_MAC && !TARGET_OS_IPHONE
+            // video_widget_ui.go's frameNum==1 bootstrap (which creates the
+            // Metal/AVSBDL overlay in the first place -- see
+            // metal_video_create) fires off *this* callback, the same one
+            // metal_video_try_submit's own zero-copy IOSurface branch always
+            // calls on decode success, REGARDLESS of whether an overlay
+            // happens to exist yet -- that's what lets the very first frame
+            // bootstrap the overlay into existence at all. Gating this on
+            // metal_video_submit_compressed_sample's own return value was
+            // exactly backwards: that call can only succeed *after* the
+            // overlay exists, so frameNum got stuck at 0 forever, no
+            // overlay ever got created, g_avsbdl stayed NULL, and the
+            // no-frames-ever watchdog just reconnected in a loop -- confirmed
+            // live (zero "overlay created" log lines across three straight
+            // reconnects before this fix).
+            CMVideoDimensions dim = CMVideoFormatDescriptionGetDimensions(g_vt_fmt_desc);
+            goVTFrame(NULL, (int)dim.width, (int)dim.height, 0);
+            if (!metal_video_submit_compressed_sample(sample)) {
+                ret = DR_OK; // overlay inactive/torn down -- dropped, not a decode failure
+            }
+#else
+            // iOS keeps the VTDecompressionSession path -- no AVSampleBufferDisplayLayer
+            // wiring there (see metal_video_submit_compressed_sample's own macOS-only guard).
             VTDecodeFrameFlags df = kVTDecodeFrame_EnableAsynchronousDecompression;
             VTDecodeInfoFlags  info = 0;
             s = VTDecompressionSessionDecodeFrame(g_vt_session, sample, df, NULL, &info);
-            CFRelease(sample);
             if (s != noErr) {
                 char msg[96];
                 snprintf(msg, sizeof(msg), "VT: VTDecompressionSessionDecodeFrame failed: %d", (int)s);
                 goVTLog(msg);
                 ret = DR_NEED_IDR;
             }
+#endif
+            CFRelease(sample);
         } else {
             char msg[96];
             snprintf(msg, sizeof(msg), "VT: CMSampleBufferCreate failed: %d", (int)s);

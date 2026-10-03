@@ -9,6 +9,8 @@
 #import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/QuartzCore.h>
 #import <Metal/Metal.h>
+#import <AVFoundation/AVFoundation.h>
+#import <CoreMedia/CoreMedia.h>
 #include <stdatomic.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -28,6 +30,20 @@ extern void goMetalLog(char *msg, int level);
 // ─────────────────────────────────────────────────────────────────────────────
 static NSView  *g_view   = nil;
 static CALayer *g_layer  = nil;
+
+// AVSampleBufferDisplayLayer video path -- sibling of g_layer/g_metal_layer,
+// takes over as the actual on-screen video presentation (see
+// metal_video_submit_compressed_sample below). Unlike g_layer's
+// VTDecompressionSession + CVPixelBuffer + CADisplayLink "whatever's newest
+// wins" polling, this hands the still-*compressed* CMSampleBuffer straight
+// to AVFoundation, which decodes AND schedules presentation itself -- the
+// same approach the official Moonlight client uses (moonlight-ios's
+// VideoDecoderRenderer.m), instead of a hand-rolled decode+present pipeline.
+// No controlTimebase is attached (official doesn't set one either), so
+// samples display immediately in enqueue order rather than being scheduled
+// against their presentationTimeStamp -- the right behavior for low-latency
+// game streaming, not a video player's "play back at the recorded rate".
+static AVSampleBufferDisplayLayer *g_avsbdl = nil;
 
 // AI Vision overlay layer, stacked directly above g_layer (the video
 // IOSurface layer) and sharing its frame/gravity so a box drawn at pixel
@@ -914,6 +930,45 @@ double metal_video_last_decode_ms(void) {
     return g_lastKnownDecodeMs;
 }
 
+// metal_video_submit_compressed_sample feeds one ready-to-decode
+// CMSampleBuffer (built zero-copy in moonlight_cgo_apple.go's
+// platform_dr_submit) to g_avsbdl -- see that global's own doc comment for
+// why this replaces the VTDecompressionSession+CVPixelBuffer+CADisplayLink
+// path below for the main H.264/H.265 video pipeline. Called from the
+// DIRECT_SUBMIT thread (same thread that reads the video UDP socket), not
+// the main thread -- intentional and the documented way to feed this layer
+// from a real-time decode pipeline, same as official Moonlight does.
+// Returns 1 if enqueued, 0 if dropped (overlay inactive/torn down -- caller
+// treats this like any other dropped frame, not a fatal error).
+static _Atomic uint64_t g_avsbdl_submit_count = 0;
+static _Atomic double   g_avsbdl_fps_start     = 0.0;
+static _Atomic uint64_t g_avsbdl_fps_frames    = 0;
+
+int metal_video_submit_compressed_sample(CMSampleBufferRef sample) {
+    if (!atomic_load(&g_active) || !g_avsbdl) return 0;
+    [g_avsbdl enqueueSampleBuffer:sample];
+
+    if (atomic_fetch_add(&g_avsbdl_submit_count, 1) == 0) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "AVSBDL: first sample enqueued (status=%ld)", (long)g_avsbdl.status);
+        goMetalLog(msg, 0);
+    }
+    double now = mono_sec();
+    double start = atomic_load(&g_avsbdl_fps_start);
+    if (start == 0.0) { atomic_store(&g_avsbdl_fps_start, now); return 1; }
+    atomic_fetch_add(&g_avsbdl_fps_frames, 1);
+    double elapsed = now - start;
+    if (elapsed >= 2.0) {
+        uint64_t frames = atomic_exchange(&g_avsbdl_fps_frames, 0);
+        atomic_store(&g_avsbdl_fps_start, now);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "AVSBDL: submit fps=%.1f (frames=%llu window=%.1fs) status=%ld",
+                 (double)frames / elapsed, (unsigned long long)frames, elapsed, (long)g_avsbdl.status);
+        goMetalLog(msg, 0);
+    }
+    return 1;
+}
+
 // One-shot diagnostic for the HDR black-screen investigation (2026-09-14):
 // logs into app.log (unlike metal_video_impl_ios.m's NSLog-only equivalent,
 // which never reaches it) exactly which of the two early-out checks below
@@ -1203,6 +1258,7 @@ int metal_video_create(uintptr_t nsWinPtr, float x, float y, float w, float h) {
             g_overlay_layer = nil;
             g_hud_layer = nil;
             g_metal_layer = nil;
+            g_avsbdl = nil;
         }
 
         // Replace path: metal_video_create can be called again while a
@@ -1266,6 +1322,18 @@ int metal_video_create(uintptr_t nsWinPtr, float x, float y, float w, float h) {
         ml.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
         [ov.layer addSublayer:ml];
 
+        // AVSampleBufferDisplayLayer -- the actual video presentation path
+        // now (see g_avsbdl's own doc comment). Sibling of vl/ml at the same
+        // depth, so AI Vision/Net Graph overlays (ol/hl below) stay on top
+        // of it the same way they do for vl/ml.
+        AVSampleBufferDisplayLayer *sl = [AVSampleBufferDisplayLayer new];
+        sl.frame = ov.bounds;
+        sl.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
+        sl.videoGravity = AVLayerVideoGravityResizeAspect;
+        sl.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+        sl.contentsScale = NSScreen.mainScreen.backingScaleFactor;
+        [ov.layer addSublayer:sl];
+
         CALayer *ol = [CALayer layer];
         ol.frame = ov.bounds;
         ol.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
@@ -1288,6 +1356,7 @@ int metal_video_create(uintptr_t nsWinPtr, float x, float y, float w, float h) {
         g_overlay_layer = ol;
         g_hud_layer = hl;
         g_metal_layer = ml;
+        g_avsbdl = sl;
 
         g_submitCount = 0; g_renderCount = 0;
         g_fpsFrames = 0;   g_fpsStart = 0;   g_lastKnownFps = 0.0;
@@ -1513,6 +1582,7 @@ void metal_video_destroy(void) {
             g_overlay_layer = nil;
             g_hud_layer = nil;
             g_metal_layer = nil;
+            g_avsbdl = nil;
         }
         atomic_store(&g_hud_dirty, 0);
         pthread_mutex_lock(&g_hud_pending_mu);
