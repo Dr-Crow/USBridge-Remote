@@ -742,9 +742,19 @@ static void metal_render_main_with_buf(CVPixelBufferRef buf, double latencyMs) {
     }
 
     // Save a retained copy for the pause snapshot (cheap retain; releases old).
+    // Guarded by g_mu: metal_video_get_last_frame_rgba() reads g_lastRenderedBuf
+    // from an arbitrary background goroutine (VideoWidget.clearVideo, via
+    // getMetalLastFrame) with no thread-hopping of its own, concurrently with
+    // this main-thread (CADisplayLink) write -- an unguarded read-then-retain
+    // racing this reassign+release could retain/read a buffer mid-free
+    // (use-after-free) the moment a stream stop/restart lands while frames
+    // are still actively rendering, e.g. switching virtual monitor or codec
+    // mid-stream.
     CVPixelBufferRetain(buf);
+    pthread_mutex_lock(&g_mu);
     CVPixelBufferRef old_last = g_lastRenderedBuf;
     g_lastRenderedBuf = buf;
+    pthread_mutex_unlock(&g_mu);
     if (old_last) CVPixelBufferRelease(old_last);
 
     // Release the caller's ref (g_lastRenderedBuf holds its own).
@@ -1550,12 +1560,15 @@ void metal_video_update_frame(float x, float y, float w, float h) {
 
 // Copies the last rendered frame to a caller-owned RGBA buffer.
 // Returns 1 on success; caller must free(*out) with free().
-// Safe to call from any thread; uses the main queue for pixel access.
+// Safe to call from any thread: the read-then-retain of g_lastRenderedBuf is
+// guarded by g_mu against metal_render_main_with_buf's main-thread
+// reassign+release of the same pointer (see that function's doc comment).
 int metal_video_get_last_frame_rgba(int *outW, int *outH, uint8_t **out) {
-    if (!g_lastRenderedBuf) return 0;
-
+    pthread_mutex_lock(&g_mu);
     CVPixelBufferRef buf = g_lastRenderedBuf;
-    CVPixelBufferRetain(buf);
+    if (buf) CVPixelBufferRetain(buf);
+    pthread_mutex_unlock(&g_mu);
+    if (!buf) return 0;
 
     int w = (int)CVPixelBufferGetWidth(buf);
     int h = (int)CVPixelBufferGetHeight(buf);
@@ -1697,10 +1710,11 @@ void metal_video_destroy(void) {
         pthread_mutex_unlock(&g_mu);
         if (old) CVPixelBufferRelease(old);
 
-        if (g_lastRenderedBuf) {
-            CVPixelBufferRelease(g_lastRenderedBuf);
-            g_lastRenderedBuf = NULL;
-        }
+        pthread_mutex_lock(&g_mu);
+        CVPixelBufferRef old_last_render = g_lastRenderedBuf;
+        g_lastRenderedBuf = NULL;
+        pthread_mutex_unlock(&g_mu);
+        if (old_last_render) CVPixelBufferRelease(old_last_render);
 
         char msg[192];
         snprintf(msg, sizeof(msg),
