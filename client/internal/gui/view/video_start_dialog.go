@@ -44,17 +44,25 @@ type VideoStartDialog struct {
 	resolutionSelect *HeaderDropdown
 	fpsSelect        *HeaderDropdown
 	bitrateSlider    *videoDialogBitrateSlider
-	bitrateBlock     *fyne.Container
-	modeDetailsSlot  *fyne.Container
-	jpegHint         *widget.Label
-	deviceLabel      *widget.Label
-	vsyncCheck       *videoDialogCheckbox
-	vsyncHint        *videoDialogWrapText
-	upscaleSelect    *HeaderDropdown
-	upscaleLabels    map[string]string // display label -> models.UpscaleMode* value
-	fsrHint          *videoDialogWrapText
-	aiVisionCheck    *videoDialogCheckbox
-	aiVisionHint     *videoDialogWrapText
+	// The slider's Low/High bound hints, rewritten when the range changes
+	// (see applyBitrateRange).
+	bitrateLowHint  *canvas.Text
+	bitrateHighHint *canvas.Text
+	// The bitrate last picked in each range, so switching codecs back and
+	// forth keeps both.
+	bitrateByRange  map[bool]float64
+	bitrateRangePW  bool
+	bitrateBlock    *fyne.Container
+	modeDetailsSlot *fyne.Container
+	jpegHint        *widget.Label
+	deviceLabel     *widget.Label
+	vsyncCheck      *videoDialogCheckbox
+	vsyncHint       *videoDialogWrapText
+	upscaleSelect   *HeaderDropdown
+	upscaleLabels   map[string]string // display label -> models.UpscaleMode* value
+	fsrHint         *videoDialogWrapText
+	aiVisionCheck   *videoDialogCheckbox
+	aiVisionHint    *videoDialogWrapText
 	// color444Check/color444Hint: the RustShine Pro 4:4:4 color upgrade.
 	// Unlike AI Vision this row is always shown, on any codec -- it just
 	// reads as an inactive/grayed item (dim title, disabled checkbox, a
@@ -1618,8 +1626,9 @@ func (vsd *VideoStartDialog) createInterface() {
 
 	vsd.fpsSelect = newVideoDialogPicker(nil)
 
-	vsd.bitrateSlider = newVideoDialogBitrateSlider(1000, 150000, 1000)
-	vsd.bitrateSlider.Value = 20000
+	vsd.bitrateSlider = newVideoDialogBitrateSlider(bitrateMinKbps, bitrateMaxKbps, bitrateStepKbps)
+	vsd.bitrateSlider.Value = bitrateDefaultKbps
+	vsd.bitrateByRange = map[bool]float64{false: bitrateDefaultKbps, true: pyroWaveBitrateDefault}
 
 	vsd.jpegHint = widget.NewLabel(i18n.Current.VideoJPEGRTPHint)
 	vsd.jpegHint.Wrapping = fyne.TextWrapWord
@@ -1826,6 +1835,7 @@ func (vsd *VideoStartDialog) createInterface() {
 	lowHint.TextSize = videoDialogHintTextSize
 	highHint := canvas.NewText(fmt.Sprintf(i18n.Current.VideoHighFidelityFmt, vsd.bitrateSlider.Max/1000, i18n.Current.UnitMbps), videoDialogHintColor)
 	highHint.TextSize = videoDialogHintTextSize
+	vsd.bitrateLowHint, vsd.bitrateHighHint = lowHint, highHint
 	bitrateHintsRow := container.NewBorder(nil, nil, lowHint, highHint, nil)
 
 	bitrateCardBG := canvas.NewRectangle(videoDialogCardBG)
@@ -2127,10 +2137,16 @@ func (vsd *VideoStartDialog) Configure(info *models.VideoInfoData, defaultWidth,
 	vsd.refreshAvailableModesAndSelect(false)
 	vsd.setSelectedModeID(selectedMode)
 
+	// The saved bitrate belongs to the range it was picked in: a PyroWave
+	// figure above the regular maximum seeds PyroWave's range only.
 	if bitrate, ok := parseBitrate(defaultBitrate); ok {
-		vsd.bitrateSlider.SetValue(float64(bitrate))
-	} else {
-		vsd.bitrateSlider.SetValue(20000)
+		inPyroWaveRange := bitrate > bitrateMaxKbps
+		vsd.bitrateByRange[inPyroWaveRange] = float64(bitrate)
+		if inPyroWaveRange == vsd.bitrateRangePW {
+			vsd.bitrateSlider.SetValue(float64(bitrate))
+		}
+	} else if !vsd.bitrateRangePW {
+		vsd.bitrateSlider.SetValue(bitrateDefaultKbps)
 	}
 
 	vsd.refreshFPSOptions()
@@ -2442,7 +2458,49 @@ func (vsd *VideoStartDialog) setSelectedModeID(modeID string) {
 	for id, button := range vsd.modeButtons {
 		button.SetActive(id == modeID)
 	}
+	vsd.applyBitrateRange(modeID == models.VideoModePyroWave)
 	vsd.refreshModeUI()
+}
+
+// Bitrate slider ranges, kbps. PyroWave is an intra-only wavelet codec for a
+// fast local link: every frame is a full picture, so it needs several times
+// the bitrate of H.264/HEVC/AV1 for the same quality (4K60 looks clean from
+// about 300 Mbps). The figure is the whole stream on the wire, FEC included.
+const (
+	bitrateMinKbps          = 1000
+	bitrateMaxKbps          = 150000
+	bitrateStepKbps         = 1000
+	bitrateDefaultKbps      = 20000
+	pyroWaveBitrateMinKbps  = 50000
+	pyroWaveBitrateMaxKbps  = 1000000
+	pyroWaveBitrateStepKbps = 10000
+	pyroWaveBitrateDefault  = 300000
+)
+
+// applyBitrateRange switches the bitrate slider between the regular range and
+// PyroWave's, keeping the value last picked in each.
+func (vsd *VideoStartDialog) applyBitrateRange(pyroWave bool) {
+	s := vsd.bitrateSlider
+	if s == nil || pyroWave == vsd.bitrateRangePW {
+		return
+	}
+	vsd.bitrateByRange[vsd.bitrateRangePW] = s.Value
+	vsd.bitrateRangePW = pyroWave
+	if pyroWave {
+		s.Min, s.Max, s.Step = pyroWaveBitrateMinKbps, pyroWaveBitrateMaxKbps, pyroWaveBitrateStepKbps
+	} else {
+		s.Min, s.Max, s.Step = bitrateMinKbps, bitrateMaxKbps, bitrateStepKbps
+	}
+	s.Value = -1 // force SetValue to refresh and notify
+	s.SetValue(vsd.bitrateByRange[pyroWave])
+	if vsd.bitrateLowHint != nil {
+		vsd.bitrateLowHint.Text = fmt.Sprintf(i18n.Current.VideoLowLatencyFmt, s.Min/1000, i18n.Current.UnitMbps)
+		vsd.bitrateLowHint.Refresh()
+	}
+	if vsd.bitrateHighHint != nil {
+		vsd.bitrateHighHint.Text = fmt.Sprintf(i18n.Current.VideoHighFidelityFmt, s.Max/1000, i18n.Current.UnitMbps)
+		vsd.bitrateHighHint.Refresh()
+	}
 }
 
 func (vsd *VideoStartDialog) rebuildModeButtons() {
