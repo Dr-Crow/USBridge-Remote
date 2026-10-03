@@ -62,20 +62,52 @@ if [[ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]]; then
     _sunshine_curl_auth=(-H "Authorization: Bearer ${GITHUB_TOKEN:-$GH_TOKEN}")
 fi
 
+# _sunshine_releases_json
+# Fetches the repo's full releases list once per process and caches it — both
+# _sunshine_asset_url and _sunshine_resolve_tag need it when scanning for a
+# release by asset rather than by GitHub's own "latest" pointer.
+_sunshine_releases_json() {
+    if [[ -z "${_sunshine_releases_cache:-}" ]]; then
+        _sunshine_releases_cache="$(curl -fsSL "${_sunshine_curl_auth[@]+"${_sunshine_curl_auth[@]}"}" "https://api.github.com/repos/${_sunshine_repo}/releases" 2>/dev/null || true)"
+        [[ -z "$_sunshine_releases_cache" ]] && _sunshine_releases_cache="[]"
+    fi
+    echo "$_sunshine_releases_cache"
+}
+
+# _sunshine_find_release <asset_name>
+# This repo's releases aren't exclusively Sunshine builds — other components
+# (e.g. punktfunk-host) publish their own releases here too, and one of those
+# can be newer than our last Sunshine release, which makes GitHub's own
+# /releases/latest pointer resolve to a release with no Sunshine assets at
+# all. So "latest" here means "newest non-draft, non-prerelease release that
+# actually carries this asset", found by scanning the list ourselves instead
+# of trusting the API's latest pointer. Prints "<tag_name>\t<download_url>".
+_sunshine_find_release() {
+    local asset_name="$1"
+    _sunshine_releases_json | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for rel in data:
+    if rel.get('draft') or rel.get('prerelease'):
+        continue
+    for a in rel.get('assets', []):
+        if a['name'] == '${asset_name}':
+            print(rel['tag_name'] + '\t' + a['browser_download_url'])
+            sys.exit(0)
+" 2>/dev/null || true
+}
+
 _sunshine_asset_url() {
     local asset_name="$1"
     local version="${USBRIDGE_SUNSHINE_VERSION:-latest}"
-    local api_url
-    if [[ "$version" == "latest" ]]; then
-        api_url="https://api.github.com/repos/${_sunshine_repo}/releases/latest"
-    else
-        api_url="https://api.github.com/repos/${_sunshine_repo}/releases/tags/${version}"
-    fi
-    # Use || true so a 404 (no release yet) returns empty string instead of aborting.
-    # "${arr[@]+"${arr[@]}"}" (not "${arr[@]}") — macOS ships bash 3.2, where
-    # expanding an empty array under `set -u` is an unbound-variable error
-    # (fixed only in bash 4.4+); this form is the standard 3.2-safe idiom.
-    curl -fsSL "${_sunshine_curl_auth[@]+"${_sunshine_curl_auth[@]}"}" "$api_url" 2>/dev/null | python3 -c "
+    if [[ "$version" != "latest" ]]; then
+        # Pinned version: the user named an exact tag, so look at that
+        # release's assets directly rather than scanning the whole list.
+        curl -fsSL "${_sunshine_curl_auth[@]+"${_sunshine_curl_auth[@]}"}" \
+            "https://api.github.com/repos/${_sunshine_repo}/releases/tags/${version}" 2>/dev/null | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
@@ -86,6 +118,9 @@ try:
 except Exception:
     pass
 " 2>/dev/null || true
+        return 0
+    fi
+    _sunshine_find_release "$asset_name" | cut -f2
 }
 
 # _sunshine_build_jobs
@@ -111,10 +146,21 @@ _sunshine_build_jobs() {
     echo "$jobs"
 }
 
+# _sunshine_resolve_tag [asset_name]
+# Tag of the release that would be fetched right now. With asset_name, this
+# is the tag _sunshine_find_release would pick (so cache comparisons track
+# the release that actually has our asset, not whatever release GitHub
+# happens to call "latest" this week). Without it, falls back to GitHub's own
+# latest pointer.
 _sunshine_resolve_tag() {
+    local asset_name="${1:-}"
     local version="${USBRIDGE_SUNSHINE_VERSION:-}"
     if [[ -n "$version" ]]; then
         echo "$version"
+        return 0
+    fi
+    if [[ -n "$asset_name" ]]; then
+        _sunshine_find_release "$asset_name" | cut -f1
         return 0
     fi
     local py
@@ -138,15 +184,15 @@ _sunshine_record_tag() {
     mkdir -p "$(dirname "$file")" && echo "$tag" > "$file"
 }
 
-# _sunshine_staged_is_current <dest> <staged_path>
+# _sunshine_staged_is_current <dest> <staged_path> <asset_name>
 # True when staged_path exists and came from the release that would be
 # fetched now, so a local rebuild picks up a new fork release instead of
 # reusing whatever an earlier build staged. When the wanted tag can't be
 # resolved (offline, rate-limited) an existing stage is kept.
 _sunshine_staged_is_current() {
-    local dest="$1" staged="$2" want have
+    local dest="$1" staged="$2" asset_name="$3" want have
     [[ -e "$staged" && "${USBRIDGE_SUNSHINE_FORCE:-0}" != "1" ]] || return 1
-    want="$(_sunshine_resolve_tag 2>/dev/null || true)"
+    want="$(_sunshine_resolve_tag "$asset_name" 2>/dev/null || true)"
     [[ -z "$want" ]] && return 0
     have="$(cat "$(_sunshine_tag_file "$dest")" 2>/dev/null || true)"
     if [[ "$want" != "$have" ]]; then
@@ -171,7 +217,12 @@ build_sunshine_linux() {
         echo -e "${YELLOW}USBRIDGE_SKIP_SUNSHINE=1 — skipping Sunshine bundling${NC}"
         return 0
     fi
-    if _sunshine_staged_is_current "$dest" "$dest/usr/bin/sunshine"; then
+    local arch
+    arch="$(uname -m)"
+    local asset_name="Sunshine-Linux-x86_64.tar.gz"
+    [[ "$arch" == "aarch64" ]] && asset_name="Sunshine-Linux-aarch64.tar.gz"
+
+    if _sunshine_staged_is_current "$dest" "$dest/usr/bin/sunshine" "$asset_name"; then
         echo -e "${GREEN}✓${NC} Sunshine already staged at $dest, skipping"
         _sunshine_clean_creds "$dest"
         return 0
@@ -179,11 +230,6 @@ build_sunshine_linux() {
 
     _sunshine_require curl "Install with: sudo apt install curl"
     _sunshine_require python3 "Install with: sudo apt install python3"
-
-    local arch
-    arch="$(uname -m)"
-    local asset_name="Sunshine-Linux-x86_64.tar.gz"
-    [[ "$arch" == "aarch64" ]] && asset_name="Sunshine-Linux-aarch64.tar.gz"
 
     # Fast path: download pre-built tarball from our fork's releases.
     echo -e "${YELLOW}Fetching Sunshine fork (Streamers-Forks)...${NC}"
@@ -201,7 +247,7 @@ build_sunshine_linux() {
         rm -f "$tmp_tgz"
         chmod +x "$dest/usr/bin/sunshine" 2>/dev/null || true
         _sunshine_clean_creds "$dest"
-        _sunshine_record_tag "$(_sunshine_resolve_tag 2>/dev/null || true)" "$dest"
+        _sunshine_record_tag "$(_sunshine_resolve_tag "$asset_name" 2>/dev/null || true)" "$dest"
         echo -e "${GREEN}✓${NC} Sunshine (fork release) staged at $dest"
         return 0
     fi
@@ -250,7 +296,9 @@ fetch_sunshine_windows() {
         echo -e "${YELLOW}USBRIDGE_SKIP_SUNSHINE=1 — skipping Sunshine bundling${NC}"
         return 0
     fi
-    if _sunshine_staged_is_current "$dest" "$dest/sunshine.exe"; then
+    local asset_name="Sunshine-Windows-x86_64-portable.zip"
+
+    if _sunshine_staged_is_current "$dest" "$dest/sunshine.exe" "$asset_name"; then
         echo -e "${GREEN}✓${NC} Sunshine already staged at $dest, skipping download"
         _sunshine_clean_creds "$dest"
         return 0
@@ -261,7 +309,7 @@ fetch_sunshine_windows() {
 
     echo -e "${YELLOW}Fetching Sunshine fork (Streamers-Forks)...${NC}"
     local url
-    url="$(_sunshine_asset_url "Sunshine-Windows-x86_64-portable.zip")"
+    url="$(_sunshine_asset_url "$asset_name")"
     if [[ -z "$url" ]]; then
         echo -e "${RED}Failed to resolve Sunshine Windows download URL${NC}"
         exit 1
@@ -285,7 +333,7 @@ fetch_sunshine_windows() {
     fi
 
     _sunshine_clean_creds "$dest"
-    _sunshine_record_tag "$(_sunshine_resolve_tag 2>/dev/null || true)" "$dest"
+    _sunshine_record_tag "$(_sunshine_resolve_tag "$asset_name" 2>/dev/null || true)" "$dest"
     echo -e "${GREEN}✓${NC} Sunshine staged at $dest"
 }
 
@@ -300,7 +348,12 @@ build_sunshine_macos() {
         echo -e "${YELLOW}USBRIDGE_SKIP_SUNSHINE=1 — skipping Sunshine bundling${NC}"
         return 0
     fi
-    if _sunshine_staged_is_current "$dest" "$dest/Sunshine.app"; then
+    local arch
+    arch="$(uname -m)"
+    local asset_name="Sunshine-macOS-arm64.dmg"
+    [[ "$arch" != "arm64" ]] && asset_name="Sunshine-macOS-x86_64.dmg"
+
+    if _sunshine_staged_is_current "$dest" "$dest/Sunshine.app" "$asset_name"; then
         echo -e "${GREEN}✓${NC} Sunshine already staged at $dest, skipping"
         _sunshine_clean_creds "$dest"
         return 0
@@ -308,11 +361,6 @@ build_sunshine_macos() {
 
     _sunshine_require curl "Install Xcode Command Line Tools: xcode-select --install"
     _sunshine_require python3 "Install Xcode Command Line Tools: xcode-select --install"
-
-    local arch
-    arch="$(uname -m)"
-    local asset_name="Sunshine-macOS-arm64.dmg"
-    [[ "$arch" != "arm64" ]] && asset_name="Sunshine-macOS-x86_64.dmg"
 
     # Fast path: download pre-built DMG from our fork's releases.
     echo -e "${YELLOW}Fetching Sunshine fork (Streamers-Forks)...${NC}"
@@ -338,7 +386,7 @@ build_sunshine_macos() {
 
         xattr -dr com.apple.quarantine "$dest/Sunshine.app" 2>/dev/null || true
         _sunshine_clean_creds "$dest"
-        _sunshine_record_tag "$(_sunshine_resolve_tag 2>/dev/null || true)" "$dest"
+        _sunshine_record_tag "$(_sunshine_resolve_tag "$asset_name" 2>/dev/null || true)" "$dest"
         echo -e "${GREEN}✓${NC} Sunshine (fork release) staged at $dest/Sunshine.app"
         return 0
     fi
