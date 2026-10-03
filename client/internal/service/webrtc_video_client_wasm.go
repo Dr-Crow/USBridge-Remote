@@ -544,6 +544,13 @@ func (c *WebRTCVideoClient) SendMoonlightControllerEvent(controllerNumber uint16
 	// either, so there's nothing that would call this in practice.
 }
 
+func (c *WebRTCVideoClient) SendMoonlightControllerArrival(controllerNumber uint16, activeGamepadMask uint16, controllerType uint8, supportedButtonFlags uint32, capabilities uint16) {
+	// Not implemented yet -- see SendMoonlightControllerEvent's own doc
+	// comment; the browser gamepad path doesn't go through Moonlight's wire
+	// protocol at all (disk_widget_gamepad_start_wasm.go exports a synthetic
+	// USB/IP device from the agent instead), so nothing would call this.
+}
+
 func (c *WebRTCVideoClient) SendMoonlightPenEvent(
 	eventType, toolType, penButtons uint8,
 	x, y, pressureOrDistance float32,

@@ -758,6 +758,12 @@ func (m *MoonlightService) SendMoonlightControllerEvent(controllerNumber uint16,
 	}
 }
 
+func (m *MoonlightService) SendMoonlightControllerArrival(controllerNumber uint16, activeGamepadMask uint16, controllerType uint8, supportedButtonFlags uint32, capabilities uint16) {
+	if m.activeWrapper != nil {
+		m.activeWrapper.SendMoonlightControllerArrival(controllerNumber, activeGamepadMask, controllerType, supportedButtonFlags, capabilities)
+	}
+}
+
 func (m *MoonlightService) SendMoonlightPenEvent(
 	eventType, toolType, penButtons uint8,
 	x, y, pressureOrDistance float32,

@@ -13,71 +13,36 @@ package platform
 #include <stdlib.h>
 #include <string.h>
 
-// Moonlight button flags
-#define LI_DPAD_UP    0x0001
-#define LI_DPAD_DOWN  0x0002
-#define LI_DPAD_LEFT  0x0004
-#define LI_DPAD_RIGHT 0x0008
-#define LI_START      0x0010
-#define LI_BACK       0x0020
-#define LI_LS         0x0040
-#define LI_RS         0x0080
-#define LI_LB         0x0100
-#define LI_RB         0x0200
-#define LI_GUIDE      0x0400
-#define LI_A          0x1000
-#define LI_B          0x2000
-#define LI_X          0x4000
-#define LI_Y          0x8000
-
-// Standard button mapping (USB HID Button Page, button 1-11 → Moonlight flags)
-static const uint16_t kButtonMap[11] = {
-    LI_A, LI_B, LI_X, LI_Y,
-    LI_LB, LI_RB,
-    LI_BACK, LI_START,
-    LI_LS, LI_RS,
-    LI_GUIDE,
-};
-
 typedef struct {
     IOHIDDeviceRef device;
     IOHIDQueueRef  queue;
-    uint16_t       buttons;
-    int16_t        leftX, leftY, rightX, rightY;
-    uint8_t        leftTrigger, rightTrigger;
+    // Raw HID state, NOT yet given Xbox/DualShock/etc. meaning -- that
+    // translation happens in Go via sdlMapping.capture() (gamepad_sdlmap.go),
+    // the same per-VID/PID SDL_GameControllerDB-driven logic
+    // gamepad_capture_windows.go already uses. Button bit n (0-indexed) is
+    // HID button usage n+1, matching sdlSource{kind:sdlButton}'s "bn"
+    // directly. axis[0..5] is Generic Desktop X,Y,Z,Rx,Ry,Rz in HID usage
+    // order (NOT WinMM's report-declaration-order quirk -- see
+    // sdlAxisToJoy's own doc comment -- IOKit hands us usage-tagged values
+    // directly), each scaled to -1..1, matching SDL's own a0..a5 axis
+    // numbering convention. pov is the hat in hundredths of a degree, or -1
+    // when centred, exactly what joyInput.pov/hatMask expect.
+    uint32_t buttons;
+    double   axis[6];
+    int      pov;
+    uint16_t vendorID;
+    uint16_t productID;
 } HIDCapture;
 
-static int16_t scaleAxis(CFIndex val, CFIndex lo, CFIndex hi) {
+static double scaleUnit(CFIndex val, CFIndex lo, CFIndex hi) {
     if (hi <= lo) return 0;
     CFIndex mid = (hi + lo) / 2;
     CFIndex half = (hi - lo) / 2;
     if (half == 0) return 0;
-    int32_t r = (int32_t)(((val - mid) * 32767) / half);
-    if (r >  32767) r =  32767;
-    if (r < -32767) r = -32767;
-    return (int16_t)r;
-}
-
-static uint8_t scaleTrigger(CFIndex val, CFIndex lo, CFIndex hi) {
-    if (hi <= lo) return 0;
-    int64_t r = ((val - lo) * 255) / (hi - lo);
-    if (r < 0) r = 0;
-    if (r > 255) r = 255;
-    return (uint8_t)r;
-}
-
-static uint16_t hatToDpad(CFIndex hat) {
-    switch (hat) {
-        case 0: return LI_DPAD_UP;
-        case 1: return LI_DPAD_UP  | LI_DPAD_RIGHT;
-        case 2: return LI_DPAD_RIGHT;
-        case 3: return LI_DPAD_DOWN | LI_DPAD_RIGHT;
-        case 4: return LI_DPAD_DOWN;
-        case 5: return LI_DPAD_DOWN | LI_DPAD_LEFT;
-        case 6: return LI_DPAD_LEFT;
-        case 7: return LI_DPAD_UP  | LI_DPAD_LEFT;
-        default: return 0;
-    }
+    double r = (double)(val - mid) / (double)half;
+    if (r >  1) r =  1;
+    if (r < -1) r = -1;
+    return r;
 }
 
 static void processValue(HIDCapture* cap, IOHIDValueRef value) {
@@ -89,33 +54,27 @@ static void processValue(HIDCapture* cap, IOHIDValueRef value) {
     CFIndex  hi    = IOHIDElementGetLogicalMax(elem);
 
     if (page == kHIDPage_Button) {
-        uint32_t idx = usage - 1; // 0-indexed
-        if (idx < 11) {
-            if (ival) cap->buttons |= kButtonMap[idx];
-            else      cap->buttons &= ~kButtonMap[idx];
+        uint32_t idx = usage - 1; // 0-indexed, matches sdlSource's "bN"
+        if (idx < 32) {
+            if (ival) cap->buttons |= (1u << idx);
+            else      cap->buttons &= ~(1u << idx);
         }
         return;
     }
 
     if (page == kHIDPage_GenericDesktop) {
         switch (usage) {
-            case kHIDUsage_GD_X:
-                cap->leftX = scaleAxis(ival, lo, hi); break;
-            case kHIDUsage_GD_Y:
-                cap->leftY = scaleAxis(ival, lo, hi); break;
-            case kHIDUsage_GD_Z:
-                cap->leftTrigger = scaleTrigger(ival, lo, hi); break;
-            case kHIDUsage_GD_Rx:
-                cap->rightX = scaleAxis(ival, lo, hi); break;
-            case kHIDUsage_GD_Ry:
-                cap->rightY = scaleAxis(ival, lo, hi); break;
-            case kHIDUsage_GD_Rz:
-                cap->rightTrigger = scaleTrigger(ival, lo, hi); break;
-            case kHIDUsage_GD_Hatswitch: {
-                uint16_t dpad = hatToDpad(ival);
-                cap->buttons = (cap->buttons & 0xFFF0) | dpad;
+            case kHIDUsage_GD_X:  cap->axis[0] = scaleUnit(ival, lo, hi); break;
+            case kHIDUsage_GD_Y:  cap->axis[1] = scaleUnit(ival, lo, hi); break;
+            case kHIDUsage_GD_Z:  cap->axis[2] = scaleUnit(ival, lo, hi); break;
+            case kHIDUsage_GD_Rx: cap->axis[3] = scaleUnit(ival, lo, hi); break;
+            case kHIDUsage_GD_Ry: cap->axis[4] = scaleUnit(ival, lo, hi); break;
+            case kHIDUsage_GD_Rz: cap->axis[5] = scaleUnit(ival, lo, hi); break;
+            case kHIDUsage_GD_Hatswitch:
+                // HID hat switches report 0-7 for the eight directions and
+                // some out-of-range "null" value (commonly 8) when centred.
+                cap->pov = (ival >= 0 && ival <= 7) ? (int)(ival * 4500) : -1;
                 break;
-            }
         }
     }
 }
@@ -174,6 +133,12 @@ static HIDCapture* openCapture(uint64_t registryEntryID) {
 
     if (!dev) return NULL;
 
+    int vid = 0, pid = 0;
+    CFNumberRef vidRef = (CFNumberRef)IOHIDDeviceGetProperty(dev, CFSTR(kIOHIDVendorIDKey));
+    if (vidRef) CFNumberGetValue(vidRef, kCFNumberIntType, &vid);
+    CFNumberRef pidRef = (CFNumberRef)IOHIDDeviceGetProperty(dev, CFSTR(kIOHIDProductIDKey));
+    if (pidRef) CFNumberGetValue(pidRef, kCFNumberIntType, &pid);
+
     IOReturn ret = IOHIDDeviceOpen(dev, kIOHIDOptionsTypeNone);
     if (ret != kIOReturnSuccess) {
         CFRelease(dev);
@@ -202,6 +167,9 @@ static HIDCapture* openCapture(uint64_t registryEntryID) {
     HIDCapture* cap = (HIDCapture*)calloc(1, sizeof(HIDCapture));
     cap->device = dev;
     cap->queue  = queue;
+    cap->pov    = -1;
+    cap->vendorID  = (uint16_t)vid;
+    cap->productID = (uint16_t)pid;
     return cap;
 }
 
@@ -215,20 +183,22 @@ static void pollCapture(HIDCapture* cap) {
     }
 }
 
-static void getState(HIDCapture* cap,
-                     uint16_t* buttons,
-                     int16_t* lx, int16_t* ly,
-                     int16_t* rx, int16_t* ry,
-                     uint8_t* lt, uint8_t* rt) {
+static void getIdentity(HIDCapture* cap, uint16_t* vid, uint16_t* pid) {
+    if (!cap) { *vid = 0; *pid = 0; return; }
+    *vid = cap->vendorID;
+    *pid = cap->productID;
+}
+
+static void getRawState(HIDCapture* cap, uint32_t* buttons, double* axis, int* pov) {
     if (!cap) {
-        *buttons = 0; *lx = *ly = *rx = *ry = 0; *lt = *rt = 0;
+        *buttons = 0;
+        for (int i = 0; i < 6; i++) axis[i] = 0;
+        *pov = -1;
         return;
     }
     *buttons = cap->buttons;
-    *lx = cap->leftX;  *ly = cap->leftY;
-    *rx = cap->rightX; *ry = cap->rightY;
-    *lt = cap->leftTrigger;
-    *rt = cap->rightTrigger;
+    for (int i = 0; i < 6; i++) axis[i] = cap->axis[i];
+    *pov = cap->pov;
 }
 
 // closeCapture releases resources.
@@ -249,6 +219,8 @@ import "C"
 import (
 	"fmt"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 // GamepadCaptureState holds the current decoded state of a gamepad.
@@ -266,6 +238,26 @@ type GamepadCapture struct {
 	done chan struct{}
 }
 
+// genericXboxMapping is the fallback layout for a HID gamepad the SDL
+// database (gamepad_sdldb.go) does not recognize: Generic Desktop axes in
+// HID usage order (X,Y,Z,Rx,Ry,Rz) and buttons 1-11 in Xbox's own usage
+// order -- the same assumption gamepad_capture_windows.go's pollWinMMState
+// falls back to for an unknown DirectInput pad. Built from a literal SDL
+// mapping line so an unrecognized pad goes through the exact same
+// sdlMapping.capture() path a database hit does (including the
+// lefty/righty Moonlight-vs-DirectInput Y flip -- see that method's own
+// doc comment), instead of a second hand-rolled implementation.
+var genericXboxMapping = func() *sdlMapping {
+	_, m, ok := parseSDLMapping("00000000000000000000000000000000,Generic Xbox Layout," +
+		"a:b0,b:b1,x:b2,y:b3,leftshoulder:b4,rightshoulder:b5,back:b6,start:b7," +
+		"leftstick:b8,rightstick:b9,guide:b10," +
+		"leftx:a0,lefty:a1,rightx:a3,righty:a4,lefttrigger:a2,righttrigger:a5,")
+	if !ok {
+		panic("gamepad_capture_darwin: invalid built-in generic Xbox SDL mapping")
+	}
+	return m
+}()
+
 // StartGamepadCapture opens the gamepad identified by deviceID and calls onState
 // at ~60 Hz with the latest input state. Returns an error if the device cannot be opened.
 func StartGamepadCapture(deviceID string, onState func(GamepadCaptureState)) (*GamepadCapture, error) {
@@ -277,6 +269,22 @@ func StartGamepadCapture(deviceID string, onState func(GamepadCaptureState)) (*G
 	cctx := C.openCapture(C.uint64_t(id))
 	if cctx == nil {
 		return nil, fmt.Errorf("failed to open IOKit HID device %s", deviceID)
+	}
+
+	var cvid, cpid C.uint16_t
+	C.getIdentity(cctx, &cvid, &cpid)
+	vid, pid := uint16(cvid), uint16(cpid)
+
+	// A pad the SDL database knows is read through its mapping (a PlayStation-
+	// layout pad has its triggers, right stick and face buttons elsewhere than
+	// an Xbox pad); an unknown one keeps the generic Xbox-style layout --
+	// mirrors gamepad_capture_windows.go's own WinMM capture exactly.
+	mapping := sdlMappingFor(vid, pid)
+	if mapping != nil {
+		logrus.Infof("🎮 [IOKit] gamepad %04x:%04x uses the SDL mapping %q", vid, pid, mapping.name)
+	} else {
+		mapping = genericXboxMapping
+		logrus.Infof("🎮 [IOKit] gamepad %04x:%04x has no SDL mapping, assuming the Xbox layout", vid, pid)
 	}
 
 	cap := &GamepadCapture{
@@ -301,20 +309,20 @@ func StartGamepadCapture(deviceID string, onState func(GamepadCaptureState)) (*G
 			case <-ticker.C:
 				C.pollCapture(cctx)
 
-				var buttons C.uint16_t
-				var lx, ly, rx, ry C.int16_t
-				var lt, rt C.uint8_t
-				C.getState(cctx, &buttons, &lx, &ly, &rx, &ry, &lt, &rt)
+				var buttons C.uint32_t
+				var axis [6]C.double
+				var pov C.int
+				C.getRawState(cctx, &buttons, &axis[0], &pov)
 
-				onState(GamepadCaptureState{
-					Buttons:      uint16(buttons),
-					LeftX:        int16(lx),
-					LeftY:        int16(ly),
-					RightX:       int16(rx),
-					RightY:       int16(ry),
-					LeftTrigger:  uint8(lt),
-					RightTrigger: uint8(rt),
-				})
+				raw := joyInput{
+					axes: [6]float64{
+						float64(axis[0]), float64(axis[1]), float64(axis[2]),
+						float64(axis[3]), float64(axis[4]), float64(axis[5]),
+					},
+					buttons: uint32(buttons),
+					pov:     int(pov),
+				}
+				onState(mapping.capture(raw))
 			}
 		}
 	}()

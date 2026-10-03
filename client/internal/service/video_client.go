@@ -94,6 +94,14 @@ type MoonlightInputSender interface {
 	SendMoonlightMouseButton(action int8, button int)
 	SendMoonlightScroll(clicks int8)
 	SendMoonlightControllerEvent(controllerNumber uint16, activeGamepadMask uint16, buttons uint16, leftTrigger uint8, rightTrigger uint8, leftStickX int16, leftStickY int16, rightStickX int16, rightStickY int16)
+	// SendMoonlightControllerArrival announces controllerNumber's pad type via
+	// LiSendControllerArrivalEvent (LI_CTYPE_* -- LiCtypeXbox/LiCtypePS/...)
+	// before any SendMoonlightControllerEvent for it, so a Sunshine-compatible
+	// host can create the right virtual pad (Xbox 360 vs DualShock 4) instead
+	// of always assuming Xbox. Falls back to an ordinary multi-controller
+	// event on a host that doesn't support arrival events, so it's always
+	// safe to call. capabilities is LI_CCAP_* bits (0 if none apply).
+	SendMoonlightControllerArrival(controllerNumber uint16, activeGamepadMask uint16, controllerType uint8, supportedButtonFlags uint32, capabilities uint16)
 	// SendMoonlightPenEvent sends one pen/tablet sample via LiSendPenEvent.
 	// x/y/pressureOrDistance are normalized 0.0..1.0 (see LiSendPenEvent's own
 	// doc comment in Limelight.h); tilt is combined Z tilt in degrees

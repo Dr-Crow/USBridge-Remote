@@ -966,6 +966,11 @@ static void do_send_multi_controller(
 {
     LiSendMultiControllerEvent(cn, am, b, lt, rt, lx, ly, rx, ry);
 }
+static void do_send_controller_arrival(unsigned short cn, unsigned short am, unsigned char ctype,
+    unsigned int supportedButtonFlags, unsigned short capabilities)
+{
+    LiSendControllerArrivalEvent((uint8_t)cn, am, ctype, supportedButtonFlags, capabilities);
+}
 static void do_send_utf8_text(const char *text, unsigned int len) { LiSendUtf8TextEvent(text, len); }
 static void do_send_pen(unsigned char eventType, unsigned char toolType, unsigned char penButtons,
                          float x, float y, float pressureOrDistance,
@@ -1257,6 +1262,18 @@ func (w *MoonlightCgoWrapper) SendMoonlightControllerEvent(
 		C.uchar(leftTrigger), C.uchar(rightTrigger),
 		C.short(leftStickX), C.short(leftStickY),
 		C.short(rightStickX), C.short(rightStickY),
+	)
+}
+func (w *MoonlightCgoWrapper) SendMoonlightControllerArrival(
+	controllerNumber uint16, activeGamepadMask uint16, controllerType uint8,
+	supportedButtonFlags uint32, capabilities uint16,
+) {
+	if !liStartConnectionActive.Load() {
+		return
+	}
+	C.do_send_controller_arrival(
+		C.ushort(controllerNumber), C.ushort(activeGamepadMask), C.uchar(controllerType),
+		C.uint(supportedButtonFlags), C.ushort(capabilities),
 	)
 }
 func (w *MoonlightCgoWrapper) SendMoonlightPenEvent(

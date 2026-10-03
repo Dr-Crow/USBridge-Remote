@@ -45,11 +45,15 @@ func (dw *DiskWidget) syncGamepadCaptures() {
 		dw.activeCaptures = make(map[string]gamepadCaptureHandle)
 	}
 
-	// Build the set of gamepad IDs that should be captured (mounted & has ID).
+	// Build the set of gamepad IDs that should be captured (mounted & has ID),
+	// and each one's requested mode -- needed below to announce its type when
+	// capture actually starts (see the newIDs loop's own comment).
 	wanted := make(map[string]bool)
+	wantedMode := make(map[string]string)
 	for _, drive := range dw.allDrives {
 		if drive.IsGamepad && drive.IsMounted && drive.GamepadID != "" {
 			wanted[drive.GamepadID] = true
+			wantedMode[drive.GamepadID] = drive.GamepadMode
 		}
 	}
 
@@ -92,6 +96,7 @@ func (dw *DiskWidget) syncGamepadCaptures() {
 		}
 		dw.activeCaptures[id] = cap
 		dw.startTouchpad(id)
+		dw.announceGamepadArrival(slot, dw.effectiveGamepadMode(wantedMode[id]))
 	}
 }
 
@@ -179,6 +184,29 @@ func (dw *DiskWidget) releasePadSlot(id string) {
 	if sender := dw.moonlightProvider(); sender != nil && sender.IsInputActive() {
 		sender.SendMoonlightControllerEvent(uint16(slot), dw.padSlots.mask(), 0, 0, 0, 0, 0, 0, 0)
 	}
+}
+
+// announceGamepadArrival tells a Sunshine-compatible host what kind of pad
+// just took this controller slot (LiSendControllerArrivalEvent/LI_CTYPE_* --
+// see MoonlightInputSender.SendMoonlightControllerArrival's own doc comment),
+// so it can create a matching virtual pad (Xbox 360 vs DualShock 4) instead
+// of always assuming Xbox. Safe to call even when nothing is listening: the
+// arrival event is a Sunshine protocol extension the client always also
+// backs with an ordinary (zero) multi-controller event, and this method
+// itself no-ops before a Moonlight session exists.
+func (dw *DiskWidget) announceGamepadArrival(slot int, mode string) {
+	if dw.moonlightProvider == nil {
+		return
+	}
+	sender := dw.moonlightProvider()
+	if sender == nil || !sender.IsInputActive() {
+		return
+	}
+	ctype := platform.MoonlightCtypeXbox
+	if mode == gamepadModeDualShock4 {
+		ctype = platform.MoonlightCtypePS
+	}
+	sender.SendMoonlightControllerArrival(uint16(slot), dw.padSlots.mask(), ctype, 0xFFFF, 0)
 }
 
 // onHostRumble applies the host's rumble request to the pad that holds that

@@ -316,6 +316,17 @@ const (
 	// the agent (Moonlight controller path). Software agents only; the
 	// hardware KVM has no such mode.
 	gamepadModeMapX360 = "mapx360"
+	// gamepadModeDualShock4 maps the local gamepad to a virtual DualShock 4
+	// pad on the agent instead of an Xbox 360 one -- same Moonlight
+	// controller-event path as gamepadModeMapX360 (see
+	// MoonlightInputSender.SendMoonlightControllerArrival's doc comment for
+	// how the agent learns which shape to create), just a different virtual
+	// pad. Software agents only: it replaces the DirectInput slot there,
+	// since a software agent has no raw-HID-passthrough path for a
+	// client-captured pad to begin with (unlike the hardware KVM, where
+	// DirectInput is a real raw gadget mode) -- the virtual-pad shape is the
+	// only choice that actually exists for it.
+	gamepadModeDualShock4 = "dualshock4"
 )
 
 func normalizeGamepadMode(mode string) string {
@@ -324,6 +335,8 @@ func normalizeGamepadMode(mode string) string {
 		return gamepadModeXInput
 	case gamepadModeMapX360:
 		return gamepadModeMapX360
+	case gamepadModeDualShock4:
+		return gamepadModeDualShock4
 	}
 	return gamepadModeDirectInput
 }
@@ -334,20 +347,28 @@ func gamepadModeLabel(mode string) string {
 		return i18n.Current.DeviceXInput
 	case gamepadModeMapX360:
 		return i18n.Current.DeviceMapX360
+	case gamepadModeDualShock4:
+		return i18n.Current.DeviceDualShock4
 	}
 	return i18n.Current.DeviceDirectInput
 }
 
 // effectiveGamepadMode resolves a row's stored mode against the connected
 // agent. An empty mode (the user has not picked one) defaults to Map Xbox 360
-// on a software agent and to XInput on the KVM hardware; Map Xbox 360 is not
-// available on the hardware, so it falls back to XInput there.
+// on a software agent and to XInput on the KVM hardware; Map Xbox 360 and
+// DualShock 4 are not available on the hardware, so both fall back to XInput
+// there.
 func (dw *DiskWidget) effectiveGamepadMode(mode string) string {
 	software := IsSoftwareAgentOS(dw.agentOS)
 	switch strings.ToLower(mode) {
 	case gamepadModeMapX360:
 		if software {
 			return gamepadModeMapX360
+		}
+		return gamepadModeXInput
+	case gamepadModeDualShock4:
+		if software {
+			return gamepadModeDualShock4
 		}
 		return gamepadModeXInput
 	case gamepadModeXInput, gamepadModeDirectInput:
@@ -360,9 +381,13 @@ func (dw *DiskWidget) effectiveGamepadMode(mode string) string {
 }
 
 // gamepadModeOptions lists the mode picker's labels for the connected agent.
+// A software agent has no raw-passthrough path for a client-captured pad, so
+// DirectInput/XInput (the hardware KVM's two real USB gadget modes) are
+// replaced there by the two virtual-pad shapes a software agent actually
+// offers.
 func (dw *DiskWidget) gamepadModeOptions() []string {
 	if IsSoftwareAgentOS(dw.agentOS) {
-		return []string{i18n.Current.DeviceMapX360, i18n.Current.DeviceDirectInput, i18n.Current.DeviceXInput}
+		return []string{i18n.Current.DeviceMapX360, i18n.Current.DeviceDualShock4}
 	}
 	return []string{i18n.Current.DeviceDirectInput, i18n.Current.DeviceXInput}
 }
@@ -374,6 +399,8 @@ func gamepadModeFromLabel(label string) string {
 		return gamepadModeXInput
 	case i18n.Current.DeviceMapX360:
 		return gamepadModeMapX360
+	case i18n.Current.DeviceDualShock4:
+		return gamepadModeDualShock4
 	}
 	return gamepadModeDirectInput
 }
