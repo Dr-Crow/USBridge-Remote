@@ -22,7 +22,7 @@ func (dw *DiskWidget) newDashboardHIDConnectButton() *view.DeviceDashboardHeader
 	return btn
 }
 
-// hidOverlaySyncInterval matches browserGamepadPollInterval's own cadence --
+// hidOverlaySyncInterval matches gamepadPollInterval's own cadence --
 // frequent enough that the overlay button visibly tracks scrolling/resizing
 // the Devices tab, cheap enough (one AbsolutePositionForObject call plus one
 // js.Value.Call) to just poll rather than hook into Fyne's own resize

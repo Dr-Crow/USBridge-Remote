@@ -594,13 +594,10 @@ func (dw *DiskWidget) loadGamepadDevices() {
 	for _, g := range gamepads {
 		ids = append(ids, fmt.Sprintf("%s %q %s:%s", g.ID, g.Name, g.VendorID, g.ProductID))
 	}
-	// Logged only when the result changes -- this runs on a 1s poll for the
-	// browser build's whole widget lifetime (browserGamepadPollInterval),
+	// Logged only when the result changes -- this runs on a 1s poll
+	// (gamepadPollInterval) for the whole widget lifetime on every platform,
 	// so logging unconditionally spams "gamepads found: 0 []" indefinitely
-	// whenever nothing is plugged in. Native platforms only call this from
-	// an explicit Refresh(), where an unconditional log is fine, but the
-	// dedupe is harmless there too (each Refresh still logs on its own
-	// first call, and again only if the result actually changed).
+	// whenever nothing is plugged in.
 	if sig := fmt.Sprintf("%d %v", len(gamepads), ids); sig != dw.lastGamepadLogSig {
 		dw.lastGamepadLogSig = sig
 		logrus.Infof("🎮 gamepads found: %d %v", len(gamepads), ids)
@@ -736,6 +733,7 @@ func (dw *DiskWidget) updateDevicesStatus() {
 
 	drives := dw.allDrives
 	usedMountedIdx := make(map[int]bool)
+	gamepadAssignment := gamepadDeviceAssignment(drives, dw.mountedDevices, dw.agentOS, usedMountedIdx)
 	for i := range drives {
 		drive := &drives[i]
 		oldStatus := drive.IsMounted
@@ -778,6 +776,22 @@ func (dw *DiskWidget) updateDevicesStatus() {
 		// then getting torn down again within a few hundred ms, every time,
 		// since combineDrives calls syncPenCaptures at its own tail.
 		if drive.IsPenTablet {
+			continue
+		}
+
+		// Resolved by gamepadDeviceAssignment above, not by the generic
+		// nested loop below -- see that function's doc comment for why a
+		// gamepad row needs its own two-pass (exact-identity-first) matching
+		// instead of the first-available-wins search every other kind here
+		// uses.
+		if drive.IsGamepad {
+			if j, ok := gamepadAssignment[i]; ok {
+				isMounted = true
+				device := dw.mountedDevices[j]
+				logrus.Debugf("🎮 Found connected gamepad: %s (type: %s, device: %s)", device.Name, device.Type, device.Device)
+			}
+			drive.IsMounted = isMounted
+			logrus.Debugf("🎮 %s (gamepad): %v -> %v", drive.Name, oldStatus, drive.IsMounted)
 			continue
 		}
 
@@ -837,26 +851,12 @@ func (dw *DiskWidget) updateDevicesStatus() {
 				break
 			}
 
-			// A software agent reports the requested mode ("mapx360", "xinput", ...) as the
-			// type, not "gamepad:<mode>" like the KVM hardware, so also match the device kind.
-			if drive.IsGamepad && (device.Device == "gamepad" || device.Type == "gamepad" || strings.HasPrefix(device.Type, "gamepad:")) {
-				// Several local pads can be listed, but the agent only knows the
-				// VID/PID we sent, so a software agent's entry belongs to the
-				// row with that identity, not simply to the first gamepad row.
-				if IsSoftwareAgentOS(dw.agentOS) && !gamepadIdentityMatches(drive.GamepadVendorID, drive.GamepadProductID, device.VendorID, device.ProductID) {
-					continue
-				}
-				isMounted = true
-				usedMountedIdx[j] = true
-				logrus.Debugf("🎮 Found connected gamepad: %s (type: %s, device: %s)", device.Name, device.Type, device.Device)
-				break
-			}
-
 			// IsUSBAudio selection is determined exclusively by the GetAudioInfo inference
 			// block below — not from mountedDevices, which reflects USB gadget presence
 			// (stale) rather than which source PulseAudio is actually streaming.
+			// IsGamepad is resolved by gamepadDeviceAssignment's own early continue above.
 
-			if drive.IsKeyboard || drive.IsMouse || drive.IsRNDIS || drive.IsGamepad || drive.IsUSBAudio {
+			if drive.IsKeyboard || drive.IsMouse || drive.IsRNDIS || drive.IsUSBAudio {
 				continue
 			}
 

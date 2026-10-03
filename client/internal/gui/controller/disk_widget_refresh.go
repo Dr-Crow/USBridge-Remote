@@ -160,7 +160,9 @@ func (dw *DiskWidget) markDevicesRefresh() {
 }
 
 // startPeriodicRefresh polls only the API sources (mounted devices + local drives).
-// Gamepad, video, and local file scanning happen on explicit Refresh() calls only.
+// Video and local file scanning happen on explicit Refresh() calls only; gamepads
+// get their own ticker instead (startGamepadPolling), since those can change with
+// no agent round-trip to notice on its own.
 func (dw *DiskWidget) startPeriodicRefresh() {
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)

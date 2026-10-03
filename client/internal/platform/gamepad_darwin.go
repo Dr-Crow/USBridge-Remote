@@ -11,9 +11,11 @@ package platform
 #include <CoreFoundation/CoreFoundation.h>
 #include <stdlib.h>
 
-// enumerateGamepads fills buf with up to maxDevices device IDs (uint64) and
-// copies the corresponding name into names[i] (caller must free). Returns count.
-static int enumerateGamepads(uint64_t* ids, char** names, int maxDevices) {
+// enumerateGamepads fills buf with up to maxDevices device IDs (uint64),
+// copies the corresponding name into names[i] (caller must free), and fills
+// vendorIDs/productIDs (0 when IOKit has no value for that device). Returns
+// count.
+static int enumerateGamepads(uint64_t* ids, char** names, int* vendorIDs, int* productIDs, int maxDevices) {
     IOHIDManagerRef mgr = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
     if (!mgr) return 0;
 
@@ -61,6 +63,13 @@ static int enumerateGamepads(uint64_t* ids, char** names, int maxDevices) {
             } else {
                 names[count] = strdup("Unknown Gamepad");
             }
+            int vid = 0, pid = 0;
+            CFNumberRef vidRef = (CFNumberRef)IOHIDDeviceGetProperty(devs[i], CFSTR(kIOHIDVendorIDKey));
+            if (vidRef) CFNumberGetValue(vidRef, kCFNumberIntType, &vid);
+            CFNumberRef pidRef = (CFNumberRef)IOHIDDeviceGetProperty(devs[i], CFSTR(kIOHIDProductIDKey));
+            if (pidRef) CFNumberGetValue(pidRef, kCFNumberIntType, &pid);
+            vendorIDs[count] = vid;
+            productIDs[count] = pid;
             count++;
         }
         free(devs);
@@ -74,6 +83,7 @@ static int enumerateGamepads(uint64_t* ids, char** names, int maxDevices) {
 import "C"
 import (
 	"fmt"
+	"sort"
 	"unsafe"
 )
 
@@ -90,17 +100,51 @@ func EnumerateGamepads() []GamepadDevice {
 	const maxDevices = 16
 	ids := make([]C.uint64_t, maxDevices)
 	names := make([]*C.char, maxDevices)
+	vendorIDs := make([]C.int, maxDevices)
+	productIDs := make([]C.int, maxDevices)
 
-	count := int(C.enumerateGamepads(&ids[0], &names[0], C.int(maxDevices)))
+	count := int(C.enumerateGamepads(&ids[0], &names[0], &vendorIDs[0], &productIDs[0], C.int(maxDevices)))
 
-	result := make([]GamepadDevice, 0, count)
+	type rawDevice struct {
+		id        uint64
+		name      string
+		vendorID  int
+		productID int
+	}
+	raw := make([]rawDevice, count)
 	for i := 0; i < count; i++ {
 		name := C.GoString(names[i])
 		C.free(unsafe.Pointer(names[i]))
-		result = append(result, GamepadDevice{
-			ID:   fmt.Sprintf("%d", uint64(ids[i])),
-			Name: name,
-		})
+		raw[i] = rawDevice{id: uint64(ids[i]), name: name, vendorID: int(vendorIDs[i]), productID: int(productIDs[i])}
+	}
+	// IOHIDManagerCopyDevices hands back a CFSet, which has no defined
+	// iteration order -- it can (and does) vary between calls even with the
+	// exact same devices attached. Left unsorted, that reshuffles the row
+	// order in the devices list on every ~1s poll, so a toggle tap can land
+	// on a different row than the one the user tapped a moment later. IDs
+	// are each device's stable IORegistryEntryID, so sorting by ID keeps the
+	// list order constant across polls as long as the device set itself
+	// hasn't changed.
+	sort.Slice(raw, func(i, j int) bool { return raw[i].id < raw[j].id })
+
+	result := make([]GamepadDevice, 0, count)
+	for _, d := range raw {
+		dev := GamepadDevice{
+			ID:   fmt.Sprintf("%d", d.id),
+			Name: d.name,
+		}
+		// 0 means IOKit had no kIOHIDVendorIDKey/kIOHIDProductIDKey for this
+		// device (some virtual/synthetic pads, e.g. a vendor driver's XInput
+		// compatibility shim, don't expose one) -- leave it blank rather than
+		// reporting a bogus "0x0000", which gamepadIdentityMatches (disk_widget_gamepad.go)
+		// would otherwise treat as a real id and wrongly match/mismatch against it.
+		if d.vendorID != 0 {
+			dev.VendorID = fmt.Sprintf("0x%04x", d.vendorID)
+		}
+		if d.productID != 0 {
+			dev.ProductID = fmt.Sprintf("0x%04x", d.productID)
+		}
+		result = append(result, dev)
 	}
 	return result
 }

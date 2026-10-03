@@ -186,9 +186,9 @@ type DiskWidget struct {
 	devicesTraceBudget  int
 	lastDrivesTraceSig  string
 	// lastGamepadLogSig is the last logged EnumerateGamepads() result (see
-	// loadGamepadDevices) -- logged only when it changes, since the wasm
-	// build polls this every second for the widget's whole lifetime
-	// (browserGamepadPollInterval) and an unconditional log there spams
+	// loadGamepadDevices) -- logged only when it changes, since every build
+	// polls this every second for the widget's whole lifetime
+	// (gamepadPollInterval) and an unconditional log there spams
 	// "gamepads found: 0 []" forever whenever nothing is plugged in.
 	lastGamepadLogSig     string
 	preferredMouseMode    string
@@ -478,7 +478,7 @@ func NewDiskWidget(usbClient *api.USBClient, updateStatus func(), app fyne.App, 
 	dw.createInterface()
 	dw.startPeriodicRefresh()
 	go dw.loadGamepadDevices()
-	dw.startBrowserGamepadPolling()
+	dw.startGamepadPolling()
 	go dw.loadPenTabletDevices()
 	dw.startPenTabletPolling()
 	go dw.loadUSBPassthroughDevices()
@@ -486,7 +486,7 @@ func NewDiskWidget(usbClient *api.USBClient, updateStatus func(), app fyne.App, 
 	return dw
 }
 
-// penTabletPollInterval matches browserGamepadPollInterval's own reasoning:
+// penTabletPollInterval matches gamepadPollInterval's own reasoning:
 // platform.ListPenTablets() (macOS's IOKit enumeration, or the web build's
 // WebHID grant list) can change at any time with no refresh trigger of its
 // own -- a tablet plugged in mid-session, or a WebHID grant completing after
@@ -495,12 +495,24 @@ func NewDiskWidget(usbClient *api.USBClient, updateStatus func(), app fyne.App, 
 // round-trip.
 const penTabletPollInterval = 1 * time.Second
 
+// gamepadPollInterval: platform.EnumerateGamepads() can change at any time
+// with no refresh trigger of its own -- a pad plugged in (or unplugged)
+// while the Devices tab just sits there open -- so this polls instead of
+// relying on the explicit Refresh() call site (Devices tab select,
+// mount/unmount round-trip) to ever run again. Previously this only polled
+// on the web build (where the Gamepad API additionally needs a button press
+// before a pad appears at all) and native platforms relied on that
+// explicit-Refresh path alone; confirmed live that a pad plugged in while
+// already sitting on the Devices screen then never appeared until the app
+// was relaunched, so native platforms need the same ticker.
+const gamepadPollInterval = 1 * time.Second
+
 // startPenTabletPolling runs loadPenTabletDevices on a short ticker for the
 // lifetime of the widget, same shutdown signal (dw.refreshStop) and busy
-// guard (dw.isClosing) startBrowserGamepadPolling's own ticker goroutine
-// uses. Unlike that one, this needs no per-platform stub: ListPenTablets
-// itself is already a no-op returning nil on platforms with no pen support
-// (pen_capture_stub.go), so polling it everywhere is harmless.
+// guard (dw.isClosing) startGamepadPolling's own ticker goroutine uses. This
+// needs no per-platform stub: ListPenTablets itself is already a no-op
+// returning nil on platforms with no pen support (pen_capture_stub.go), so
+// polling it everywhere is harmless.
 func (dw *DiskWidget) startPenTabletPolling() {
 	go func() {
 		ticker := time.NewTicker(penTabletPollInterval)
@@ -514,6 +526,44 @@ func (dw *DiskWidget) startPenTabletPolling() {
 					continue
 				}
 				dw.loadPenTabletDevices()
+			}
+		}
+	}()
+}
+
+// startGamepadPolling runs loadGamepadDevices on a short ticker for the
+// lifetime of the widget, same shutdown signal/busy guard as
+// startPenTabletPolling. This needs no per-platform stub either:
+// platform.EnumerateGamepads() is already a cheap no-op returning nil on
+// platforms with no gamepad support (gamepad_stub.go), so polling it
+// everywhere is harmless -- see gamepadPollInterval's doc comment for why
+// native platforms need this too, not just the web build.
+//
+// Skipped entirely while the Control tab (video overlay) is the visible nav
+// destination, same guard startPeriodicRefresh's own ticker already applies
+// to its three HTTP round-trips: loadGamepadDevices ends in updateUIAsync,
+// which hops onto the Fyne/AppKit main thread, and scheduleCombine's own doc
+// comment already found that kind of per-tick main-thread work (there,
+// combineDrives itself) stalling the Metal CADisplayLink tied to the same
+// run loop during a stream. The Devices tab isn't visible then anyway, so
+// there is nothing to refresh for -- FlushPendingCombine (Devices tab
+// select) and the next off-video tick catch it up.
+func (dw *DiskWidget) startGamepadPolling() {
+	go func() {
+		ticker := time.NewTicker(gamepadPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-dw.refreshStop:
+				return
+			case <-ticker.C:
+				if dw.isClosing.Load() {
+					continue
+				}
+				if !view.NavVideoHidden() {
+					continue
+				}
+				dw.loadGamepadDevices()
 			}
 		}
 	}()

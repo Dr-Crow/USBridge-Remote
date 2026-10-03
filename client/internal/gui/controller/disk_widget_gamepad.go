@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"usbridge-client/internal/models"
 	"usbridge-client/internal/platform"
 	"usbridge-client/internal/service"
 
@@ -261,4 +262,80 @@ func gamepadIdentityMatches(driveVID, drivePID, deviceVID, devicePID string) boo
 		return true
 	}
 	return norm(driveVID) == norm(deviceVID) && norm(drivePID) == norm(devicePID)
+}
+
+// isMountedGamepadDevice reports whether a mounted-device entry is a gamepad
+// gadget/session: a software agent reports the requested mode ("mapx360",
+// "xinput", ...) as the type, not "gamepad:<mode>" like the KVM hardware, so
+// this also matches the device kind.
+func isMountedGamepadDevice(d *models.DeviceInfo) bool {
+	return d.Status == "connected" && (d.Device == "gamepad" || d.Type == "gamepad" || strings.HasPrefix(d.Type, "gamepad:"))
+}
+
+// gamepadIdentityExactMatch is gamepadIdentityMatches without its "either
+// side blank counts as a match" fallback -- both identities must actually be
+// present and equal.
+func gamepadIdentityExactMatch(driveVID, drivePID, deviceVID, devicePID string) bool {
+	norm := func(s string) string {
+		s = strings.ToLower(strings.TrimSpace(s))
+		s = strings.TrimPrefix(s, "0x")
+		return strings.TrimLeft(s, "0")
+	}
+	if norm(driveVID) == "" || norm(drivePID) == "" || norm(deviceVID) == "" || norm(devicePID) == "" {
+		return false
+	}
+	return norm(driveVID) == norm(deviceVID) && norm(drivePID) == norm(devicePID)
+}
+
+// gamepadDeviceAssignment maps each gamepad row in drives (by index) to the
+// dw.mountedDevices index it belongs to, marking claimed entries in
+// usedMountedIdx. Resolved in two passes rather than the single
+// first-available-wins search every other drive kind in updateDevicesStatus
+// uses: gamepadIdentityMatches treats a blank identity on either side as
+// "could be anyone", which is right for a single-pad KVM gadget (neither
+// side has a real VID/PID to compare) but wrong the moment a second pad is
+// in the picture and ANY row or device has no identity of its own -- e.g. a
+// vendor driver's virtual XInput-compatibility pad sitting next to the real
+// controller, which IOKit exposes with no kIOHIDVendorIDKey/kIOHIDProductIDKey
+// at all (see gamepad_darwin.go). Without an exact-match pass first,
+// whichever gamepad row updateDevicesStatus happened to check first could
+// steal another pad's mount confirmation purely by having no identity to
+// disqualify it. Confirmed live with a Razer Raiju plus Razer's own virtual
+// pad: toggling the Raiju on lit up the virtual pad's row instead, every
+// time, because the virtual row (blank identity) was reached first and
+// matched regardless of which pad the agent actually confirmed.
+func gamepadDeviceAssignment(drives []DriveItem, devices []*models.DeviceInfo, agentOS string, usedMountedIdx map[int]bool) map[int]int {
+	assignment := make(map[int]int)
+	multiPad := IsSoftwareAgentOS(agentOS)
+
+	assign := func(exactOnly bool) {
+		for i := range drives {
+			if !drives[i].IsGamepad {
+				continue
+			}
+			if _, done := assignment[i]; done {
+				continue
+			}
+			for j, device := range devices {
+				if usedMountedIdx[j] || !isMountedGamepadDevice(device) {
+					continue
+				}
+				if multiPad {
+					if exactOnly {
+						if !gamepadIdentityExactMatch(drives[i].GamepadVendorID, drives[i].GamepadProductID, device.VendorID, device.ProductID) {
+							continue
+						}
+					} else if !gamepadIdentityMatches(drives[i].GamepadVendorID, drives[i].GamepadProductID, device.VendorID, device.ProductID) {
+						continue
+					}
+				}
+				assignment[i] = j
+				usedMountedIdx[j] = true
+				break
+			}
+		}
+	}
+	assign(true)  // exact VID/PID matches first
+	assign(false) // today's wildcard fallback for whatever's left
+	return assignment
 }
