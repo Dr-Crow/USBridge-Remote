@@ -31,6 +31,13 @@ extern int metal_video_is_active(void);
 // builds entirely, see that file's own TARGET_OS_IPHONE guard), see
 // platform_set_video_format below and that function's own doc comment.
 extern void metal_video_set_hdr(int enabled);
+
+// PyroWave decode (pyrowave_decode_darwin.m) -- macOS-only, see that file's own
+// TARGET_OS_IPHONE-equivalent build tag (darwin && !ios).
+extern uint8_t *pyrowave_darwin_slot_begin(size_t total);
+extern void pyrowave_darwin_slot_commit(size_t total);
+extern void pyrowave_darwin_teardown(void);
+extern uint64_t pyrowave_darwin_frames(void);
 #endif
 
 #include "moonlight_cgo_shared.h"
@@ -390,7 +397,19 @@ static void vt_callback(
     CVImageBufferRef img, CMTime pts, CMTime dur)
 {
     (void)ctx; (void)frameRefCon; (void)flags; (void)pts; (void)dur;
-    if (status != noErr || img == NULL) return;
+    if (status != noErr || img == NULL) {
+        // Was a silent drop -- no logging at all -- which meant a VT decode
+        // error here was indistinguishable from network silence further up
+        // the stack (see checkVideoSilence's watchdog, a few lines below in
+        // this file): both just looked like "no frames for N seconds" and
+        // forced a full reconnect, with zero evidence of *why* left behind.
+        if (status != noErr) {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "VT: decode callback status=%d (frame dropped)", (int)status);
+            goVTLog(msg);
+        }
+        return;
+    }
 
     // ── VT FPS counter (runs before routing so it always counts) ─────────────
     {
@@ -682,11 +701,27 @@ static void walk_annexb(
     }
 }
 
-typedef struct { uint8_t *avcc; int avcc_len; int avcc_cap; int new_params; } vt_nal_ctx;
+// vt_nal_ctx drives the zero-copy Annex-B -> AVCC rewrite: base/dataBuffer
+// describe the flattened RTP-fragment buffer (see platform_dr_submit) that
+// every PICDATA NAL's bytes still physically live in; frameBuffer is the
+// AVCC-formatted result handed to VideoToolbox. Matches the official
+// Moonlight client's approach (Limelight/Stream/VideoDecoderRenderer.m,
+// -updateAnnexBBufferForRange:): a NAL's *payload* is never copied a second
+// time -- only its freshly-synthesized 4-byte length prefix is a real
+// allocation; the payload itself is attached to frameBuffer by reference
+// via CMBlockBufferAppendBufferReference, which keeps dataBuffer (and the
+// flattened bytes it owns) alive for exactly as long as VT needs them.
+typedef struct {
+    const uint8_t *base;
+    CMBlockBufferRef dataBuffer;
+    CMBlockBufferRef frameBuffer;
+    int new_params;
+    int error;
+} vt_nal_ctx;
 
 static void vt_handle_nal(const uint8_t *nal, int len, void *ptr) {
     vt_nal_ctx *ctx = (vt_nal_ctx *)ptr;
-    if (len <= 0) return;
+    if (len <= 0 || ctx->error) return;
 
     int isHEVC = (g_video_format & 0x0F00) != 0;
     if (isHEVC) {
@@ -732,31 +767,92 @@ static void vt_handle_nal(const uint8_t *nal, int len, void *ptr) {
             return;
         }
     }
-    int needed = ctx->avcc_len + 4 + len;
-    if (needed > ctx->avcc_cap) {
-        int nc = needed * 2 + 64;
-        uint8_t *nb = (uint8_t *)realloc(ctx->avcc, nc);
-        if (!nb) return;
-        ctx->avcc = nb; ctx->avcc_cap = nc;
+    // Append a fresh 4-byte block for this NAL's AVCC length prefix (tiny
+    // allocation, independent of NAL size) ...
+    size_t priorLen = CMBlockBufferGetDataLength(ctx->frameBuffer);
+    OSStatus st = CMBlockBufferAppendMemoryBlock(ctx->frameBuffer, NULL, 4,
+        kCFAllocatorDefault, NULL, 0, 4, 0);
+    if (st != noErr) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "VT: CMBlockBufferAppendMemoryBlock failed: %d", (int)st);
+        goVTLog(msg);
+        ctx->error = 1; return;
     }
-    uint8_t *p = ctx->avcc + ctx->avcc_len;
-    p[0] = (uint8_t)((len >> 24) & 0xFF); p[1] = (uint8_t)((len >> 16) & 0xFF);
-    p[2] = (uint8_t)((len >>  8) & 0xFF); p[3] = (uint8_t)( len        & 0xFF);
-    memcpy(p + 4, nal, len);
-    ctx->avcc_len += 4 + len;
+    uint8_t lenBytes[4] = {
+        (uint8_t)((len >> 24) & 0xFF), (uint8_t)((len >> 16) & 0xFF),
+        (uint8_t)((len >>  8) & 0xFF), (uint8_t)( len        & 0xFF),
+    };
+    st = CMBlockBufferReplaceDataBytes(lenBytes, ctx->frameBuffer, priorLen, 4);
+    if (st != noErr) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "VT: CMBlockBufferReplaceDataBytes failed: %d", (int)st);
+        goVTLog(msg);
+        ctx->error = 1; return;
+    }
+
+    // ... then attach this NAL's payload *by reference* -- no copy -- into
+    // the flattened buffer it already lives in (ctx->dataBuffer wraps
+    // ctx->base; CMBlockBuffer retains dataBuffer for as long as this
+    // reference, or anything built from frameBuffer, is alive).
+    int off = (int)(nal - ctx->base);
+    st = CMBlockBufferAppendBufferReference(ctx->frameBuffer, ctx->dataBuffer,
+        (size_t)off, (size_t)len, 0);
+    if (st != noErr) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "VT: CMBlockBufferAppendBufferReference failed: %d", (int)st);
+        goVTLog(msg);
+        ctx->error = 1; return;
+    }
 }
+
+#if TARGET_OS_MAC && !TARGET_OS_IPHONE
+// pyrowave_submit hands one PyroWave access unit to the decode thread
+// (pyrowave_decode_darwin.m); the frame reaches the renderer through
+// pyrowave_darwin_deliver there.
+static int pyrowave_submit(PDECODE_UNIT du) {
+    size_t total = 0;
+    for (PLENTRY e = du->bufferList; e; e = e->next) total += (size_t)e->length;
+    if (total == 0) return DR_OK;
+    uint8_t *slot = pyrowave_darwin_slot_begin(total);
+    if (!slot) return DR_NEED_IDR;
+    size_t off = 0;
+    for (PLENTRY e = du->bufferList; e; e = e->next) {
+        memcpy(slot + off, e->data, (size_t)e->length);
+        off += (size_t)e->length;
+    }
+    pyrowave_darwin_slot_commit(total);
+    return DR_OK;
+}
+#endif
 
 // platform_post_stop tears down the VT session after LiStopConnection joins threads.
 // Safe because no more dr_submit callbacks can fire after thread join.
 void platform_post_stop(void) {
     vt_invalidate();
+#if TARGET_OS_MAC && !TARGET_OS_IPHONE
+    pyrowave_darwin_teardown();
+#endif
 }
 
 int platform_dr_submit(PDECODE_UNIT du) {
+#if TARGET_OS_MAC && !TARGET_OS_IPHONE
+    if (g_video_format & VIDEO_FORMAT_MASK_PYROWAVE) return pyrowave_submit(du);
+#endif
+
     int total = 0;
     for (PLENTRY e = du->bufferList; e; e = e->next) total += e->length;
     if (total <= 0) return DR_OK;
 
+    // One gather copy is unavoidable -- du->bufferList's RTP fragments are
+    // scattered across separate packet buffers, and Annex-B start codes can
+    // straddle a fragment boundary, so NAL scanning needs one contiguous
+    // range. This matches the official Moonlight client's own
+    // DrSubmitDecodeUnit (Connection.m) exactly: one malloc+memcpy to
+    // flatten, then zero-copy from there on (see vt_handle_nal's own doc
+    // comment). `ab`'s ownership transfers to dataBuffer below -- it must
+    // stay a fresh malloc every call, not a reused buffer, since VT's
+    // asynchronous decode can still be reading from it well after this
+    // function returns.
     uint8_t *ab = (uint8_t *)malloc(total);
     if (!ab) return DR_NEED_IDR;
     int off = 0;
@@ -764,49 +860,70 @@ int platform_dr_submit(PDECODE_UNIT du) {
         memcpy(ab + off, e->data, e->length); off += e->length;
     }
 
-    vt_nal_ctx ctx = {
-        .avcc = (uint8_t *)malloc(total + 64), .avcc_len = 0,
-        .avcc_cap = total + 64, .new_params = 0,
-    };
-    if (!ctx.avcc) { free(ab); return DR_NEED_IDR; }
+    CMBlockBufferRef dataBuffer = NULL;
+    OSStatus s0 = CMBlockBufferCreateWithMemoryBlock(
+        kCFAllocatorDefault, ab, total, kCFAllocatorMalloc, NULL, 0, total, 0, &dataBuffer);
+    if (s0 != noErr) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "VT: CMBlockBufferCreateWithMemoryBlock(data) failed: %d", (int)s0);
+        goVTLog(msg);
+        free(ab); return DR_NEED_IDR;
+    }
+    // dataBuffer now owns `ab` -- it (and whatever retains it, e.g. the
+    // buffer references appended into frameBuffer below) will free() it
+    // once its last reference drops, which can be well after this
+    // function returns for an async decode.
 
+    CMBlockBufferRef frameBuffer = NULL;
+    OSStatus s1 = CMBlockBufferCreateEmpty(kCFAllocatorDefault, 0, 0, &frameBuffer);
+    if (s1 != noErr) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "VT: CMBlockBufferCreateEmpty failed: %d", (int)s1);
+        goVTLog(msg);
+        CFRelease(dataBuffer); return DR_NEED_IDR;
+    }
+
+    vt_nal_ctx ctx = { .base = ab, .dataBuffer = dataBuffer, .frameBuffer = frameBuffer, .new_params = 0, .error = 0 };
     walk_annexb(ab, total, vt_handle_nal, &ctx);
-    free(ab);
 
     if ((ctx.new_params || !g_vt_session) && g_sps_len > 0 && g_pps_len > 0) {
-        if (vt_create_session() != 0) { free(ctx.avcc); return DR_NEED_IDR; }
+        if (vt_create_session() != 0) { CFRelease(frameBuffer); CFRelease(dataBuffer); return DR_NEED_IDR; }
     }
-    if (!g_vt_session) { free(ctx.avcc); return DR_NEED_IDR; }
+    if (!g_vt_session) { CFRelease(frameBuffer); CFRelease(dataBuffer); return DR_NEED_IDR; }
 
     int ret = DR_OK;
-    if (ctx.avcc_len > 0 && g_vt_fmt_desc) {
-        int avcc_len = ctx.avcc_len;
-        CMBlockBufferRef block = NULL;
-        OSStatus s = CMBlockBufferCreateWithMemoryBlock(
-            kCFAllocatorDefault, ctx.avcc, avcc_len, kCFAllocatorMalloc,
-            NULL, 0, avcc_len, 0, &block);
+    size_t frameLen = CMBlockBufferGetDataLength(frameBuffer);
+    if (!ctx.error && frameLen > 0 && g_vt_fmt_desc) {
+        CMSampleTimingInfo timing = {
+            .duration              = kCMTimeInvalid,
+            .presentationTimeStamp = CMTimeMake((int64_t)g_vt_frame_count++, 60),
+            .decodeTimeStamp       = kCMTimeInvalid,
+        };
+        CMSampleBufferRef sample = NULL;
+        OSStatus s = CMSampleBufferCreate(kCFAllocatorDefault, frameBuffer, TRUE, NULL, NULL,
+            g_vt_fmt_desc, 1, 1, &timing, 1, &frameLen, &sample);
         if (s == noErr) {
-            ctx.avcc = NULL;
-            CMSampleTimingInfo timing = {
-                .duration              = kCMTimeInvalid,
-                .presentationTimeStamp = CMTimeMake((int64_t)g_vt_frame_count++, 60),
-                .decodeTimeStamp       = kCMTimeInvalid,
-            };
-            size_t sample_sz = (size_t)avcc_len;
-            CMSampleBufferRef sample = NULL;
-            s = CMSampleBufferCreate(kCFAllocatorDefault, block, TRUE, NULL, NULL,
-                g_vt_fmt_desc, 1, 1, &timing, 1, &sample_sz, &sample);
-            CFRelease(block);
-            if (s == noErr) {
-                VTDecodeFrameFlags df = kVTDecodeFrame_EnableAsynchronousDecompression;
-                VTDecodeInfoFlags  info = 0;
-                s = VTDecompressionSessionDecodeFrame(g_vt_session, sample, df, NULL, &info);
-                CFRelease(sample);
-                if (s != noErr) ret = DR_NEED_IDR;
-            } else { ret = DR_NEED_IDR; }
-        } else { ret = DR_NEED_IDR; }
+            VTDecodeFrameFlags df = kVTDecodeFrame_EnableAsynchronousDecompression;
+            VTDecodeInfoFlags  info = 0;
+            s = VTDecompressionSessionDecodeFrame(g_vt_session, sample, df, NULL, &info);
+            CFRelease(sample);
+            if (s != noErr) {
+                char msg[96];
+                snprintf(msg, sizeof(msg), "VT: VTDecompressionSessionDecodeFrame failed: %d", (int)s);
+                goVTLog(msg);
+                ret = DR_NEED_IDR;
+            }
+        } else {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "VT: CMSampleBufferCreate failed: %d", (int)s);
+            goVTLog(msg);
+            ret = DR_NEED_IDR;
+        }
+    } else if (ctx.error) {
+        ret = DR_NEED_IDR;
     }
-    if (ctx.avcc) free(ctx.avcc);
+    CFRelease(frameBuffer);
+    CFRelease(dataBuffer);
 
     // Tear down VT session after stop (called from do_li_stop context via vt_invalidate).
     return ret;

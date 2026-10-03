@@ -807,34 +807,52 @@ static double g_dl_diag_start = 0.0;
     }
 
     g_dl_fire_count++;
-    double diagNow = mono_sec();
-    if (g_dl_diag_start == 0.0) g_dl_diag_start = diagNow;
-    double diagElapsed = diagNow - g_dl_diag_start;
-    if (diagElapsed >= 2.0) {
-        char diagMsg[160];
-        snprintf(diagMsg, sizeof(diagMsg),
-                 "[DIAG] DisplayLink fire_rate=%.1fHz hit_rate=%.1fHz (fires=%llu hits=%llu window=%.1fs)",
-                 (double)g_dl_fire_count / diagElapsed, (double)g_dl_hit_count / diagElapsed,
-                 (unsigned long long)g_dl_fire_count, (unsigned long long)g_dl_hit_count, diagElapsed);
-        goMetalLog(diagMsg, 0);
-        g_dl_fire_count = 0;
-        g_dl_hit_count = 0;
-        g_dl_diag_start = diagNow;
-    }
 
-    // Stutter Profiler: DisplayLink stall detection
+    // Stutter Profiler: DisplayLink stall detection, plus a gap histogram --
+    // the 50ms-threshold warning below only catches a single dropped frame
+    // outright; a sustained 60->45Hz degradation (what's actually reported)
+    // is many *small* ~4-6ms-over-budget gaps, not occasional big ones, and
+    // would never trip that threshold even once. Bucketed here so a 2s
+    // window shows the actual shape of the jank instead of just an average.
+    static uint64_t g_gap_bucket_ok = 0;    // <18ms: one healthy ~60Hz tick
+    static uint64_t g_gap_bucket_1 = 0;     // 18-25ms: ~1 tick missed
+    static uint64_t g_gap_bucket_2 = 0;     // 25-50ms: 2+ ticks missed
     uint64_t now = mach_absolute_time();
     if (g_last_dl_time != 0) {
         mach_timebase_info_data_t tb;
         mach_timebase_info(&tb);
         uint64_t elapsed_ns = (now - g_last_dl_time) * tb.numer / tb.denom;
-        if (elapsed_ns > 50000000) { // 50ms
+        uint64_t elapsed_ms = elapsed_ns / 1000000;
+        if (elapsed_ms > 50) {
             char msg[128];
-            snprintf(msg, sizeof(msg), "⚠️ [Profiler] AppKit/DisplayLink stalled for %llu ms (UI freeze!)", elapsed_ns / 1000000);
+            snprintf(msg, sizeof(msg), "⚠️ [Profiler] AppKit/DisplayLink stalled for %llu ms (UI freeze!)", (unsigned long long)elapsed_ms);
             goMetalLog(msg, 2); // warn
+        } else if (elapsed_ms >= 25) {
+            g_gap_bucket_2++;
+        } else if (elapsed_ms >= 18) {
+            g_gap_bucket_1++;
+        } else {
+            g_gap_bucket_ok++;
         }
     }
     g_last_dl_time = now;
+
+    double diagNow = mono_sec();
+    if (g_dl_diag_start == 0.0) g_dl_diag_start = diagNow;
+    double diagElapsed = diagNow - g_dl_diag_start;
+    if (diagElapsed >= 2.0) {
+        char diagMsg[220];
+        snprintf(diagMsg, sizeof(diagMsg),
+                 "[DIAG] DisplayLink fire_rate=%.1fHz hit_rate=%.1fHz (fires=%llu hits=%llu window=%.1fs) gaps: ok=%llu 1tick(18-25ms)=%llu 2tick(25-50ms)=%llu",
+                 (double)g_dl_fire_count / diagElapsed, (double)g_dl_hit_count / diagElapsed,
+                 (unsigned long long)g_dl_fire_count, (unsigned long long)g_dl_hit_count, diagElapsed,
+                 (unsigned long long)g_gap_bucket_ok, (unsigned long long)g_gap_bucket_1, (unsigned long long)g_gap_bucket_2);
+        goMetalLog(diagMsg, 0);
+        g_dl_fire_count = 0;
+        g_dl_hit_count = 0;
+        g_dl_diag_start = diagNow;
+        g_gap_bucket_ok = 0; g_gap_bucket_1 = 0; g_gap_bucket_2 = 0;
+    }
 
     pthread_mutex_lock(&g_mu);
     CVPixelBufferRef buf = g_pendingBuf;

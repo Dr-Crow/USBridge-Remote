@@ -173,6 +173,22 @@ func (dw *DiskWidget) startPeriodicRefresh() {
 				if dw.isClosing.Load() {
 					continue
 				}
+				// Same guard scheduleCombine already applies to the heavy
+				// rebuild it triggers (see that function's own doc comment:
+				// 150-220ms of main-thread work, confirmed live to stall the
+				// Metal CADisplayLink) -- but the three HTTP round-trips
+				// below and the updateUIAsync dispatch each one ends with
+				// still ran unconditionally every 10s even while actively
+				// streaming, each one a small (but, per-call, nonzero) hop
+				// onto the same main thread/run loop the CADisplayLink needs
+				// serviced. None of this data is shown while the video nav
+				// is the visible destination, so there is nothing to refresh
+				// for -- skip the round-trips themselves, not just their
+				// downstream rebuild. FlushPendingCombine (Devices tab
+				// select) and the next off-video tick catch it up.
+				if !view.NavVideoHidden() {
+					continue
+				}
 				dw.loadLocalDrives()
 				dw.loadMountedDevices()
 				dw.loadUSBPassthroughDevices()
