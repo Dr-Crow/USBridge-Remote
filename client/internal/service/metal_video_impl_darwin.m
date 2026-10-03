@@ -39,10 +39,17 @@ static CALayer *g_layer  = nil;
 // to AVFoundation, which decodes AND schedules presentation itself -- the
 // same approach the official Moonlight client uses (moonlight-ios's
 // VideoDecoderRenderer.m), instead of a hand-rolled decode+present pipeline.
-// No controlTimebase is attached (official doesn't set one either), so
-// samples display immediately in enqueue order rather than being scheduled
-// against their presentationTimeStamp -- the right behavior for low-latency
-// game streaming, not a video player's "play back at the recorded rate".
+// No controlTimebase is attached (official doesn't set one either), AND
+// every sample fed in via metal_video_submit_compressed_sample carries the
+// kCMSampleAttachmentKey_DisplayImmediately attachment (set in
+// moonlight_cgo_apple.go's platform_dr_submit, see its own doc comment) --
+// without that attachment, AVSampleBufferDisplayLayer still paces display
+// against each sample's presentationTimeStamp via its own internally
+// created timebase even with no controlTimebase attached, which reproduces
+// the host's encode/network jitter as on-screen judder. The attachment is
+// what actually makes it display each sample the instant it's ready, the
+// right behavior for low-latency game streaming, not a video player's "play
+// back at the recorded rate".
 static AVSampleBufferDisplayLayer *g_avsbdl = nil;
 
 // Set whenever a *fresh* g_avsbdl is created (metal_video_create), cleared

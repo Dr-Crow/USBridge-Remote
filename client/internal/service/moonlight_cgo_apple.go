@@ -939,6 +939,25 @@ int platform_dr_submit(PDECODE_UNIT du) {
             g_vt_fmt_desc, 1, 1, &timing, 1, &frameLen, &sample);
         if (s == noErr) {
 #if TARGET_OS_MAC && !TARGET_OS_IPHONE
+            // Without this, AVSampleBufferDisplayLayer (metal_video_submit_compressed_sample
+            // below) does NOT just show samples the instant they're decoded despite no
+            // controlTimebase being attached (see g_avsbdl's own doc comment) -- it still paces
+            // display against each sample's presentationTimeStamp using its own internally
+            // created timebase, the same as a normal video player. That PTS is the host's real
+            // RTP encode timestamp (see this function's own comment above), which inherits
+            // network/encode jitter frame to frame; pacing display to it reproduces that jitter
+            // on screen as judder even while decode/submit itself holds a rock-steady average
+            // fps -- exactly the "steady 60fps but micro-stutters vs. official Moonlight"
+            // symptom this was added to fix. kCMSampleAttachmentKey_DisplayImmediately tells the
+            // layer to show each sample as soon as it's ready instead, which is what official
+            // Moonlight's own AVSampleBufferDisplayLayer path (moonlight-ios's
+            // VideoDecoderRenderer.m) actually relies on for this -- not merely omitting a
+            // controlTimebase, which alone isn't enough.
+            CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sample, true);
+            if (attachments != NULL && CFArrayGetCount(attachments) > 0) {
+                CFMutableDictionaryRef attachment = (CFMutableDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
+                CFDictionarySetValue(attachment, kCMSampleAttachmentKey_DisplayImmediately, kCFBooleanTrue);
+            }
             // video_widget_ui.go's frameNum==1 bootstrap (which creates the
             // Metal/AVSBDL overlay in the first place -- see
             // metal_video_create) fires off *this* callback, the same one
