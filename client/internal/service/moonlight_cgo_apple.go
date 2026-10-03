@@ -38,6 +38,8 @@ extern void metal_video_set_hdr(int enabled);
 // VTDecompressionSession route further down stays compiled in, just
 // unreached for that codec pair now).
 extern int metal_video_submit_compressed_sample(CMSampleBufferRef sample);
+extern int  metal_video_avsbdl_needs_fresh_idr(void);
+extern void metal_video_avsbdl_clear_needs_idr(void);
 
 // PyroWave decode (pyrowave_decode_darwin.m) -- macOS-only, see that file's own
 // TARGET_OS_IPHONE-equivalent build tag (darwin && !ios).
@@ -844,6 +846,23 @@ void platform_post_stop(void) {
 int platform_dr_submit(PDECODE_UNIT du) {
 #if TARGET_OS_MAC && !TARGET_OS_IPHONE
     if (g_video_format & VIDEO_FORMAT_MASK_PYROWAVE) return pyrowave_submit(du);
+
+    // See metal_video_impl_darwin.m's g_avsbdl_needs_idr doc comment: a
+    // freshly-(re)created AVSampleBufferDisplayLayer needs an actual IDR as
+    // its first sample, but by the time it exists (reactively, off the
+    // frameNum==1 bootstrap) the stream's real opening IDR is long gone --
+    // every frame in between was silently dropped with g_avsbdl still nil.
+    // Skip straight to requesting one instead of feeding it an ordinary
+    // delta frame it has no reference state for, which otherwise left it
+    // waiting on whatever periodic refresh the host happened to be running
+    // -- confirmed live as "took several minutes to show a picture".
+    if (metal_video_avsbdl_needs_fresh_idr()) {
+        if (du->frameType == FRAME_TYPE_IDR) {
+            metal_video_avsbdl_clear_needs_idr(); // this one's good -- fall through and feed it below
+        } else {
+            return DR_NEED_IDR;
+        }
+    }
 #endif
 
     int total = 0;
@@ -936,7 +955,10 @@ int platform_dr_submit(PDECODE_UNIT du) {
             // reconnects before this fix).
             CMVideoDimensions dim = CMVideoFormatDescriptionGetDimensions(g_vt_fmt_desc);
             goVTFrame(NULL, (int)dim.width, (int)dim.height, 0);
-            if (!metal_video_submit_compressed_sample(sample)) {
+            int sr = metal_video_submit_compressed_sample(sample);
+            if (sr == 2) {
+                ret = DR_NEED_IDR; // layer had failed; flushed, needs a fresh IDR to resume
+            } else if (sr == 0) {
                 ret = DR_OK; // overlay inactive/torn down -- dropped, not a decode failure
             }
 #else

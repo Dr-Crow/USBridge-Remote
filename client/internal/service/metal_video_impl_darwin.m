@@ -45,6 +45,26 @@ static CALayer *g_layer  = nil;
 // game streaming, not a video player's "play back at the recorded rate".
 static AVSampleBufferDisplayLayer *g_avsbdl = nil;
 
+// Set whenever a *fresh* g_avsbdl is created (metal_video_create), cleared
+// once a real IDR has been fed to it. Needed because this overlay is only
+// created reactively -- off the Go side's frameNum==1 bootstrap, itself
+// only reachable once a frame has already been decoded (see
+// platform_dr_submit's own goVTFrame call) -- so by the time g_avsbdl
+// actually exists, the stream's *real* opening IDR is long gone: every
+// frame that arrived during the create race (dispatch_sync to the main
+// thread, a goroutine hop, ...) was silently dropped (g_avsbdl was still
+// nil), and what's arriving now is an ordinary delta frame referencing
+// decoder state this brand-new layer never had. Unlike the old
+// VTDecompressionSession path -- which decoded continuously regardless of
+// whether a CALayer existed to show the result, so by the time one did,
+// its reference-frame state was already caught up -- AVSampleBufferDisplayLayer
+// only starts decoding once *we* feed it something, cold, so its first
+// sample must actually be a valid IDR. Without requesting one, the fix was
+// to wait for whatever periodic refresh/RFI cadence the host happened to
+// be running -- confirmed live as the "took several minutes to show a
+// picture" report this flag exists to fix.
+static _Atomic int g_avsbdl_needs_idr = 0;
+
 // AI Vision overlay layer, stacked directly above g_layer (the video
 // IOSurface layer) and sharing its frame/gravity so a box drawn at pixel
 // (x,y) of the detected frame lands on the exact same screen pixel the
@@ -939,13 +959,53 @@ double metal_video_last_decode_ms(void) {
 // the main thread -- intentional and the documented way to feed this layer
 // from a real-time decode pipeline, same as official Moonlight does.
 // Returns 1 if enqueued, 0 if dropped (overlay inactive/torn down -- caller
-// treats this like any other dropped frame, not a fatal error).
+// treats this like any other dropped frame, not a fatal error), or 2 if the
+// layer had failed and was just flushed to recover -- caller should request
+// a fresh IDR (this sample was NOT enqueued) rather than just dropping it.
 static _Atomic uint64_t g_avsbdl_submit_count = 0;
 static _Atomic double   g_avsbdl_fps_start     = 0.0;
 static _Atomic uint64_t g_avsbdl_fps_frames    = 0;
 
+// metal_video_avsbdl_needs_fresh_idr: see g_avsbdl_needs_idr's own doc
+// comment. Peeks (does not clear) the flag -- platform_dr_submit clears it
+// itself, only once it actually has an IDR in hand to feed, via
+// metal_video_avsbdl_clear_needs_idr below.
+int metal_video_avsbdl_needs_fresh_idr(void) {
+    return atomic_load(&g_avsbdl_needs_idr) != 0;
+}
+void metal_video_avsbdl_clear_needs_idr(void) {
+    atomic_store(&g_avsbdl_needs_idr, 0);
+}
+
 int metal_video_submit_compressed_sample(CMSampleBufferRef sample) {
     if (!atomic_load(&g_active) || !g_avsbdl) return 0;
+
+    // Once AVSampleBufferDisplayLayer hits AVQueuedSampleBufferRenderingStatusFailed
+    // (2), it silently ignores every further enqueueSampleBuffer: call -- no
+    // crash, no exception, the frame just never appears -- until -flush is
+    // called to reset it back to a working state (Apple's own documented
+    // recovery for this status). Without this check, a single bad early
+    // sample (e.g. a decode error on whatever happened to be the very first
+    // frame) meant the screen stayed black for the rest of the session: every
+    // later frame, including real IDRs, kept getting silently dropped here.
+    // Confirmed live: exactly this (a report of "black screen for up to a
+    // minute") with zero evidence in the log before this check existed.
+    if (g_avsbdl.status == AVQueuedSampleBufferRenderingStatusFailed) {
+        NSError *err = g_avsbdl.error;
+        char msg[160];
+        snprintf(msg, sizeof(msg), "AVSBDL: status=Failed, flushing to recover (%s)",
+                 err ? err.localizedDescription.UTF8String : "no error info");
+        goMetalLog(msg, 1); // warn
+        [g_avsbdl flush];
+        // Don't also enqueue this sample: it's almost certainly not an IDR
+        // (those are rare/periodic), so it'll just fail again immediately
+        // post-flush. Tell the caller to request a fresh IDR instead of
+        // waiting for whatever RFI/periodic-refresh cadence would otherwise
+        // eventually send one -- recovers in roughly one round-trip instead
+        // of up to several seconds.
+        return 2;
+    }
+
     [g_avsbdl enqueueSampleBuffer:sample];
 
     if (atomic_fetch_add(&g_avsbdl_submit_count, 1) == 0) {
@@ -1357,6 +1417,7 @@ int metal_video_create(uintptr_t nsWinPtr, float x, float y, float w, float h) {
         g_hud_layer = hl;
         g_metal_layer = ml;
         g_avsbdl = sl;
+        atomic_store(&g_avsbdl_needs_idr, 1);
 
         g_submitCount = 0; g_renderCount = 0;
         g_fpsFrames = 0;   g_fpsStart = 0;   g_lastKnownFps = 0.0;
