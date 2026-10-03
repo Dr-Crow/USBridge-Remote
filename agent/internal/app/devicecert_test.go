@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -238,4 +239,61 @@ func TestTickDeviceCert_ReusesCertOnIPChange(t *testing.T) {
 	if certRequests != 1 {
 		t.Errorf("GET /v1/device/cert called %d times, want 1 (wildcard cert must be reused across IP changes)", certRequests)
 	}
+}
+
+// TestDeviceCertTickOutcome covers deviceCertWatchdog's retry-backoff
+// decision for every outcome tickDeviceCert can return. The last case is a
+// regression test for the 2026-10-04 incident: an error that is neither nil
+// nor ErrPending nor ErrRateLimited (a network failure, hwid unavailable, or
+// -- what actually happened -- a non-JSON response like an edge/WAF block
+// page) used to leave registeredIP/registerTime untouched, which made the
+// caller's ticker loop retry on every 3-second tick forever instead of
+// backing off, turning a transient backend problem into a self-reinforcing
+// request storm.
+func TestDeviceCertTickOutcome(t *testing.T) {
+	const ip = "192.168.1.5"
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+
+	t.Run("success backs off the full register interval", func(t *testing.T) {
+		gotIP, gotTime := deviceCertTickOutcome(nil, ip, now)
+		if gotIP != ip || !gotTime.Equal(now) {
+			t.Errorf("deviceCertTickOutcome(nil, ...) = (%q, %v), want (%q, %v)", gotIP, gotTime, ip, now)
+		}
+	})
+
+	t.Run("pending retries sooner than the full register interval", func(t *testing.T) {
+		gotIP, gotTime := deviceCertTickOutcome(devicecert.ErrPending, ip, now)
+		if gotIP != ip {
+			t.Errorf("registeredIP = %q, want %q", gotIP, ip)
+		}
+		// runTick's ticker loop fires again once time.Since(registerTime) >=
+		// deviceCertRegisterInterval, so the effective next-retry instant is
+		// registerTime + deviceCertRegisterInterval -- confirm that lands
+		// deviceCertPendingRetry after now, not a full deviceCertRegisterInterval.
+		gotNextTick := gotTime.Add(deviceCertRegisterInterval)
+		wantNextTick := now.Add(deviceCertPendingRetry)
+		if !gotNextTick.Equal(wantNextTick) {
+			t.Errorf("effective next retry = %v, want %v", gotNextTick, wantNextTick)
+		}
+	})
+
+	t.Run("rate-limited backs off same as success, not every poll tick", func(t *testing.T) {
+		gotIP, gotTime := deviceCertTickOutcome(devicecert.ErrRateLimited, ip, now)
+		if gotIP != ip || !gotTime.Equal(now) {
+			t.Errorf("deviceCertTickOutcome(ErrRateLimited, ...) = (%q, %v), want (%q, %v)", gotIP, gotTime, ip, now)
+		}
+	})
+
+	t.Run("an unrecognized error still backs off instead of leaving state untouched", func(t *testing.T) {
+		gotIP, gotTime := deviceCertTickOutcome(errors.New("boom: unexpected HTML from edge"), ip, now)
+		if gotTime.IsZero() {
+			t.Fatal("registerTime is zero -- caller's ticker loop will retry on every deviceCertPollInterval tick forever")
+		}
+		if gotIP != ip {
+			t.Errorf("registeredIP = %q, want %q (must be set even on failure, or the ticker loop's IP-changed check never settles)", gotIP, ip)
+		}
+		if !gotTime.Equal(now) {
+			t.Errorf("registerTime = %v, want %v", gotTime, now)
+		}
+	})
 }

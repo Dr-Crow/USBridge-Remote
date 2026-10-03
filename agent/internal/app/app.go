@@ -2613,6 +2613,38 @@ const deviceCertPendingRetry = time.Minute
 // routing table for IP address / interface changes.
 const deviceCertPollInterval = 3 * time.Second
 
+// deviceCertTickOutcome decides how deviceCertWatchdog's runTick should
+// update its retry bookkeeping after one attempt at ip, given the error (if
+// any) tickDeviceCert returned. Pulled out as a pure function so this
+// decision is unit-testable without a real 3-second ticker.
+//
+// Every outcome other than ErrPending backs off the full
+// deviceCertRegisterInterval, success or not -- this function must ALWAYS
+// return a non-zero registerTime and the attempted ip, never the zero
+// values, on every path. An earlier version only did this for err == nil,
+// ErrPending, and ErrRateLimited; any OTHER error (a network failure, a
+// non-JSON response such as an edge/WAF block page, hwid unavailable, ...)
+// fell through without updating either return value. Since the caller's
+// outer ticker loop retries whenever registeredIP != the current IP OR
+// registerTime is its zero value, leaving both untouched made that
+// "never registered yet" condition permanently true for as long as the
+// error kept recurring -- retrying on every single deviceCertPollInterval
+// (3s) tick forever instead of backing off. That turned a transient
+// backend problem into a self-reinforcing request storm: more failures (an
+// account-wide rate limit, say) produced more non-JSON error responses,
+// which produced more unthrottled retries, which kept the backend further
+// over its limit. See usbridge-entitlement-backend's 2026-10-04 incident
+// writeup. Fixed by making the fallback case identical to the success case.
+func deviceCertTickOutcome(err error, ip string, now time.Time) (registeredIP string, registerTime time.Time) {
+	if errors.Is(err, devicecert.ErrPending) {
+		// Registered fine, cert just not issued yet: poll again in
+		// ~deviceCertPendingRetry instead of waiting a full
+		// deviceCertRegisterInterval.
+		return ip, now.Add(deviceCertPendingRetry - deviceCertRegisterInterval)
+	}
+	return ip, now
+}
+
 // deviceCertWatchdog keeps this machine's <label>.device.usbridge.io DNS
 // record and per-device TLS cert (see internal/tlshost,
 // internal/devicecert) up to date -- what lets the browser-based web
@@ -2633,27 +2665,10 @@ func (a *App) deviceCertWatchdog(ctx context.Context) {
 			return
 		}
 		err := a.tickDeviceCert(ctx)
-		if errors.Is(err, devicecert.ErrPending) {
-			// Registered fine, cert just not issued yet: poll again in
-			// ~deviceCertPendingRetry instead of every deviceCertPollInterval.
-			lastRegisteredIP = ip
-			lastRegisterTime = time.Now().Add(deviceCertPendingRetry - deviceCertRegisterInterval)
-			return
+		if err == nil && lastRegisteredIP != "" && lastRegisteredIP != ip {
+			log.Printf("🌐 [app] device-cert: local IP changed (%s -> %s), registered domain", lastRegisteredIP, ip)
 		}
-		if errors.Is(err, devicecert.ErrRateLimited) {
-			// Backend or Let's Encrypt quota hit: hammering every 3 s only
-			// makes it worse, wait out a full heartbeat interval.
-			lastRegisteredIP = ip
-			lastRegisterTime = time.Now()
-			return
-		}
-		if err == nil {
-			if lastRegisteredIP != "" && lastRegisteredIP != ip {
-				log.Printf("🌐 [app] device-cert: local IP changed (%s -> %s), registered domain", lastRegisteredIP, ip)
-			}
-			lastRegisteredIP = ip
-			lastRegisterTime = time.Now()
-		}
+		lastRegisteredIP, lastRegisterTime = deviceCertTickOutcome(err, ip, time.Now())
 	}
 
 	runTick()
