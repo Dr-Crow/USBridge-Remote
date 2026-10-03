@@ -1542,6 +1542,16 @@ func (a *App) SetStreamBackend(kind string) error {
 		return fmt.Errorf("punktfunk-host is not installed")
 	}
 
+	// The two backends number monitors differently (Sunshine: its own KMS
+	// index; RustShine: "cardPath|connector"), so each keeps its own pin
+	// and a switch would otherwise come up on whatever the other one was
+	// last left on -- live: RustShine on HDMI-A-1, then Sunshine captured
+	// its stale "0", which by then was the vkms Virtual-1 (cursor on black).
+	pinnedConnector := ""
+	if a.stream != nil {
+		pinnedConnector = pinConnector(a.stream)
+	}
+
 	stopStart := time.Now()
 	if a.stream != nil {
 		a.lastSwitch.Stopped = a.streamKind
@@ -1577,6 +1587,7 @@ func (a *App) SetStreamBackend(kind string) error {
 	if pw, ok := next.(streamhost.ProcessWatcher); ok {
 		pw.SetOnExit(a.startSunshine)
 	}
+	carryPin(next, pinnedConnector)
 	// Before the start, so the backend comes up on the benchmark's monitor.
 	_, benchPinned := a.applyBenchMonitor(next, kind)
 
@@ -1595,6 +1606,13 @@ func (a *App) SetStreamBackend(kind string) error {
 	// own retry/backoff to eventually paper over it.
 	a.stream.WaitReady(a.cfg.SunshinePort, streamReadyTimeout)
 	a.waitForMonitorCorrelation()
+	if !benchPinned && a.benchMonitor == "" && carryPin(a.stream, pinnedConnector) {
+		// Sunshine's index for the connector is only known for certain from
+		// its own log of this start.
+		if err := a.RestartSunshine(); err != nil {
+			log.Printf("[app] restarting %s on %s: %v", kind, pinnedConnector, err)
+		}
+	}
 	if !benchPinned && a.benchMonitor != "" {
 		// Sunshine names monitors by a GUID only its own log reveals, so a
 		// Sunshine that never ran here could only be pinned once it's up.
@@ -1614,6 +1632,47 @@ func (a *App) SetStreamBackend(kind string) error {
 	return nil
 }
 
+// pinConnector is the connector name ("HDMI-A-1") b is pinned to capture, or
+// "" when the pin is not a connector (unset, a virtual display spec, or a
+// platform without correlation by name).
+func pinConnector(b streamhost.Backend) string {
+	pin := b.OutputName()
+	if pin == "" || strings.HasPrefix(pin, "virtual:") {
+		return ""
+	}
+	if _, conn, ok := strings.Cut(pin, "|"); ok {
+		return conn
+	}
+	for _, d := range b.ListCaptureDevices() {
+		if d.OutputName == pin {
+			return d.Key
+		}
+	}
+	return ""
+}
+
+// carryPin pins b to connector in b's own numbering, when b knows the
+// connector and is pinned elsewhere. Reports whether the pin changed.
+func carryPin(b streamhost.Backend, connector string) bool {
+	if connector == "" {
+		return false
+	}
+	for _, d := range b.ListCaptureDevices() {
+		if d.Key != connector || d.OutputName == "" {
+			continue
+		}
+		if d.OutputName == b.OutputName() {
+			return false
+		}
+		if err := b.SetOutputName(d.OutputName); err != nil {
+			log.Printf("[app] carrying the %s pin over: %v", connector, err)
+			return false
+		}
+		log.Printf("[app] output pin %s carried over as %q", connector, d.OutputName)
+		return true
+	}
+	return false
+}
 
 // streamReadyTimeout bounds how long a backend (re)start waits for the
 // backend to bind its listeners before telling clients it's up. WaitReady
