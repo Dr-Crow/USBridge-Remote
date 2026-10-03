@@ -842,6 +842,34 @@ static double g_dl_diag_start = 0.0;
         metal_video_apply_pending_hud_overlay();
     }
 
+    // AVSampleBufferDisplayLayer health check: g_avsbdl can report
+    // status=Rendering and a perfectly healthy submit fps while the LAYER
+    // ITSELF is detached from the window (no superlayer) or has collapsed
+    // to a zero-size frame -- decode succeeds independent of presentation
+    // geometry, so neither condition trips the Failed-status recovery in
+    // metal_video_submit_compressed_sample. Confirmed live: a rapid
+    // benchmark-driven stop/switch-backend/start reconnect cycle left
+    // exactly this state -- "AVSBDL: submit fps=60.0 status=1" logging
+    // continuously while the actual screen stayed solid black. Checked
+    // every tick (cheap: two property reads) and self-healed by
+    // re-attaching/re-sizing rather than just logged, since by the time a
+    // human notices the black screen the diagnostic window has long since
+    // passed -- next time this fires, the fix should already be visible by
+    // the time anyone looks.
+    if (g_avsbdl && g_view) {
+        BOOL detached = (g_avsbdl.superlayer == nil);
+        BOOL collapsed = CGRectIsEmpty(g_avsbdl.frame);
+        if (detached || collapsed) {
+            char msg[160];
+            snprintf(msg, sizeof(msg),
+                     "AVSBDL: self-heal -- detached=%d collapsed=%d (frame=%.0fx%.0f) -- re-attaching",
+                     detached, collapsed, g_avsbdl.frame.size.width, g_avsbdl.frame.size.height);
+            goMetalLog(msg, 1); // warn
+            if (detached) [g_view.layer addSublayer:g_avsbdl];
+            g_avsbdl.frame = g_view.bounds;
+        }
+    }
+
     g_dl_fire_count++;
 
     // Stutter Profiler: DisplayLink stall detection, plus a gap histogram --
@@ -919,8 +947,22 @@ int metal_video_is_active(void) {
 // VKVideoGetStats().Rendered equivalent. Read cross-thread without a lock,
 // same tolerated race as g_submitCount above: a plain monotonic counter,
 // never torn in practice on this platform's int64 alignment.
+// Also incremented by metal_video_submit_compressed_sample further down
+// (the AVSampleBufferDisplayLayer path) -- declared up here so
+// metal_video_rendered_count below can read it; see that function's own
+// doc comment for why the two counters are summed.
+static _Atomic uint64_t g_avsbdl_submit_count = 0;
+
 int64_t metal_video_rendered_count(void) {
-    return g_renderCount;
+    // g_renderCount (the old CAMetalLayer/CADisplayLink path) stays 0 for
+    // H.264/H.265 now that g_avsbdl handles that pipeline instead -- and
+    // vice versa, g_avsbdl_submit_count stays 0 if that path is never
+    // reached (e.g. PyroWave's own route, or iOS). Exactly one of the two
+    // is live in a given build/session, so summing them is safe and keeps
+    // this counter meaningful for both -- the streamer benchmark's
+    // client-side render-fps stat (bench_recorder.go) reads this, and
+    // reported a flat 0.0 fps for every AVSBDL-path run before this fix.
+    return g_renderCount + (int64_t)atomic_load(&g_avsbdl_submit_count);
 }
 
 // Returns the Metal render FPS from the current measurement window.
@@ -962,7 +1004,6 @@ double metal_video_last_decode_ms(void) {
 // treats this like any other dropped frame, not a fatal error), or 2 if the
 // layer had failed and was just flushed to recover -- caller should request
 // a fresh IDR (this sample was NOT enqueued) rather than just dropping it.
-static _Atomic uint64_t g_avsbdl_submit_count = 0;
 static _Atomic double   g_avsbdl_fps_start     = 0.0;
 static _Atomic uint64_t g_avsbdl_fps_frames    = 0;
 
