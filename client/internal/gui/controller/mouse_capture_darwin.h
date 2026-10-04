@@ -1,3 +1,5 @@
+//go:build darwin && !ios
+
 #ifndef USBRIDGE_MOUSE_CAPTURE_DARWIN_H
 #define USBRIDGE_MOUSE_CAPTURE_DARWIN_H
 

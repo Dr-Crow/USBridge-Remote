@@ -1,3 +1,5 @@
+//go:build linux && !android
+
 #ifndef USBRIDGE_MOUSE_CAPTURE_LINUX_H
 #define USBRIDGE_MOUSE_CAPTURE_LINUX_H
 

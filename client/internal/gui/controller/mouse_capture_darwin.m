@@ -1,4 +1,12 @@
+//go:build darwin && !ios
+
 // Windowed (non-global) raw relative mouse capture for Capture mode.
+//
+// go/build's filename-based matching treats "_darwin" files as valid for
+// GOOS=ios too, same as "_linux" for android -- without the explicit tag
+// above this gets pulled into iOS builds and fails on missing AppKit/NSEvent
+// symbols. Same fix native_fullscreen_capture_darwin.* and
+// qr_camera_scanner_darwin.* already carry.
 //
 // This is deliberately NOT built on CGEventTap/kCGSessionEventTap the way
 // native_fullscreen_capture_darwin.go's exclusive-fullscreen input path is --

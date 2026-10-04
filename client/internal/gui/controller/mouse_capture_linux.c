@@ -1,4 +1,12 @@
+//go:build linux && !android
+
 // Raw relative mouse capture for Capture mode on X11.
+//
+// go/build's filename-based matching treats "_linux" C/H files as valid for
+// GOOS=android too (Android's kernel is Linux) -- unlike mouse_capture_linux.go,
+// this file has no build-tag comment of its own to override that, so without
+// the explicit tag above it gets pulled into Android builds and fails on
+// missing X11/Xlib.h. Same fix v4l2camera_impl_linux.c/.h already carry.
 //
 // There is no XInput2 raw-motion extension linked into this build (only
 // -lX11, same as vk_video_impl_linux.c), so this uses the same "virtual
