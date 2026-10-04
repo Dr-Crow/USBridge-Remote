@@ -102,22 +102,6 @@ func whatsNewCatalog() []whatsNewCard {
 			Date:    "September 2026",
 			Items: []whatsNewItem{
 				{
-					Kind: whatsNewKindPro,
-					Points: []whatsNewPoint{{
-						Glyph: whatsNewGlyphUSB,
-						Title: whatsNewCopy{
-							EN: "USB emulation support",
-							ES: "Soporte de emulacion USB",
-							UK: "Підтримка USB-емуляції",
-						},
-						Body: whatsNewCopy{
-							EN: "Pass local USB devices through to the host.",
-							ES: "Pasa dispositivos USB locales al host.",
-							UK: "Прокидання локальних USB-пристроїв на хост.",
-						},
-					}},
-				},
-				{
 					Kind: whatsNewKindFree,
 					Points: []whatsNewPoint{{
 						Glyph: whatsNewGlyphDisplay,
