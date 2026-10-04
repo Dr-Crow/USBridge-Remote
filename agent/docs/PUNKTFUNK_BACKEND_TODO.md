@@ -314,6 +314,21 @@ Windows.
 Run the client's benchmark against an agent built from this branch with
 Punktfunk picked, then work down "What's still open".
 
+## Shared pairing with Sunshine/rust-shine (2026-10-04)
+
+Punktfunk's own `cert.pem`/`key.pem`/`uniqueid`/`paired.json`/
+`client-labels.json` (all under `PUNKTFUNK_CONFIG_DIR`, which is
+`<stateDir>/punktfunk`) are now kept in sync with Sunshine's and
+rust-shine's own trust stores, so a Moonlight client paired against one
+backend doesn't need a fresh PIN after switching to Punktfunk. See
+[`SHARED_PAIRING.md`](SHARED_PAIRING.md) for the full design; the
+punktfunk-specific format details (confirmed from `gamestream/mod.rs`'s
+`paired_path`/`load_paired`/`save_paired` and `gamestream/cert.rs`'s
+`ServerIdentity::load_or_create`) live in
+`agent/internal/streamhost/shared_auth_formats.go`. Not yet verified
+against a *running* `punktfunk-host` process (unit-tested against the file
+formats only) — see that doc's "What's confirmed vs. still open" section.
+
 ## PyroWave over the GameStream plane (2026-10-03)
 
 The Punktfunk fork (Streamers-Forks `punktfunk/`) now offers PyroWave to a

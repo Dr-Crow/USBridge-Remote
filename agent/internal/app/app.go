@@ -4276,8 +4276,21 @@ func (a *App) VirtualDisplaySupported() bool {
 	return a.stream.VirtualDisplaySupported()
 }
 
-// UnpairSunshineClient removes the Moonlight client with the given UUID from
-// Sunshine's authorized client list.
+// UnpairSunshineClient removes the Moonlight client identified by uniqueID
+// (meaning depends on the active backend -- see streamhost's UnpairClient
+// doc comments) from every stream-host backend's trust list, not just the
+// currently active one -- see streamhost.RemoveTrustedClientEverywhere's
+// doc comment for why a shared trust store means a client unpaired here
+// must disappear from Sunshine's, rust-shine's, AND punktfunk's own files,
+// or switching backends would silently resurrect it.
+//
+// The live admin-API call against the active backend runs first (so an
+// already-running process drops the client immediately, in memory, not
+// just on its next restart) but its failure is only logged, never
+// returned: RemoveTrustedClientEverywhere's direct file rewrite is the
+// authoritative removal and is what actually fixes the originally-reported
+// bug (Sunshine's own admin-API unpair silently not persisting) -- a
+// caller only needs to know whether the durable removal succeeded.
 func (a *App) UnpairSunshineClient(uniqueID string) error {
 	a.streamMu.Lock()
 	defer a.streamMu.Unlock()
@@ -4288,7 +4301,14 @@ func (a *App) UnpairSunshineClient(uniqueID string) error {
 	if port == 0 {
 		port = 47990
 	}
-	return a.stream.UnpairClient(port, uniqueID)
+	if err := a.stream.UnpairClient(port, uniqueID); err != nil {
+		log.Printf("[app] live unpair against the active backend failed (will still remove it from the shared trust store): %v", err)
+	}
+	kind := streamhost.BackendKind(a.stream)
+	if kind == "" || a.cfg.StateDir == "" {
+		return nil
+	}
+	return streamhost.RemoveTrustedClientEverywhere(a.cfg.StateDir, kind, uniqueID)
 }
 
 // UpdateListenAddr updates the agent's HTTP listen host and port, persists the
@@ -4515,7 +4535,19 @@ func (a *App) SubmitMoonlightPIN(pin string) error {
 	if port == 0 {
 		port = 47990
 	}
-	return a.stream.SubmitPIN(port, pin)
+	if err := a.stream.SubmitPIN(port, pin); err != nil {
+		return err
+	}
+	// Propagates the client that just paired to the other two backends'
+	// trust lists immediately, instead of waiting for either of them to
+	// next Start() -- see streamhost.SyncAfterPair's doc comment. Also the
+	// only thing allowed to lift a prior tombstone (RemoveTrustedClientEverywhere),
+	// since this runs in direct response to a real pairing ceremony that
+	// just succeeded, not a passive file scan.
+	if kind := streamhost.BackendKind(a.stream); kind != "" && a.cfg.StateDir != "" {
+		streamhost.SyncAfterPair(a.cfg.StateDir, kind)
+	}
+	return nil
 }
 
 // SetAudioSink points Sunshine at the given audio device (sunshine.conf's

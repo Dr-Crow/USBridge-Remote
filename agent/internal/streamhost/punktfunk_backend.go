@@ -312,6 +312,14 @@ func (b *punktfunkBackend) Start(adminPort int) error {
 			log.Printf("[punktfunk] warning: could not create %s: %v", dir, err)
 		}
 	}
+
+	// Provisions the shared TLS identity (see shared_auth.go) into
+	// cert.pem/key.pem/uniqueid, and converges paired.json/
+	// client-labels.json with Sunshine's/rust-shine's own trust lists --
+	// same reasoning as sunshineBackend.Start()'s identical call.
+	// Best-effort: never blocks Start over it.
+	ReconcileSharedAuth(b.stateDir)
+
 	// A host KWin refused at startup keeps that answer, so this comes first.
 	b.ensureCapture()
 

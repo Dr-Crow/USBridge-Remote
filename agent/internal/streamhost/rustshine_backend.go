@@ -490,6 +490,13 @@ func (b *rustshineBackend) Start(adminPort int) error {
 		}
 	}
 
+	// Provisions the shared TLS identity (see shared_auth.go) into
+	// server_cert.pem/server_key.pem/server_uuid.txt, and converges
+	// trusted_clients.pem with Sunshine's/punktfunk's own trust lists --
+	// same reasoning as sunshineBackend.Start()'s identical call.
+	// Best-effort: never blocks Start over it.
+	ReconcileSharedAuth(b.stateDir)
+
 	// Backfill adapter_name if capture=kms was persisted without one (e.g.
 	// a sunshine_capture_mode:"kms" preference inherited from a previous
 	// Sunshine session via app.syncSunshineCaptureMode, written straight

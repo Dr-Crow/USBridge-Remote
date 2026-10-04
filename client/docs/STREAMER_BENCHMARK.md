@@ -55,16 +55,26 @@ Per frame, from `dr_submit` (`internal/service/bench_frames.c`):
 Every 100 ms: RTT and its variance, playout jitter and delay, packet, FEC
 and loss counters, and frames presented by the renderer. The same 100 ms
 tick also drives the live Net Graph HUD (Control footer's graph toggle),
-which since the benchmark work also shows a streamer/codec/bitrate line:
-the active backend (pushed once per stream start from
-`GET /api/bench/status`, not polled live), the codec moonlight-common-c
-actually negotiated (`NegotiatedVideoCodecName`), and a live bitrate
-averaged over the last ~1 s from a cumulative decoded-bytes counter
-(`dr_submit`'s `DECODE_UNIT.fullLength`, see `net_graph.go`'s `BytesVideo`).
+which shows a streamer/codec/bitrate line on every stream -- not just a
+benchmark run -- plus its own GPU line:
+
+* **Streamer/codec/bitrate:** the active backend (pushed once per stream
+  start from `GET /api/bench/status`, not polled live), the codec
+  moonlight-common-c actually negotiated (`NegotiatedVideoCodecName`), and
+  a live bitrate averaged over the last ~1 s from a cumulative
+  decoded-bytes counter (`dr_submit`'s `DECODE_UNIT.fullLength`, see
+  `net_graph.go`'s `BytesVideo`).
+* **GPU:** `GPU <host> - <client>` -- the agent host's GPU (same
+  `GET /api/bench/status` push, see `gpu` below) and the client's own
+  decode/render GPU (`VkPhysicalDeviceProperties.deviceName` on
+  Windows/Linux/Android, the system default Metal device's name on
+  macOS/iOS; `--` on the web client and wherever the host side hasn't
+  answered yet).
 
 Every 500 ms, on the agent (`agent/internal/hostload`, Windows performance
-counters -- the ones Task Manager shows; other host OSes send no samples):
-whole-machine CPU and the streamer processes' CPU (`sunshine`,
+counters -- the ones Task Manager shows; other host OSes, and any PDH
+failure, send no samples and now also name why, see `/api/bench/load/stop`
+below): whole-machine CPU and the streamer processes' CPU (`sunshine`,
 `usbridge-streamer`; percent of all cores), and GPU utilization per engine
 type -- `3d`, `encode`, `decode`, `copy`, and `codec` for a shared
 encode+decode block (AMD's "Video Codec") -- for the whole machine and for
@@ -117,11 +127,11 @@ operator's choosing.
 
 | Endpoint | |
 |---|---|
-| `GET /api/bench/status` | active backend, backends available to switch to, player |
+| `GET /api/bench/status` | active backend, backends available to switch to, player, `gpu` (host GPU name, `account.CollectDeviceInfo`) |
 | `POST /api/bench/backend` `{"kind":"sunshine"\|"rustshine"}` | switch, returns `switch_ms` |
 | `POST /api/bench/prepare` | download the test video |
 | `POST /api/bench/video/start` / `stop` | play / close the test video |
-| `POST /api/bench/load/start` / `stop` | sample host CPU/GPU load; `stop` returns `{"samples":[...]}` |
+| `POST /api/bench/load/start` / `stop` | sample host CPU/GPU load; `stop` returns `{"samples":[...]}`, plus `"error"` naming why whenever `samples` is empty (`hostload.Sampler.LastError`) |
 
 The player stops on its own after 15 minutes if no client stops it. On
 Windows it is launched into the interactive session (a Session 0 window

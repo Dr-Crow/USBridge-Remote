@@ -220,3 +220,23 @@ type Backend interface {
 	CaptureDeviceLister
 	NetworkPorts
 }
+
+// BackendKind identifies which concrete backend b is, as the short string
+// shared_auth.go's RemoveTrustedClientEverywhere/resolveFingerprint use to
+// know which native trust-file format and unpair-identifier semantics apply
+// (see UnpairClient's per-backend doc comments: a uniqueid for Sunshine/
+// rust-shine, a certificate fingerprint for punktfunk). "" for any other
+// Backend implementation (e.g. a test fake) -- callers must treat that as
+// "don't know how to sync this one" rather than guessing.
+func BackendKind(b Backend) string {
+	switch b.(type) {
+	case *sunshineBackend:
+		return "sunshine"
+	case *rustshineBackend:
+		return "rustshine"
+	case *punktfunkBackend:
+		return "punktfunk"
+	default:
+		return ""
+	}
+}

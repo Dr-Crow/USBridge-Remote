@@ -88,6 +88,7 @@ That's the whole setup. See the [top-level README](../README.md#-quick-start) fo
 ## Reference
 
 * **[Auto-Update](../../docs/AUTO_UPDATE.md)** — how the Agent verifies and applies updates, including headless/silent-update behavior and the separate RustShine update channel.
+* **[Shared Pairing](SHARED_PAIRING.md)** — how Sunshine/RustShine/Punktfunk share one TLS identity and trust list, so switching streamers (or unpairing a device) doesn't require re-pairing with each one separately.
 * **[API Endpoints](../../client/docs/api_endpoints.md)** — the Master QR Sync pairing protocol and signed-request scheme; identical whether the client is talking to an Agent or a hardware KVM.
 * **[Security & Authentication Model](https://github.com/USBridge-Technologies/USBridge-KVM-2.0/blob/main/docs/content/10-developer-api/security-model.md)** — the same layered pairing/signing/streaming security model used across the whole USBridge ecosystem, written up in full on the hardware KVM's docs (the Agent doesn't have a separate write-up because there's nothing different to say — it's the same scheme).
 
