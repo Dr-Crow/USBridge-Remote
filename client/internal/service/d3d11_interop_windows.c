@@ -325,4 +325,83 @@ int d3dx_deliver(AVFrame *frame, void **out_img, int *out_vkfmt, void **out_sem,
     return 1;
 }
 
+// d3dx_download: CPU copy of a D3D11VA frame for AI Vision / the pre-overlay
+// fallback, without stalling decode. av_hwframe_transfer_data maps its
+// staging texture while holding ffmpeg's device lock, so it waits for the
+// whole GPU queue -- with AI Vision's DirectML inference on the same GPU that
+// is long enough to block D3D11VA decode (which takes the same lock) past
+// moonlight-common-c's 15-frame queue, and every recovery IDR overflowed it
+// again. Here the lock is held only to queue the copy and to try a
+// non-blocking Map; between attempts it is released.
+static ID3D11Texture2D *g_dx_stage = NULL;
+static int g_dx_stage_w = 0, g_dx_stage_h = 0;
+static DXGI_FORMAT g_dx_stage_fmt = DXGI_FORMAT_UNKNOWN;
+
+AVFrame *d3dx_download(AVFrame *frame) {
+    if (!g_dx_hwdev || frame->format != AV_PIX_FMT_D3D11 || !frame->hw_frames_ctx) return NULL;
+    AVHWFramesContext *fc = (AVHWFramesContext *)frame->hw_frames_ctx->data;
+    DXGI_FORMAT fmt;
+    if (fc->sw_format == AV_PIX_FMT_NV12) fmt = DXGI_FORMAT_NV12;
+    else if (fc->sw_format == AV_PIX_FMT_P010) fmt = DXGI_FORMAT_P010;
+    else return NULL;
+    int w = frame->width, h = frame->height;
+    int bpp = fmt == DXGI_FORMAT_P010 ? 2 : 1;
+
+    // Only the readback thread calls this, so the staging texture needs no
+    // lock of its own.
+    if (!g_dx_stage || g_dx_stage_w != w || g_dx_stage_h != h || g_dx_stage_fmt != fmt) {
+        if (g_dx_stage) { ID3D11Texture2D_Release(g_dx_stage); g_dx_stage = NULL; }
+        D3D11_TEXTURE2D_DESC td = { 0 };
+        td.Width = w; td.Height = h; td.MipLevels = 1; td.ArraySize = 1; td.Format = fmt;
+        td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_STAGING; td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        if (ID3D11Device5_CreateTexture2D(g_dx_dev, &td, NULL, &g_dx_stage) != S_OK) { g_dx_stage = NULL; return NULL; }
+        g_dx_stage_w = w; g_dx_stage_h = h; g_dx_stage_fmt = fmt;
+    }
+
+    ID3D11Texture2D *src = (ID3D11Texture2D *)frame->data[0];
+    UINT index = (UINT)(intptr_t)frame->data[1];
+    D3D11_BOX box = { 0, 0, 0, (UINT)w, (UINT)h, 1 };
+    g_dx_avctx->lock(g_dx_avctx->lock_ctx);
+    ID3D11DeviceContext4_CopySubresourceRegion(g_dx_ctx, (ID3D11Resource *)g_dx_stage, 0, 0, 0, 0,
+                                               (ID3D11Resource *)src, index, &box);
+    ID3D11DeviceContext4_Flush(g_dx_ctx);
+    g_dx_avctx->unlock(g_dx_avctx->lock_ctx);
+
+    D3D11_MAPPED_SUBRESOURCE m;
+    HRESULT hr = DXGI_ERROR_WAS_STILL_DRAWING;
+    for (int tries = 0; tries < 2000; tries++) { // ~2s ceiling
+        g_dx_avctx->lock(g_dx_avctx->lock_ctx);
+        hr = ID3D11DeviceContext4_Map(g_dx_ctx, (ID3D11Resource *)g_dx_stage, 0, D3D11_MAP_READ,
+                                      D3D11_MAP_FLAG_DO_NOT_WAIT, &m);
+        if (hr != DXGI_ERROR_WAS_STILL_DRAWING) break; // mapped (lock still held) or failed
+        g_dx_avctx->unlock(g_dx_avctx->lock_ctx);
+        Sleep(1);
+    }
+    if (hr != S_OK) {
+        if (hr != DXGI_ERROR_WAS_STILL_DRAWING) g_dx_avctx->unlock(g_dx_avctx->lock_ctx);
+        return NULL;
+    }
+
+    AVFrame *sw = av_frame_alloc();
+    int ok = sw != NULL;
+    if (ok) {
+        sw->format = fc->sw_format; sw->width = w; sw->height = h;
+        ok = av_frame_get_buffer(sw, 0) == 0;
+    }
+    if (ok) {
+        // NV12/P010: luma plane, then interleaved chroma at RowPitch * height
+        // (D3D11 staging textures lay planar formats out contiguously).
+        const uint8_t *base_ptr = (const uint8_t *)m.pData;
+        for (int y = 0; y < h; y++)
+            memcpy(sw->data[0] + (size_t)y * sw->linesize[0], base_ptr + (size_t)y * m.RowPitch, (size_t)w * bpp);
+        const uint8_t *uv = base_ptr + (size_t)m.RowPitch * h;
+        for (int y = 0; y < (h + 1) / 2; y++)
+            memcpy(sw->data[1] + (size_t)y * sw->linesize[1], uv + (size_t)y * m.RowPitch, (size_t)w * bpp);
+    }
+    ID3D11DeviceContext4_Unmap(g_dx_ctx, (ID3D11Resource *)g_dx_stage, 0);
+    g_dx_avctx->unlock(g_dx_avctx->lock_ctx);
+    if (!ok) av_frame_free(&sw);
+    return sw;
+}
+
 #endif // _WIN32

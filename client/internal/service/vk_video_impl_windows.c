@@ -4015,9 +4015,14 @@ static void vk_full_cleanup(void) {
         g_aivision_dset = VK_NULL_HANDLE;
         g_aivision_tex_layout = VK_IMAGE_LAYOUT_UNDEFINED;
         g_aivision_tex_w = 0; g_aivision_tex_h = 0;
+        // vk_aivision_set_pixels (AI Vision's goroutine) writes this buffer
+        // under g_cs at any time, including mid-teardown -- freeing it
+        // without the lock was a use-after-free crash on stream restart.
+        if (g_cs_init) EnterCriticalSection(&g_cs);
         g_aivision_active = 0; g_aivision_dirty = 0;
         free(g_aivision_pixels); g_aivision_pixels = NULL; g_aivision_pixels_sz = 0;
         g_aivision_pending_w = 0; g_aivision_pending_h = 0;
+        if (g_cs_init) LeaveCriticalSection(&g_cs);
 
         vk_destroy_sync_semaphores();
         if (g_fence)   { vkDestroyFence(g_dev, g_fence, NULL);       g_fence = VK_NULL_HANDLE; }

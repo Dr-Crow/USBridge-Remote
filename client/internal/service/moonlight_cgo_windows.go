@@ -305,6 +305,7 @@ extern AVBufferRef *win_vk_hwdev_ctx_ref(void);
 extern AVBufferRef *d3dx_device_ref(void);
 extern int d3dx_deliver(AVFrame *frame, void **out_img, int *out_vkfmt, void **out_sem, uint64_t *out_val, void **out_release_ctx);
 extern void d3dx_release_slot(void *ctx);
+extern AVFrame *d3dx_download(AVFrame *frame);
 extern void vk_frame_release_avframe(void *ctx);
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -616,7 +617,16 @@ static HANDLE   g_rb_event  = NULL;
 static HANDLE   g_rb_thread = NULL;
 static AVFrame *g_rb_frame  = NULL;
 static int      g_rb_vtframe = 0;
+static LONG     g_rb_gen = 0;
 static int      g_vk_session_frames = 0; // frames this stream; reset in dr_setup
+static int      g_vk_overlay_seen = 0;   // overlay was active at some point this stream
+// g_stream_gen changes at every stream start and stop. A readback job is
+// only delivered if the generation it was taken in is still current: a
+// conversion finishing after its stream stopped (or after the next one
+// started) used to reach the GUI as that stream's "first frame" and create a
+// second Vulkan overlay on top of the live one -- broken swapchain, fence
+// timeouts, a frozen picture left over the UI.
+static volatile LONG g_stream_gen = 0;
 
 static DWORD WINAPI win_readback_thread(LPVOID arg) {
     (void)arg;
@@ -627,12 +637,24 @@ static DWORD WINAPI win_readback_thread(LPVOID arg) {
         EnterCriticalSection(&g_rb_cs);
         AVFrame *frame = g_rb_frame;
         int vtframe = g_rb_vtframe;
+        LONG gen = g_rb_gen;
         g_rb_frame = NULL;
         LeaveCriticalSection(&g_rb_cs);
         if (!frame) continue;
+        if (gen != g_stream_gen) { av_frame_free(&frame); continue; }
 
-        AVFrame *sw = av_frame_alloc();
-        if (sw && av_hwframe_transfer_data(sw, frame, 0) == 0) {
+        // D3D11VA frames go through d3dx_download, which never waits for
+        // the GPU while holding the device lock D3D11VA decode needs.
+        AVFrame *sw = NULL;
+        int got = 0;
+        if (frame->format == AV_PIX_FMT_D3D11) {
+            sw = d3dx_download(frame);
+            got = sw != NULL;
+        } else {
+            sw = av_frame_alloc();
+            got = sw && av_hwframe_transfer_data(sw, frame, 0) == 0;
+        }
+        if (got) {
             int w = frame->width, h = frame->height;
             if (!sws || w != sws_w || h != sws_h || sw->format != sws_fmt) {
                 if (sws) sws_freeContext(sws);
@@ -644,8 +666,10 @@ static DWORD WINAPI win_readback_thread(LPVOID arg) {
                 uint8_t *dst[4]   = { pixels, NULL, NULL, NULL };
                 int dst_stride[4] = { w * 4, 0, 0, 0 };
                 sws_scale(sws, (const uint8_t *const *)sw->data, sw->linesize, 0, h, dst, dst_stride);
-                goAIVisionSample(pixels, w, h, w * 4);
-                if (vtframe) goVTFrame(pixels, w, h, w * 4);
+                if (gen == g_stream_gen) {
+                    goAIVisionSample(pixels, w, h, w * 4);
+                    if (vtframe && !(vk_video_is_active() || gl_video_is_active())) goVTFrame(pixels, w, h, w * 4);
+                }
                 free(pixels);
             }
         }
@@ -655,16 +679,27 @@ static DWORD WINAPI win_readback_thread(LPVOID arg) {
     return 0;
 }
 
+// win_readback_cancel drops a queued (not yet started) readback job.
+static void win_readback_cancel(void) {
+    if (!g_rb_thread) return;
+    EnterCriticalSection(&g_rb_cs);
+    if (g_rb_frame) av_frame_free(&g_rb_frame);
+    LeaveCriticalSection(&g_rb_cs);
+}
+
 static void win_readback_post(AVFrame *frame, int vtframe) {
     if (!g_rb_thread) {
         InitializeCriticalSection(&g_rb_cs);
         g_rb_event = CreateEvent(NULL, FALSE, FALSE, NULL);
         g_rb_thread = CreateThread(NULL, 0, win_readback_thread, NULL, 0, NULL);
+        // Background work (AI Vision sampling): never ahead of decode.
+        if (g_rb_thread) SetThreadPriority(g_rb_thread, THREAD_PRIORITY_BELOW_NORMAL);
     }
     EnterCriticalSection(&g_rb_cs);
     if (!g_rb_frame) {
         g_rb_frame = av_frame_clone(frame);
         g_rb_vtframe = vtframe;
+        g_rb_gen = g_stream_gen;
     }
     LeaveCriticalSection(&g_rb_cs);
     SetEvent(g_rb_event);
@@ -683,9 +718,14 @@ static void win_frame_notify(AVFrame *frame) {
     // (handleVideoFrame's frame == nil branch), with the size taken from
     // noteNativeFrameSize. Pixels are only read back if the overlay still
     // isn't up ~2s in (fallback to the Fyne canvas), or for AI Vision.
+    // Only while the overlay has never come up this stream: it is also
+    // briefly inactive while a stream is being torn down or restarted, and a
+    // readback taken then is exactly the stale frame g_stream_gen guards
+    // against.
     int native_overlay_active = vk_video_is_active() || gl_video_is_active();
+    if (native_overlay_active) g_vk_overlay_seen = 1;
     int session_frame = ++g_vk_session_frames;
-    if (!native_overlay_active && session_frame > 2 * (g_stream_fps > 0 ? g_stream_fps : 60)) {
+    if (!native_overlay_active && !g_vk_overlay_seen && session_frame > 2 * (g_stream_fps > 0 ? g_stream_fps : 60)) {
         win_readback_post(frame, 1);
     } else {
         if (goAIVisionShouldSample()) win_readback_post(frame, 0);
@@ -879,6 +919,8 @@ static int  dr_setup(int fmt, int w, int h, int rate, void *ctx, int flags) {
     g_video_format = fmt ? fmt : 0x0001;
     g_stream_w = w; g_stream_h = h; g_stream_fps = rate;
     g_vk_session_frames = 0;
+    g_vk_overlay_seen = 0;
+    InterlockedIncrement(&g_stream_gen);
     // Create the decoder now (moonlight-qt does the same in its setup)
     // rather than on the first frame: Vulkan Video session setup takes about
     // a second, and frames queued behind it overflowed the 15-frame queue.
@@ -942,6 +984,10 @@ static void dr_start(void) {
     if (!g_dec_watchdog) g_dec_watchdog = CreateThread(NULL, 0, win_decode_watchdog, NULL, 0, NULL);
     if (g_decode_mode != WIN_DECODE_PULL || g_pull_thread) return;
     g_pull_thread = CreateThread(NULL, 0, win_pull_decode_thread, NULL, 0, NULL);
+    // Decode must keep pace with the network even when AI Vision's detector
+    // or anything else saturates the CPU; a 125ms scheduling gap overflows
+    // moonlight-common-c's 15-frame queue at 120 fps.
+    if (g_pull_thread) SetThreadPriority(g_pull_thread, THREAD_PRIORITY_ABOVE_NORMAL);
 }
 static void dr_stop(void) {
     InterlockedExchange(&g_pull_quit, 1);
@@ -1094,7 +1140,14 @@ static int win_decode_drain(void) {
     int n = 0, err;
     for (;;) {
         dec_stage(DEC_STAGE_DRAIN);
+        double t_recv0 = win_mono_ms();
         err = avcodec_receive_frame(ctx, frame);
+        double t_recv = win_mono_ms() - t_recv0;
+        if (t_recv > WIN_DELIVER_SLOW_MS) {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "SLOW avcodec_receive_frame %.0fms", t_recv);
+            goVTLog(msg);
+        }
         if (err != 0) break;
         g_dec_out++;
         dec_stage(DEC_STAGE_DELIVER);
@@ -1301,7 +1354,9 @@ static int do_li_start(
 static void do_li_stop(void) {
     if (!g_li_active) return;
     g_li_active = 0;
+    InterlockedIncrement(&g_stream_gen); // in-flight readbacks belong to a dead stream now
     LiStopConnection();
+    win_readback_cancel();
     if (g_sws) { sws_freeContext(g_sws); g_sws = NULL; }
     if (g_avctx) avcodec_free_context(&g_avctx);
     if (g_hw_dev_ctx) av_buffer_unref(&g_hw_dev_ctx);
