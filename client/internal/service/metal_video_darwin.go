@@ -36,6 +36,7 @@ extern void metal_video_set_hud_overlay(const uint8_t *rgba, int w, int h, int s
 extern void metal_video_clear_hud_overlay(void);
 extern void metal_video_set_hud_scale(float s);
 extern double metal_video_last_decode_ms(void);
+extern int    metal_video_decode_ms_available(void);
 extern void metal_video_get_gpu_name(char *out, int out_len);
 
 extern void metal_video_debug_link_counts(int64_t *created, int64_t *invalidated);
@@ -83,6 +84,7 @@ func init() {
 	}
 	netGraphRenderFPS = MetalVideoLastFPS
 	netGraphDecodeMs = MetalVideoLastDecodeMs
+	netGraphDecodeMsValid = MetalVideoDecodeMsAvailable
 	netGraphGPUNameFn = MetalVideoGPUName
 	benchRenderedFramesFn = MetalVideoRenderedCount
 
@@ -276,6 +278,16 @@ func MetalVideoClearHudOverlay() {
 // the overlay is inactive or no sample has landed yet.
 func MetalVideoLastDecodeMs() float64 {
 	return float64(C.metal_video_last_decode_ms())
+}
+
+// MetalVideoDecodeMsAvailable reports whether MetalVideoLastDecodeMs
+// reflects a real measurement for the current session -- see
+// metal_video_impl_darwin.m's metal_video_decode_ms_available doc comment.
+// false on the AVSampleBufferDisplayLayer path (the main H.264/H.265
+// pipeline), which has no equivalent measurement; Net Graph shows "DEC --"
+// instead of a frozen, misleading "0.0ms" in that case.
+func MetalVideoDecodeMsAvailable() bool {
+	return C.metal_video_decode_ms_available() != 0
 }
 
 // MetalVideoGPUName returns the system default Metal device's name (e.g.

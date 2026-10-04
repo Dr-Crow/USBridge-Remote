@@ -121,6 +121,11 @@ type NetGraphSample struct {
 
 	RenderFPS float64
 	DecodeMs  float64
+	// DecodeMsValid is false only on macOS's AVSampleBufferDisplayLayer path
+	// (see netGraphDecodeMsValid's doc comment), which has no equivalent
+	// measurement -- true everywhere else (nil hook = "always valid", same
+	// convention the Snapshot builder below applies).
+	DecodeMsValid bool
 
 	// ConcealedFrames: how many motion-extrapolated frames frame smoothing
 	// (frame_smoothing.go) presented during this tick -- a per-tick delta
@@ -154,6 +159,14 @@ var (
 	netGraphNetworkStatsFn func() netGraphRawNetworkStats
 	netGraphRenderFPS      func() float64
 	netGraphDecodeMs       func() float64
+	// netGraphDecodeMsValid reports whether netGraphDecodeMs's result is a
+	// real measurement -- nil hook (every platform but macOS) means
+	// "always valid", since only macOS's AVSampleBufferDisplayLayer video
+	// path (see metal_video_impl_darwin.m's metal_video_decode_ms_available
+	// doc comment) has no decode-latency measurement at all. Without this,
+	// that path showed a frozen, misleading "DEC 0.0ms" for the entire
+	// session instead of admitting there's no data.
+	netGraphDecodeMsValid func() bool
 	// netGraphConcealedFramesFn returns frame smoothing's running total of
 	// synthesized frames (GetFrameSmoothingStats().ConcealedFrames on
 	// Windows, see frame_smoothing_windows.go) -- nil on platforms without
@@ -498,8 +511,12 @@ func collectNetGraphSample() NetGraphSample {
 	if fn := netGraphRenderFPS; fn != nil {
 		s.RenderFPS = fn()
 	}
+	s.DecodeMsValid = true
 	if fn := netGraphDecodeMs; fn != nil {
 		s.DecodeMs = fn()
+	}
+	if fn := netGraphDecodeMsValid; fn != nil {
+		s.DecodeMsValid = fn()
 	}
 	return s
 }
@@ -630,13 +647,19 @@ func buildNetGraphHUD(samples []NetGraphSample) *image.RGBA {
 	row += netGraphLineH
 	decColor := netGraphGood
 	switch {
+	case !latest.DecodeMsValid:
+		decColor = netGraphDim
 	case latest.DecodeMs >= 33:
 		decColor = netGraphBad
 	case latest.DecodeMs >= 16:
 		decColor = netGraphWarn
 	}
+	decText := "DEC -- "
+	if latest.DecodeMsValid {
+		decText = netGraphFmtMs("DEC", latest.DecodeMs)
+	}
 	netGraphDrawText(img, marginX, row, netGraphFmtFPS("FPS", latest.RenderFPS), netGraphText)
-	netGraphDrawText(img, col2, row, netGraphFmtMs("DEC", latest.DecodeMs), decColor)
+	netGraphDrawText(img, col2, row, decText, decColor)
 
 	// Row is always reserved (like RTT above) -- making it conditional made
 	// graphTop/graphH below jump every time the host's reported latency hit

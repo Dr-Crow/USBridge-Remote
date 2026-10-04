@@ -969,6 +969,14 @@ int metal_video_is_active(void) {
 // metal_video_rendered_count below can read it; see that function's own
 // doc comment for why the two counters are summed.
 static _Atomic uint64_t g_avsbdl_submit_count = 0;
+// g_avsbdl_fps_start/g_avsbdl_fps_frames/g_lastKnownAvsbdlFps: also declared
+// up here (full definitions live with metal_video_submit_compressed_sample
+// further down) so metal_video_last_fps above that function can read them
+// too -- same forward-declare-for-an-earlier-reader reason as
+// g_avsbdl_submit_count just above.
+static _Atomic double   g_avsbdl_fps_start     = 0.0;
+static _Atomic uint64_t g_avsbdl_fps_frames    = 0;
+static _Atomic double   g_lastKnownAvsbdlFps   = 0.0;
 
 int64_t metal_video_rendered_count(void) {
     // g_renderCount (the old CAMetalLayer/CADisplayLink path) stays 0 for
@@ -985,8 +993,28 @@ int64_t metal_video_rendered_count(void) {
 // Returns the Metal render FPS from the current measurement window.
 // Falls back to the last known value during the brief reset gap so callers
 // never see a spurious zero while frames are still being rendered.
+//
+// Checks the AVSBDL path first: g_fpsFrames/g_fpsStart (and therefore
+// g_lastKnownFps) are only ever touched by metal_render_main_with_buf, the
+// legacy CVPixelBuffer+CADisplayLink path -- which metal_video_rendered_count's
+// own doc comment already established stays completely untouched for
+// H.264/H.265 now that g_avsbdl handles that pipeline instead. Before this
+// check, Net Graph's FPS line silently stayed frozen at 0 for the whole
+// session on every AVSBDL-path stream (the common case on macOS) -- same
+// bug class metal_video_rendered_count was fixed for, just never ported to
+// this getter too.
 double metal_video_last_fps(void) {
     if (!atomic_load(&g_active)) return 0.0;
+    if (atomic_load(&g_avsbdl_submit_count) > 0) {
+        double start = atomic_load(&g_avsbdl_fps_start);
+        if (start == 0.0) return 0.0; // no frames at all yet
+        double elapsed = mono_sec() - start;
+        uint64_t frames = atomic_load(&g_avsbdl_fps_frames);
+        if (frames == 0 || elapsed < 0.5) {
+            return atomic_load(&g_lastKnownAvsbdlFps);
+        }
+        return (double)frames / elapsed;
+    }
     if (g_fpsStart == 0.0) return 0.0; // no frames at all yet
     double elapsed = mono_sec() - g_fpsStart;
     if (g_fpsFrames == 0 || elapsed < 0.5) {
@@ -1004,9 +1032,36 @@ double metal_video_last_fps(void) {
 // reset gap, same as metal_video_last_fps. 0 if no sample has ever landed
 // (e.g. overlay inactive, or every submit happened before any pendingBuf
 // timestamp was set).
+//
+// Meaningless on the AVSBDL path (see metal_video_decode_ms_available's doc
+// comment for why there's no equivalent measurement there yet) -- callers
+// MUST check that first, since this still returns g_lastKnownDecodeMs's
+// frozen initial 0.0 in that case, not a real number.
 double metal_video_last_decode_ms(void) {
     if (!atomic_load(&g_active)) return 0.0;
     return g_lastKnownDecodeMs;
+}
+
+// metal_video_decode_ms_available reports whether metal_video_last_decode_ms
+// reflects a real measurement for the CURRENT session. The legacy
+// CVPixelBuffer+CADisplayLink path (metal_render_main_with_buf) times
+// submit-to-display directly; the newer AVSampleBufferDisplayLayer path
+// (metal_video_submit_compressed_sample, now the main H.264/H.265 pipeline
+// -- see g_avsbdl's doc comment) hands decode+presentation to AVFoundation
+// internally with no per-sample completion callback this code hooks, so it
+// has never fed g_decodeMsSum/g_lastKnownDecodeMs at all. Net Graph's DEC
+// line used to show a flat, misleading "0.0ms" for the entire session on
+// every AVSBDL-path stream (the common case) instead of admitting there's
+// no measurement -- same root cause metal_video_last_fps was just fixed
+// for, except there's no equivalent AVSBDL-side counter to fall back to
+// here, since no timestamp is captured on that path at all.
+//
+// g_avsbdl_submit_count never resets mid-session (only at metal_video_create),
+// and the two paths are mutually exclusive per session (see
+// metal_video_rendered_count's doc comment), so count==0 reliably means
+// "the legacy path is the one actually running."
+int metal_video_decode_ms_available(void) {
+    return atomic_load(&g_avsbdl_submit_count) == 0;
 }
 
 // metal_video_get_gpu_name copies the system default Metal device's name
@@ -1039,8 +1094,8 @@ void metal_video_get_gpu_name(char *out, int out_len) {
 // treats this like any other dropped frame, not a fatal error), or 2 if the
 // layer had failed and was just flushed to recover -- caller should request
 // a fresh IDR (this sample was NOT enqueued) rather than just dropping it.
-static _Atomic double   g_avsbdl_fps_start     = 0.0;
-static _Atomic uint64_t g_avsbdl_fps_frames    = 0;
+// (g_avsbdl_fps_start/g_avsbdl_fps_frames/g_lastKnownAvsbdlFps are declared
+// up near g_avsbdl_submit_count, for the same earlier-reader reason.)
 
 // metal_video_avsbdl_needs_fresh_idr: see g_avsbdl_needs_idr's own doc
 // comment. Peeks (does not clear) the flag -- platform_dr_submit clears it
@@ -1097,9 +1152,11 @@ int metal_video_submit_compressed_sample(CMSampleBufferRef sample) {
     if (elapsed >= 2.0) {
         uint64_t frames = atomic_exchange(&g_avsbdl_fps_frames, 0);
         atomic_store(&g_avsbdl_fps_start, now);
+        double fps = (double)frames / elapsed;
+        atomic_store(&g_lastKnownAvsbdlFps, fps);
         char msg[128];
         snprintf(msg, sizeof(msg), "AVSBDL: submit fps=%.1f (frames=%llu window=%.1fs) status=%ld",
-                 (double)frames / elapsed, (unsigned long long)frames, elapsed, (long)g_avsbdl.status);
+                 fps, (unsigned long long)frames, elapsed, (long)g_avsbdl.status);
         goMetalLog(msg, 0);
     }
     return 1;
