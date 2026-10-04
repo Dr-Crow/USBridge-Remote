@@ -107,6 +107,12 @@ type VideoStartDialog struct {
 	// service.FrameSmoothingSupported() is true (Windows today).
 	frameSmoothingCheck *videoDialogCheckbox
 	frameSmoothingHint  *videoDialogWrapText
+	// playoutBufferCheck/playoutBufferHint: the moonlight-common-c fork's
+	// jitter buffer (service.SetPlayoutBufferEnabled) -- draft until
+	// Apply/Start, off by default. Only built/shown when
+	// service.PlayoutBufferSupported() is true (Windows today).
+	playoutBufferCheck *videoDialogCheckbox
+	playoutBufferHint  *videoDialogWrapText
 
 	startBtn  *videoDialogPillButton
 	cancelBtn *videoDialogPillButton
@@ -1532,6 +1538,11 @@ func newVideoDialogToggleRowInner(check *videoDialogCheckbox, titleText fyne.Can
 // design: the checkbox and a bold title + badge share the first line, and
 // the description sits on its own line below, indented to the title's own
 // left edge. The whole row is tappable (see videoDialogToggleTap).
+// showFrameSmoothingToggle hides the Smooth Motion row: in live use its
+// synthesized frames looked worse than holding the last real frame, with no
+// visible benefit. The feature itself stays off (service default).
+const showFrameSmoothingToggle = false
+
 func newVideoDialogToggleRow(check *videoDialogCheckbox, titleText fyne.CanvasObject, badge fyne.CanvasObject, description fyne.CanvasObject) fyne.CanvasObject {
 	return newVideoDialogToggleTap(check, newVideoDialogToggleRowInner(check, titleText, badge, description))
 }
@@ -1772,8 +1783,10 @@ func (vsd *VideoStartDialog) createInterface() {
 	}
 
 	// Frame Smoothing: draft until Apply/Start, same as AI Vision/Net Graph.
+	// Hidden for now (showFrameSmoothingToggle): in live use the synthesized
+	// frames looked worse than simply holding the last real one.
 	var frameSmoothingRow fyne.CanvasObject
-	if service.FrameSmoothingSupported() {
+	if showFrameSmoothingToggle && service.FrameSmoothingSupported() {
 		vsd.frameSmoothingCheck = newVideoDialogCheckbox(service.FrameSmoothingEnabled(), nil)
 		vsd.frameSmoothingHint = newVideoDialogDescription(i18n.Current.FrameSmoothingHint, videoDialogToggleDescWidthFor(hintPanelW))
 		frameSmoothingRow = newVideoDialogToggleRow(
@@ -1781,6 +1794,19 @@ func (vsd *VideoStartDialog) createInterface() {
 			newVideoDialogRowTitle(i18n.Current.FrameSmoothing),
 			newVideoDialogBadge(i18n.Current.FrameSmoothingBadge, design.ColorConnectionBadgeText),
 			vsd.frameSmoothingHint,
+		)
+	}
+
+	// Jitter buffer: draft until Apply/Start, same as the toggles above.
+	var playoutBufferRow fyne.CanvasObject
+	if service.PlayoutBufferSupported() {
+		vsd.playoutBufferCheck = newVideoDialogCheckbox(service.PlayoutBufferEnabled(), nil)
+		vsd.playoutBufferHint = newVideoDialogDescription(i18n.Current.PlayoutBufferHint, videoDialogToggleDescWidthFor(hintPanelW))
+		playoutBufferRow = newVideoDialogToggleRow(
+			vsd.playoutBufferCheck,
+			newVideoDialogRowTitle(i18n.Current.PlayoutBuffer),
+			newVideoDialogBadge(i18n.Current.PlayoutBufferBadge, design.ColorConnectionBadgeText),
+			vsd.playoutBufferHint,
 		)
 	}
 
@@ -1794,6 +1820,9 @@ func (vsd *VideoStartDialog) createInterface() {
 	}
 	if frameSmoothingRow != nil {
 		frameSmoothingRow = NewInsetExact(frameSmoothingRow, videoDialogToggleAlignLeft, 0, 0, 0)
+	}
+	if playoutBufferRow != nil {
+		playoutBufferRow = NewInsetExact(playoutBufferRow, videoDialogToggleAlignLeft, 0, 0, 0)
 	}
 
 	vsd.startBtn = newVideoDialogApplyButton(i18n.Current.StartVideo, vsd.handleStart)
@@ -1926,6 +1955,9 @@ func (vsd *VideoStartDialog) createInterface() {
 	}
 	if frameSmoothingRow != nil {
 		otherRows = append(otherRows, frameSmoothingRow)
+	}
+	if playoutBufferRow != nil {
+		otherRows = append(otherRows, playoutBufferRow)
 	}
 	bodyChildren = append(bodyChildren, newVideoDialogOtherSettingsCard(otherRows...), videoDialogVSpace(4))
 	bodyContent := container.NewVBox(bodyChildren...)
@@ -2176,6 +2208,9 @@ func (vsd *VideoStartDialog) syncHintWrapWidths() {
 	if vsd.frameSmoothingHint != nil {
 		vsd.frameSmoothingHint.SetWrapWidth(videoDialogToggleDescWidthFor(panelW))
 	}
+	if vsd.playoutBufferHint != nil {
+		vsd.playoutBufferHint.SetWrapWidth(videoDialogToggleDescWidthFor(panelW))
+	}
 }
 
 func (vsd *VideoStartDialog) Show(onApply func(request *models.VideoStartRequest)) {
@@ -2188,6 +2223,9 @@ func (vsd *VideoStartDialog) Show(onApply func(request *models.VideoStartRequest
 	}
 	if vsd.frameSmoothingCheck != nil {
 		vsd.frameSmoothingCheck.SetChecked(service.FrameSmoothingEnabled())
+	}
+	if vsd.playoutBufferCheck != nil {
+		vsd.playoutBufferCheck.SetChecked(service.PlayoutBufferEnabled())
 	}
 	vsd.syncHintWrapWidths()
 	if vsd.dialog != nil && vsd.parent != nil {
@@ -2651,6 +2689,9 @@ func (vsd *VideoStartDialog) applyLocalOverlaySettings() {
 	if vsd.frameSmoothingCheck != nil {
 		service.SetFrameSmoothingEnabled(vsd.frameSmoothingCheck.Checked)
 	}
+	if vsd.playoutBufferCheck != nil {
+		service.SetPlayoutBufferEnabled(vsd.playoutBufferCheck.Checked)
+	}
 }
 
 func (vsd *VideoStartDialog) revertLocalOverlayDrafts() {
@@ -2663,6 +2704,9 @@ func (vsd *VideoStartDialog) revertLocalOverlayDrafts() {
 	}
 	if vsd.frameSmoothingCheck != nil {
 		vsd.frameSmoothingCheck.SetChecked(service.FrameSmoothingEnabled())
+	}
+	if vsd.playoutBufferCheck != nil {
+		vsd.playoutBufferCheck.SetChecked(service.PlayoutBufferEnabled())
 	}
 }
 

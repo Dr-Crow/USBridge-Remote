@@ -436,8 +436,11 @@ typedef struct {
     VkDescriptorSet dset;
     VkFormat      fmt; // which g_ycbcr_pipelines[] entry dset was built against
 } VkImgViewCacheEntry;
-#define VK_IMGVIEW_CACHE_SIZE 8
+// 32 covers ffmpeg's whole Vulkan frame pool (HEVC's DPB alone can be 16
+// surfaces); at 8 the pool's surfaces kept evicting each other.
+#define VK_IMGVIEW_CACHE_SIZE 32
 static VkImgViewCacheEntry g_imgview_cache[VK_IMGVIEW_CACHE_SIZE];
+static int g_imgview_evict_next = 0;
 
 // Pending zero-copy frame — single-slot, parallel to g_buf/g_ready above.
 static VkImage    g_vkf_img          = VK_NULL_HANDLE;
@@ -446,6 +449,8 @@ static VkImageLayout g_vkf_layout    = VK_IMAGE_LAYOUT_UNDEFINED;
 static int        g_vkf_w = 0, g_vkf_h = 0;
 static void      *g_vkf_release_ctx  = NULL;
 static void      (*g_vkf_release_fn)(void*) = NULL;
+static VkSemaphore g_vkf_sem         = VK_NULL_HANDLE;
+static uint64_t   g_vkf_sem_value    = 0;
 static volatile int g_vkf_ready      = 0;
 
 // Previous frame's release context — freed once the NEXT frame's render
@@ -1835,7 +1840,13 @@ static VkYcbcrPipeline *vk_ycbcr_pipeline_get(VkFormat fmt) {
     // Pool sized for the small image-view cache — one descriptor set per
     // cached VkImage, all bound to this format's immutable sampler.
     {
-        VkDescriptorPoolSize poolSize = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_IMGVIEW_CACHE_SIZE };
+        // A YCbCr combined image sampler can take several descriptors per set
+        // (VkSamplerYcbcrConversionImageFormatProperties::
+        // combinedImageSamplerDescriptorCount -- 3 on AMD for NV12/P010). Sized
+        // at 1 per set, the pool ran dry after a few of ffmpeg's images and
+        // every frame decoded into any other image was silently not drawn
+        // ("vkAllocateDescriptorSets failed" thousands of times per session).
+        VkDescriptorPoolSize poolSize = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_IMGVIEW_CACHE_SIZE * 3 };
         VkDescriptorPoolCreateInfo poolCI = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
         poolCI.maxSets = VK_IMGVIEW_CACHE_SIZE; poolCI.poolSizeCount = 1; poolCI.pPoolSizes = &poolSize;
         if (vkCreateDescriptorPool(g_dev, &poolCI, NULL, &p->dpool) != VK_SUCCESS) goto fail;
@@ -1915,12 +1926,15 @@ static VkDescriptorSet vk_imgview_cache_get(VkImage img, VkFormat fmt, VkYcbcrPi
         if (free_slot < 0 && g_imgview_cache[i].img == VK_NULL_HANDLE) free_slot = i;
     }
     if (free_slot < 0) {
-        // Cache full — reuse slot 0. vkDeviceWaitIdle in the caller's fence
-        // wait already guarantees no in-flight command buffer references the
-        // old view before we get here (single command buffer, single frame
-        // in flight, same as the RGBA path above).
-        free_slot = 0;
-        if (g_imgview_cache[0].view) vkDestroyImageView(g_dev, g_imgview_cache[0].view, NULL);
+        // Cache full -- evict round-robin. This runs before the caller's own
+        // fence wait, so wait for the in-flight frame here first: it may be
+        // sampling through the very view/descriptor set being replaced.
+        free_slot = g_imgview_evict_next;
+        g_imgview_evict_next = (g_imgview_evict_next + 1) % VK_IMGVIEW_CACHE_SIZE;
+        vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, 2000000000ULL);
+        if (g_imgview_cache[free_slot].view) vkDestroyImageView(g_dev, g_imgview_cache[free_slot].view, NULL);
+        g_imgview_cache[free_slot].view = VK_NULL_HANDLE;
+        g_imgview_cache[free_slot].img  = VK_NULL_HANDLE;
     }
 
     VkSamplerYcbcrConversionInfo convInfo = { VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO };
@@ -1944,7 +1958,8 @@ static VkDescriptorSet vk_imgview_cache_get(VkImage img, VkFormat fmt, VkYcbcrPi
         VkDescriptorSetAllocateInfo dsAI = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
         dsAI.descriptorPool = pl->dpool; dsAI.descriptorSetCount = 1; dsAI.pSetLayouts = &pl->dsl;
         if (vkAllocateDescriptorSets(g_dev, &dsAI, &dset) != VK_SUCCESS) {
-            goVKLog("vk_imgview_cache_get: vkAllocateDescriptorSets failed", 2);
+            static int logged = 0;
+            if (!logged++) goVKLog("vk_imgview_cache_get: vkAllocateDescriptorSets failed", 2);
             vkDestroyImageView(g_dev, view, NULL);
             return VK_NULL_HANDLE;
         }
@@ -1966,7 +1981,8 @@ static VkDescriptorSet vk_imgview_cache_get(VkImage img, VkFormat fmt, VkYcbcrPi
 // vk_render_frame_vkimage — zero-copy counterpart to vk_render_frame: samples
 // a decoded VkImage directly into the swapchain instead of blitting an
 // uploaded RGBA staging texture. Same acquire/fence/present machinery.
-static int vk_render_frame_vkimage(VkImage img, VkFormat fmt, VkImageLayout src_layout, int fw, int fh) {
+static int vk_render_frame_vkimage(VkImage img, VkFormat fmt, VkImageLayout src_layout, int fw, int fh,
+                                   VkSemaphore wait_sem, uint64_t wait_value) {
     if (!g_dev || !g_swap) return 0;
     char _dbg[96];
 
@@ -1975,15 +1991,25 @@ static int vk_render_frame_vkimage(VkImage img, VkFormat fmt, VkImageLayout src_
     VkDescriptorSet dset = vk_imgview_cache_get(img, fmt, pl);
     if (!dset) return 0;
 
-    // In-order-execution sync: our own graphics-queue command buffer is
-    // recorded/submitted strictly after this wait, so waiting for the
-    // decode queue to go idle here guarantees the image's decode write has
-    // completed before we sample it — the same mechanism proven correct in
-    // the standalone same-device prototype (vk_samedev_readback_test.c /
-    // vk_ycbcr_render_test.c), used here instead of the AVVkFrame timeline-
-    // semaphore fields to avoid also having to hand ffmpeg's frame state
-    // back in sync (layout/access/sem_value) after an external read.
-    if (g_decode_queue) vkQueueWaitIdle(g_decode_queue);
+    // Host-side wait for this frame's decode: our graphics-queue command
+    // buffer is recorded/submitted strictly after it, so the decode write has
+    // completed before we sample. Waiting on the AVVkFrame's own timeline
+    // semaphore value (read-only -- ffmpeg's frame state is untouched) rather
+    // than vkQueueWaitIdle(decode queue): that also waited for every *newer*
+    // frame ffmpeg had queued since, and touched a VkQueue ffmpeg submits to
+    // from the decode thread without its queue lock.
+    if (wait_sem != VK_NULL_HANDLE) {
+        VkSemaphoreWaitInfo wi = { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
+        wi.semaphoreCount = 1; wi.pSemaphores = &wait_sem; wi.pValues = &wait_value;
+        VkResult wr = vkWaitSemaphores(g_dev, &wi, 1000000000ULL);
+        if (wr != VK_SUCCESS) {
+            vk_check_device_lost(wr);
+            goVKLog("vkWaitSemaphores(decode) failed/timed out -- skipping frame", 2);
+            return 0;
+        }
+    } else if (g_decode_queue) {
+        vkQueueWaitIdle(g_decode_queue);
+    }
 
     uint32_t img_idx = 0;
     // See g_img_sems's doc comment: rotate through the pool since the
@@ -3487,9 +3513,11 @@ static DWORD WINAPI vk_render_thread(LPVOID unused) {
             VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
             void *rel_ctx = NULL;
             void (*rel_fn)(void*) = NULL;
+            VkSemaphore wsem = VK_NULL_HANDLE; uint64_t wval = 0;
             EnterCriticalSection(&g_cs);
             if (g_vkf_ready) {
                 img = g_vkf_img; fmt = g_vkf_fmt; layout = g_vkf_layout; fw = g_vkf_w; fh = g_vkf_h;
+                wsem = g_vkf_sem; wval = g_vkf_sem_value;
                 rel_ctx = g_vkf_release_ctx; rel_fn = g_vkf_release_fn;
                 g_vkf_ready = 0;
             }
@@ -3498,7 +3526,7 @@ static DWORD WINAPI vk_render_thread(LPVOID unused) {
             if (img != VK_NULL_HANDLE) {
                 g_has_frame = 1;
                 g_render_stage = 1; // got frame — entering vk_render_frame_vkimage
-                rf = vk_render_frame_vkimage(img, fmt, layout, fw, fh);
+                rf = vk_render_frame_vkimage(img, fmt, layout, fw, fh, wsem, wval);
                 if (rf) {
                     // Fence-wait at the top of the NEXT call confirms this
                     // frame's GPU read has retired before its ref is dropped.
@@ -3686,7 +3714,8 @@ int vk_video_try_submit(uint8_t *rgba, int width, int height, int stride) {
 // Returns 1 if the frame was accepted (release_fn will be called later), 0
 // if rejected (caller must release immediately).
 int vk_video_try_submit_vkframe(void *vk_image, int vk_format, int vk_layout, int width, int height,
-                                 int narrow_range, void *release_ctx, void (*release_fn)(void *)) {
+                                 int narrow_range, void *wait_sem, uint64_t wait_value,
+                                 void *release_ctx, void (*release_fn)(void *)) {
     (void)narrow_range; // reserved: VK_SAMPLER_YCBCR_RANGE_ITU_NARROW is currently hardcoded, matches Moonlight's H264/HEVC streams
     if (!atomic_load(&g_active) || !g_cs_init) return 0;
     EnterCriticalSection(&g_cs);
@@ -3705,6 +3734,8 @@ int vk_video_try_submit_vkframe(void *vk_image, int vk_format, int vk_layout, in
     g_vkf_fmt = (VkFormat)vk_format;
     g_vkf_layout = (VkImageLayout)vk_layout;
     g_vkf_w = width; g_vkf_h = height;
+    g_vkf_sem = (VkSemaphore)wait_sem;
+    g_vkf_sem_value = wait_value;
     g_vkf_release_ctx = release_ctx;
     g_vkf_release_fn  = release_fn;
     g_vkf_ready = 1;
@@ -3882,6 +3913,7 @@ static void vk_full_cleanup(void) {
             if (g_imgview_cache[i].view) vkDestroyImageView(g_dev, g_imgview_cache[i].view, NULL);
             memset(&g_imgview_cache[i], 0, sizeof(g_imgview_cache[i]));
         }
+        g_imgview_evict_next = 0;
         for (int i = 0; i < VK_YCBCR_PIPELINE_CACHE_SIZE; i++) {
             VkYcbcrPipeline *p = &g_ycbcr_pipelines[i];
             if (p->pipeline) vkDestroyPipeline(g_dev, p->pipeline, NULL);

@@ -598,6 +598,9 @@ type LocalizedStrings struct {
 	FrameSmoothing                       string // "Smooth Motion" checkbox title, video parameters dialog -- motion-extrapolated stall concealment, pure local rendering fallback like AI Vision
 	FrameSmoothingHint                   string // hint shown under the Smooth Motion checkbox
 	FrameSmoothingBadge                  string // small badge next to the Smooth Motion title, e.g. "BETA"
+	PlayoutBuffer                        string // "Jitter Buffer" checkbox title, video parameters dialog -- moonlight-common-c fork's playout delay, Windows only, off by default
+	PlayoutBufferHint                    string // hint shown under the Jitter Buffer checkbox
+	PlayoutBufferBadge                   string // small platform badge next to the Jitter Buffer title
 	OtherSettings                        string // labeled divider above the video-parameters toggle list, same style as OrEnterManually
 	MuteAudio                            string // "Mute Audio"
 	UnmuteAudio                          string // "Unmute Audio"
@@ -1251,6 +1254,9 @@ func EN() *LocalizedStrings {
 		FrameSmoothing:                       "Smooth Motion",
 		FrameSmoothingHint:                   "When the network stalls, fills the gap with a motion-extrapolated frame instead of freezing -- never delays real frames, only bridges a late/lost one.",
 		FrameSmoothingBadge:                  "Beta",
+		PlayoutBuffer:                        "Jitter Buffer",
+		PlayoutBufferHint:                    "Holds each frame back by a few milliseconds to even out a jittery network. Smoother cadence on bad Wi-Fi, but adds latency -- leave it off on a good connection.",
+		PlayoutBufferBadge:                   "Win",
 		OtherSettings:                        "OTHER SETTINGS",
 		MuteAudio:                            "Mute Audio",
 		UnmuteAudio:                          "Unmute Audio",
