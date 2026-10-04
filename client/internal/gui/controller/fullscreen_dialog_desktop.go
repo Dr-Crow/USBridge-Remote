@@ -38,10 +38,34 @@ func (fd *FullscreenDialog) platformShow() {
 	}
 }
 
+// platformExit closes the fullscreen window -- except in the one state
+// where doing so would be fatal. Fyne's glfw driver (internal/driver/glfw/
+// loop.go's destroyWindow) calls Quit() UNCONDITIONALLY whenever its
+// window count reaches zero, regardless of SetMaster/SetCloseIntercept.
+// If fd.fullscreenWindow is, at this exact moment, the only window the
+// driver still has in its list (the main window should always also be
+// there -- see gui.newKeepAliveWindow for the real fix -- but window-list
+// bookkeeping bugs are exactly the kind of thing that only shows up once
+// in production), Close() silently kills the entire process: no
+// SetCloseIntercept consulted, no stream/USB disconnect, no crash report
+// (it's a clean exit(0), not a signal). Reproduced in production on
+// 2026-10-04: app.log shows this exact fullscreen-exit sequence running
+// normally and then just stopping mid-frame; the unified log's
+// runningboardd entry for the process read "termination reported by
+// launchd (0, 0, 512)" -- exit status 0, no signal, nothing for
+// ReportCrash to catch.
 func (fd *FullscreenDialog) platformExit() {
 	logrus.Info("🔍 Desktop: closing the fullscreen window")
-	if fd.fullscreenWindow != nil {
-		fd.fullscreenWindow.Close()
-		fd.fullscreenWindow = nil
+	if fd.fullscreenWindow == nil {
+		return
 	}
+	win := fd.fullscreenWindow
+	fd.fullscreenWindow = nil
+
+	if count := len(fyne.CurrentApp().Driver().AllWindows()); count <= 1 {
+		logrus.Errorf("⚠️ [Fullscreen] refusing to Close() what looks like the only window Fyne is tracking (count=%d) -- hiding instead so the app doesn't silently quit", count)
+		win.Hide()
+		return
+	}
+	win.Close()
 }
