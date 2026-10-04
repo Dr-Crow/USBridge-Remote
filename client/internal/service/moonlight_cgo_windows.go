@@ -11,7 +11,7 @@ package service
 #cgo CFLAGS: -I${SRCDIR}/../../moonlight-common-c/src -I${SRCDIR}/../../moonlight-common-c/enet/include
 #cgo LDFLAGS: -L${SRCDIR}/../../moonlight-common-c/build -L${SRCDIR}/../../moonlight-common-c/build/enet -lmoonlight-common-c -lenet -lws2_32 -lwinmm
 #cgo LDFLAGS: -lavcodec -lavutil -lswscale
-#cgo LDFLAGS: -lole32 -loleaut32 -luuid -lmfplat -lmfuuid
+#cgo LDFLAGS: -lole32 -loleaut32 -luuid -lmfplat -lmfuuid -ld3d11 -ldxgi
 
 #define COBJMACROS
 #define INITGUID
@@ -70,8 +70,10 @@ extern int vk_video_try_submit(uint8_t *rgba, int width, int height, int stride)
 // wait_sem/wait_value: the AVVkFrame's timeline semaphore and the value its
 // decode signals -- the render thread waits on exactly that instead of
 // idling ffmpeg's whole decode queue.
+// external: the image is imported from D3D11 (d3d11_interop_windows.c) and
+// must be acquired from / released to VK_QUEUE_FAMILY_EXTERNAL.
 extern int vk_video_try_submit_vkframe(void *vk_image, int vk_format, int vk_layout, int width, int height,
-                                        int narrow_range, void *wait_sem, uint64_t wait_value,
+                                        int narrow_range, void *wait_sem, uint64_t wait_value, int external,
                                         void *release_ctx, void (*release_fn)(void *));
 // GDI fallback (gl_video_impl_windows.c) — BGRA format.
 extern int gl_video_is_active(void);
@@ -299,6 +301,10 @@ static void ar_decode(char *data, int len) {
 extern int  goAIVisionShouldSample(void);
 extern void goAIVisionSample(uint8_t *rgba, int width, int height, int stride);
 extern AVBufferRef *win_vk_hwdev_ctx_ref(void);
+// D3D11VA decode -> Vulkan renderer bridge (d3d11_interop_windows.c).
+extern AVBufferRef *d3dx_device_ref(void);
+extern int d3dx_deliver(AVFrame *frame, void **out_img, int *out_vkfmt, void **out_sem, uint64_t *out_val, void **out_release_ctx);
+extern void d3dx_release_slot(void *ctx);
 extern void vk_frame_release_avframe(void *ctx);
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -310,6 +316,7 @@ static struct SwsContext *g_sws         = NULL;
 static AVBufferRef       *g_hw_dev_ctx  = NULL;
 static enum AVPixelFormat g_hw_pix_fmt  = AV_PIX_FMT_NONE;
 static int                g_using_vulkan_decode = 0; // set once the Vulkan zero-copy tier is committed for this session
+static int                g_using_d3dx_decode   = 0; // D3D11VA decode copied into Vulkan (d3d11_interop_windows.c)
 static enum AVPixelFormat g_av_dst_fmt  = AV_PIX_FMT_NONE;
 static int                g_av_w        = 0;
 static int                g_av_h        = 0;
@@ -421,7 +428,37 @@ static void win_av_init(void) {
         return;
     }
 
-    // Tier 0: real Vulkan Video Decode (VK_KHR_video_decode_h264/h265),
+    // Tier 0: D3D11VA decode -- what moonlight-qt uses on Windows -- copied
+    // on the GPU into images the Vulkan renderer imports
+    // (d3d11_interop_windows.c). On a Radeon 780M it decodes 4K HEVC at
+    // ~232 fps on one thread vs ~151 fps for ffmpeg's Vulkan decoder, with
+    // lower tail latency at 120 fps (docs/WINDOWS_DECODE_PIPELINE.md), and
+    // the renderer never touches an image libavcodec still uses as a
+    // reference. USBRIDGE_DECODER=vulkan skips it.
+    {
+        const char *dec_env = getenv("USBRIDGE_DECODER");
+        AVBufferRef *dx_ref = (dec_env && _stricmp(dec_env, "vulkan") == 0) ? NULL : d3dx_device_ref();
+        if (dx_ref) {
+            g_hw_pix_fmt = AV_PIX_FMT_D3D11;
+            g_avctx = avcodec_alloc_context3(codec);
+            g_avctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+            g_avctx->hw_device_ctx = dx_ref; // ownership transferred
+            g_avctx->get_format = win_get_hw_format;
+            if (avcodec_open2(g_avctx, codec, NULL) == 0) {
+                g_using_d3dx_decode = 1;
+                char msg[160];
+                snprintf(msg, sizeof(msg), "libavcodec/win: using %s (hardware D3D11VA -> Vulkan zero-copy interop, %dx%d@%d)",
+                         codec_label, g_stream_w, g_stream_h, g_stream_fps);
+                goVTLog(msg);
+                return;
+            }
+            avcodec_free_context(&g_avctx);
+            g_hw_pix_fmt = AV_PIX_FMT_NONE;
+            goVTLog((char*)"libavcodec/win: D3D11VA interop decoder rejected this codec/profile -- trying Vulkan Video Decode");
+        }
+    }
+
+    // Tier 1: real Vulkan Video Decode (VK_KHR_video_decode_h264/h265),
     // zero-copy -- decode and presentation share one VkDevice/VkImage, no
     // CPU readback, no sws_scale. Validated standalone (decode, same-device
     // plane readback, and a real VkSamplerYcbcrConversion render pass all
@@ -633,6 +670,61 @@ static void win_readback_post(AVFrame *frame, int vtframe) {
     SetEvent(g_rb_event);
 }
 
+// win_frame_notify: per-frame GUI/stats notification shared by the
+// zero-copy paths (Vulkan Video decode and D3D11VA interop).
+static void win_frame_notify(AVFrame *frame) {
+    // The readback itself runs on win_readback_thread, never here: a 4K
+    // transfer + sws_scale costs ~270ms, and on the decode thread that
+    // overflowed moonlight-common-c's 15-frame queue on the first frame of
+    // every session (flush -> ~1.5s of "Waiting for IDR frame").
+    //
+    // No CPU copy is needed to bring the overlay up: a nil-pixels goVTFrame
+    // on frame 1 already makes the video widget create the Vulkan overlay
+    // (handleVideoFrame's frame == nil branch), with the size taken from
+    // noteNativeFrameSize. Pixels are only read back if the overlay still
+    // isn't up ~2s in (fallback to the Fyne canvas), or for AI Vision.
+    int native_overlay_active = vk_video_is_active() || gl_video_is_active();
+    int session_frame = ++g_vk_session_frames;
+    if (!native_overlay_active && session_frame > 2 * (g_stream_fps > 0 ? g_stream_fps : 60)) {
+        win_readback_post(frame, 1);
+    } else {
+        if (goAIVisionShouldSample()) win_readback_post(frame, 0);
+        // Stats-only notification (first-frame log, FPS counter, overlay
+        // bootstrap on frame 1).
+        goVTFrame(NULL, frame->width, frame->height, 0);
+    }
+
+}
+
+// win_deliver_frame_d3dx: D3D11VA frame -> GPU copy into an imported image
+// (d3dx_deliver) -> renderer. The ring slot comes back to d3dx via
+// d3dx_release_slot once the renderer's read of it has retired.
+static void win_deliver_frame_d3dx(AVFrame *frame) {
+    double t_start = win_mono_ms();
+    win_frame_notify(frame);
+    void *img = NULL, *sem = NULL, *slot = NULL;
+    int vkfmt = 0;
+    uint64_t val = 0;
+    if (d3dx_deliver(frame, &img, &vkfmt, &sem, &val, &slot)) {
+        if (!vk_video_try_submit_vkframe(img, vkfmt, 0, frame->width, frame->height,
+                                          1, sem, val, 1, slot, d3dx_release_slot)) {
+            d3dx_release_slot(slot);
+        }
+    }
+    if (++g_av_frame_cnt == 1) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "libavcodec/win: first video frame decoded (D3D11VA -> Vulkan) %dx%d", frame->width, frame->height);
+        goVTLog(msg);
+    }
+    double t_end = win_mono_ms();
+    g_last_decode_ms = t_end - t_start;
+    if (t_end - t_start > WIN_DELIVER_SLOW_MS) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "SLOW win_deliver_frame(d3d11) %.0fms", t_end - t_start);
+        goVTLog(msg);
+    }
+}
+
 static void win_deliver_frame_vulkan(AVFrame *frame) {
     double t_start = win_mono_ms();
     AVVkFrame *vkf = (AVVkFrame*)frame->data[0];
@@ -674,34 +766,14 @@ static void win_deliver_frame_vulkan(AVFrame *frame) {
     // macOS), fed by pushNetGraphOverlayToVulkan/pushAIVisionOverlayToVulkan
     // via vk_hud_set_pixels/vk_aivision_set_pixels, independent of this
     // function entirely.
-    //
-    // The readback itself runs on win_readback_thread, never here: a 4K
-    // transfer + sws_scale costs ~270ms, and on the decode thread that
-    // overflowed moonlight-common-c's 15-frame queue on the first frame of
-    // every session (flush -> ~1.5s of "Waiting for IDR frame").
-    //
-    // No CPU copy is needed to bring the overlay up: a nil-pixels goVTFrame
-    // on frame 1 already makes the video widget create the Vulkan overlay
-    // (handleVideoFrame's frame == nil branch), with the size taken from
-    // noteNativeFrameSize. Pixels are only read back if the overlay still
-    // isn't up ~2s in (fallback to the Fyne canvas), or for AI Vision.
-    int native_overlay_active = vk_video_is_active() || gl_video_is_active();
-    int session_frame = ++g_vk_session_frames;
-    if (!native_overlay_active && session_frame > 2 * (g_stream_fps > 0 ? g_stream_fps : 60)) {
-        win_readback_post(frame, 1);
-    } else {
-        if (goAIVisionShouldSample()) win_readback_post(frame, 0);
-        // Stats-only notification (first-frame log, FPS counter, overlay
-        // bootstrap on frame 1).
-        goVTFrame(NULL, frame->width, frame->height, 0);
-    }
+    win_frame_notify(frame);
 
     // narrow_range=1: Moonlight/H264/HEVC streams are limited-range BT.601/709.
     AVFrame *ref = av_frame_clone(frame);
     if (ref) {
         if (!vk_video_try_submit_vkframe((void*)vkf->img[0], (int)vkfctx->format[0], (int)vkf->layout[0],
                                           frame->width, frame->height,
-                                          1, (void*)vkf->sem[0], vkf->sem_value[0],
+                                          1, (void*)vkf->sem[0], vkf->sem_value[0], 0,
                                           (void*)ref, vk_frame_release_avframe)) {
             av_frame_free(&ref);
         }
@@ -725,6 +797,10 @@ static void win_deliver_frame_vulkan(AVFrame *frame) {
 static void win_deliver_frame(AVFrame *frame) {
     if (frame->format == AV_PIX_FMT_VULKAN) {
         win_deliver_frame_vulkan(frame);
+        return;
+    }
+    if (frame->format == AV_PIX_FMT_D3D11 && g_using_d3dx_decode) {
+        win_deliver_frame_d3dx(frame);
         return;
     }
     double t_start = win_mono_ms();
@@ -1235,6 +1311,7 @@ static void do_li_stop(void) {
     // resets so the next session's win_av_init() re-probes cleanly (e.g. if
     // the codec changed to AV1, which has no Vulkan decode extension here).
     g_using_vulkan_decode = 0;
+    g_using_d3dx_decode = 0;
 }
 
 static void do_li_interrupt(void) {

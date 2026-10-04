@@ -203,10 +203,62 @@ In a live session, the client logs its configuration at stream start:
   records the decode thread's stage, the in/out counters, the ffmpeg error
   codes and the RTP packet and FEC counters.
 
-### Open issue
+Two problems remained in live use of Vulkan Video decode:
 
-The decoder thread count comes from the *requested* fps. If a session
-requests 60 fps but the host sends more (about 107 fps was seen), a 4K
-stream gets one decoder thread. That cannot keep up, so the queue overflows
-and requests an IDR about once a second. Choosing the thread count from the
-measured arrival rate would fix this.
+- **Queueing latency.** With either 1 or 2 decoder threads, frames waited
+  30-120 ms in the decode queue at 4K@120. The decoder only just kept up,
+  so every GPU clock dip built a backlog. The same thing happened at a
+  requested 60 fps, because the host actually sent about 107 fps.
+- **Brightness flashes.** The renderer moved the decoder's image to
+  `SHADER_READ_ONLY` behind ffmpeg's back. ffmpeg still used that image as
+  a reference, so the following frames decoded with corrupted references.
+
+## D3D11VA decode with a Vulkan interop (current default)
+
+`ffmpeg -hwaccel <x> -threads N` on the 40 Mbps 4K clip, 780M, 3 runs each:
+
+| decoder | throughput |
+|---|---|
+| D3D11VA, 1 thread | **232 fps** |
+| Vulkan, 1 thread | 151 fps |
+| Vulkan, 2 threads | 151 fps |
+
+The earlier "1 thread 104 fps / 2 threads 202 fps" result for Vulkan did
+not reproduce. Vulkan throughput on this iGPU varies with GPU state.
+
+`d3d11_interop_windows.c` decodes with D3D11VA, which is also what
+moonlight-qt uses on Windows. For each frame:
+
+1. One `CopySubresourceRegion` copies the frame into a ring of 4 shared
+   NV12/P010 textures.
+2. Vulkan imports those textures (`VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT`).
+3. A shared `ID3D11Fence`, imported as a Vulkan timeline semaphore, orders
+   the copy before the render.
+
+The renderer acquires each image from `VK_QUEUE_FAMILY_EXTERNAL` in
+`GENERAL` layout and releases it the same way. It never touches an image
+libavcodec uses as a reference.
+
+`tools/decode_bench/d3d11_interop_bench.c` shows the interop is correct:
+plane 0 read back through Vulkan byte-matches `av_hwframe_transfer_data`.
+It also measures latency from scheduled arrival until the frame is readable
+by Vulkan:
+
+| 4K | D3D11VA + interop p50 / p99 | Vulkan decode p50 / p99 |
+|---|---|---|
+| 120 fps, 8 Mbps | 6.8-7.8 / 12-16 ms | 8.4 / 13-60 ms |
+| 120 fps, 40 Mbps | 7.1-7.2 / 14-18 ms | 8.4-8.5 / 19-26 ms |
+| 60 fps | 8-9 / 13-15 ms | 7-9 / 12-15 ms |
+
+Live, 4K@120 HEVC from the Linux agent:
+
+- Decode holds a steady 120 fps.
+- Queue wait (`enqueueToSubmit`) is p50 17 µs and p90 73 µs, down from
+  30-120 ms with Vulkan decode.
+- No reconnects. A few queue overflows happened only in the first half
+  minute.
+
+If the interop cannot be set up, the client falls back to Vulkan Video
+decode. Missing pieces include: no LUID match, no D3D11.4 fences, or no
+external memory/semaphore extensions. `USBRIDGE_DECODER=vulkan` forces
+the fallback for comparison.

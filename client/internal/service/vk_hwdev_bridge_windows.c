@@ -58,7 +58,9 @@ static int win_vk_hwdev_ensure(void) {
 
     AVDictionary *opts = NULL;
     av_dict_set(&opts, "instance_extensions", "+VK_KHR_surface+VK_KHR_win32_surface", 0);
-    av_dict_set(&opts, "device_extensions", "+VK_KHR_swapchain", 0);
+    // external_memory/semaphore_win32: D3D11VA decode output is imported
+    // into this device (d3d11_interop_windows.c).
+    av_dict_set(&opts, "device_extensions", "+VK_KHR_swapchain+VK_KHR_external_memory_win32+VK_KHR_external_semaphore_win32", 0);
     AVBufferRef *hw_ctx = NULL;
     int err = av_hwdevice_ctx_create(&hw_ctx, AV_HWDEVICE_TYPE_VULKAN, NULL, opts, 0);
     av_dict_free(&opts);

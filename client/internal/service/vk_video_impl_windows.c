@@ -441,6 +441,13 @@ typedef struct {
 #define VK_IMGVIEW_CACHE_SIZE 32
 static VkImgViewCacheEntry g_imgview_cache[VK_IMGVIEW_CACHE_SIZE];
 static int g_imgview_evict_next = 0;
+// Images about to be destroyed by their owner (d3d11_interop_windows.c's
+// ring), queued from the decode thread and evicted from g_imgview_cache on
+// the render thread before the next lookup -- a later VkImage can reuse the
+// same handle value.
+#define VK_FORGET_MAX 16
+static VkImage g_forget[VK_FORGET_MAX];
+static int g_forget_n = 0;
 
 // Pending zero-copy frame — single-slot, parallel to g_buf/g_ready above.
 static VkImage    g_vkf_img          = VK_NULL_HANDLE;
@@ -450,6 +457,7 @@ static int        g_vkf_w = 0, g_vkf_h = 0;
 static void      *g_vkf_release_ctx  = NULL;
 static void      (*g_vkf_release_fn)(void*) = NULL;
 static VkSemaphore g_vkf_sem         = VK_NULL_HANDLE;
+static int        g_vkf_external     = 0; // image imported from D3D11 (d3d11_interop_windows.c)
 static uint64_t   g_vkf_sem_value    = 0;
 static volatile int g_vkf_ready      = 0;
 
@@ -1919,7 +1927,27 @@ fail:
 // and caching the VkImageView + VkDescriptorSet on first sight of this
 // VkImage. ffmpeg's internal Vulkan frame pool round-robins a small fixed set
 // of images, so this cache stays tiny (VK_IMGVIEW_CACHE_SIZE) in practice.
+static void vk_imgview_cache_apply_forget(void) {
+    if (!g_cs_init) return;
+    VkImage gone[VK_FORGET_MAX];
+    int n;
+    EnterCriticalSection(&g_cs);
+    n = g_forget_n;
+    memcpy(gone, g_forget, sizeof(VkImage) * (size_t)n);
+    g_forget_n = 0;
+    LeaveCriticalSection(&g_cs);
+    for (int k = 0; k < n; k++) {
+        for (int i = 0; i < VK_IMGVIEW_CACHE_SIZE; i++) {
+            if (g_imgview_cache[i].img != gone[k]) continue;
+            if (g_imgview_cache[i].view) vkDestroyImageView(g_dev, g_imgview_cache[i].view, NULL);
+            g_imgview_cache[i].view = VK_NULL_HANDLE;
+            g_imgview_cache[i].img = VK_NULL_HANDLE; // dset is kept for reuse
+        }
+    }
+}
+
 static VkDescriptorSet vk_imgview_cache_get(VkImage img, VkFormat fmt, VkYcbcrPipeline *pl) {
+    vk_imgview_cache_apply_forget();
     int free_slot = -1;
     for (int i = 0; i < VK_IMGVIEW_CACHE_SIZE; i++) {
         if (g_imgview_cache[i].img == img && g_imgview_cache[i].fmt == fmt) return g_imgview_cache[i].dset;
@@ -1982,7 +2010,7 @@ static VkDescriptorSet vk_imgview_cache_get(VkImage img, VkFormat fmt, VkYcbcrPi
 // a decoded VkImage directly into the swapchain instead of blitting an
 // uploaded RGBA staging texture. Same acquire/fence/present machinery.
 static int vk_render_frame_vkimage(VkImage img, VkFormat fmt, VkImageLayout src_layout, int fw, int fh,
-                                   VkSemaphore wait_sem, uint64_t wait_value) {
+                                   VkSemaphore wait_sem, uint64_t wait_value, int external) {
     if (!g_dev || !g_swap) return 0;
     char _dbg[96];
 
@@ -2093,12 +2121,18 @@ static int vk_render_frame_vkimage(VkImage img, VkFormat fmt, VkImageLayout src_
     // frame (correct decode, garbage/discarded data by the time the shader
     // sampled it), exactly the bug the standalone prototype's real-layout
     // barrier (vk_ycbcr_render_test.c) never hit.
+    //
+    // An image imported from D3D11 (external) is acquired from
+    // VK_QUEUE_FAMILY_EXTERNAL in GENERAL layout, which keeps what D3D11
+    // wrote, and released back the same way at the end of this command
+    // buffer (verified byte-exact against a CPU copy in
+    // tools/decode_bench/d3d11_interop_bench.c).
     {
         VkImageMemoryBarrier b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-        b.oldLayout = src_layout;
+        b.oldLayout = external ? VK_IMAGE_LAYOUT_GENERAL : src_layout;
         b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.srcQueueFamilyIndex = external ? VK_QUEUE_FAMILY_EXTERNAL : VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = external ? g_qfam : VK_QUEUE_FAMILY_IGNORED;
         b.image = img;
         b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         b.subresourceRange.levelCount = 1; b.subresourceRange.layerCount = 1;
@@ -2206,6 +2240,21 @@ static int vk_render_frame_vkimage(VkImage img, VkFormat fmt, VkImageLayout src_
             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
         g_conceal_tex_layout[conceal_slot] = VK_IMAGE_LAYOUT_GENERAL;
+    }
+
+    if (external) {
+        VkImageMemoryBarrier b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        b.srcQueueFamilyIndex = g_qfam;
+        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+        b.image = img;
+        b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        b.subresourceRange.levelCount = 1; b.subresourceRange.layerCount = 1;
+        b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        b.dstAccessMask = 0;
+        vkCmdPipelineBarrier(g_cmdbuf, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                             0, 0, NULL, 0, NULL, 1, &b);
     }
 
     vkEndCommandBuffer(g_cmdbuf);
@@ -3513,11 +3562,11 @@ static DWORD WINAPI vk_render_thread(LPVOID unused) {
             VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
             void *rel_ctx = NULL;
             void (*rel_fn)(void*) = NULL;
-            VkSemaphore wsem = VK_NULL_HANDLE; uint64_t wval = 0;
+            VkSemaphore wsem = VK_NULL_HANDLE; uint64_t wval = 0; int wext = 0;
             EnterCriticalSection(&g_cs);
             if (g_vkf_ready) {
                 img = g_vkf_img; fmt = g_vkf_fmt; layout = g_vkf_layout; fw = g_vkf_w; fh = g_vkf_h;
-                wsem = g_vkf_sem; wval = g_vkf_sem_value;
+                wsem = g_vkf_sem; wval = g_vkf_sem_value; wext = g_vkf_external;
                 rel_ctx = g_vkf_release_ctx; rel_fn = g_vkf_release_fn;
                 g_vkf_ready = 0;
             }
@@ -3526,7 +3575,7 @@ static DWORD WINAPI vk_render_thread(LPVOID unused) {
             if (img != VK_NULL_HANDLE) {
                 g_has_frame = 1;
                 g_render_stage = 1; // got frame — entering vk_render_frame_vkimage
-                rf = vk_render_frame_vkimage(img, fmt, layout, fw, fh, wsem, wval);
+                rf = vk_render_frame_vkimage(img, fmt, layout, fw, fh, wsem, wval, wext);
                 if (rf) {
                     // Fence-wait at the top of the NEXT call confirms this
                     // frame's GPU read has retired before its ref is dropped.
@@ -3714,7 +3763,7 @@ int vk_video_try_submit(uint8_t *rgba, int width, int height, int stride) {
 // Returns 1 if the frame was accepted (release_fn will be called later), 0
 // if rejected (caller must release immediately).
 int vk_video_try_submit_vkframe(void *vk_image, int vk_format, int vk_layout, int width, int height,
-                                 int narrow_range, void *wait_sem, uint64_t wait_value,
+                                 int narrow_range, void *wait_sem, uint64_t wait_value, int external,
                                  void *release_ctx, void (*release_fn)(void *)) {
     (void)narrow_range; // reserved: VK_SAMPLER_YCBCR_RANGE_ITU_NARROW is currently hardcoded, matches Moonlight's H264/HEVC streams
     if (!atomic_load(&g_active) || !g_cs_init) return 0;
@@ -3736,6 +3785,7 @@ int vk_video_try_submit_vkframe(void *vk_image, int vk_format, int vk_layout, in
     g_vkf_w = width; g_vkf_h = height;
     g_vkf_sem = (VkSemaphore)wait_sem;
     g_vkf_sem_value = wait_value;
+    g_vkf_external = external;
     g_vkf_release_ctx = release_ctx;
     g_vkf_release_fn  = release_fn;
     g_vkf_ready = 1;
@@ -3743,6 +3793,15 @@ int vk_video_try_submit_vkframe(void *vk_image, int vk_format, int vk_layout, in
     LeaveCriticalSection(&g_cs);
     SetEvent(g_event);
     return 1;
+}
+
+// vk_video_forget_image: the owner of an image the renderer may have cached
+// a view for is about to destroy it (any thread). See g_forget.
+void vk_video_forget_image(void *vk_image) {
+    if (!g_cs_init) return;
+    EnterCriticalSection(&g_cs);
+    if (g_forget_n < VK_FORGET_MAX) g_forget[g_forget_n++] = (VkImage)vk_image;
+    LeaveCriticalSection(&g_cs);
 }
 
 // vk_hud_set_pixels is called from Go (net_graph_windows.go's push hook,
