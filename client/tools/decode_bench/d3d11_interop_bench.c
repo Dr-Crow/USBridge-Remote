@@ -61,6 +61,14 @@ static ID3D11Device5 *g_d3d;
 static ID3D11DeviceContext4 *g_d3dctx;
 static AVD3D11VADeviceContext *g_avd3d;
 static ID3D11Texture2D *g_shared[RING];
+// BENCH_RGB=1: convert with the D3D11 video processor into shared BGRA
+// textures instead of copying NV12 (NVIDIA mis-imports NV12's chroma plane).
+static int g_rgb;
+static ID3D11VideoDevice *g_vdev;
+static ID3D11VideoContext *g_vctx;
+static ID3D11VideoProcessorEnumerator *g_venum;
+static ID3D11VideoProcessor *g_vproc;
+static ID3D11VideoProcessorOutputView *g_vout[RING];
 static ID3D11Fence *g_fence;
 static UINT64 g_fence_val;
 // Vulkan side
@@ -118,9 +126,20 @@ static void deliver(AVFrame *fr) {
     UINT slice = (UINT)(intptr_t)fr->data[1];
     int slot = g_ring_next; g_ring_next = (g_ring_next + 1) % RING;
     g_avd3d->lock(g_avd3d->lock_ctx);
-    D3D11_BOX box = { 0, 0, 0, (UINT)g_w, (UINT)g_h, 1 };
-    ID3D11DeviceContext4_CopySubresourceRegion(g_d3dctx, (ID3D11Resource *)g_shared[slot], 0, 0, 0, 0,
-                                               (ID3D11Resource *)src, slice, &box);
+    if (g_rgb) {
+        D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd = { 0 };
+        ivd.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D; ivd.Texture2D.ArraySlice = slice;
+        ID3D11VideoProcessorInputView *iv = NULL;
+        CHECK(ID3D11VideoDevice_CreateVideoProcessorInputView(g_vdev, (ID3D11Resource *)src, g_venum, &ivd, &iv) == S_OK, "input view");
+        D3D11_VIDEO_PROCESSOR_STREAM st = { 0 };
+        st.Enable = TRUE; st.pInputSurface = iv;
+        CHECK(ID3D11VideoContext_VideoProcessorBlt(g_vctx, g_vproc, g_vout[slot], 0, 1, &st) == S_OK, "VideoProcessorBlt");
+        ID3D11VideoProcessorInputView_Release(iv);
+    } else {
+        D3D11_BOX box = { 0, 0, 0, (UINT)g_w, (UINT)g_h, 1 };
+        ID3D11DeviceContext4_CopySubresourceRegion(g_d3dctx, (ID3D11Resource *)g_shared[slot], 0, 0, 0, 0,
+                                                   (ID3D11Resource *)src, slice, &box);
+    }
     UINT64 v = ++g_fence_val;
     ID3D11DeviceContext4_Signal(g_d3dctx, g_fence, v);
     ID3D11DeviceContext4_Flush(g_d3dctx);
@@ -185,13 +204,89 @@ static uint32_t find_mem_type(uint32_t bits, VkMemoryPropertyFlags want) {
     return UINT32_MAX;
 }
 
-// Plane-0 readback through Vulkan, compared with ffmpeg's own CPU copy.
-static void verify_interop(AVFrame *fr, int slot, uint32_t qf, VkQueue queue) {
+// Reads both planes back through Vulkan (acquire from EXTERNAL in GENERAL,
+// copy, release back -- the same ownership dance as the renderer) and
+// compares them with ffmpeg's own CPU copy of the same frame. Returns the
+// number of differing bytes (luma + chroma); prints a line when verbose.
+static size_t verify_rgb(int slot, uint32_t qf, VkQueue queue, int verbose) {
+    size_t sz = (size_t)g_w * g_h * 4;
+    // D3D11 side
+    D3D11_TEXTURE2D_DESC td = { 0 };
+    td.Width = g_w; td.Height = g_h; td.MipLevels = 1; td.ArraySize = 1; td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_STAGING; td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    ID3D11Texture2D *st; CHECK(ID3D11Device5_CreateTexture2D(g_d3d, &td, NULL, &st) == S_OK, "staging");
+    g_avd3d->lock(g_avd3d->lock_ctx);
+    ID3D11DeviceContext4_CopyResource(g_d3dctx, (ID3D11Resource *)st, (ID3D11Resource *)g_shared[slot]);
+    D3D11_MAPPED_SUBRESOURCE m;
+    CHECK(ID3D11DeviceContext4_Map(g_d3dctx, (ID3D11Resource *)st, 0, D3D11_MAP_READ, 0, &m) == S_OK, "Map");
+    // Vulkan side
+    VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+    bci.size = sz; bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VkBuffer buf; CHECK(vkCreateBuffer(g_dev, &bci, NULL, &buf) == VK_SUCCESS, "vkCreateBuffer");
+    VkMemoryRequirements mr; vkGetBufferMemoryRequirements(g_dev, buf, &mr);
+    VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    mai.allocationSize = mr.size;
+    mai.memoryTypeIndex = find_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    VkDeviceMemory bm; CHECK(vkAllocateMemory(g_dev, &mai, NULL, &bm) == VK_SUCCESS, "alloc");
+    vkBindBufferMemory(g_dev, buf, bm, 0);
+    VkCommandPoolCreateInfo pci = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO }; pci.queueFamilyIndex = qf;
+    VkCommandPool pool; vkCreateCommandPool(g_dev, &pci, NULL, &pool);
+    VkCommandBufferAllocateInfo cai = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+    cai.commandPool = pool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; cai.commandBufferCount = 1;
+    VkCommandBuffer cb; vkAllocateCommandBuffers(g_dev, &cai, &cb);
+    VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    vkBeginCommandBuffer(cb, &bi);
+    VkImageMemoryBarrier b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    b.oldLayout = VK_IMAGE_LAYOUT_GENERAL; b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL; b.dstQueueFamilyIndex = qf;
+    b.image = g_vkimg[slot];
+    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; b.subresourceRange.levelCount = 1; b.subresourceRange.layerCount = 1;
+    b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+    VkBufferImageCopy reg = { 0 };
+    reg.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; reg.imageSubresource.layerCount = 1;
+    reg.imageExtent.width = g_w; reg.imageExtent.height = g_h; reg.imageExtent.depth = 1;
+    vkCmdCopyImageToBuffer(cb, g_vkimg[slot], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &reg);
+    VkImageMemoryBarrier rb = b;
+    rb.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; rb.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    rb.srcQueueFamilyIndex = qf; rb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+    rb.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT; rb.dstAccessMask = 0;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &rb);
+    vkEndCommandBuffer(cb);
+    UINT64 wv = g_fence_val;
+    VkTimelineSemaphoreSubmitInfo ts = { VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO };
+    ts.waitSemaphoreValueCount = 1; ts.pWaitSemaphoreValues = &wv;
+    VkPipelineStageFlags ws = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkSubmitInfo si = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    si.pNext = &ts; si.waitSemaphoreCount = 1; si.pWaitSemaphores = &g_vksem; si.pWaitDstStageMask = &ws;
+    si.commandBufferCount = 1; si.pCommandBuffers = &cb;
+    VkResult sr = vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE);
+    if (sr != VK_SUCCESS) { printf("vkQueueSubmit failed: %d\n", (int)sr); exit(1); }
+    vkQueueWaitIdle(queue);
+    uint8_t *p; vkMapMemory(g_dev, bm, 0, sz, 0, (void **)&p);
+    size_t d = 0; uint64_t sum = 0;
+    for (int y = 0; y < g_h; y++) {
+        const uint8_t *a = p + (size_t)y * g_w * 4, *c = (const uint8_t *)m.pData + (size_t)y * m.RowPitch;
+        for (int x = 0; x < g_w * 4; x++) { d += a[x] != c[x]; sum += a[x]; }
+    }
+    if (verbose)
+        printf("interop check (BGRA) slot %d: differing=%zu of %zu, mean=%.1f -> %s\n", slot, d, sz, (double)sum / sz,
+               d == 0 && sum > 0 ? "OK" : "MISMATCH");
+    vkUnmapMemory(g_dev, bm);
+    ID3D11DeviceContext4_Unmap(g_d3dctx, (ID3D11Resource *)st, 0);
+    g_avd3d->unlock(g_avd3d->lock_ctx);
+    ID3D11Texture2D_Release(st);
+    vkDestroyCommandPool(g_dev, pool, NULL); vkDestroyBuffer(g_dev, buf, NULL); vkFreeMemory(g_dev, bm, NULL);
+    return d;
+}
+
+static size_t verify_interop(AVFrame *fr, int slot, uint32_t qf, VkQueue queue, int verbose) {
+    if (g_rgb) return verify_rgb(slot, qf, queue, verbose);
     AVFrame *sw = av_frame_alloc();
     CHECK(av_hwframe_transfer_data(sw, fr, 0) == 0, "av_hwframe_transfer_data");
-    size_t ysize = (size_t)g_w * g_h;
+    size_t ysize = (size_t)g_w * g_h, csize = (size_t)g_w * ((g_h + 1) / 2); // NV12: interleaved UV, w bytes per row, h/2 rows
     VkBufferCreateInfo bci = { VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-    bci.size = ysize; bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bci.size = ysize + csize; bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     VkBuffer buf; CHECK(vkCreateBuffer(g_dev, &bci, NULL, &buf) == VK_SUCCESS, "vkCreateBuffer");
     VkMemoryRequirements mr; vkGetBufferMemoryRequirements(g_dev, buf, &mr);
     VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
@@ -208,17 +303,25 @@ static void verify_interop(AVFrame *fr, int slot, uint32_t qf, VkQueue queue) {
     VkCommandBufferBeginInfo bi = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     vkBeginCommandBuffer(cb, &bi);
     VkImageMemoryBarrier b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-    b.oldLayout = VK_IMAGE_LAYOUT_GENERAL; // written by D3D11: acquire from EXTERNAL, keeping contents
+    b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
     b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL; b.dstQueueFamilyIndex = qf;
     b.image = g_vkimg[slot];
-    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_PLANE_0_BIT; b.subresourceRange.levelCount = 1; b.subresourceRange.layerCount = 1;
+    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; b.subresourceRange.levelCount = 1; b.subresourceRange.layerCount = 1;
     b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
-    VkBufferImageCopy reg = { 0 };
-    reg.imageSubresource.aspectMask = VK_IMAGE_ASPECT_PLANE_0_BIT; reg.imageSubresource.layerCount = 1;
-    reg.imageExtent.width = g_w; reg.imageExtent.height = g_h; reg.imageExtent.depth = 1;
-    vkCmdCopyImageToBuffer(cb, g_vkimg[slot], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 1, &reg);
+    VkBufferImageCopy reg[2] = { 0 };
+    reg[0].imageSubresource.aspectMask = VK_IMAGE_ASPECT_PLANE_0_BIT; reg[0].imageSubresource.layerCount = 1;
+    reg[0].imageExtent.width = g_w; reg[0].imageExtent.height = g_h; reg[0].imageExtent.depth = 1;
+    reg[1].bufferOffset = ysize;
+    reg[1].imageSubresource.aspectMask = VK_IMAGE_ASPECT_PLANE_1_BIT; reg[1].imageSubresource.layerCount = 1;
+    reg[1].imageExtent.width = g_w / 2; reg[1].imageExtent.height = (g_h + 1) / 2; reg[1].imageExtent.depth = 1;
+    vkCmdCopyImageToBuffer(cb, g_vkimg[slot], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buf, 2, reg);
+    VkImageMemoryBarrier rb = b;
+    rb.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL; rb.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+    rb.srcQueueFamilyIndex = qf; rb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+    rb.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT; rb.dstAccessMask = 0;
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &rb);
     vkEndCommandBuffer(cb);
     UINT64 wv = g_fence_val;
     VkTimelineSemaphoreSubmitInfo ts = { VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO };
@@ -229,17 +332,41 @@ static void verify_interop(AVFrame *fr, int slot, uint32_t qf, VkQueue queue) {
     si.commandBufferCount = 1; si.pCommandBuffers = &cb;
     CHECK(vkQueueSubmit(queue, 1, &si, VK_NULL_HANDLE) == VK_SUCCESS, "vkQueueSubmit verify");
     vkQueueWaitIdle(queue);
-    uint8_t *p; vkMapMemory(g_dev, bm, 0, ysize, 0, (void **)&p);
-    size_t diff = 0; uint64_t sum = 0;
+    uint8_t *p; vkMapMemory(g_dev, bm, 0, ysize + csize, 0, (void **)&p);
+    size_t dy = 0, dc = 0; uint64_t sum = 0;
     for (int y = 0; y < g_h; y++) {
         const uint8_t *a = p + (size_t)y * g_w, *c = sw->data[0] + (size_t)y * sw->linesize[0];
-        for (int x = 0; x < g_w; x++) { diff += a[x] != c[x]; sum += a[x]; }
+        for (int x = 0; x < g_w; x++) { dy += a[x] != c[x]; sum += a[x]; }
     }
-    printf("interop check: luma bytes differing=%zu of %zu, mean luma via Vulkan=%.1f -> %s\n",
-           diff, ysize, (double)sum / ysize, diff == 0 && sum > 0 ? "OK" : "MISMATCH");
+    for (int y = 0; y < (g_h + 1) / 2; y++) {
+        const uint8_t *a = p + ysize + (size_t)y * g_w, *c = sw->data[1] + (size_t)y * sw->linesize[1];
+        for (int x = 0; x < g_w; x++) dc += a[x] != c[x];
+    }
+    if (verbose && dc) {
+        // Where did Vulkan's chroma come from? Find the row offset (into the
+        // luma+chroma byte stream as D3D11 lays it out) that best matches.
+        int ch = (g_h + 1) / 2, best_k = 0; size_t best = (size_t)-1;
+        for (int k = -64; k <= 64; k++) {
+            size_t d = 0;
+            for (int y = 0; y < ch; y += 8) {
+                int sy = y + k;
+                const uint8_t *a = p + ysize + (size_t)y * g_w;
+                const uint8_t *c = sy < 0 ? sw->data[0] + (size_t)(g_h + sy) * sw->linesize[0]
+                                 : sy < ch ? sw->data[1] + (size_t)sy * sw->linesize[1] : NULL;
+                if (!c) { d += g_w; continue; }
+                for (int x = 0; x < g_w; x++) d += a[x] != c[x];
+            }
+            if (d < best) { best = d; best_k = k; }
+        }
+        printf("  chroma best match at row offset %d (sampled mismatches %zu)\n", best_k, best);
+    }
+    if (verbose)
+        printf("interop check slot %d: luma differing=%zu of %zu, chroma differing=%zu of %zu, mean luma=%.1f -> %s\n",
+               slot, dy, ysize, dc, csize, (double)sum / ysize, dy == 0 && dc == 0 && sum > 0 ? "OK" : "MISMATCH");
     vkUnmapMemory(g_dev, bm);
     vkDestroyCommandPool(g_dev, pool, NULL); vkDestroyBuffer(g_dev, buf, NULL); vkFreeMemory(g_dev, bm, NULL);
     av_frame_free(&sw);
+    return dy + dc;
 }
 
 static int cmpd(const void *a, const void *b) { double x = *(double *)a, y = *(double *)b; return x < y ? -1 : x > y; }
@@ -267,7 +394,8 @@ int main(int argc, char **argv) {
     av_dict_set(&o, "instance_extensions", "+VK_KHR_surface+VK_KHR_win32_surface", 0);
     av_dict_set(&o, "device_extensions", "+VK_KHR_swapchain+VK_KHR_external_memory_win32+VK_KHR_external_semaphore_win32", 0);
     AVBufferRef *vkhw = NULL;
-    CHECK(av_hwdevice_ctx_create(&vkhw, AV_HWDEVICE_TYPE_VULKAN, NULL, o, 0) == 0, "vulkan hwdevice");
+    // BENCH_VKDEV picks the Vulkan device (index or name substring, as ffmpeg's -init_hw_device takes it).
+    CHECK(av_hwdevice_ctx_create(&vkhw, AV_HWDEVICE_TYPE_VULKAN, getenv("BENCH_VKDEV"), o, 0) == 0, "vulkan hwdevice");
     AVVulkanDeviceContext *vk = (AVVulkanDeviceContext *)((AVHWDeviceContext *)vkhw->data)->hwctx;
     g_dev = vk->act_dev; g_phys = vk->phys_dev;
     VkPhysicalDeviceIDProperties idp = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES };
@@ -296,6 +424,25 @@ int main(int argc, char **argv) {
     g_avd3d = (AVD3D11VADeviceContext *)((AVHWDeviceContext *)dhw->data)->hwctx;
     g_avd3d->device = dev0; // ffmpeg takes this reference
     CHECK(av_hwdevice_ctx_init(dhw) == 0, "d3d11va hwdevice init");
+    g_rgb = getenv("BENCH_RGB") != NULL;
+    if (g_rgb) {
+        CHECK(ID3D11Device5_QueryInterface(g_d3d, &IID_ID3D11VideoDevice, (void **)&g_vdev) == S_OK, "ID3D11VideoDevice");
+        CHECK(ID3D11DeviceContext4_QueryInterface(g_d3dctx, &IID_ID3D11VideoContext, (void **)&g_vctx) == S_OK, "ID3D11VideoContext");
+        D3D11_VIDEO_PROCESSOR_CONTENT_DESC cd = { 0 };
+        cd.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+        cd.InputWidth = g_w; cd.InputHeight = g_h; cd.OutputWidth = g_w; cd.OutputHeight = g_h;
+        cd.Usage = D3D11_VIDEO_USAGE_OPTIMAL_SPEED;
+        CHECK(ID3D11VideoDevice_CreateVideoProcessorEnumerator(g_vdev, &cd, &g_venum) == S_OK, "VP enumerator");
+        CHECK(ID3D11VideoDevice_CreateVideoProcessor(g_vdev, g_venum, 0, &g_vproc) == S_OK, "VideoProcessor");
+        // Same conversion as the Vulkan renderer's sampler: BT.601, studio range in, full range out.
+        D3D11_VIDEO_PROCESSOR_COLOR_SPACE in = { 0 }, out = { 0 };
+        in.YCbCr_Matrix = 0; in.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
+        out.RGB_Range = 0; out.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
+        ID3D11VideoContext_VideoProcessorSetStreamColorSpace(g_vctx, g_vproc, 0, &in);
+        ID3D11VideoContext_VideoProcessorSetOutputColorSpace(g_vctx, g_vproc, &out);
+        ID3D11VideoContext_VideoProcessorSetStreamAutoProcessingMode(g_vctx, g_vproc, 0, FALSE);
+        ID3D11VideoContext_VideoProcessorSetStreamFrameFormat(g_vctx, g_vproc, 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
+    }
 
     // Shared NV12 ring + shared fence, imported into Vulkan.
     PFN_vkGetMemoryWin32HandlePropertiesKHR getProps = (PFN_vkGetMemoryWin32HandlePropertiesKHR)vkGetDeviceProcAddr(g_dev, "vkGetMemoryWin32HandlePropertiesKHR");
@@ -303,8 +450,10 @@ int main(int argc, char **argv) {
     CHECK(getProps && importSem, "external memory/semaphore win32 entry points");
     for (int s = 0; s < RING; s++) {
         D3D11_TEXTURE2D_DESC td = { 0 };
-        td.Width = g_w; td.Height = g_h; td.MipLevels = 1; td.ArraySize = 1; td.Format = DXGI_FORMAT_NV12;
-        td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        td.Width = g_w; td.Height = g_h; td.MipLevels = 1; td.ArraySize = 1;
+        td.Format = g_rgb ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_NV12;
+        td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_DEFAULT;
+        td.BindFlags = D3D11_BIND_SHADER_RESOURCE | (g_rgb ? D3D11_BIND_RENDER_TARGET : 0);
         td.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
         CHECK(ID3D11Device5_CreateTexture2D(g_d3d, &td, NULL, &g_shared[s]) == S_OK, "shared NV12 texture");
         IDXGIResource1 *r; ID3D11Texture2D_QueryInterface(g_shared[s], &IID_IDXGIResource1, (void **)&r);
@@ -314,7 +463,7 @@ int main(int argc, char **argv) {
         VkExternalMemoryImageCreateInfo emi = { VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO };
         emi.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
         VkImageCreateInfo ici = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
-        ici.pNext = &emi; ici.imageType = VK_IMAGE_TYPE_2D; ici.format = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
+        ici.pNext = &emi; ici.imageType = VK_IMAGE_TYPE_2D; ici.format = g_rgb ? VK_FORMAT_B8G8R8A8_UNORM : VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
         ici.extent.width = g_w; ici.extent.height = g_h; ici.extent.depth = 1; ici.mipLevels = 1; ici.arrayLayers = 1;
         ici.samples = VK_SAMPLE_COUNT_1_BIT; ici.tiling = VK_IMAGE_TILING_OPTIMAL;
         ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
@@ -334,6 +483,13 @@ int main(int argc, char **argv) {
         CHECK(vkBindImageMemory(g_dev, g_vkimg[s], g_vkmem[s], 0) == VK_SUCCESS, "bind imported memory");
         CloseHandle(h);
     }
+    if (g_rgb) {
+        for (int s = 0; s < RING; s++) {
+            D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC ovd = { 0 };
+            ovd.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+            CHECK(ID3D11VideoDevice_CreateVideoProcessorOutputView(g_vdev, (ID3D11Resource *)g_shared[s], g_venum, &ovd, &g_vout[s]) == S_OK, "output view");
+        }
+    }
     CHECK(ID3D11Device5_CreateFence(g_d3d, 0, D3D11_FENCE_FLAG_SHARED, &IID_ID3D11Fence, (void **)&g_fence) == S_OK, "ID3D11Fence");
     HANDLE fh; CHECK(ID3D11Fence_CreateSharedHandle(g_fence, NULL, GENERIC_ALL, NULL, &fh) == S_OK, "fence shared handle");
     VkSemaphoreTypeCreateInfo stci = { VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO }; stci.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
@@ -351,7 +507,7 @@ int main(int argc, char **argv) {
     CHECK(avcodec_open2(g_ctx, codec, NULL) == 0, "avcodec_open2 d3d11va");
 
     VkPhysicalDeviceProperties pr; vkGetPhysicalDeviceProperties(g_phys, &pr);
-    printf("GPU: %s, %dx%d, D3D11VA decode -> shared NV12 -> Vulkan\n", pr.deviceName, g_w, g_h);
+    printf("GPU: %s, %dx%d, D3D11VA decode -> shared %s -> Vulkan\n", pr.deviceName, g_w, g_h, g_rgb ? "BGRA (video processor)" : "NV12");
 
     // Warm-up on the IDR, then prove the interop on that frame.
     dec_send(0);
@@ -361,8 +517,28 @@ int main(int argc, char **argv) {
         f->pts = -1;
         int slot = g_ring_next;
         deliver(f);
-        verify_interop(f, slot, gfx_qf, gfx_q);
+        verify_interop(f, slot, gfx_qf, gfx_q, 1);
         av_frame_free(&f);
+    }
+    // BENCH_VERIFY=N: decode the next N frames one by one and check every
+    // one of them (cycling through all ring slots) instead of timing.
+    if (getenv("BENCH_VERIFY")) {
+        int n = atoi(getenv("BENCH_VERIFY")), bad = 0;
+        size_t worst = 0;
+        for (int i = 1; i <= n && i < g_npkts; i++) {
+            dec_send(i);
+            AVFrame *f = av_frame_alloc();
+            if (avcodec_receive_frame(g_ctx, f) == 0) {
+                f->pts = -1;
+                int slot = g_ring_next;
+                deliver(f);
+                size_t d = verify_interop(f, slot, gfx_qf, gfx_q, 0);
+                if (d) { bad++; if (d > worst) worst = d; if (bad <= 5) printf("frame %d slot %d: %zu bytes differ\n", i, slot, d); }
+            }
+            av_frame_free(&f);
+        }
+        printf("verify: %d of %d frames mismatched (worst %zu bytes)\n", bad, n, worst);
+        return bad ? 1 : 0;
     }
     HANDLE rt = CreateThread(NULL, 0, render_thread, NULL, 0, NULL);
     Sleep(200);

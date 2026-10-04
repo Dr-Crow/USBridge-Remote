@@ -262,3 +262,66 @@ If the interop cannot be set up, the client falls back to Vulkan Video
 decode. Missing pieces include: no LUID match, no D3D11.4 fences, or no
 external memory/semaphore extensions. `USBRIDGE_DECODER=vulkan` forces
 the fallback for comparison.
+
+## NVIDIA, HDR10 and GPU load
+
+### NVIDIA mis-imports NV12
+
+On an RTX 3090, a D3D11 NV12 texture imported into Vulkan behaves like this:
+
+- Luma (plane 0) reads back byte-exact.
+- About 90% of chroma (plane 1) bytes differ. No row offset explains the
+  difference.
+- The driver still reports NV12 import as supported.
+
+On screen this shows up as ghosted or wrong colors.
+`d3d11_interop_bench.c` checks both planes with `BENCH_VERIFY=N` and uses
+`BENCH_VKDEV` to choose the GPU.
+
+### Fix: convert to RGB on the D3D11 side
+
+Single-plane RGB formats import byte-exact on both vendors (60 of 60
+frames). So on every GPU except AMD, the D3D11 video processor
+(`VideoProcessorBlt`) converts each frame into a shared RGB texture first:
+
+- SDR goes to BGRA8, using BT.601 studio range to full range, the same
+  conversion as the renderer's sampler.
+- HDR10 goes to RGB10A2, kept as PQ / BT.2020.
+
+AMD keeps the plain copy, because it is verified exact and about 2 ms
+faster. `USBRIDGE_D3DX_MODE=nv12|rgb` overrides the choice.
+
+### HDR10 output
+
+- **Swapchain.** When a 10-bit frame arrives, the renderer switches to an
+  HDR10 swapchain (`A2B10G10R10`, `HDR10_ST2084`). This only works while
+  Windows HDR is on for that display, and needs `VK_EXT_swapchain_colorspace`.
+- **Video.** Frames are already PQ, so they are shown as-is.
+- **Overlays.** The HUD and AI Vision overlays use `hud_hdr.frag`, which
+  maps sRGB to SDR white at 203 nits in PQ.
+- **Requesting HDR.** On Windows, `HdrDisplaySupported()` is true only
+  when both of these hold:
+  - Windows HDR is on for the monitor the client window is on.
+  - D3D11VA decodes HEVC Main10 to P010.
+
+  The video dialog offers HDR only in that case, and `ConnectToMoonlight`
+  re-checks at connect time. If it no longer holds, the client asks the
+  host for SDR. An HDR stream therefore never reaches an SDR display in
+  normal use.
+- **Tone-mapping fallback.** The video processor's HDR-to-SDR tone mapping
+  is still there, but only for Windows HDR being switched off mid-stream.
+
+### GPU engine load
+
+Measured with Windows "GPU Engine" counters for the bench process only,
+4K@120 at 40 Mbps. This covers decode and transfer, not our draw:
+
+| path | 3D engine | video engine | latency p50 / p99 |
+|---|---|---|---|
+| NVIDIA SDR (video processor to BGRA) | 0.5 % | 51 % | 6.7 / 14 ms |
+| NVIDIA HDR10 (P010 to RGB10A2 PQ) | 0.5 % | 47 % | 6.1 / 14 ms |
+| AMD SDR (NV12 copy) | 10 % | 90 % | 9.0 / 25 ms |
+| AMD HDR10 to SDR tone map (fallback only) | 50 % | 91 % | 12.5 / 25 ms |
+
+On NVIDIA the video processor runs on the video engine, so games sharing
+the GPU are not affected.

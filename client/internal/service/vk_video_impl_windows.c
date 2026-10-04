@@ -396,6 +396,14 @@ void vk_set_fsr(int enable) {
 static VkImage                 *g_swap_imgs    = NULL;
 static VkImageView             *g_swap_views   = NULL;
 static VkFormat                 g_swap_fmt     = VK_FORMAT_UNDEFINED;
+// HDR10 output. g_want_hdr follows the content (10-bit frames = HDR10);
+// g_swap_hdr is what the current swapchain actually is (HDR10_ST2084 +
+// A2B10G10R10) -- only when the surface offers it, i.e. Windows HDR is on
+// for that display. g_hdr_display_avail is published for the decoder side
+// (d3d11_interop_windows.c), which tone-maps HDR to SDR itself otherwise.
+static int                      g_want_hdr     = 0;
+static int                      g_swap_hdr     = 0;
+static atomic_int               g_hdr_display_avail = 0;
 static VkExtent2D               g_swap_ext     = {0,0};
 
 // 1 when g_inst/g_pdev/g_dev were adopted from win_vk_hwdev_get() (ffmpeg
@@ -423,6 +431,7 @@ typedef struct {
     VkPipeline               pipeline;
     VkDescriptorPool         dpool;
     VkFormat                 fmt; // VK_FORMAT_UNDEFINED = unused slot
+    VkFormat                 swap_fmt; // color attachment format the pipeline was built for
 } VkYcbcrPipeline;
 #define VK_YCBCR_PIPELINE_CACHE_SIZE 4
 static VkYcbcrPipeline g_ycbcr_pipelines[VK_YCBCR_PIPELINE_CACHE_SIZE];
@@ -1034,6 +1043,28 @@ static int vk_create_swapchain(int w, int h) {
             g_swap_fmt = fmts[i].format; csp = fmts[i].colorSpace; break;
         }
     }
+    // HDR10: the surface only offers HDR10_ST2084 while Windows HDR is on for
+    // this display (and VK_EXT_swapchain_colorspace is enabled, see
+    // vk_hwdev_bridge_windows.c).
+    int hdr_idx = -1;
+    for (uint32_t i = 0; i < nfmt; i++) {
+        if (fmts[i].colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT &&
+            (fmts[i].format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 || fmts[i].format == VK_FORMAT_A2R10G10B10_UNORM_PACK32)) {
+            hdr_idx = (int)i; break;
+        }
+    }
+    atomic_store(&g_hdr_display_avail, hdr_idx >= 0);
+    g_swap_hdr = 0;
+    if (g_want_hdr && hdr_idx >= 0) {
+        g_swap_fmt = fmts[hdr_idx].format; csp = fmts[hdr_idx].colorSpace;
+        g_swap_hdr = 1;
+    }
+    {
+        char m[160];
+        snprintf(m, sizeof(m), "swapchain format: %s (HDR10 %s on this display)",
+                 g_swap_hdr ? "HDR10 PQ BT.2020 10-bit" : "SDR 8-bit", hdr_idx >= 0 ? "available" : "not available");
+        goVKLog(m, 0);
+    }
     free(fmts);
 
     // Present mode preference depends on g_vsync (see vk_video_create's vsync arg):
@@ -1361,6 +1392,86 @@ static VkShaderModule vk_shader_from_spv(const uint32_t *code, size_t code_size)
 // vk_aivision_ensure_tex (further down) creates/resizes AI Vision's texture,
 // sized to the live video resolution rather than fixed.
 
+// vk_hud_create_pipeline builds the HUD/AI Vision overlay pipeline for the
+// current swapchain format: the SDR shader on an SDR swapchain, the PQ one
+// (hud_hdr.frag, shader_arrays.h) on an HDR10 swapchain.
+static VkFormat g_hud_pipeline_fmt = VK_FORMAT_UNDEFINED;
+static int      g_hud_pipeline_hdr = 0;
+static int vk_hud_create_pipeline(void) {
+    // Pipeline: a small positioned quad, alpha-blended over whatever the
+    // video draw already wrote into the swapchain image -- unlike
+    // vk_ycbcr_pipeline_get's opaque fullscreen-triangle video pipeline,
+    // blendEnable is on here and the quad's screen position comes from a
+    // push constant (see vk_hud_record_draw) rather than being fixed.
+    {
+        VkShaderModule vs = vk_shader_from_spv(g_hud_vert_spv, sizeof(g_hud_vert_spv));
+        VkShaderModule fs = g_swap_hdr ? vk_shader_from_spv(g_hud_hdr_frag_spv, sizeof(g_hud_hdr_frag_spv))
+                                : vk_shader_from_spv(g_hud_frag_spv, sizeof(g_hud_frag_spv));
+        if (!vs || !fs) {
+            if (vs) vkDestroyShaderModule(g_dev, vs, NULL);
+            if (fs) vkDestroyShaderModule(g_dev, fs, NULL);
+            return 0;
+        }
+        VkPipelineShaderStageCreateInfo stages[2] = {0};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT; stages[0].module = vs; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
+
+        VkPipelineVertexInputStateCreateInfo vi = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+        VkPipelineInputAssemblyStateCreateInfo ia = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo vpState = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+        vpState.viewportCount = 1; vpState.scissorCount = 1; // dynamic
+        VkDynamicState dynStates[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dynCI = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+        dynCI.dynamicStateCount = 2; dynCI.pDynamicStates = dynStates;
+        VkPipelineRasterizationStateCreateInfo rs = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE; rs.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo ms = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineColorBlendAttachmentState cba = {0};
+        cba.blendEnable = VK_TRUE;
+        cba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        cba.colorBlendOp = VK_BLEND_OP_ADD;
+        cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        cba.alphaBlendOp = VK_BLEND_OP_ADD;
+        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo cb = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+        cb.attachmentCount = 1; cb.pAttachments = &cba;
+
+        VkPipelineRenderingCreateInfo renderingCI = { VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+        renderingCI.colorAttachmentCount = 1; renderingCI.pColorAttachmentFormats = &g_swap_fmt;
+
+        VkGraphicsPipelineCreateInfo pipeCI = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+        pipeCI.pNext = &renderingCI;
+        pipeCI.stageCount = 2; pipeCI.pStages = stages;
+        pipeCI.pVertexInputState = &vi; pipeCI.pInputAssemblyState = &ia;
+        pipeCI.pViewportState = &vpState; pipeCI.pRasterizationState = &rs;
+        pipeCI.pMultisampleState = &ms; pipeCI.pColorBlendState = &cb;
+        pipeCI.pDynamicState = &dynCI;
+        pipeCI.layout = g_hud_playout;
+        VkResult pr = vkCreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pipeCI, NULL, &g_hud_pipeline);
+        vkDestroyShaderModule(g_dev, vs, NULL);
+        vkDestroyShaderModule(g_dev, fs, NULL);
+        if (pr != VK_SUCCESS) return 0;
+    }
+    g_hud_pipeline_fmt = g_swap_fmt;
+    g_hud_pipeline_hdr = g_swap_hdr;
+    return 1;
+}
+
+// vk_hud_pipeline_current rebuilds the overlay pipeline after an SDR <->
+// HDR10 swapchain switch. Render thread, after the fence wait.
+static int vk_hud_pipeline_current(void) {
+    if (g_hud_pipeline && g_hud_pipeline_fmt == g_swap_fmt && g_hud_pipeline_hdr == g_swap_hdr) return 1;
+    if (g_hud_pipeline) { vkDestroyPipeline(g_dev, g_hud_pipeline, NULL); g_hud_pipeline = VK_NULL_HANDLE; }
+    return vk_hud_create_pipeline();
+}
+
 // vk_hud_ensure_resources lazily creates the sampler, descriptor set layout,
 // alpha-blended pipeline and descriptor pool shared by both overlays, plus
 // this HUD's own persistent VK_HUD_W x VK_HUD_H texture + dedicated staging
@@ -1415,66 +1526,7 @@ static int vk_hud_ensure_resources(void) {
         if (vkAllocateDescriptorSets(g_dev, &dsai, &g_aivision_dset) != VK_SUCCESS) goto fail;
     }
 
-    // Pipeline: a small positioned quad, alpha-blended over whatever the
-    // video draw already wrote into the swapchain image -- unlike
-    // vk_ycbcr_pipeline_get's opaque fullscreen-triangle video pipeline,
-    // blendEnable is on here and the quad's screen position comes from a
-    // push constant (see vk_hud_record_draw) rather than being fixed.
-    {
-        VkShaderModule vs = vk_shader_from_spv(g_hud_vert_spv, sizeof(g_hud_vert_spv));
-        VkShaderModule fs = vk_shader_from_spv(g_hud_frag_spv, sizeof(g_hud_frag_spv));
-        if (!vs || !fs) {
-            if (vs) vkDestroyShaderModule(g_dev, vs, NULL);
-            if (fs) vkDestroyShaderModule(g_dev, fs, NULL);
-            goto fail;
-        }
-        VkPipelineShaderStageCreateInfo stages[2] = {0};
-        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT; stages[0].module = vs; stages[0].pName = "main";
-        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
-
-        VkPipelineVertexInputStateCreateInfo vi = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
-        VkPipelineInputAssemblyStateCreateInfo ia = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
-        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-        VkPipelineViewportStateCreateInfo vpState = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
-        vpState.viewportCount = 1; vpState.scissorCount = 1; // dynamic
-        VkDynamicState dynStates[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-        VkPipelineDynamicStateCreateInfo dynCI = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
-        dynCI.dynamicStateCount = 2; dynCI.pDynamicStates = dynStates;
-        VkPipelineRasterizationStateCreateInfo rs = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
-        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE; rs.lineWidth = 1.0f;
-        VkPipelineMultisampleStateCreateInfo ms = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
-        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-        VkPipelineColorBlendAttachmentState cba = {0};
-        cba.blendEnable = VK_TRUE;
-        cba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        cba.colorBlendOp = VK_BLEND_OP_ADD;
-        cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        cba.alphaBlendOp = VK_BLEND_OP_ADD;
-        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        VkPipelineColorBlendStateCreateInfo cb = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
-        cb.attachmentCount = 1; cb.pAttachments = &cba;
-
-        VkPipelineRenderingCreateInfo renderingCI = { VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
-        renderingCI.colorAttachmentCount = 1; renderingCI.pColorAttachmentFormats = &g_swap_fmt;
-
-        VkGraphicsPipelineCreateInfo pipeCI = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
-        pipeCI.pNext = &renderingCI;
-        pipeCI.stageCount = 2; pipeCI.pStages = stages;
-        pipeCI.pVertexInputState = &vi; pipeCI.pInputAssemblyState = &ia;
-        pipeCI.pViewportState = &vpState; pipeCI.pRasterizationState = &rs;
-        pipeCI.pMultisampleState = &ms; pipeCI.pColorBlendState = &cb;
-        pipeCI.pDynamicState = &dynCI;
-        pipeCI.layout = g_hud_playout;
-        VkResult pr = vkCreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pipeCI, NULL, &g_hud_pipeline);
-        vkDestroyShaderModule(g_dev, vs, NULL);
-        vkDestroyShaderModule(g_dev, fs, NULL);
-        if (pr != VK_SUCCESS) goto fail;
-    }
+    if (!vk_hud_create_pipeline()) goto fail;
 
     // Persistent HUD texture (device-local, sampled + transfer dst).
     {
@@ -1601,6 +1653,7 @@ static void vk_hud_maybe_upload_cmds(VkCommandBuffer cb) {
 // bound (reuses whatever the video draw just set).
 static void vk_hud_record_draw(VkCommandBuffer cb, int fw, int fh) {
     if (!g_hud_active || g_hud_resources_ok <= 0) return;
+    if (!vk_hud_pipeline_current()) return;
     if (fw <= 0 || fh <= 0) return;
 
     int pct = atomic_load(&g_hud_scale_pct);
@@ -1773,6 +1826,7 @@ static void vk_aivision_maybe_upload_cmds(VkCommandBuffer cb, int fw, int fh) {
 // already bound.
 static void vk_aivision_record_draw(VkCommandBuffer cb, int fw, int fh) {
     if (!g_aivision_active || g_hud_resources_ok <= 0) return;
+    if (!vk_hud_pipeline_current()) return;
     if (g_aivision_tex == VK_NULL_HANDLE || g_aivision_tex_w != fw || g_aivision_tex_h != fh) return;
 
     float rect[4] = { -1.0f, -1.0f, 1.0f, 1.0f }; // full frame, no anchoring math needed
@@ -1787,9 +1841,39 @@ static void vk_aivision_record_draw(VkCommandBuffer cb, int fw, int fh) {
 // the given multi-planar VkFormat (NV12 8-bit and P010 10-bit HDR each get
 // their own entry — the sampler's YCbCr conversion is format-specific),
 // creating it on first use. Returns NULL on failure.
+// vk_format_is_ycbcr: multi-planar formats sampled through a
+// VkSamplerYcbcrConversion. Anything else (BGRA/RGB10A2 frames the D3D11
+// video processor already converted, d3d11_interop_windows.c) is sampled as
+// plain RGB by the same pipeline without a conversion.
+static int vk_format_is_ycbcr(VkFormat fmt) {
+    return fmt == VK_FORMAT_G8_B8R8_2PLANE_420_UNORM ||
+           fmt == VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16;
+}
+
+// vk_ycbcr_pipeline_drop destroys one cache entry and every cached view /
+// descriptor set built against it (the sets live in its pool). Render thread
+// only, after the fence wait, so nothing in flight references them.
+static void vk_ycbcr_pipeline_drop(VkYcbcrPipeline *p) {
+    for (int i = 0; i < VK_IMGVIEW_CACHE_SIZE; i++) {
+        if (g_imgview_cache[i].fmt != p->fmt) continue;
+        if (g_imgview_cache[i].view) vkDestroyImageView(g_dev, g_imgview_cache[i].view, NULL);
+        memset(&g_imgview_cache[i], 0, sizeof(g_imgview_cache[i]));
+    }
+    if (p->pipeline) vkDestroyPipeline(g_dev, p->pipeline, NULL);
+    if (p->playout)  vkDestroyPipelineLayout(g_dev, p->playout, NULL);
+    if (p->dpool)    vkDestroyDescriptorPool(g_dev, p->dpool, NULL);
+    if (p->dsl)      vkDestroyDescriptorSetLayout(g_dev, p->dsl, NULL);
+    if (p->sampler)  vkDestroySampler(g_dev, p->sampler, NULL);
+    if (p->conv)     vkDestroySamplerYcbcrConversion(g_dev, p->conv, NULL);
+    memset(p, 0, sizeof(*p));
+}
+
 static VkYcbcrPipeline *vk_ycbcr_pipeline_get(VkFormat fmt) {
     for (int i = 0; i < VK_YCBCR_PIPELINE_CACHE_SIZE; i++) {
-        if (g_ycbcr_pipelines[i].fmt == fmt) return &g_ycbcr_pipelines[i];
+        if (g_ycbcr_pipelines[i].fmt != fmt) continue;
+        if (g_ycbcr_pipelines[i].swap_fmt == g_swap_fmt) return &g_ycbcr_pipelines[i];
+        vk_ycbcr_pipeline_drop(&g_ycbcr_pipelines[i]); // swapchain format changed (SDR <-> HDR10)
+        break;
     }
     int slot = -1;
     for (int i = 0; i < VK_YCBCR_PIPELINE_CACHE_SIZE; i++) {
@@ -1800,7 +1884,11 @@ static VkYcbcrPipeline *vk_ycbcr_pipeline_get(VkFormat fmt) {
 
     VkSamplerYcbcrConversionCreateInfo convCI = { VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_CREATE_INFO };
     convCI.format = fmt;
-    convCI.ycbcrModel = VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601;
+    // 10-bit (P010) only ever carries HDR10 here, which is BT.2020; 8-bit
+    // streams are BT.601 (moonlight-common-c's default colorspace).
+    convCI.ycbcrModel = fmt == VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
+                        ? VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_2020
+                        : VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601;
     convCI.ycbcrRange = VK_SAMPLER_YCBCR_RANGE_ITU_NARROW;
     convCI.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
     convCI.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -1809,7 +1897,7 @@ static VkYcbcrPipeline *vk_ycbcr_pipeline_get(VkFormat fmt) {
     convCI.xChromaOffset = VK_CHROMA_LOCATION_COSITED_EVEN;
     convCI.yChromaOffset = VK_CHROMA_LOCATION_COSITED_EVEN;
     convCI.chromaFilter = VK_FILTER_LINEAR;
-    if (vkCreateSamplerYcbcrConversion(g_dev, &convCI, NULL, &p->conv) != VK_SUCCESS) {
+    if (vk_format_is_ycbcr(fmt) && vkCreateSamplerYcbcrConversion(g_dev, &convCI, NULL, &p->conv) != VK_SUCCESS) {
         goVKLog("vk_ycbcr_pipeline_get: vkCreateSamplerYcbcrConversion failed", 2);
         memset(p, 0, sizeof(*p)); return NULL;
     }
@@ -1817,7 +1905,7 @@ static VkYcbcrPipeline *vk_ycbcr_pipeline_get(VkFormat fmt) {
     VkSamplerYcbcrConversionInfo convInfo = { VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO };
     convInfo.conversion = p->conv;
     VkSamplerCreateInfo sampCI = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-    sampCI.pNext = &convInfo;
+    sampCI.pNext = p->conv ? &convInfo : NULL;
     sampCI.magFilter = VK_FILTER_LINEAR;
     sampCI.minFilter = VK_FILTER_LINEAR;
     sampCI.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -1909,6 +1997,7 @@ static VkYcbcrPipeline *vk_ycbcr_pipeline_get(VkFormat fmt) {
     }
 
     p->fmt = fmt;
+    p->swap_fmt = g_swap_fmt;
     return p;
 
 fail:
@@ -1968,7 +2057,7 @@ static VkDescriptorSet vk_imgview_cache_get(VkImage img, VkFormat fmt, VkYcbcrPi
     VkSamplerYcbcrConversionInfo convInfo = { VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO };
     convInfo.conversion = pl->conv;
     VkImageViewCreateInfo viewCI = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-    viewCI.pNext = &convInfo;
+    viewCI.pNext = pl->conv ? &convInfo : NULL;
     viewCI.image = img;
     viewCI.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewCI.format = fmt;
@@ -2097,7 +2186,7 @@ static int vk_render_frame_vkimage(VkImage img, VkFormat fmt, VkImageLayout src_
     // why they carry COLOR_ATTACHMENT_BIT on this path). Skipped entirely
     // while the feature is off, so the happy path never allocates this GPU
     // memory or adds the extra render pass below.
-    int conceal_capture = atomic_load(&g_conceal_enabled) && vk_conceal_ensure_tex2(fw, fh);
+    int conceal_capture = !g_swap_hdr && atomic_load(&g_conceal_enabled) && vk_conceal_ensure_tex2(fw, fh);
     int conceal_slot = conceal_capture ? (1 - g_conceal_cur) : -1;
 
     vkResetCommandBuffer(g_cmdbuf, 0);
@@ -2353,7 +2442,7 @@ static int vk_render_frame(uint8_t *pixels, int fw, int fh, int fs) {
     // this frame's resolution. Skipped entirely while the feature is off, so
     // the happy path never allocates this GPU memory. Failure here just means
     // no concealment material this frame -- never fails vk_render_frame itself.
-    int conceal_capture = atomic_load(&g_conceal_enabled) && vk_conceal_ensure_tex2(fw, fh);
+    int conceal_capture = !g_swap_hdr && atomic_load(&g_conceal_enabled) && vk_conceal_ensure_tex2(fw, fh);
 
     // Upload frame to staging buffer.
     size_t row = (size_t)fw * 4;
@@ -3573,6 +3662,14 @@ static DWORD WINAPI vk_render_thread(LPVOID unused) {
             LeaveCriticalSection(&g_cs);
 
             if (img != VK_NULL_HANDLE) {
+                // 10-bit frames are HDR10 (PQ, BT.2020): switch the swapchain
+                // when the content does, if the display can show it.
+                int content_hdr = fmt == VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16 ||
+                                  fmt == VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+                if (content_hdr != g_want_hdr) {
+                    g_want_hdr = content_hdr;
+                    if (g_swap_hdr != (content_hdr && atomic_load(&g_hdr_display_avail))) vk_recreate_swapchain();
+                }
                 g_has_frame = 1;
                 g_render_stage = 1; // got frame — entering vk_render_frame_vkimage
                 rf = vk_render_frame_vkimage(img, fmt, layout, fw, fh, wsem, wval, wext);
@@ -3793,6 +3890,12 @@ int vk_video_try_submit_vkframe(void *vk_image, int vk_format, int vk_layout, in
     LeaveCriticalSection(&g_cs);
     SetEvent(g_event);
     return 1;
+}
+
+// vk_video_hdr_display_available: the current swapchain's surface offers
+// HDR10 (Windows HDR is on for the display the video is on). Any thread.
+int vk_video_hdr_display_available(void) {
+    return atomic_load(&g_hdr_display_avail);
 }
 
 // vk_video_forget_image: the owner of an image the renderer may have cached

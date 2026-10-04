@@ -8,7 +8,20 @@
 //   D3D11VA decoder array slice --CopySubresourceRegion--> shared NV12/P010
 //   texture (ring of D3DX_RING) --imported as VkImage--> vk_video_impl
 //
-// ordered by a shared ID3D11Fence that Vulkan imports as a timeline
+// On NVIDIA (and anything that isn't AMD) the copy is a D3D11 video
+// processor blit into BGRA8 (SDR) / RGB10A2 PQ BT.2020 (HDR10) instead:
+// NVIDIA's Vulkan driver accepts an imported NV12 D3D11 texture but reads its
+// chroma plane wrong (luma byte-exact, ~90% of chroma bytes differ -- ghosted
+// colors on screen), while single-plane RGB formats import byte-exact on both
+// vendors (tools/decode_bench/d3d11_interop_bench.c, BENCH_RGB/BENCH_VERIFY).
+// AMD keeps the plain copy: it's verified exact and ~2ms faster there.
+// USBRIDGE_D3DX_MODE=nv12|rgb overrides the choice.
+//
+// HDR10 (P010) on a display that is not in HDR mode always goes through the
+// video processor, on any vendor, which tone-maps PQ/BT.2020 down to SDR
+// BGRA8 -- shown on an SDR swapchain, raw PQ would look washed out.
+//
+// Either way the result is ordered by a shared ID3D11Fence that Vulkan imports as a timeline
 // semaphore: the decode thread signals value N after the copy, the render
 // thread waits for N before sampling. The copy is a few hundred
 // microseconds of GPU time, and the renderer reads its own image, never one
@@ -29,7 +42,7 @@
 #define VK_USE_PLATFORM_WIN32_KHR
 #include <windows.h>
 #include <d3d11_4.h>
-#include <dxgi1_2.h>
+#include <dxgi1_6.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_win32.h>
 #include <libavcodec/avcodec.h>
@@ -43,6 +56,7 @@
 extern void goVTLog(char *msg);
 extern AVBufferRef *win_vk_hwdev_ctx_ref(void);
 extern void vk_video_forget_image(void *vk_image);
+extern int vk_video_hdr_display_available(void);
 
 #define D3DX_RING 4
 
@@ -60,8 +74,14 @@ static VkDevice g_dx_vkdev = VK_NULL_HANDLE;
 static VkPhysicalDevice g_dx_vkphys = VK_NULL_HANDLE;
 static VkSemaphore g_dx_vksem = VK_NULL_HANDLE;
 
+static int g_dx_use_vp = 0; // convert with the video processor instead of copying planar frames
+static ID3D11VideoDevice *g_dx_vdev = NULL;
+static ID3D11VideoContext *g_dx_vctx = NULL;
+static ID3D11VideoContext1 *g_dx_vctx1 = NULL; // color spaces beyond BT.601/709 SDR (HDR10)
+
 typedef struct {
     ID3D11Texture2D *tex;
+    ID3D11VideoProcessorOutputView *vout; // video-processor mode only
     VkImage img;
     VkDeviceMemory mem;
     volatile LONG busy; // handed to the renderer, not yet released
@@ -69,7 +89,12 @@ typedef struct {
 typedef struct {
     DxSlot slot[D3DX_RING];
     int w, h;
-    DXGI_FORMAT fmt;
+    DXGI_FORMAT src_fmt;   // decoder output format (NV12/P010) the ring was made for
+    VkFormat vkfmt;        // what the renderer samples
+    int vp;                // 1: video processor blit, 0: plain copy
+    int hdr_display;       // HDR10 swapchain was available when the ring was made (HDR sources only)
+    ID3D11VideoProcessorEnumerator *venum;
+    ID3D11VideoProcessor *vproc;
     int next;
 } DxRing;
 // g_dx_cur is the ring in use. A size/format change retires it to
@@ -129,7 +154,14 @@ AVBufferRef *d3dx_device_ref(void) {
     for (UINT i = 0; IDXGIFactory1_EnumAdapters1(fac, i, &ad) == S_OK; i++) {
         DXGI_ADAPTER_DESC1 d;
         IDXGIAdapter1_GetDesc1(ad, &d);
-        if (!memcmp(&d.AdapterLuid, idp.deviceLUID, sizeof(LUID))) { pick = ad; break; }
+        if (!memcmp(&d.AdapterLuid, idp.deviceLUID, sizeof(LUID))) {
+            pick = ad;
+            const char *mode = getenv("USBRIDGE_D3DX_MODE");
+            if (mode && _stricmp(mode, "rgb") == 0) g_dx_use_vp = 1;
+            else if (mode && _stricmp(mode, "nv12") == 0) g_dx_use_vp = 0;
+            else g_dx_use_vp = d.VendorId != 0x1002; // AMD: plain copy (see header)
+            break;
+        }
         IDXGIAdapter1_Release(ad);
     }
     if (!pick) { fail = "no DXGI adapter matches the Vulkan device"; goto out; }
@@ -163,6 +195,14 @@ AVBufferRef *d3dx_device_ref(void) {
     dev0 = NULL;
     if (av_hwdevice_ctx_init(hw) < 0) { av_buffer_unref(&hw); g_dx_avctx = NULL; fail = "av_hwdevice_ctx_init(D3D11VA)"; goto out; }
     g_dx_hwdev = hw;
+    if (ID3D11Device5_QueryInterface(g_dx_dev, &IID_ID3D11VideoDevice, (void **)&g_dx_vdev) != S_OK ||
+        ID3D11DeviceContext4_QueryInterface(g_dx_ctx, &IID_ID3D11VideoContext, (void **)&g_dx_vctx) != S_OK) {
+        g_dx_vdev = NULL; g_dx_vctx = NULL;
+        if (g_dx_use_vp) dx_log("libavcodec/win: D3D11 video processor unavailable -- copying planar frames instead");
+        g_dx_use_vp = 0;
+    } else if (ID3D11DeviceContext4_QueryInterface(g_dx_ctx, &IID_ID3D11VideoContext1, (void **)&g_dx_vctx1) != S_OK) {
+        g_dx_vctx1 = NULL; // SDR still works through the D3D11.0 color space API; no HDR10 color spaces
+    }
 
 out:
     if (fh) CloseHandle(fh);
@@ -174,7 +214,8 @@ out:
     if (fail) {
         snprintf(msg, sizeof(msg), "libavcodec/win: D3D11VA->Vulkan interop unavailable: %s", fail);
     } else {
-        snprintf(msg, sizeof(msg), "libavcodec/win: D3D11VA->Vulkan interop ready (shared fence imported)");
+        snprintf(msg, sizeof(msg), "libavcodec/win: D3D11VA->Vulkan interop ready (shared fence imported, %s)",
+                 g_dx_use_vp ? "video processor -> RGB" : "planar copy");
     }
     dx_log(msg);
     AVBufferRef *r = g_dx_hwdev ? av_buffer_ref(g_dx_hwdev) : NULL;
@@ -193,22 +234,35 @@ static void dx_ring_free(DxRing *r) {
         DxSlot *s = &r->slot[i];
         if (s->img) { vk_video_forget_image((void *)s->img); vkDestroyImage(g_dx_vkdev, s->img, NULL); }
         if (s->mem) vkFreeMemory(g_dx_vkdev, s->mem, NULL);
+        if (s->vout) ID3D11VideoProcessorOutputView_Release(s->vout);
         if (s->tex) ID3D11Texture2D_Release(s->tex);
     }
+    if (r->vproc) ID3D11VideoProcessor_Release(r->vproc);
+    if (r->venum) ID3D11VideoProcessorEnumerator_Release(r->venum);
     free(r);
 }
 
-static DxRing *dx_ring_create(int w, int h, DXGI_FORMAT fmt, VkFormat vkfmt) {
+static DxRing *dx_ring_create(int w, int h, DXGI_FORMAT src_fmt, int hdr_display) {
+    int vp = g_dx_use_vp;
+    int hdr = src_fmt == DXGI_FORMAT_P010;
+    int hdr_out = hdr && hdr_display;  // keep PQ for an HDR10 swapchain
+    int tonemap = hdr && !hdr_display; // PQ -> SDR in the video processor
+    if (tonemap && g_dx_vctx1) vp = 1;
+    if (hdr && vp && !g_dx_vctx1) vp = 0; // no HDR10 color spaces on this driver; planar P010 still renders
+    DXGI_FORMAT fmt = vp ? (hdr_out ? DXGI_FORMAT_R10G10B10A2_UNORM : DXGI_FORMAT_B8G8R8A8_UNORM) : src_fmt;
+    VkFormat vkfmt = vp ? (hdr_out ? VK_FORMAT_A2B10G10R10_UNORM_PACK32 : VK_FORMAT_B8G8R8A8_UNORM)
+                        : (hdr ? VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16 : VK_FORMAT_G8_B8R8_2PLANE_420_UNORM);
     PFN_vkGetMemoryWin32HandlePropertiesKHR getProps =
         (PFN_vkGetMemoryWin32HandlePropertiesKHR)vkGetDeviceProcAddr(g_dx_vkdev, "vkGetMemoryWin32HandlePropertiesKHR");
     DxRing *r = (DxRing *)calloc(1, sizeof(DxRing));
     if (!r) return NULL;
-    r->w = w; r->h = h; r->fmt = fmt;
+    r->w = w; r->h = h; r->src_fmt = src_fmt; r->vkfmt = vkfmt; r->vp = vp; r->hdr_display = hdr_display;
     for (int i = 0; i < D3DX_RING; i++) {
         DxSlot *s = &r->slot[i];
         D3D11_TEXTURE2D_DESC td = { 0 };
         td.Width = w; td.Height = h; td.MipLevels = 1; td.ArraySize = 1; td.Format = fmt;
-        td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_DEFAULT;
+        td.BindFlags = D3D11_BIND_SHADER_RESOURCE | (vp ? D3D11_BIND_RENDER_TARGET : 0);
         td.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
         if (ID3D11Device5_CreateTexture2D(g_dx_dev, &td, NULL, &s->tex) != S_OK) goto fail;
         IDXGIResource1 *res = NULL;
@@ -246,10 +300,43 @@ static DxRing *dx_ring_create(int w, int h, DXGI_FORMAT fmt, VkFormat vkfmt) {
         CloseHandle(shared);
         if (!ok) goto fail;
     }
+    if (vp) {
+        D3D11_VIDEO_PROCESSOR_CONTENT_DESC cd = { 0 };
+        cd.InputFrameFormat = D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE;
+        cd.InputWidth = w; cd.InputHeight = h; cd.OutputWidth = w; cd.OutputHeight = h;
+        cd.Usage = D3D11_VIDEO_USAGE_OPTIMAL_SPEED;
+        if (ID3D11VideoDevice_CreateVideoProcessorEnumerator(g_dx_vdev, &cd, &r->venum) != S_OK ||
+            ID3D11VideoDevice_CreateVideoProcessor(g_dx_vdev, r->venum, 0, &r->vproc) != S_OK) goto fail;
+        for (int i = 0; i < D3DX_RING; i++) {
+            D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC ovd = { 0 };
+            ovd.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+            if (ID3D11VideoDevice_CreateVideoProcessorOutputView(g_dx_vdev, (ID3D11Resource *)r->slot[i].tex, r->venum,
+                                                                 &ovd, &r->slot[i].vout) != S_OK) goto fail;
+        }
+        // SDR: same conversion as the renderer's own sampler (BT.601 studio
+        // range in, full range out). HDR10: keep PQ / BT.2020 -- the output
+        // is still PQ-encoded, for an HDR10 swapchain.
+        if (g_dx_vctx1) {
+            ID3D11VideoContext1_VideoProcessorSetStreamColorSpace1(g_dx_vctx1, r->vproc, 0,
+                hdr ? DXGI_COLOR_SPACE_YCBCR_STUDIO_G2084_LEFT_P2020 : DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P601);
+            ID3D11VideoContext1_VideoProcessorSetOutputColorSpace1(g_dx_vctx1, r->vproc,
+                hdr_out ? DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020 : DXGI_COLOR_SPACE_RGB_FULL_G22_NONE_P709);
+        } else {
+            D3D11_VIDEO_PROCESSOR_COLOR_SPACE in = { 0 }, out = { 0 };
+            in.YCbCr_Matrix = 0; in.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_16_235;
+            out.RGB_Range = 0; out.Nominal_Range = D3D11_VIDEO_PROCESSOR_NOMINAL_RANGE_0_255;
+            ID3D11VideoContext_VideoProcessorSetStreamColorSpace(g_dx_vctx, r->vproc, 0, &in);
+            ID3D11VideoContext_VideoProcessorSetOutputColorSpace(g_dx_vctx, r->vproc, &out);
+        }
+        ID3D11VideoContext_VideoProcessorSetStreamAutoProcessingMode(g_dx_vctx, r->vproc, 0, FALSE);
+        ID3D11VideoContext_VideoProcessorSetStreamFrameFormat(g_dx_vctx, r->vproc, 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
+    }
     {
-        char msg[160];
-        snprintf(msg, sizeof(msg), "libavcodec/win: D3D11VA->Vulkan ring ready: %d x %dx%d %s",
-                 D3DX_RING, w, h, fmt == DXGI_FORMAT_P010 ? "P010" : "NV12");
+        char msg[200];
+        snprintf(msg, sizeof(msg), "libavcodec/win: D3D11VA->Vulkan ring ready: %d x %dx%d %s -> %s",
+                 D3DX_RING, w, h, hdr ? "P010" : "NV12",
+                 !vp ? "planar copy" : hdr_out ? "RGB10A2 PQ BT.2020 (video processor)"
+                     : tonemap ? "BGRA8, HDR tone-mapped to SDR (video processor)" : "BGRA8 (video processor)");
         dx_log(msg);
     }
     return r;
@@ -273,19 +360,15 @@ int d3dx_deliver(AVFrame *frame, void **out_img, int *out_vkfmt, void **out_sem,
     if (!g_dx_hwdev || frame->format != AV_PIX_FMT_D3D11 || !frame->hw_frames_ctx) return 0;
     AVHWFramesContext *fc = (AVHWFramesContext *)frame->hw_frames_ctx->data;
     DXGI_FORMAT fmt;
-    VkFormat vkfmt;
-    if (fc->sw_format == AV_PIX_FMT_NV12) {
-        fmt = DXGI_FORMAT_NV12; vkfmt = VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
-    } else if (fc->sw_format == AV_PIX_FMT_P010) {
-        fmt = DXGI_FORMAT_P010; vkfmt = VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16;
-    } else {
-        return 0;
-    }
+    if (fc->sw_format == AV_PIX_FMT_NV12) fmt = DXGI_FORMAT_NV12;
+    else if (fc->sw_format == AV_PIX_FMT_P010) fmt = DXGI_FORMAT_P010;
+    else return 0;
     int w = frame->width, h = frame->height;
     if (g_dx_old && !dx_ring_busy(g_dx_old)) { dx_ring_free(g_dx_old); g_dx_old = NULL; }
-    if (!g_dx_cur || w != g_dx_cur->w || h != g_dx_cur->h || fmt != g_dx_cur->fmt) {
+    int hdr_display = fmt == DXGI_FORMAT_P010 ? vk_video_hdr_display_available() : 0;
+    if (!g_dx_cur || w != g_dx_cur->w || h != g_dx_cur->h || fmt != g_dx_cur->src_fmt || hdr_display != g_dx_cur->hdr_display) {
         if (g_dx_old) return 0; // two size changes in flight; wait for the renderer to let go
-        DxRing *r = dx_ring_create(w, h, fmt, vkfmt);
+        DxRing *r = dx_ring_create(w, h, fmt, hdr_display);
         if (!r) {
             static int logged = 0;
             if (!logged++) dx_log("libavcodec/win: D3D11VA->Vulkan ring creation failed -- frames dropped");
@@ -310,15 +393,41 @@ int d3dx_deliver(AVFrame *frame, void **out_img, int *out_vkfmt, void **out_sem,
     UINT index = (UINT)(intptr_t)frame->data[1];
     D3D11_BOX box = { 0, 0, 0, (UINT)w, (UINT)h, 1 };
     g_dx_avctx->lock(g_dx_avctx->lock_ctx);
-    ID3D11DeviceContext4_CopySubresourceRegion(g_dx_ctx, (ID3D11Resource *)slot->tex, 0, 0, 0, 0,
-                                               (ID3D11Resource *)src, index, &box);
+    if (ring->vp) {
+        D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC ivd = { 0 };
+        ivd.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
+        ivd.Texture2D.ArraySlice = index;
+        ID3D11VideoProcessorInputView *iv = NULL;
+        HRESULT hr = ID3D11VideoDevice_CreateVideoProcessorInputView(g_dx_vdev, (ID3D11Resource *)src, ring->venum, &ivd, &iv);
+        if (hr == S_OK) {
+            D3D11_VIDEO_PROCESSOR_STREAM st = { 0 };
+            st.Enable = TRUE;
+            st.pInputSurface = iv;
+            hr = ID3D11VideoContext_VideoProcessorBlt(g_dx_vctx, ring->vproc, slot->vout, 0, 1, &st);
+            ID3D11VideoProcessorInputView_Release(iv);
+        }
+        if (hr != S_OK) {
+            g_dx_avctx->unlock(g_dx_avctx->lock_ctx);
+            InterlockedExchange(&slot->busy, 0);
+            static int logged = 0;
+            if (!logged++) {
+                char msg[96];
+                snprintf(msg, sizeof(msg), "libavcodec/win: VideoProcessorBlt failed 0x%08lx", (unsigned long)hr);
+                dx_log(msg);
+            }
+            return 0;
+        }
+    } else {
+        ID3D11DeviceContext4_CopySubresourceRegion(g_dx_ctx, (ID3D11Resource *)slot->tex, 0, 0, 0, 0,
+                                                   (ID3D11Resource *)src, index, &box);
+    }
     UINT64 v = ++g_dx_fence_val;
     ID3D11DeviceContext4_Signal(g_dx_ctx, g_dx_fence, v);
     ID3D11DeviceContext4_Flush(g_dx_ctx);
     g_dx_avctx->unlock(g_dx_avctx->lock_ctx);
 
     *out_img = (void *)slot->img;
-    *out_vkfmt = (int)vkfmt;
+    *out_vkfmt = (int)ring->vkfmt;
     *out_sem = (void *)g_dx_vksem;
     *out_val = v;
     *out_release_ctx = slot;
@@ -402,6 +511,63 @@ AVFrame *d3dx_download(AVFrame *frame) {
     g_dx_avctx->unlock(g_dx_avctx->lock_ctx);
     if (!ok) av_frame_free(&sw);
     return sw;
+}
+
+// ---- HDR capability (service.HdrDisplaySupported, hdr_display_supported_windows.go)
+
+static BOOL CALLBACK dx_find_own_window(HWND hwnd, LPARAM lp) {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == GetCurrentProcessId() && IsWindowVisible(hwnd) && !GetWindow(hwnd, GW_OWNER)) {
+        *(HWND *)lp = hwnd;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+// win_hdr_output_active: Windows HDR is on for the monitor this app's main
+// window is on (the primary monitor if no window is up yet).
+int win_hdr_output_active(void) {
+    HWND own = NULL;
+    EnumWindows(dx_find_own_window, (LPARAM)&own);
+    HMONITOR mon = own ? MonitorFromWindow(own, MONITOR_DEFAULTTOPRIMARY)
+                       : MonitorFromPoint((POINT){ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+    IDXGIFactory1 *fac = NULL;
+    if (CreateDXGIFactory1(&IID_IDXGIFactory1, (void **)&fac) != S_OK) return 0;
+    int hdr = 0, found = 0;
+    IDXGIAdapter1 *ad = NULL;
+    for (UINT i = 0; !found && IDXGIFactory1_EnumAdapters1(fac, i, &ad) == S_OK; i++) {
+        IDXGIOutput *out = NULL;
+        for (UINT j = 0; !found && IDXGIAdapter1_EnumOutputs(ad, j, &out) == S_OK; j++) {
+            IDXGIOutput6 *o6 = NULL;
+            if (IDXGIOutput_QueryInterface(out, &IID_IDXGIOutput6, (void **)&o6) == S_OK) {
+                DXGI_OUTPUT_DESC1 d;
+                if (IDXGIOutput6_GetDesc1(o6, &d) == S_OK && d.Monitor == mon) {
+                    found = 1;
+                    hdr = d.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+                }
+                IDXGIOutput6_Release(o6);
+            }
+            IDXGIOutput_Release(out);
+        }
+        IDXGIAdapter1_Release(ad);
+    }
+    IDXGIFactory1_Release(fac);
+    return hdr;
+}
+
+// d3dx_hevc_main10_supported: the interop is up and its D3D11VA decoder
+// takes HEVC Main10 to P010. Cached after the first answer.
+int d3dx_hevc_main10_supported(void) {
+    static int cached = -1;
+    if (cached >= 0) return cached;
+    AVBufferRef *ref = d3dx_device_ref();
+    if (!ref) return cached = 0;
+    av_buffer_unref(&ref);
+    BOOL ok = FALSE;
+    if (g_dx_vdev)
+        ID3D11VideoDevice_CheckVideoDecoderFormat(g_dx_vdev, &D3D11_DECODER_PROFILE_HEVC_VLD_MAIN10, DXGI_FORMAT_P010, &ok);
+    return cached = ok ? 1 : 0;
 }
 
 #endif // _WIN32
