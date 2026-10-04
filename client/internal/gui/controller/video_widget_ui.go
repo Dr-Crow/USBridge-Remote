@@ -485,6 +485,7 @@ func (vw *VideoWidget) StopVideoSync() error {
 				vw.isVideoConnected = false
 				vw.isMouseConnected = false
 				service.SetActiveStreamerBackend("")
+				service.SetHostGPUName("")
 				vw.clearVideo()
 				fyne.Do(func() {
 					if vw.statusLabel != nil {
@@ -506,6 +507,7 @@ func (vw *VideoWidget) StopVideoSync() error {
 		vw.isStreaming = false
 		vw.isVideoConnected = false
 		service.SetActiveStreamerBackend("")
+		service.SetHostGPUName("")
 		if vw.videoClient != nil {
 			_ = vw.videoClient.Disconnect()
 		}
@@ -531,6 +533,7 @@ func (vw *VideoWidget) stopVideoInternal() {
 	vw.isVideoConnected = false
 	vw.isMouseConnected = false
 	service.SetActiveStreamerBackend("")
+	service.SetHostGPUName("")
 
 	// Tear down the local overlay/canvas first, before touching the network at
 	// all. clearVideo() destroys the native GPU overlay (Android's Vulkan
@@ -1395,17 +1398,18 @@ func (vw *VideoWidget) SetStreaming(streaming bool) {
 		vw.refreshNetGraphStreamerBackend()
 	} else {
 		service.SetActiveStreamerBackend("")
+		service.SetHostGPUName("")
 	}
 }
 
 // refreshNetGraphStreamerBackend asks the agent once which streamer
-// (sunshine/rustshine) is currently active, for the Net Graph HUD's
-// streamer/codec/bitrate line -- best-effort and async, same as
-// ensureInputFocusAsync above: a slow or failed /api/bench/status must
-// never delay or fail the stream start itself. Not polled continuously
-// (the backend essentially never changes mid-session; see
-// service.SetActiveStreamerBackend's own doc comment for why this is a
-// one-shot push rather than a live pull hook).
+// (sunshine/rustshine) is currently active and which GPU it's running on,
+// for the Net Graph HUD's streamer/codec/bitrate line and GPU line --
+// best-effort and async, same as ensureInputFocusAsync above: a slow or
+// failed /api/bench/status must never delay or fail the stream start
+// itself. Not polled continuously (neither the backend nor the host's GPU
+// changes mid-session; see service.SetActiveStreamerBackend's own doc
+// comment for why this is a one-shot push rather than a live pull hook).
 func (vw *VideoWidget) refreshNetGraphStreamerBackend() {
 	client := vw.usbClient
 	if client == nil {
@@ -1417,6 +1421,7 @@ func (vw *VideoWidget) refreshNetGraphStreamerBackend() {
 			return
 		}
 		service.SetActiveStreamerBackend(status.ActiveBackend)
+		service.SetHostGPUName(status.GPU)
 	}()
 }
 
@@ -1452,6 +1457,7 @@ func (vw *VideoWidget) HandleConnectionLost() {
 	vw.isVideoConnected = false
 	vw.isMouseConnected = false
 	service.SetActiveStreamerBackend("")
+	service.SetHostGPUName("")
 	vw.hideConnectingSpinner()
 	vw.stopRenderTicker()
 	// Tear down the overlay/mouse pump first so the window starts accepting
@@ -1489,6 +1495,7 @@ func (vw *VideoWidget) handleDeviceRebuildLocally() {
 	vw.isVideoConnected = false
 	vw.isMouseConnected = false
 	service.SetActiveStreamerBackend("")
+	service.SetHostGPUName("")
 	vw.clearVideo()
 
 	fyne.Do(func() {

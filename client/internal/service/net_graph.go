@@ -218,6 +218,12 @@ var (
 	// doc comment for why this is a push, not a pull hook like the others).
 	netGraphStreamerBackend atomic.Pointer[string]
 
+	// netGraphHostGPU is the agent host's GPU name (BenchStatus.GPU), for
+	// the GPU line's "server side" half -- same push mechanism and reason
+	// as netGraphStreamerBackend above (only known via the same
+	// client.BenchStatus() round trip, see SetHostGPUName).
+	netGraphHostGPU atomic.Pointer[string]
+
 	// netGraphBanner is an extra status line drawn at the top of the HUD
 	// (see SetNetGraphBanner); nil or "" draws nothing.
 	netGraphBanner atomic.Pointer[string]
@@ -262,6 +268,23 @@ func netGraphStreamerLabel() (string, bool) {
 	return *p, true
 }
 
+// SetHostGPUName records the agent host's GPU name (BenchStatus.GPU),
+// shown on the HUD's GPU line alongside the client's own decode GPU -- see
+// netGraphHostGPU's own doc comment for why this is a push. "" clears it
+// (stream stopped, or this agent build predates the field).
+func SetHostGPUName(name string) {
+	netGraphHostGPU.Store(&name)
+}
+
+// netGraphHostGPULabel reads the most recently pushed host GPU name, "" if
+// never set or cleared.
+func netGraphHostGPULabel() string {
+	if p := netGraphHostGPU.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
 // netGraphHudMargin is the gap, in pixels, between the HUD box and the
 // bottom/right edges of the frame -- used by the CPU-buffer compositing
 // path (netGraphBlitOverlay below, Linux/Windows) and by
@@ -303,6 +326,7 @@ func SetNetGraphEnabled(enabled bool) {
 		netGraphMu.Unlock()
 		netGraphCachedImg.Store(nil)
 		SetActiveStreamerBackend("")
+		SetHostGPUName("")
 		if clear := netGraphMetalClear; clear != nil {
 			clear()
 		}
@@ -651,19 +675,26 @@ func buildNetGraphHUD(samples []NetGraphSample) *image.RGBA {
 	}
 	netGraphDrawText(img, marginX, row, line, netGraphText)
 
-	// GPU: which GPU is decoding/rendering this stream on the client --
-	// its own line rather than squeezed onto the streamer/codec/bitrate
+	// GPU: both ends of the stream -- which GPU the agent host is
+	// capturing/encoding on, and which GPU this client is decoding/
+	// rendering on, "--" on whichever side has no data yet (host: before
+	// the first BenchStatus round trip this session, see SetHostGPUName's
+	// doc comment; client: on platforms without netGraphGPUNameFn wired).
+	// Its own line rather than squeezed onto the streamer/codec/bitrate
 	// line above, since GPU names ("NVIDIA GeForce RTX 4080") can run much
-	// longer than any of those three. "--" on every platform without
-	// netGraphGPUNameFn wired (see that hook's own doc comment).
+	// longer than any of those three.
 	row += netGraphLineH
-	gpuLabel := "--"
+	hostGPULabel := "--"
+	if name := netGraphHostGPULabel(); name != "" {
+		hostGPULabel = name
+	}
+	clientGPULabel := "--"
 	if fn := netGraphGPUNameFn; fn != nil {
 		if name, ok := fn(); ok && name != "" {
-			gpuLabel = name
+			clientGPULabel = name
 		}
 	}
-	netGraphDrawText(img, marginX, row, "GPU "+gpuLabel, netGraphText)
+	netGraphDrawText(img, marginX, row, "GPU "+hostGPULabel+" - "+clientGPULabel, netGraphText)
 
 	if banner := NetGraphBanner(); banner != "" {
 		row += netGraphLineH

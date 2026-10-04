@@ -23,6 +23,10 @@ type benchApplication interface {
 	SetStreamBackend(kind string) error
 	BenchMonitors() ([]monitors.Monitor, error)
 	BenchMonitor() string
+	// BenchHostGPU names this host's GPU, surfaced on /api/bench/status for
+	// the client's Net Graph HUD (see app.App.BenchHostGPU's own doc
+	// comment).
+	BenchHostGPU() string
 	SetBenchMonitor(id string, deferRestart bool) error
 	LastBackendSwitch() BackendSwitchTiming
 	// BenchVideoOutput names (by prefix) the compositor output the test
@@ -50,6 +54,9 @@ type BenchStatus struct {
 	// enumerate them), and the one it's pinned to now ("" for none).
 	Monitors []monitors.Monitor `json:"monitors,omitempty"`
 	Monitor  string             `json:"monitor,omitempty"`
+	// GPU names this host's GPU -- see benchApplication.BenchHostGPU's doc
+	// comment. Empty if the host's platform detection couldn't determine it.
+	GPU string `json:"gpu,omitempty"`
 }
 
 func (s *Server) benchApp(w http.ResponseWriter) (benchApplication, bool) {
@@ -76,6 +83,7 @@ func (s *Server) benchStatus(w http.ResponseWriter, r *http.Request) {
 		Video:             b.BenchPlayer().Status(),
 		Monitors:          mons,
 		Monitor:           b.BenchMonitor(),
+		GPU:               b.BenchHostGPU(),
 	})
 }
 
@@ -208,11 +216,20 @@ func (s *Server) benchLoadStart(w http.ResponseWriter, r *http.Request) {
 }
 
 // benchLoadStop ends the sampling and returns its samples (empty where the
-// host can't read its load).
+// host can't read its load). Error names why, whenever samples came back
+// empty -- see hostload.Sampler.LastError's doc comment for why this used
+// to be an agent-log-only detail the client (and whoever read its
+// benchmark table) had no way to see.
 func (s *Server) benchLoadStop(w http.ResponseWriter, r *http.Request) {
 	samples := s.benchLoad.Stop()
 	if samples == nil {
 		samples = []hostload.Sample{}
 	}
-	s.ok(w, "bench_load", map[string]any{"samples": samples})
+	resp := map[string]any{"samples": samples}
+	if len(samples) == 0 {
+		if err := s.benchLoad.LastError(); err != nil {
+			resp["error"] = err.Error()
+		}
+	}
+	s.ok(w, "bench_load", resp)
 }

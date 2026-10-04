@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 
+	"usbridge_agent/internal/account"
 	"usbridge_agent/internal/benchvideo"
 	"usbridge_agent/internal/monitors"
 	"usbridge_agent/internal/streamhost"
@@ -29,6 +30,16 @@ func (a *App) BenchStreamBackends() (active string, available []string) {
 		available = append(available, "punktfunk")
 	}
 	return a.currentStreamKind(), available
+}
+
+// BenchHostGPU names this host's GPU, for the client's Net Graph HUD (which
+// shows both ends of the stream: this plus the client's own decode GPU, see
+// usbridge-client's net_graph.go netGraphGPUNameFn). Reuses
+// account.CollectDeviceInfo's existing platform detection (cached after its
+// first call, shared with the device-code login telemetry) instead of
+// duplicating it.
+func (a *App) BenchHostGPU() string {
+	return account.CollectDeviceInfo().GPU
 }
 
 // BenchVideoOutput is the virtual display the active streamer streams
