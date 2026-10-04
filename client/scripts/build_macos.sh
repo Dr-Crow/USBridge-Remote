@@ -538,9 +538,6 @@ touch "$DIST_DIR/$APP_BUNDLE_NAME"
 
 echo -e "${GREEN}   ✅ App bundle: $DIST_DIR/$APP_BUNDLE_NAME${NC}"
 
-# 7. Dist extras
-[ -f config.yaml ] && cp config.yaml "$DIST_DIR/"
-
 # No README.txt in the DMG — a symlink to /Applications alongside the .app
 # gives the standard drag-to-install Finder window instead, which is more
 # discoverable than a text file nobody opens.
