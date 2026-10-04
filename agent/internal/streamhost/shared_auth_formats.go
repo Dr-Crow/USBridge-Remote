@@ -393,7 +393,8 @@ func provisionRustshineIdentity(stateDir string) error {
 // hex(sha256(der)), label store keyed by that same lowercase hex string).
 // gamestream/cert.rs's ServerIdentity::load_or_create reads cert.pem/key.pem
 // from the same config dir; host.rs's load_or_create_uniqueid reads
-// "uniqueid" as a bare dash-less hex string.
+// "uniqueid" verbatim (it generates dash-less hex itself, but any string
+// works -- see provisionPunktfunkIdentity).
 
 func punktfunkConfigSubdir(stateDir string) string {
 	return (&punktfunkBackend{stateDir: stateDir}).punktfunkConfigDir()
@@ -529,6 +530,10 @@ func provisionPunktfunkIdentity(stateDir string) error {
 	if err := atomicWriteLocked(keyPath, keyPEM, 0o600); err != nil {
 		return err
 	}
-	undashed := undashifyUUID(serverUUID)
-	return atomicWriteLocked(uuidPath, []byte(undashed), 0o644)
+	// Verbatim, dashes and all: punktfunk-host reads this file as an opaque
+	// string and reports it as serverinfo's uniqueid, and Moonlight keys a
+	// host by that exact string. Its own generator writes dash-less hex, so
+	// handing it that form made Moonlight see punktfunk as a different PC
+	// from Sunshine and rust-shine, which report the dashed uppercase form.
+	return atomicWriteLocked(uuidPath, []byte(serverUUID), 0o644)
 }

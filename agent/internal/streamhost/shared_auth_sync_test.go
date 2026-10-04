@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestReconcileSharedAuth_PairingViaOneBackendPropagatesToTheOtherTwo is the
@@ -213,7 +214,7 @@ func TestSyncAfterPair_PropagatesImmediatelyWithoutWaitingForAnotherStart(t *tes
 		t.Fatal(err)
 	}
 
-	SyncAfterPair(stateDir, "sunshine")
+	SyncAfterPair(stateDir, "sunshine", nil)
 
 	rsClients, _ := readRustshineTrusted(stateDir)
 	pfClients, _ := readPunktfunkTrusted(stateDir)
@@ -262,7 +263,7 @@ func TestSyncAfterPair_ClearsTombstoneOnGenuineRePair(t *testing.T) {
 	if err := writeRustshineTrusted(stateDir, []trustedClient{{Fingerprint: fp, UniqueID: "c1-again", CertDER: der}}); err != nil {
 		t.Fatal(err)
 	}
-	SyncAfterPair(stateDir, "rustshine")
+	SyncAfterPair(stateDir, "rustshine", nil)
 
 	store = loadCanonicalStore(stateDir)
 	if containsString(store.Removed, fp) {
@@ -489,4 +490,51 @@ func countFingerprint(clients []trustedClient, fp string) int {
 		}
 	}
 	return n
+}
+
+// TestAwaitPairingAndSync_WaitsForTheHandshakeToFinish is the regression
+// test for the bug where SyncAfterPair ran straight after SubmitPIN: the
+// host writes the new client's certificate only after the client's later
+// pairing stages, so the sync saw nothing, the tombstone stayed, and the
+// next backend Start() stripped the fresh pairing everywhere. A stale
+// tombstoned entry already in the file before the PIN must stay removed.
+func TestAwaitPairingAndSync_WaitsForTheHandshakeToFinish(t *testing.T) {
+	stateDir := t.TempDir()
+	if _, _, _, err := EnsureSharedIdentity(stateDir); err != nil {
+		t.Fatal(err)
+	}
+	staleDER, freshDER := mustGenCertDER(t), mustGenCertDER(t)
+	staleFP, freshFP := fingerprintOf(staleDER), fingerprintOf(freshDER)
+	if err := saveCanonicalStore(stateDir, trustStoreFile{Removed: []string{staleFP, freshFP}}); err != nil {
+		t.Fatal(err)
+	}
+	stale := trustedClient{Fingerprint: staleFP, CertDER: staleDER}
+	if err := writePunktfunkTrusted(stateDir, []trustedClient{stale}); err != nil {
+		t.Fatal(err)
+	}
+
+	before := TrustedFingerprints(stateDir, "punktfunk")
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		_ = writePunktfunkTrusted(stateDir, []trustedClient{stale, {Fingerprint: freshFP, CertDER: freshDER}})
+	}()
+	if !AwaitPairingAndSync(stateDir, "punktfunk", before, 5*time.Second) {
+		t.Fatal("did not see the client that paired after SubmitPIN returned")
+	}
+
+	store := loadCanonicalStore(stateDir)
+	if containsString(store.Removed, freshFP) {
+		t.Error("tombstone on the freshly re-paired client was not lifted")
+	}
+	if !containsString(store.Removed, staleFP) {
+		t.Error("stale entry that predates the PIN had its tombstone lifted")
+	}
+	rs, _ := readRustshineTrusted(stateDir)
+	_, sun, _ := readSunshineTrusted(stateDir)
+	if !containsFingerprint(rs, freshFP) || !containsFingerprint(sun, freshFP) {
+		t.Error("freshly paired client was not propagated to rust-shine and sunshine")
+	}
+	if containsFingerprint(rs, staleFP) || containsFingerprint(sun, staleFP) {
+		t.Error("stale tombstoned client was propagated")
+	}
 }

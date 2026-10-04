@@ -348,10 +348,6 @@ func dashifyUUID(s string) string {
 	return strings.ToUpper(s[0:8] + "-" + s[8:12] + "-" + s[12:16] + "-" + s[16:20] + "-" + s[20:32])
 }
 
-func undashifyUUID(s string) string {
-	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(s), "-", ""))
-}
-
 // adoptExistingIdentity looks for an identity one of the three backends
 // already established, in priority order (Sunshine first -- it's
 // NewDefault's unconditional boot choice, see that function's doc comment,
@@ -562,45 +558,98 @@ func ReconcileSharedAuth(stateDir string) {
 	}
 }
 
-// SyncAfterPair propagates a client that just paired against activeBackend
-// (a successful SubmitPIN call, see app.go's SubmitMoonlightPIN) to the
-// other two backends immediately, without waiting for either of them to
-// next Start() and run ReconcileSharedAuth itself.
-//
-// This is also what gives a tombstoned fingerprint (see
-// RemoveTrustedClientEverywhere's doc comment) a correct way back in: if
-// the operator unpairs a device and then genuinely re-pairs the exact same
-// physical device later (Moonlight clients reuse their own persisted
-// keypair, so this produces the identical certificate), that fingerprint
-// reappearing in activeBackend's own native file *immediately after a real
-// SubmitPIN call just succeeded for it* is proof of a brand new pairing
-// ceremony -- unlike ReconcileSharedAuth's passive reconcile, which sees
-// the exact same file content on every Start() regardless of whether it
-// reflects a stale leftover (the original bug) or a genuine new pair, and
-// therefore must never lift a tombstone on its own. Only this function,
-// called in direct response to a just-completed pairing, may clear one.
-func SyncAfterPair(stateDir, activeBackend string) {
-	if stateDir == "" {
-		return
+// TrustedFingerprints snapshots the fingerprints backend's own native trust
+// file currently holds. SubmitMoonlightPIN takes one right before relaying
+// a PIN, so AwaitPairingAndSync can tell the client that pairing adds apart
+// from everything that was already there.
+func TrustedFingerprints(stateDir, backend string) map[string]bool {
+	out := map[string]bool{}
+	for _, c := range readNativeTrusted(stateDir, backend) {
+		out[c.Fingerprint] = true
 	}
-	var fresh []trustedClient
-	switch activeBackend {
+	return out
+}
+
+func readNativeTrusted(stateDir, backend string) []trustedClient {
+	var clients []trustedClient
+	switch backend {
 	case "sunshine":
-		_, fresh, _ = readSunshineTrusted(stateDir)
+		_, clients, _ = readSunshineTrusted(stateDir)
 	case "rustshine":
-		fresh, _ = readRustshineTrusted(stateDir)
+		clients, _ = readRustshineTrusted(stateDir)
 	case "punktfunk":
-		fresh, _ = readPunktfunkTrusted(stateDir)
-	default:
-		return
+		clients, _ = readPunktfunkTrusted(stateDir)
 	}
+	return clients
+}
+
+// pairingSyncPoll is how often AwaitPairingAndSync re-reads the active
+// backend's trust file while the client finishes the pairing handshake.
+var pairingSyncPoll = 250 * time.Millisecond
+
+// AwaitPairingAndSync waits, up to timeout, for a client that is not in
+// before to show up in backend's own trust file, then runs SyncAfterPair.
+//
+// It has to wait: SubmitPIN returns as soon as the host accepts the PIN,
+// while the client still has the clientchallenge..pairchallenge stages to
+// go, and the host writes the new certificate to disk only after those.
+// Calling SyncAfterPair straight after SubmitPIN (what this code used to
+// do) always saw the file without the new client, so the pairing never
+// reached the canonical store, never lifted a tombstone, and the next
+// backend Start()'s ReconcileSharedAuth stripped it out of every file
+// again -- including the backend it had just been paired on.
+func AwaitPairingAndSync(stateDir, backend string, before map[string]bool, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if SyncAfterPair(stateDir, backend, before) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			log.Printf("[shared-auth] no new client appeared in %s's trust file within %s of the PIN; not propagated", backend, timeout)
+			return false
+		}
+		time.Sleep(pairingSyncPoll)
+	}
+}
+
+// SyncAfterPair propagates a client that just paired against activeBackend
+// to the other two backends immediately, without waiting for either of
+// them to next Start() and run ReconcileSharedAuth itself. It reports
+// whether activeBackend's file holds a client that is not in before.
+//
+// before is the fingerprint set activeBackend's file held before the PIN
+// was relayed (TrustedFingerprints); nil treats every entry as new. Only a
+// new entry -- one that appeared in direct response to a pairing ceremony
+// -- may lift a tombstone (see RemoveTrustedClientEverywhere's doc
+// comment): if the operator unpairs a device and later genuinely re-pairs
+// it (Moonlight clients reuse their persisted keypair, so the certificate
+// is identical), that is a deliberate re-pair. An entry that was already
+// in the file before the PIN is a stale leftover and stays tombstoned,
+// the same rule ReconcileSharedAuth's passive reconcile follows.
+func SyncAfterPair(stateDir, activeBackend string, before map[string]bool) bool {
+	if stateDir == "" {
+		return false
+	}
+	switch activeBackend {
+	case "sunshine", "rustshine", "punktfunk":
+	default:
+		return false
+	}
+	current := readNativeTrusted(stateDir, activeBackend)
 
 	store := loadCanonicalStore(stateDir)
+	sawNew := false
 	changed := false
-	for _, c := range fresh {
-		if removedList, ok := removeString(store.Removed, c.Fingerprint); ok {
-			store.Removed = removedList
-			changed = true
+	for _, c := range current {
+		isNew := !before[c.Fingerprint]
+		if isNew {
+			sawNew = true
+			if removedList, ok := removeString(store.Removed, c.Fingerprint); ok {
+				store.Removed = removedList
+				changed = true
+			}
+		} else if containsString(store.Removed, c.Fingerprint) {
+			continue
 		}
 		before := len(store.Clients)
 		store.Clients = mergeClient(store.Clients, c)
@@ -609,17 +658,17 @@ func SyncAfterPair(stateDir, activeBackend string) {
 		}
 	}
 	if !changed {
-		return
+		return sawNew
 	}
 	if err := saveCanonicalStore(stateDir, store); err != nil {
 		log.Printf("[shared-auth] could not persist canonical trust store after pairing: %v", err)
-		return
+		return sawNew
 	}
 
 	_, _, serverUUID, err := EnsureSharedIdentity(stateDir)
 	if err != nil {
 		log.Printf("[shared-auth] could not resolve shared identity after pairing: %v", err)
-		return
+		return sawNew
 	}
 	if activeBackend != "sunshine" {
 		if _, err := projectToSunshine(stateDir, serverUUID, store.Clients, store.Removed); err != nil {
@@ -636,6 +685,10 @@ func SyncAfterPair(stateDir, activeBackend string) {
 			log.Printf("[shared-auth] punktfunk trust propagation after pairing failed: %v", err)
 		}
 	}
+	if sawNew {
+		log.Printf("[shared-auth] client paired on %s propagated to the other backends", activeBackend)
+	}
+	return sawNew
 }
 
 // RemoveTrustedClientEverywhere unpairs identifier (meaning depends on

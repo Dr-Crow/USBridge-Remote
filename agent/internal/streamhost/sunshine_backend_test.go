@@ -449,7 +449,7 @@ func TestSunshineConfigArgs_ConfigPathFirstThenIsolatedOverrides(t *testing.T) {
 	b := &sunshineBackend{stateDir: t.TempDir()}
 	args := b.sunshineConfigArgs()
 
-	wantLen := 6 // config path + 5 "key=value" overrides
+	wantLen := 7 // config path + 6 "key=value" overrides
 	if len(args) != wantLen {
 		t.Fatalf("sunshineConfigArgs() = %v, want %d elements", args, wantLen)
 	}
@@ -458,7 +458,7 @@ func TestSunshineConfigArgs_ConfigPathFirstThenIsolatedOverrides(t *testing.T) {
 	}
 
 	dataDir := b.sunshineDataDir()
-	wantPrefixes := []string{"credentials_file=", "file_apps=", "log_path=", "pkey=", "cert="}
+	wantPrefixes := []string{"file_state=", "credentials_file=", "file_apps=", "log_path=", "pkey=", "cert="}
 	for i, prefix := range wantPrefixes {
 		got := args[i+1]
 		if !strings.HasPrefix(got, prefix) {

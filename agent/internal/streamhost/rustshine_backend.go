@@ -576,6 +576,12 @@ func (b *rustshineBackend) Start(adminPort int) error {
 		args = append(args, cfgPath)
 	}
 	args = append(args, "--http-port", strconv.Itoa(basePort))
+	// Same name Sunshine and punktfunk-host report (both default to the OS
+	// hostname), so Moonlight shows one PC whichever backend is running;
+	// rust-shine's own default is "usbridge-streamer".
+	if host, err := os.Hostname(); err == nil && host != "" {
+		args = append(args, "--hostname", host)
+	}
 	if credsPath != "" {
 		args = append(args, "--credentials-path", credsPath)
 	}

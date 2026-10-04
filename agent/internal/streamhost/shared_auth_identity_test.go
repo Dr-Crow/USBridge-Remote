@@ -207,15 +207,12 @@ func TestEnsureSharedIdentity_MissingUUIDSidecarIsRegeneratedWithoutDiscardingId
 	}
 }
 
-func TestDashifyUndashifyUUID_RoundTrip(t *testing.T) {
-	dashed := "C064935C-8F6E-E601-D90C-41DCF049EFA9"
-	undashed := undashifyUUID(dashed)
-	if undashed != "c064935c8f6ee601d90c41dcf049efa9" {
-		t.Errorf("undashifyUUID(%q) = %q", dashed, undashed)
-	}
-	redashed := dashifyUUID(undashed)
-	if redashed != dashed {
-		t.Errorf("dashifyUUID(undashifyUUID(%q)) = %q, want %q", dashed, redashed, dashed)
+func TestDashifyUUID_AcceptsBothForms(t *testing.T) {
+	want := "C064935C-8F6E-E601-D90C-41DCF049EFA9"
+	for _, in := range []string{"c064935c8f6ee601d90c41dcf049efa9", want} {
+		if got := dashifyUUID(in); got != want {
+			t.Errorf("dashifyUUID(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

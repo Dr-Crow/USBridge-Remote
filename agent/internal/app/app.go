@@ -4535,17 +4535,25 @@ func (a *App) SubmitMoonlightPIN(pin string) error {
 	if port == 0 {
 		port = 47990
 	}
+	kind := streamhost.BackendKind(a.stream)
+	var before map[string]bool
+	if kind != "" && a.cfg.StateDir != "" {
+		before = streamhost.TrustedFingerprints(a.cfg.StateDir, kind)
+	}
 	if err := a.stream.SubmitPIN(port, pin); err != nil {
 		return err
 	}
 	// Propagates the client that just paired to the other two backends'
-	// trust lists immediately, instead of waiting for either of them to
-	// next Start() -- see streamhost.SyncAfterPair's doc comment. Also the
-	// only thing allowed to lift a prior tombstone (RemoveTrustedClientEverywhere),
-	// since this runs in direct response to a real pairing ceremony that
-	// just succeeded, not a passive file scan.
-	if kind := streamhost.BackendKind(a.stream); kind != "" && a.cfg.StateDir != "" {
-		streamhost.SyncAfterPair(a.cfg.StateDir, kind)
+	// trust lists, instead of waiting for either of them to next Start() --
+	// see streamhost.AwaitPairingAndSync's doc comment for why this has to
+	// wait for the client to finish the handshake first. Also the only
+	// thing allowed to lift a prior tombstone (RemoveTrustedClientEverywhere),
+	// since it runs in direct response to a real pairing ceremony, not a
+	// passive file scan. In the background: the client is still mid-pairing
+	// and must get this PIN response now.
+	if before != nil {
+		stateDir := a.cfg.StateDir
+		go streamhost.AwaitPairingAndSync(stateDir, kind, before, 2*time.Minute)
 	}
 	return nil
 }
