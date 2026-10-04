@@ -27,6 +27,11 @@
 _sunshine_repo="USBridge-Technologies/Streamers-Forks"
 # Where Sunshine sits inside that repository (a source build needs it).
 _sunshine_subdir="sunshine"
+# Self-resolved rather than relying on a caller-provided SCRIPT_DIR — this
+# file is sourced from build_macos.sh/build_linux.sh/build_windows.*, and
+# _sunshine_verify_download below needs an absolute path to
+# verify_release_manifest.go regardless of which of those sourced it.
+_sunshine_file_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 _sunshine_require() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -81,7 +86,10 @@ _sunshine_releases_json() {
 # /releases/latest pointer resolve to a release with no Sunshine assets at
 # all. So "latest" here means "newest non-draft, non-prerelease release that
 # actually carries this asset", found by scanning the list ourselves instead
-# of trusting the API's latest pointer. Prints "<tag_name>\t<download_url>".
+# of trusting the API's latest pointer. Prints
+# "<tag_name>\t<download_url>\t<manifest_url>\t<sig_url>" — the last two are
+# empty for a release published before release-all.yml started signing a
+# manifest.json/.sig alongside its assets (see _sunshine_verify_download).
 _sunshine_find_release() {
     local asset_name="$1"
     _sunshine_releases_json | python3 -c "
@@ -93,14 +101,68 @@ except Exception:
 for rel in data:
     if rel.get('draft') or rel.get('prerelease'):
         continue
-    for a in rel.get('assets', []):
-        if a['name'] == '${asset_name}':
-            print(rel['tag_name'] + '\t' + a['browser_download_url'])
-            sys.exit(0)
+    by_name = {a['name']: a['browser_download_url'] for a in rel.get('assets', [])}
+    if '${asset_name}' in by_name:
+        print('\t'.join([
+            rel['tag_name'],
+            by_name['${asset_name}'],
+            by_name.get('manifest.json', ''),
+            by_name.get('manifest.json.sig', ''),
+        ]))
+        sys.exit(0)
 " 2>/dev/null || true
 }
 
-_sunshine_asset_url() {
+# _sunshine_verify_download <file> <asset_name> <manifest_url> <sig_url>
+# Checks file's SHA-256 against the Ed25519-signed manifest.json published
+# alongside the release asset_name came from, via
+# verify_release_manifest.go (AGENT_UPDATE_ED25519_PRIVATE_KEY's public
+# half — the agent's own update-signing key, reused here rather than a new
+# one since the agent already embeds and trusts it, see that script's doc
+# comment). Closes the gap plain HTTPS-to-GitHub leaves open: a compromised
+# GITHUB_TOKEN or CI run could otherwise edit a release's assets after the
+# fact and this function's caller would have no way to tell.
+#
+# manifest_url/sig_url are empty for a release published before
+# release-all.yml started signing manifests — that's a warning, not a
+# failure, so older or individually re-dispatched per-fork releases keep
+# working. A manifest that IS present but doesn't verify, or disagrees with
+# the downloaded bytes, is always a hard failure — never silently ignored.
+_sunshine_verify_download() {
+    local file="$1" asset_name="$2" manifest_url="$3" sig_url="$4"
+    if [[ -z "$manifest_url" || -z "$sig_url" ]]; then
+        echo -e "${YELLOW}⚠${NC}  release has no signed manifest (pre-dates release-all.yml) — skipping integrity check for $asset_name"
+        return 0
+    fi
+    _sunshine_require go "Install Go to verify the signed release manifest: https://go.dev/dl/"
+
+    local tmp_manifest tmp_sig
+    tmp_manifest="$(mktemp)"
+    tmp_sig="$(mktemp)"
+    if ! curl -fsSL "${_sunshine_curl_auth[@]+"${_sunshine_curl_auth[@]}"}" -o "$tmp_manifest" "$manifest_url" \
+        || ! curl -fsSL "${_sunshine_curl_auth[@]+"${_sunshine_curl_auth[@]}"}" -o "$tmp_sig" "$sig_url"; then
+        rm -f "$tmp_manifest" "$tmp_sig"
+        echo -e "${RED}✗${NC} failed to download signed manifest for $asset_name"
+        return 1
+    fi
+
+    if go run "$_sunshine_file_dir/verify_release_manifest.go" \
+        -manifest "$tmp_manifest" -sig "$tmp_sig" -asset "$asset_name" -file "$file"; then
+        rm -f "$tmp_manifest" "$tmp_sig"
+        return 0
+    fi
+    rm -f "$tmp_manifest" "$tmp_sig"
+    echo -e "${RED}✗${NC} signed manifest verification FAILED for $asset_name — refusing to use this download"
+    return 1
+}
+
+# _sunshine_release_info <asset_name>
+# Prints "<tag>\t<asset_url>\t<manifest_url>\t<sig_url>" for whichever
+# release would be fetched right now (USBRIDGE_SUNSHINE_VERSION pinned, or
+# the newest non-draft/prerelease release with asset_name — see
+# _sunshine_find_release). manifest_url/sig_url are empty when that release
+# predates release-all.yml's signed manifest.
+_sunshine_release_info() {
     local asset_name="$1"
     local version="${USBRIDGE_SUNSHINE_VERSION:-latest}"
     if [[ "$version" != "latest" ]]; then
@@ -111,17 +173,23 @@ _sunshine_asset_url() {
 import sys, json
 try:
     data = json.load(sys.stdin)
-    for a in data.get('assets', []):
-        if a['name'] == '${asset_name}':
-            print(a['browser_download_url'])
-            break
+    by_name = {a['name']: a['browser_download_url'] for a in data.get('assets', [])}
+    if '${asset_name}' in by_name:
+        print('\t'.join([
+            data.get('tag_name', '${version}'),
+            by_name['${asset_name}'],
+            by_name.get('manifest.json', ''),
+            by_name.get('manifest.json.sig', ''),
+        ]))
 except Exception:
     pass
 " 2>/dev/null || true
         return 0
     fi
-    _sunshine_find_release "$asset_name" | cut -f2
+    _sunshine_find_release "$asset_name"
 }
+
+_sunshine_asset_url() { _sunshine_release_info "$1" | cut -f2; }
 
 # _sunshine_build_jobs
 # Parallel job count for a Sunshine source build. Its C++ TUs (boost, nvcc'd
@@ -148,7 +216,7 @@ _sunshine_build_jobs() {
 
 # _sunshine_resolve_tag [asset_name]
 # Tag of the release that would be fetched right now. With asset_name, this
-# is the tag _sunshine_find_release would pick (so cache comparisons track
+# is the tag _sunshine_release_info would pick (so cache comparisons track
 # the release that actually has our asset, not whatever release GitHub
 # happens to call "latest" this week). Without it, falls back to GitHub's own
 # latest pointer.
@@ -160,7 +228,7 @@ _sunshine_resolve_tag() {
         return 0
     fi
     if [[ -n "$asset_name" ]]; then
-        _sunshine_find_release "$asset_name" | cut -f1
+        _sunshine_release_info "$asset_name" | cut -f1
         return 0
     fi
     local py
@@ -233,21 +301,25 @@ build_sunshine_linux() {
 
     # Fast path: download pre-built tarball from our fork's releases.
     echo -e "${YELLOW}Fetching Sunshine fork (Streamers-Forks)...${NC}"
-    local url
-    url="$(_sunshine_asset_url "$asset_name")"
+    local tag url manifest_url sig_url
+    IFS=$'\t' read -r tag url manifest_url sig_url <<< "$(_sunshine_release_info "$asset_name")"
 
     if [[ -n "$url" ]]; then
         local tmp_tgz
         tmp_tgz="$(mktemp).tar.gz"
         echo "Downloading: $url"
         curl -fL --progress-bar -o "$tmp_tgz" "$url"
+        if ! _sunshine_verify_download "$tmp_tgz" "$asset_name" "$manifest_url" "$sig_url"; then
+            rm -f "$tmp_tgz"
+            exit 1
+        fi
         rm -rf "$dest"
         mkdir -p "$dest"
         tar -xzf "$tmp_tgz" -C "$dest"
         rm -f "$tmp_tgz"
         chmod +x "$dest/usr/bin/sunshine" 2>/dev/null || true
         _sunshine_clean_creds "$dest"
-        _sunshine_record_tag "$(_sunshine_resolve_tag "$asset_name" 2>/dev/null || true)" "$dest"
+        _sunshine_record_tag "$tag" "$dest"
         echo -e "${GREEN}✓${NC} Sunshine (fork release) staged at $dest"
         return 0
     fi
@@ -308,8 +380,8 @@ fetch_sunshine_windows() {
     _sunshine_require python "Install with: pacman -S --needed mingw-w64-ucrt-x86_64-python"
 
     echo -e "${YELLOW}Fetching Sunshine fork (Streamers-Forks)...${NC}"
-    local url
-    url="$(_sunshine_asset_url "$asset_name")"
+    local tag url manifest_url sig_url
+    IFS=$'\t' read -r tag url manifest_url sig_url <<< "$(_sunshine_release_info "$asset_name")"
     if [[ -z "$url" ]]; then
         echo -e "${RED}Failed to resolve Sunshine Windows download URL${NC}"
         exit 1
@@ -319,6 +391,10 @@ fetch_sunshine_windows() {
     tmp_zip="$(mktemp).zip"
     echo "Downloading: $url"
     curl -fL --progress-bar -o "$tmp_zip" "$url"
+    if ! _sunshine_verify_download "$tmp_zip" "$asset_name" "$manifest_url" "$sig_url"; then
+        rm -f "$tmp_zip"
+        exit 1
+    fi
 
     rm -rf "$dest"
     mkdir -p "$dest"
@@ -333,7 +409,7 @@ fetch_sunshine_windows() {
     fi
 
     _sunshine_clean_creds "$dest"
-    _sunshine_record_tag "$(_sunshine_resolve_tag "$asset_name" 2>/dev/null || true)" "$dest"
+    _sunshine_record_tag "$tag" "$dest"
     echo -e "${GREEN}✓${NC} Sunshine staged at $dest"
 }
 
@@ -364,14 +440,18 @@ build_sunshine_macos() {
 
     # Fast path: download pre-built DMG from our fork's releases.
     echo -e "${YELLOW}Fetching Sunshine fork (Streamers-Forks)...${NC}"
-    local url
-    url="$(_sunshine_asset_url "$asset_name")"
+    local tag url manifest_url sig_url
+    IFS=$'\t' read -r tag url manifest_url sig_url <<< "$(_sunshine_release_info "$asset_name")"
 
     if [[ -n "$url" ]]; then
         local tmp_dmg
         tmp_dmg="$(mktemp).dmg"
         echo "Downloading: $url"
         curl -fL --progress-bar -o "$tmp_dmg" "$url"
+        if ! _sunshine_verify_download "$tmp_dmg" "$asset_name" "$manifest_url" "$sig_url"; then
+            rm -f "$tmp_dmg"
+            exit 1
+        fi
 
         local mount_point
         mount_point="$(mktemp -d)"
@@ -386,7 +466,7 @@ build_sunshine_macos() {
 
         xattr -dr com.apple.quarantine "$dest/Sunshine.app" 2>/dev/null || true
         _sunshine_clean_creds "$dest"
-        _sunshine_record_tag "$(_sunshine_resolve_tag "$asset_name" 2>/dev/null || true)" "$dest"
+        _sunshine_record_tag "$tag" "$dest"
         echo -e "${GREEN}✓${NC} Sunshine (fork release) staged at $dest/Sunshine.app"
         return 0
     fi
