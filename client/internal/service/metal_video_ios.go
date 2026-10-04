@@ -4,7 +4,7 @@ package service
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
-#cgo LDFLAGS: -framework UIKit -framework CoreVideo -framework QuartzCore -framework CoreFoundation
+#cgo LDFLAGS: -framework UIKit -framework CoreVideo -framework QuartzCore -framework CoreFoundation -framework Metal
 
 #include <stdint.h>
 #include <stdlib.h>
