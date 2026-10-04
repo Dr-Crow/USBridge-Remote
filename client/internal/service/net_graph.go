@@ -698,26 +698,28 @@ func buildNetGraphHUD(samples []NetGraphSample) *image.RGBA {
 	}
 	netGraphDrawText(img, marginX, row, line, netGraphText)
 
-	// GPU: both ends of the stream -- which GPU the agent host is
-	// capturing/encoding on, and which GPU this client is decoding/
-	// rendering on, "--" on whichever side has no data yet (host: before
-	// the first BenchStatus round trip this session, see SetHostGPUName's
-	// doc comment; client: on platforms without netGraphGPUNameFn wired).
-	// Its own line rather than squeezed onto the streamer/codec/bitrate
-	// line above, since GPU names ("NVIDIA GeForce RTX 4080") can run much
-	// longer than any of those three.
+	// Encode/Decode: which GPU the agent host is capturing/encoding on, and
+	// which GPU this client is decoding/rendering on, "--" on whichever
+	// side has no data yet (host: before the first BenchStatus round trip
+	// this session, see SetHostGPUName's doc comment; client: on platforms
+	// without netGraphGPUNameFn wired). Two rows, not one "GPU host -
+	// client" line -- real GPU names ("NVIDIA GeForce RTX 4080") on both
+	// ends together regularly overflowed a single row.
 	row += netGraphLineH
 	hostGPULabel := "--"
 	if name := netGraphHostGPULabel(); name != "" {
 		hostGPULabel = name
 	}
+	netGraphDrawText(img, marginX, row, "ENCODE "+hostGPULabel, netGraphText)
+
+	row += netGraphLineH
 	clientGPULabel := "--"
 	if fn := netGraphGPUNameFn; fn != nil {
 		if name, ok := fn(); ok && name != "" {
 			clientGPULabel = name
 		}
 	}
-	netGraphDrawText(img, marginX, row, "GPU "+hostGPULabel+" - "+clientGPULabel, netGraphText)
+	netGraphDrawText(img, marginX, row, "DECODE "+clientGPULabel, netGraphText)
 
 	if banner := NetGraphBanner(); banner != "" {
 		row += netGraphLineH
