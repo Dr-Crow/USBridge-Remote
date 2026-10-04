@@ -419,7 +419,7 @@ func (w *Window) applySelectedProtocol(parent fyne.Window) {
 		return
 	}
 	key := w.protocolPick
-	if key == protocolPro || key == protocolEnterprise || protocolNeedsPurchase(key, st, acc) {
+	if protocolNeedsPurchase(key, st, acc) {
 		w.protocolPick = w.protocolApplied
 		w.refreshProtocolPickerVisuals(false)
 		w.showTariffPickerDialog(parent, key)
