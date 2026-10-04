@@ -9,6 +9,7 @@
 #import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/QuartzCore.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <Metal/Metal.h>
 #include <stdatomic.h>
 #include <pthread.h>
 #include <stdio.h>
