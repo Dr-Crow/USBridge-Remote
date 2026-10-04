@@ -43,7 +43,16 @@ if [ -f "${OUT_LIB}" ] && [ -z "${PYROWAVE_FORCE_REBUILD:-}" ] && \
     exit 0
 fi
 
-cmake -S "${SRC_DIR}" -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+# -DCMAKE_CXX_STANDARD/REQUIRED forced on the command line (a cache entry,
+# outranks the vendor's own `set(CMAKE_CXX_STANDARD 14)` before its
+# project() call): that plain set() stopped taking effect on this runner
+# image (macos-14) as of 2026-10, silently falling back to a pre-C++11
+# dialect and failing on Granite's `constexpr`/alias-declaration/rvalue-ref
+# usage ("too many errors emitted" cascading from intrusive.hpp/
+# logging.hpp). Setting it explicitly here is immune to whatever changed on
+# the image side.
+cmake -S "${SRC_DIR}" -B "${BUILD_DIR}" -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+    -DCMAKE_CXX_STANDARD=17 -DCMAKE_CXX_STANDARD_REQUIRED=ON
 cmake --build "${BUILD_DIR}" --target pyrowave-capi -j "${JOBS}"
 
 # One combined archive so the Go side only needs one -l flag (matches Linux's
