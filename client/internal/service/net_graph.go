@@ -163,7 +163,15 @@ var (
 	// negotiated for the current session (see NegotiatedVideoCodecName on
 	// each platform's cgo wrapper) -- nil hook, same "no data yet" contract
 	// as the others, until a session has reported one.
-	netGraphCodecFn    func() (string, bool)
+	netGraphCodecFn func() (string, bool)
+	// netGraphGPUNameFn returns the client's active decode/render GPU name
+	// (e.g. "NVIDIA GeForce RTX 4080", "Apple M3 Pro") -- nil hook, same "no
+	// data yet" contract as the others, wired per-platform (Vulkan's
+	// VkPhysicalDeviceProperties.deviceName on Windows/Linux/Android, the
+	// system default Metal device's name on macOS/iOS). Not wired on wasm:
+	// WebGL's UNMASKED_RENDERER_WEBGL string would need its own plumbing
+	// through the browser's JS bridge.
+	netGraphGPUNameFn  func() (string, bool)
 	netGraphMetalPush  func(img *image.RGBA)
 	netGraphMetalClear func()
 	// netGraphScalePush applies the on-screen HUD scale (Vulkan quad /
@@ -642,6 +650,20 @@ func buildNetGraphHUD(samples []NetGraphSample) *image.RGBA {
 		line += "  " + netGraphFmtMbps(kbps)
 	}
 	netGraphDrawText(img, marginX, row, line, netGraphText)
+
+	// GPU: which GPU is decoding/rendering this stream on the client --
+	// its own line rather than squeezed onto the streamer/codec/bitrate
+	// line above, since GPU names ("NVIDIA GeForce RTX 4080") can run much
+	// longer than any of those three. "--" on every platform without
+	// netGraphGPUNameFn wired (see that hook's own doc comment).
+	row += netGraphLineH
+	gpuLabel := "--"
+	if fn := netGraphGPUNameFn; fn != nil {
+		if name, ok := fn(); ok && name != "" {
+			gpuLabel = name
+		}
+	}
+	netGraphDrawText(img, marginX, row, "GPU "+gpuLabel, netGraphText)
 
 	if banner := NetGraphBanner(); banner != "" {
 		row += netGraphLineH

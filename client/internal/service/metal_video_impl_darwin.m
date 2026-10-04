@@ -1009,6 +1009,24 @@ double metal_video_last_decode_ms(void) {
     return g_lastKnownDecodeMs;
 }
 
+// metal_video_get_gpu_name copies the system default Metal device's name
+// (e.g. "Apple M3 Pro") into out, NUL-terminated and truncated to out_len.
+// Queried fresh rather than cached off g_mtl_device/ml.device (the FSR
+// upscale and overlay layers' own devices, both only created once a stream
+// starts) -- a plain MTLCreateSystemDefaultDevice() call is cheap and this
+// way Net Graph's GPU line reads correctly even before the first stream of
+// the session, same as macOS's automatic-graphics-switching Macs report
+// whichever GPU is actually active right now. Empty if Metal is
+// unavailable (never expected on a supported macOS version).
+void metal_video_get_gpu_name(char *out, int out_len) {
+    if (!out || out_len <= 0) return;
+    out[0] = '\0';
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+    if (!dev) return;
+    const char *name = [dev.name UTF8String];
+    if (name) snprintf(out, out_len, "%s", name);
+}
+
 // metal_video_submit_compressed_sample feeds one ready-to-decode
 // CMSampleBuffer (built zero-copy in moonlight_cgo_apple.go's
 // platform_dr_submit) to g_avsbdl -- see that global's own doc comment for

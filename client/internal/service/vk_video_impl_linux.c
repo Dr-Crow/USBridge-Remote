@@ -2057,6 +2057,18 @@ void vk_video_get_diag(long long *hb, int *stage) {
     *stage = g_render_stage;
 }
 
+// vk_video_get_gpu_name: see vk_video_impl_windows.c's identical function
+// for the rationale -- copies the active Vulkan physical device's name into
+// out, empty when no device has been selected yet this session.
+void vk_video_get_gpu_name(char *out, int out_len) {
+    if (!out || out_len <= 0) return;
+    out[0] = '\0';
+    if (g_pdev == VK_NULL_HANDLE) return;
+    VkPhysicalDeviceProperties pr;
+    vkGetPhysicalDeviceProperties(g_pdev, &pr);
+    snprintf(out, out_len, "%s", pr.deviceName);
+}
+
 void vk_video_get_video_dest(int *dx, int *dy, int *dw, int *dh, int *sw, int *sh) {
     if (dx) *dx = atomic_load(&g_video_dx);
     if (dy) *dy = atomic_load(&g_video_dy);

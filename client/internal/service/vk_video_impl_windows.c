@@ -4255,6 +4255,21 @@ void vk_video_get_diag(long long *hb, int *stage) {
     *stage = g_render_stage;
 }
 
+// vk_video_get_gpu_name copies the active Vulkan physical device's name
+// (VkPhysicalDeviceProperties.deviceName, the same string already logged at
+// overlay creation above) into out, NUL-terminated and truncated to
+// out_len. Empty when no device has been selected yet (no stream has
+// started this session) -- callers treat an empty string as "no data yet",
+// same convention as the other Net Graph stat getters.
+void vk_video_get_gpu_name(char *out, int out_len) {
+    if (!out || out_len <= 0) return;
+    out[0] = '\0';
+    if (g_pdev == VK_NULL_HANDLE) return;
+    VkPhysicalDeviceProperties pr;
+    vkGetPhysicalDeviceProperties(g_pdev, &pr);
+    snprintf(out, out_len, "%s", pr.deviceName);
+}
+
 // vk_video_set_concealment_enabled toggles frame smoothing (see the "frame
 // smoothing" section above vk_render_thread). Called from
 // frame_smoothing_windows.go's init() hook, wired to

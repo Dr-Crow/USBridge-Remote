@@ -36,6 +36,7 @@ extern void metal_video_set_hud_overlay(const uint8_t *rgba, int w, int h, int s
 extern void metal_video_clear_hud_overlay(void);
 extern void metal_video_set_hud_scale(float s);
 extern double metal_video_last_decode_ms(void);
+extern void metal_video_get_gpu_name(char *out, int out_len);
 
 extern void metal_video_debug_link_counts(int64_t *created, int64_t *invalidated);
 
@@ -82,6 +83,7 @@ func init() {
 	}
 	netGraphRenderFPS = MetalVideoLastFPS
 	netGraphDecodeMs = MetalVideoLastDecodeMs
+	netGraphGPUNameFn = MetalVideoGPUName
 	benchRenderedFramesFn = MetalVideoRenderedCount
 
 	// UpscaleMode (upscale_mode.go's cross-platform SetUpscaleMode) -- see
@@ -274,6 +276,18 @@ func MetalVideoClearHudOverlay() {
 // the overlay is inactive or no sample has landed yet.
 func MetalVideoLastDecodeMs() float64 {
 	return float64(C.metal_video_last_decode_ms())
+}
+
+// MetalVideoGPUName returns the system default Metal device's name (e.g.
+// "Apple M3 Pro"), for Net Graph's GPU line -- see
+// metal_video_impl_darwin.m's metal_video_get_gpu_name doc comment for why
+// this needs no active stream to answer. ok is false only if Metal itself
+// is unavailable.
+func MetalVideoGPUName() (string, bool) {
+	buf := make([]C.char, 256)
+	C.metal_video_get_gpu_name(&buf[0], C.int(len(buf)))
+	name := C.GoString(&buf[0])
+	return name, name != ""
 }
 
 // MetalVideoDebugLinkCounts returns how many CADisplayLinks

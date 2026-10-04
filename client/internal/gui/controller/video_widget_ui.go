@@ -403,6 +403,11 @@ func (vw *VideoWidget) startVideoWithParamsInternal(request *models.VideoStartRe
 	vw.debugLogSpinner("ConnectToMoonlight-succeeded")
 	logrus.Info("✅ Moonlight stream started")
 	service.SyncNetGraphNativeScale()
+	// Net Graph's streamer/codec/bitrate line otherwise stayed "--" outside
+	// a benchmark run (which shows the streamer name only in its own
+	// progress banner, see benchmark_dialog.go's SetNetGraphBanner calls) --
+	// every real stream start needs this pushed too, not just benchmarks.
+	vw.refreshNetGraphStreamerBackend()
 
 	// Re-check right after marking the session live: ConnectToMoonlight()
 	// returns once LiStartConnection is merely *submitted* (see its own
@@ -479,6 +484,7 @@ func (vw *VideoWidget) StopVideoSync() error {
 				vw.isStreaming = false
 				vw.isVideoConnected = false
 				vw.isMouseConnected = false
+				service.SetActiveStreamerBackend("")
 				vw.clearVideo()
 				fyne.Do(func() {
 					if vw.statusLabel != nil {
@@ -499,6 +505,7 @@ func (vw *VideoWidget) StopVideoSync() error {
 		logrus.Warn("⚠️ StopVideoSync timed out, forcing local cleanup")
 		vw.isStreaming = false
 		vw.isVideoConnected = false
+		service.SetActiveStreamerBackend("")
 		if vw.videoClient != nil {
 			_ = vw.videoClient.Disconnect()
 		}
@@ -523,6 +530,7 @@ func (vw *VideoWidget) stopVideoInternal() {
 	vw.isStreaming = false
 	vw.isVideoConnected = false
 	vw.isMouseConnected = false
+	service.SetActiveStreamerBackend("")
 
 	// Tear down the local overlay/canvas first, before touching the network at
 	// all. clearVideo() destroys the native GPU overlay (Android's Vulkan
@@ -1443,6 +1451,7 @@ func (vw *VideoWidget) HandleConnectionLost() {
 	vw.isStreaming = false
 	vw.isVideoConnected = false
 	vw.isMouseConnected = false
+	service.SetActiveStreamerBackend("")
 	vw.hideConnectingSpinner()
 	vw.stopRenderTicker()
 	// Tear down the overlay/mouse pump first so the window starts accepting
@@ -1479,6 +1488,7 @@ func (vw *VideoWidget) handleDeviceRebuildLocally() {
 	vw.isStreaming = false
 	vw.isVideoConnected = false
 	vw.isMouseConnected = false
+	service.SetActiveStreamerBackend("")
 	vw.clearVideo()
 
 	fyne.Do(func() {

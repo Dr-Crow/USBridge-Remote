@@ -19,6 +19,7 @@ extern void vk_video_get_stats(long long *rendered, long long *submitted,
                                float *max_gap_ms);
 extern void vk_video_clear_pending_stats(void);
 extern void vk_video_get_diag(long long *hb, int *stage);
+extern void vk_video_get_gpu_name(char *out, int out_len);
 extern void vk_video_set_hidden(int hidden);
 extern int  vk_video_next_event(int *type_out, int *x_out, int *y_out, int *btn_out);
 extern void vk_video_get_video_dest(int *dx, int *dy, int *dw, int *dh, int *sw, int *sh);
@@ -118,6 +119,16 @@ func VKVideoGetDiag() (hb int64, stage int) {
 	var s C.int
 	C.vk_video_get_diag(&h, &s)
 	return int64(h), int(s)
+}
+
+// VKVideoGetGPUName returns the active Vulkan physical device's name, for
+// Net Graph's GPU line. ok is false before any device has been selected
+// (no stream started this session yet).
+func VKVideoGetGPUName() (string, bool) {
+	buf := make([]C.char, 256)
+	C.vk_video_get_gpu_name(&buf[0], C.int(len(buf)))
+	name := C.GoString(&buf[0])
+	return name, name != ""
 }
 
 func VKVideoSetHidden(hidden bool) {
