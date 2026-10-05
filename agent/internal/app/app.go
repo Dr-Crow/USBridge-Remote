@@ -610,7 +610,8 @@ func New() (*App, error) {
 	// Punktfunk needs no entitlement, only its binary; without one (it was
 	// uninstalled since) the agent comes back on Sunshine.
 	streamhost.SetPunktfunkStageDir(forkrelease.PunktfunkDir(cfg.StateDir))
-	// On Windows Sunshine is downloaded, not shipped (see sunshine_update.go).
+	// Where the release has a build for this platform Sunshine is downloaded,
+	// not shipped (see sunshine_update.go).
 	if forkrelease.SunshineAssetName() != "" {
 		streamhost.SetSunshineStageBinary(forkrelease.SunshineBinary(cfg.StateDir))
 	}
@@ -1581,7 +1582,7 @@ func (a *App) SetStreamBackend(kind string) error {
 			return err
 		}
 	}
-	// So is Sunshine where the agent doesn't ship it (Windows).
+	// So is Sunshine where the agent doesn't ship it (sunshineDownloadable).
 	if kind == "sunshine" && sunshineDownloadable() && !a.sunshineOnDisk() {
 		if err := a.DownloadSunshine(nil); err != nil {
 			return err
@@ -2361,12 +2362,14 @@ func (a *App) LogoutAccount() error {
 func (a *App) DownloadPunktfunk(onProgress forkrelease.ProgressFunc) error {
 	a.entMu.Lock()
 	a.entStatus.DownloadInProgress = true
+	a.entStatus.DownloadName = "USBridge Streamer"
 	a.entStatus.Progress = -1
 	a.entStatus.LastError = ""
 	a.entMu.Unlock()
 	defer func() {
 		a.entMu.Lock()
 		a.entStatus.DownloadInProgress = false
+		a.entStatus.DownloadName = ""
 		a.entMu.Unlock()
 	}()
 	combined := func(downloaded, total int64) {
@@ -2508,12 +2511,14 @@ func (a *App) DownloadRustShine(onProgress entitlement.ProgressFunc) error {
 
 	a.entMu.Lock()
 	a.entStatus.DownloadInProgress = true
+	a.entStatus.DownloadName = "Punktfunk"
 	a.entStatus.Progress = -1
 	a.entStatus.LastError = ""
 	a.entMu.Unlock()
 	defer func() {
 		a.entMu.Lock()
 		a.entStatus.DownloadInProgress = false
+		a.entStatus.DownloadName = ""
 		a.entMu.Unlock()
 	}()
 

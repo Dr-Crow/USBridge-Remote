@@ -15,24 +15,30 @@ import (
 )
 
 // Sunshine from Streamers-Forks' latest release, the same way as
-// punktfunk-host (signed manifest, SHA-256 per asset). On Windows the agent
-// no longer ships Sunshine: it downloads it the first time Sunshine is the
-// streamer and updates it from then on. An older agent's bundled
-// sunshine\ is still used until the first download.
+// punktfunk-host (signed manifest, SHA-256 per asset). Where the release has
+// a build for this platform the agent no longer ships Sunshine: it downloads
+// it the first time Sunshine is the streamer and updates it from then on.
+// An older agent's bundled Sunshine is still used until the first download.
 
-// SunshineAssetName is this platform's Sunshine asset, "" where the agent
-// still bundles Sunshine: Linux (the KMS grant only covers a root-owned
-// installed tree, see streamerlaunch) and macOS (a signed DMG).
+// SunshineAssetName is this platform's Sunshine asset, "" where the release
+// has none (Intel Macs, Linux arm64) and the agent still bundles Sunshine.
+// Linux KMS capture still goes through a root-owned copy of the tree (see
+// streamerlaunch.SunshineDir), made from the downloaded one on the grant.
 func SunshineAssetName() string {
-	if runtime.GOOS == "windows" && runtime.GOARCH == "amd64" {
+	switch runtime.GOOS + "/" + runtime.GOARCH {
+	case "windows/amd64":
 		return "Sunshine-Windows-x86_64-portable.zip"
+	case "linux/amd64":
+		return "Sunshine-Linux-x86_64.tar.gz"
+	case "darwin/arm64":
+		return "Sunshine-macOS-arm64.dmg"
 	}
 	return ""
 }
 
 // SunshineDir is where the staged Sunshine lives: a tree laid out like the
 // bundled one (Windows: sunshine.exe, assets/, tools/; Linux: usr/bin/sunshine,
-// usr/local/assets, usr/lib). Not <stateDir>/sunshine: that is Sunshine's
+// usr/local/assets, usr/lib; macOS: Sunshine.app). Not <stateDir>/sunshine: that is Sunshine's
 // config dir.
 func SunshineDir(stateDir string) string { return filepath.Join(stateDir, "sunshine-host") }
 
@@ -44,6 +50,8 @@ func SunshineBinary(stateDir string) string {
 		return filepath.Join(SunshineDir(stateDir), "sunshine.exe")
 	case "linux":
 		return filepath.Join(SunshineDir(stateDir), "usr", "bin", "sunshine")
+	case "darwin":
+		return filepath.Join(SunshineDir(stateDir), "Sunshine.app", "Contents", "MacOS", "Sunshine")
 	}
 	return ""
 }
@@ -124,10 +132,13 @@ func PrepareSunshine(ctx context.Context, stateDir string, onProgress ProgressFu
 		return nil, err
 	}
 	p := &PreparedSunshine{stateDir: stateDir, nextDir: next, Version: m.Version}
-	if strings.HasSuffix(asset, ".zip") {
+	switch {
+	case strings.HasSuffix(asset, ".zip"):
 		// The portable zip holds everything under Sunshine/.
 		err = extractZipTree(archive, next, "Sunshine/")
-	} else {
+	case strings.HasSuffix(asset, ".dmg"):
+		err = extractDMGApp(ctx, archive, filepath.Join(next, "Sunshine.app"))
+	default:
 		err = extractTarGzTree(archive, next)
 	}
 	if err == nil {

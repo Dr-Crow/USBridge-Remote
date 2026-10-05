@@ -26,8 +26,10 @@ if [[ $# -gt 0 ]]; then
     exit 1
 fi
 
-# The agent always bundles the open-source Sunshine backend at build time
-# (fetch_sunshine.sh below) -- RustShine is never built from source or
+# Apple Silicon builds don't bundle the open-source Sunshine backend: the
+# agent downloads the fork's signed, notarized release itself (see the
+# Sunshine block below). Intel builds still do (fetch_sunshine.sh), as the
+# fork publishes no x86_64 DMG. RustShine is never built from source or
 # bundled here. streamhost.rustshineBackend is always compiled into the
 # agent binary regardless (see internal/streamhost/factory.go's own doc
 # comment: the old //go:build rustshine compile-time seam is gone, gating
@@ -163,10 +165,16 @@ PLIST
 sed -i '' "s/__VERSION__/$VERSION/g" "$APP_CONTENTS/Info.plist"
 
 # Bundle the streaming host before signing — adding files after signing breaks
-# the seal. RustShine is never built from source or bundled here -- see this
-# script's own top comment.
-source "$SCRIPT_DIR/fetch_sunshine.sh"
-fetch_sunshine_macos "$APP_MACOS/sunshine"
+# the seal. Only on Intel: on Apple Silicon the agent downloads Sunshine
+# (internal/forkrelease, app/sunshine_update.go) and updates it from there.
+# RustShine is never built from source or bundled here -- see this script's
+# own top comment.
+if [[ "$(uname -m)" == "arm64" ]]; then
+    echo -e "${GREEN}✓${NC} Sunshine not bundled (the agent downloads it)"
+else
+    source "$SCRIPT_DIR/fetch_sunshine.sh"
+    fetch_sunshine_macos "$APP_MACOS/sunshine"
+fi
 
 # Bundle Tailscale CLI (statically linked Go binary — no dylib deps to walk).
 # The daemon itself is not bundled: on macOS we rely on a system-installed

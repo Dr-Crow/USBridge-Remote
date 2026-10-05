@@ -678,8 +678,12 @@ func (w *Window) syncStreamerUpdateFooter(st entitlement.Status) {
 	if w.streamerUpdateChecking {
 		return
 	}
-	if st.RustShineUpdateInProgress {
-		if !w.streamerBgUpdateWatching {
+	// A download nobody here asked for (Sunshine fetched on first start) is
+	// shown the same way; the footer's download watcher names it. One a
+	// protocol switch runs already has the switch's footer.
+	bgDownload := st.DownloadInProgress && !w.protocolSwitching
+	if st.RustShineUpdateInProgress || bgDownload {
+		if !w.streamerBgUpdateWatching && !w.protocolSwitching {
 			w.streamerVersionAtBusy = st.RustShineVersion
 			w.startFooterBusy(loc().CheckingUpdates)
 			w.streamerBgUpdateWatching = true
@@ -690,6 +694,10 @@ func (w *Window) syncStreamerUpdateFooter(st entitlement.Status) {
 		return
 	}
 	w.streamerBgUpdateWatching = false
+	if w.protocolSwitching {
+		// The switch took the footer over; it clears it itself.
+		return
+	}
 	if st.RustShineVersion != "" && st.RustShineVersion != w.streamerVersionAtBusy {
 		w.showFooterIdle(loc().StreamerUpdated, footerIdleMessageDuration)
 		return
@@ -5100,9 +5108,13 @@ func showAutostartInfoDialog(parent fyne.Window) {
 	if parent == nil {
 		return
 	}
-	path := autostart.Location()
-	if strings.TrimSpace(path) == "" {
-		path = "—"
+	c := loc()
+	via := c.AutostartViaSystemd
+	switch runtime.GOOS {
+	case "windows":
+		via = c.AutostartViaService
+	case "darwin":
+		via = c.AutostartViaLaunchd
 	}
 
 	var popup *widget.PopUp
@@ -5112,12 +5124,22 @@ func showAutostartInfoDialog(parent fyne.Window) {
 		}
 	}
 
-	msg := widget.NewLabel(path)
-	msg.Wrapping = fyne.TextWrapBreak
-	msg.Alignment = fyne.TextAlignLeading
-	body := wrapDialogValueBox(wrapDialogLabel(msg, 11, design.ColorTextLight))
-	footer := container.NewCenter(newDialogCTA(loc().OK, closeDialog))
-	panel := newBrandedDialogPanelInsets(loc().AutostartInfo, statusDialogWidth, 20, 10, body, footer, closeDialog)
+	how := widget.NewLabel(fmt.Sprintf(c.AutostartInfoBody, via))
+	how.Wrapping = fyne.TextWrapWord
+	how.Alignment = fyne.TextAlignLeading
+	body := container.NewVBox(wrapDialogLabel(how, 11, design.ColorTextLight))
+	// Where the entry lives, once there is one (the path a moved binary
+	// would leave stale).
+	if path := strings.TrimSpace(autostart.Location()); path != "" && autostart.IsEnabled() {
+		entry := widget.NewLabel(c.AutostartEntry)
+		msg := widget.NewLabel(path)
+		msg.Wrapping = fyne.TextWrapBreak
+		msg.Alignment = fyne.TextAlignLeading
+		body.Add(wrapDialogLabel(entry, 10, design.ColorEmptyHint))
+		body.Add(wrapDialogValueBox(wrapDialogLabel(msg, 10, design.ColorTextLight)))
+	}
+	footer := container.NewCenter(newDialogCTA(c.OK, closeDialog))
+	panel := newBrandedDialogPanelInsets(c.AutostartInfo, statusDialogWidth, 20, 10, body, footer, closeDialog)
 	popup = showOverlayPopup(parent, overlayPopupSpec{Panel: panel})
 }
 

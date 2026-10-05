@@ -22,9 +22,9 @@ if [[ $# -gt 0 ]]; then
     exit 1
 fi
 
-# The agent always bundles the open-source Sunshine backend at build time
-# (fetch_sunshine.sh below) -- RustShine is never built from source or
-# bundled here. streamhost.rustshineBackend is always compiled into the
+# No streamer is bundled: the agent downloads the open-source Sunshine
+# backend from the fork's signed release itself (see the Sunshine block
+# below) -- and RustShine is never built from source or bundled here. streamhost.rustshineBackend is always compiled into the
 # agent binary regardless (see internal/streamhost/factory.go's own doc
 # comment: the old //go:build rustshine compile-time seam is gone, gating
 # is entirely runtime via internal/entitlement), so there was never a real
@@ -85,11 +85,12 @@ echo -e "${YELLOW}Compiling usbridge-streamer-launch (static)...${NC}"
 CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$LAUNCHER_PATH" ./cmd/usbridge_streamer_launch
 chmod +x "$LAUNCHER_PATH"
 
-# Fetch/build Sunshine (staged as dist/linux/sunshine/usr/bin/sunshine + assets).
-# RustShine is never built from source or bundled here -- see this script's
-# own top comment.
-source "$SCRIPT_DIR/fetch_sunshine.sh"
-fetch_sunshine_linux "$DIST_DIR/sunshine"
+# Sunshine is no longer bundled (x86_64 is the only Linux build): the agent
+# downloads the fork's signed release itself (internal/forkrelease,
+# app/sunshine_update.go) and updates it from there; the KMS grant copies
+# that download into the root-owned launcher tree. Remove a dist/linux/sunshine
+# an older build left so the block below doesn't pick it up.
+rm -rf "$DIST_DIR/sunshine"
 
 # ── Build AppImage ─────────────────────────────────────────────────────────────
 # The AppImage bundles the agent + Sunshine into a single relocatable package.
@@ -140,7 +141,7 @@ if [[ -f "$SUNSHINE_STAGING/usr/bin/sunshine" ]]; then
     fi
     echo -e "${GREEN}✓${NC} Sunshine bundled into AppDir"
 else
-    echo -e "${YELLOW}Warning: Sunshine binary not found at $SUNSHINE_STAGING/usr/bin/sunshine — AppImage will not include Sunshine${NC}"
+    echo -e "${GREEN}✓${NC} Sunshine not bundled (the agent downloads it)"
 fi
 
 # Icon

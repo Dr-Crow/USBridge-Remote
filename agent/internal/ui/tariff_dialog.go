@@ -69,7 +69,6 @@ func tariffPlansNow() []tariffPlan {
 			paid:     true,
 			features: []tariffFeature{
 				{c.Feat444, c.Feat444Sub},
-				{c.FeatUSB, c.FeatUSBSub},
 				{c.FeatWacom, c.FeatWacomSub},
 			},
 		},
@@ -178,7 +177,7 @@ func (w *Window) showTariffPickerDialog(parent fyne.Window, initialKey string) {
 	)
 	panel := newTariffDialogPanel(w.tariffDialogVersion(), body, footerSlot, closeDialog)
 	popup = showOverlayPopup(parent, overlayPopupSpec{
-		Panel: panel,
+		Panel:        panel,
 		OnOutsideTap: closeDialog,
 		PanelSize: func(canvasSize fyne.Size, _ fyne.CanvasObject) fyne.Size {
 			width := tariffDialogWidth
