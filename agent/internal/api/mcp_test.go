@@ -632,3 +632,6 @@ func TestMCP_MouseAction_LegacyAbsoluteActionNowWorks(t *testing.T) {
 		t.Fatalf("AbsoluteEvent called with %+v, want x=16000 y=8000 mask=1", call)
 	}
 }
+
+func (s *mcpTestApp) VirtualDisplayPrimary() bool                 { return false }
+func (s *mcpTestApp) SetVirtualDisplayPrimary(bool) (bool, error) { return false, nil }

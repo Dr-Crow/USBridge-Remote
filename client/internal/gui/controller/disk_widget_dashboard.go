@@ -410,6 +410,9 @@ func (dw *DiskWidget) refreshDashboard() {
 			}
 			var extras []fyne.CanvasObject
 			if drive.VideoDevice != nil && drive.VideoDevice.Bus == "virtual" {
+				if t := dw.newDashboardVirtualDisplayPrimaryToggle(drive); t != nil {
+					extras = append(extras, t)
+				}
 				extras = append(extras, dw.newDashboardVirtualDisplayDeleteButton(drive))
 			}
 			extras = append(extras, dw.newDashboardVideoSettingsButton(drive))
@@ -1197,6 +1200,25 @@ func (dw *DiskWidget) newDashboardVideoSettingsButton(drive DriveItem) fyne.Canv
 		if dw.onVideoConfigRequested != nil {
 			dw.onVideoConfigRequested(deviceCopy.Path)
 		}
+	}, dw.dashboardVideoHover)
+	btn.SetDisabled(dw.controlsLocked())
+	return btn
+}
+
+// newDashboardVirtualDisplayPrimaryToggle is the virtual display's "Main"
+// switch: lit while it is the primary display (taskbar and new windows go
+// there), tap to turn it off or on. Nil when the agent doesn't report it.
+func (dw *DiskWidget) newDashboardVirtualDisplayPrimaryToggle(drive DriveItem) fyne.CanvasObject {
+	if drive.VideoDevice == nil || drive.VideoDevice.Primary == nil {
+		return nil
+	}
+	id := drive.VideoDevice.Path
+	on := *drive.VideoDevice.Primary
+	btn := view.NewDeviceDashboardTextToggle(i18n.Current.VirtualDisplayPrimaryToggle, on, func() {
+		if dw.controlsLocked() {
+			return
+		}
+		dw.handleToggleVirtualDisplayPrimary(id, !on)
 	}, dw.dashboardVideoHover)
 	btn.SetDisabled(dw.controlsLocked())
 	return btn
