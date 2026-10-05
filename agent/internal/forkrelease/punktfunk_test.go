@@ -124,20 +124,55 @@ func TestSafeName(t *testing.T) {
 	}
 }
 
+// Commit replaces the release's files and keeps everything else: the live dir
+// is also punktfunk-host's config dir (keys, pairings, settings).
+func TestCommitKeepsConfig(t *testing.T) {
+	dir := t.TempDir()
+	live := PunktfunkDir(dir)
+	next := live + ".next"
+	for d, files := range map[string]map[string]string{
+		live: {punktfunkBinaryName(): "old", "VERSION": "v1\n", "native-key.pem": "key", "paired.json": "{}"},
+		next: {punktfunkBinaryName(): "new", "VERSION": "v2\n"},
+	} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		for name, body := range files {
+			if err := os.WriteFile(filepath.Join(d, name), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := (&PreparedPunktfunk{stateDir: dir, nextDir: next, Version: "v2"}).Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{punktfunkBinaryName(): "new", "VERSION": "v2\n", "native-key.pem": "key", "paired.json": "{}"} {
+		if b, err := os.ReadFile(filepath.Join(live, name)); err != nil || string(b) != want {
+			t.Errorf("%s = %q, %v; want %q", name, b, err, want)
+		}
+	}
+	for _, gone := range []string{next, filepath.Join(live, punktfunkBinaryName()+".old")} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Errorf("%s left behind", gone)
+		}
+	}
+}
+
 // The real thing, from GitHub: USBRIDGE_LIVE_FORKRELEASE=1 go test ./internal/forkrelease -run Live
 func TestLiveDownload(t *testing.T) {
 	if os.Getenv("USBRIDGE_LIVE_FORKRELEASE") == "" {
 		t.Skip("set USBRIDGE_LIVE_FORKRELEASE=1 to download from GitHub")
 	}
 	dir := t.TempDir()
-	// An older build already in place: the update path swaps it out whole.
+	// An older build already in place, in the dir that is also the host's
+	// config dir: the update replaces the build's files and nothing else.
 	old := PunktfunkDir(dir)
 	if err := os.MkdirAll(old, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(old, punktfunkBinaryName()), []byte("old"), 0o755)
 	os.WriteFile(filepath.Join(old, "VERSION"), []byte("v0-old\n"), 0o644)
-	os.WriteFile(filepath.Join(old, "stale-file"), []byte("x"), 0o644)
+	os.WriteFile(filepath.Join(old, "paired.json"), []byte("{}"), 0o644)
 	latest, err := LatestPunktfunkVersion(context.Background())
 	if err != nil || latest == "" {
 		t.Fatalf("latest = %q, %v", latest, err)
@@ -155,8 +190,8 @@ func TestLiveDownload(t *testing.T) {
 	if !PunktfunkStaged(dir) || PunktfunkStagedVersion(dir) != prep.Version || prep.Version != latest {
 		t.Fatalf("staged=%v version=%q want %q", PunktfunkStaged(dir), PunktfunkStagedVersion(dir), prep.Version)
 	}
-	if _, err := os.Stat(filepath.Join(old, "stale-file")); !os.IsNotExist(err) {
-		t.Fatal("the old build's files survived the swap")
+	if b, err := os.ReadFile(filepath.Join(old, "paired.json")); err != nil || string(b) != "{}" {
+		t.Fatalf("the host's config did not survive the update: %q, %v", b, err)
 	}
 	if fi, err := os.Stat(filepath.Join(old, punktfunkBinaryName())); err != nil || fi.Size() < 1<<20 {
 		t.Fatalf("staged binary looks wrong: %v", err)
