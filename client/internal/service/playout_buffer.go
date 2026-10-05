@@ -6,14 +6,20 @@ import "sync/atomic"
 // (VideoDepacketizer.c's playoutDelayForFrame) holds each frame back by a
 // multiple of the measured network jitter before decoding it. It smooths
 // cadence on a jittery link, but it is pure added latency, and the official
-// Moonlight clients have nothing like it -- so on Windows it is opt-in from
-// the video settings dialog and off by default. See
-// docs/WINDOWS_DECODE_PIPELINE.md for the measurements behind this.
+// Moonlight clients have nothing like it -- so it is opt-in from the video
+// settings dialog wherever PlayoutBufferSupported() is true (Windows,
+// macOS, Linux, iOS, Android -- see each platform's own
+// playout_buffer_supported_*.go). The zero value here is off, matching the
+// desktop default; playout_buffer_default_mobile.go flips mobile's default
+// to on at init. See docs/WINDOWS_DECODE_PIPELINE.md for the measurements
+// behind the buffer itself.
 var playoutBufferEnabled atomic.Bool
 
 // SetPlayoutBufferEnabled turns the buffer on or off for the next stream
-// start (the fork reads it once per session). The video settings dialog
-// applies this from Apply/Start; Cancel/close leaves the previous state.
+// start (the fork reads USBRIDGE_PLAYOUT_BUFFER, driven by this, once per
+// session -- see moonlight_cgo_wrapper.go/moonlight_cgo_windows.go/
+// moonlight_cgo_android.go). The video settings dialog applies this from
+// Apply/Start; Cancel/close leaves the previous state.
 func SetPlayoutBufferEnabled(enabled bool) {
 	playoutBufferEnabled.Store(enabled)
 }

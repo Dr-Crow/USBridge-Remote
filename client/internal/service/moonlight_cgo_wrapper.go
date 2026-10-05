@@ -338,6 +338,25 @@ func (w *MoonlightCgoWrapper) StartStream(
 			return
 		}
 
+		// moonlight-common-c's playout (jitter) buffer -- see
+		// playout_buffer.go's doc comment -- is driven by this env var on
+		// every platform (VideoDepacketizer.c re-reads it once per stream
+		// start, same mechanism moonlight_cgo_windows.go and
+		// moonlight_cgo_android.go use). This file covers macOS/iOS/Linux;
+		// PlayoutBufferSupported() is true on all three (see
+		// playout_buffer_supported_darwin.go/_ios.go/_linux.go) but the
+		// guard is kept in case a future platform added to this shared
+		// wrapper doesn't have a working DIRECT_SUBMIT delay path yet.
+		// os.Setenv reaches the C runtime's getenv() here because this is a
+		// cgo build (runtime/cgo/setenv.go).
+		if PlayoutBufferSupported() {
+			if PlayoutBufferEnabled() {
+				os.Setenv("USBRIDGE_PLAYOUT_BUFFER", "1")
+			} else {
+				os.Setenv("USBRIDGE_PLAYOUT_BUFFER", "0")
+			}
+		}
+
 		ret := C.do_li_start(
 			host, appVer, gfeVer, rtsp,
 			C.int(serverCodecModeSupport), C.int(videoFormat),

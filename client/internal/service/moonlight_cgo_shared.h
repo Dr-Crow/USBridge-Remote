@@ -273,9 +273,12 @@ int do_li_start(
     // counters diverging live) -- something about this Metal/CVDisplayLink
     // path doesn't tolerate decode happening off its accustomed thread, and
     // it wasn't safe to leave running while diagnosing further. Keep
-    // CAPABILITY_DIRECT_SUBMIT set until that's understood; the jitter
-    // buffer code is left in place (harmless, unreachable while this flag
-    // is set) for whoever picks this back up.
+    // CAPABILITY_DIRECT_SUBMIT set permanently -- the jitter buffer was
+    // later (v7) reworked to apply its delay directly on this path instead
+    // (reassembleFrame() in VideoDepacketizer.c, right on this receive
+    // thread), so it works without needing the abandoned thread split.
+    // Driven by USBRIDGE_PLAYOUT_BUFFER, same as Windows -- see
+    // playout_buffer_supported_darwin.go and moonlight_cgo_wrapper.go.
     dr.capabilities = CAPABILITY_DIRECT_SUBMIT | CAPABILITY_REFERENCE_FRAME_INVALIDATION_AVC | CAPABILITY_REFERENCE_FRAME_INVALIDATION_HEVC | CAPABILITY_REFERENCE_FRAME_INVALIDATION_AV1;
 
     AUDIO_RENDERER_CALLBACKS ar;
