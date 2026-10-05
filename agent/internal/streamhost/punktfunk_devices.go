@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 )
 
@@ -22,11 +23,18 @@ import (
 // this client" -- confirmed live, and fixed by a user-level .desktop naming
 // the binary's real path.
 func (b *punktfunkBackend) ListCaptureDevices() []CaptureDevice {
+	// list-monitors is a Linux command: elsewhere punktfunk-host answers
+	// "unknown command". On Windows every call of it also flashed a console
+	// window, and the GUI asks for devices every few seconds.
+	if runtime.GOOS != "linux" {
+		return nil
+	}
 	bin := b.binaryPath()
 	if bin == "" {
 		return nil
 	}
 	cmd := exec.Command(bin, "list-monitors")
+	configureProcess(cmd)
 	cmd.Env = append(os.Environ(), punktfunkConfigDirEnv+"="+b.punktfunkConfigDir())
 	out, err := cmd.Output()
 	if err != nil {

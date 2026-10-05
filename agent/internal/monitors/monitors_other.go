@@ -14,3 +14,6 @@ func ProcessMonitor(pid int) (string, bool) { return "", false }
 
 // MoveProcessWindows is only implemented on Windows.
 func MoveProcessWindows(pid int, m Monitor) error { return ErrUnsupported }
+
+// GDINames is Windows-only.
+func GDINames() []string { return nil }

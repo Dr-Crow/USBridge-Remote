@@ -3,6 +3,7 @@ package controller
 import (
 	"fmt"
 	"image/color"
+	"strings"
 
 	"usbridge-client/internal/gui/design"
 	"usbridge-client/internal/gui/i18n"
@@ -219,6 +220,28 @@ func (dw *DiskWidget) handleToggleVirtualDisplayPrimary(id string, primary bool)
 			fyne.Do(func() {
 				view.ShowErrorDialog(fmt.Errorf(i18n.Current.VirtualDisplayPrimaryFailed, err), dw.window)
 			})
+			return
+		}
+		dw.loadVideoDevices()
+	}()
+}
+
+// handleToggleMonitorPower switches one of the agent's monitors on or off
+// (the dashboard's "On" switch).
+func (dw *DiskWidget) handleToggleMonitorPower(monitorID string, on bool) {
+	if dw.usbClient == nil {
+		return
+	}
+	go func() {
+		dw.userOperationInFlight.Store(true)
+		defer dw.userOperationInFlight.Store(false)
+		if err := dw.usbClient.SetMonitorEnabled(monitorID, on); err != nil {
+			logrus.Errorf("Failed to switch the monitor: %v", err)
+			msg := fmt.Errorf(i18n.Current.MonitorPowerFailed, err)
+			if strings.Contains(err.Error(), "monitor_last_display") || strings.Contains(err.Error(), "only active display") {
+				msg = fmt.Errorf("%s", i18n.Current.MonitorPowerLastDisplay)
+			}
+			fyne.Do(func() { view.ShowErrorDialog(msg, dw.window) })
 			return
 		}
 		dw.loadVideoDevices()
