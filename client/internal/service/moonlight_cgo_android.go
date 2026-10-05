@@ -835,6 +835,17 @@ func (w *MoonlightCgoWrapper) StartStream(url string, key []byte, appV, gfeV str
 		if waited := time.Since(lockWaitStart); waited > 5*time.Millisecond {
 			logrus.Infof("🌕 [Moonlight/CGO/Android] do_li_start waited %v for previous call to release liStartCallMu", waited)
 		}
+		// moonlight-common-c's playout (jitter) buffer -- see
+		// playout_buffer.go and playout_buffer_default_mobile.go -- is
+		// driven by this env var on every platform (VideoDepacketizer.c
+		// re-reads it once per stream start). Same mechanism as
+		// moonlight_cgo_wrapper.go's macOS/Linux/iOS wiring.
+		if PlayoutBufferEnabled() {
+			os.Setenv("USBRIDGE_PLAYOUT_BUFFER", "1")
+		} else {
+			os.Setenv("USBRIDGE_PLAYOUT_BUFFER", "0")
+		}
+
 		callStart := time.Now()
 		ret := C.do_li_start(cHost, cAppV, cGfeV, cRtsp,
 			C.int(codec), C.int(videoFormat), C.int(width), C.int(height), C.int(fps), C.int(bit),
