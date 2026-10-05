@@ -427,6 +427,10 @@ type SystemDevice struct {
 	Index       int    `json:"index,omitempty"`
 	Connected   bool   `json:"connected"`
 	Description string `json:"description"`
+	// Primary: virtual displays only -- whether the agent makes it the
+	// primary display (taskbar and new windows open there). Nil from agents
+	// that don't support it.
+	Primary *bool `json:"primary,omitempty"`
 }
 
 // AudioStartRequest request to start audio capture.

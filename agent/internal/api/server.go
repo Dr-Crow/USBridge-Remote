@@ -75,6 +75,11 @@ type Application interface {
 	// with PyroWave, which takes them on any GPU it runs on -- independent of
 	// the HEVC encoder's Color444Status/HdrStatus.
 	PyroWaveColorStatus() (color444 bool, hdr bool)
+	// VirtualDisplayPrimary / SetVirtualDisplayPrimary: whether the virtual
+	// monitor is made the primary display; see
+	// streamhost.Backend.SetVirtualDisplayPrimary.
+	VirtualDisplayPrimary() bool
+	SetVirtualDisplayPrimary(primary bool) (live bool, err error)
 	// VirtualDisplaySupported reports whether the current stream backend
 	// supports native virtual displays.
 	VirtualDisplaySupported() bool
@@ -223,6 +228,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/video/set_device", sec.LimitPolling(s.videoSetDevice))
 	mux.HandleFunc("POST /api/video/virtual_displays", sec.LimitPolling(s.virtualDisplayCreate))
 	mux.HandleFunc("DELETE /api/video/virtual_displays/{id}", sec.LimitPolling(s.virtualDisplayDelete))
+	mux.HandleFunc("POST /api/video/virtual_displays/{id}/primary", sec.LimitPolling(s.virtualDisplaySetPrimary))
 	mux.HandleFunc("/api/screen", sec.LimitPolling(s.screen))
 	mux.HandleFunc("GET /api/bench/status", sec.LimitPolling(s.benchStatus))
 	mux.HandleFunc("POST /api/bench/backend", sec.LimitPolling(s.benchBackend))
@@ -1042,7 +1048,11 @@ func (s *Server) videoDevices(w http.ResponseWriter, r *http.Request) {
 		if cur := s.app.SunshineOutputName(); strings.HasPrefix(cur, "virtual:") {
 			s.addVirtualEntryLocked(cur)
 		}
-		devices = append(devices, s.virtualDisplays...)
+		primary := s.app.VirtualDisplayPrimary()
+		for _, vd := range s.virtualDisplays {
+			vd.Primary = &primary
+			devices = append(devices, vd)
+		}
 		s.virtMu.Unlock()
 	}
 
@@ -1058,6 +1068,10 @@ func (s *Server) virtualDisplayCreate(w http.ResponseWriter, r *http.Request) {
 		Width  int `json:"width"`
 		Height int `json:"height"`
 		FPS    int `json:"fps"`
+		// Primary: make it the primary display (taskbar and new windows go
+		// there). Omitted means yes -- a remote user can't see the
+		// physical screens.
+		Primary *bool `json:"primary,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.fail(w, http.StatusBadRequest, "invalid_json", err)
@@ -1070,11 +1084,40 @@ func (s *Server) virtualDisplayCreate(w http.ResponseWriter, r *http.Request) {
 
 	path := fmt.Sprintf("virtual:%dx%d@%d", req.Width, req.Height, req.FPS)
 
+	primary := req.Primary == nil || *req.Primary
+	if _, err := s.app.SetVirtualDisplayPrimary(primary); err != nil {
+		log.Printf("[api] virtual display create: primary=%v not applied: %v", primary, err)
+	}
+
 	s.virtMu.Lock()
 	vd := s.addVirtualEntryLocked(path)
 	s.virtMu.Unlock()
 
 	s.ok(w, "virtual_display_created", vd)
+}
+
+// virtualDisplaySetPrimary turns "the virtual monitor is the primary display"
+// on or off: saved for the next start and applied to the live virtual monitor
+// right away (no stream restart). The choice covers every virtual display
+// entry -- only one exists at a time.
+func (s *Server) virtualDisplaySetPrimary(w http.ResponseWriter, r *http.Request) {
+	if !s.app.VirtualDisplaySupported() {
+		s.fail(w, http.StatusBadRequest, "virtual_displays_unsupported", nil)
+		return
+	}
+	var req struct {
+		Primary bool `json:"primary"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.fail(w, http.StatusBadRequest, "invalid_json", err)
+		return
+	}
+	live, err := s.app.SetVirtualDisplayPrimary(req.Primary)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, "virtual_display_primary_failed", err)
+		return
+	}
+	s.ok(w, "virtual_display_primary", map[string]any{"primary": req.Primary, "applied_live": live})
 }
 
 func (s *Server) virtualDisplayDelete(w http.ResponseWriter, r *http.Request) {

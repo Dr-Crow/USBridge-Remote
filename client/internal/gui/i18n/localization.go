@@ -62,6 +62,10 @@ type LocalizedStrings struct {
 	AddVirtualDisplayTitle            string
 	AddVirtualDisplaySubtitle         string
 	DeleteVirtualDisplayConfirm       string
+	VirtualDisplayPrimary             string
+	VirtualDisplayPrimaryHint         string
+	VirtualDisplayPrimaryToggle       string
+	VirtualDisplayPrimaryFailed       string
 	TailscaleRedirectHint             string
 	AutoRegistrationBadge             string
 	ConnectionBadgeUnknown            string
@@ -721,6 +725,10 @@ func EN() *LocalizedStrings {
 		AddVirtualDisplayTitle:            "Add virtual display",
 		AddVirtualDisplaySubtitle:         "Pick a preset or enter a custom resolution for the video pipe.",
 		DeleteVirtualDisplayConfirm:       "Remove this virtual display?",
+		VirtualDisplayPrimary:             "Make it the main display",
+		VirtualDisplayPrimaryHint:         "The taskbar and new windows open on it. Turn it off any time with the display's Main switch.",
+		VirtualDisplayPrimaryToggle:       "Main",
+		VirtualDisplayPrimaryFailed:       "Couldn't switch the main display: %v",
 		TailscaleRedirectHint:             "After connection, the redirect will open on the web.",
 		AutoRegistrationBadge:             "AUTO-REGISTRATION",
 		ConnectionBadgeUnknown:            "Unknown",
@@ -1371,6 +1379,10 @@ func ES() *LocalizedStrings {
 	locale.AddVirtualDisplayTitle = "Agregar display virtual"
 	locale.AddVirtualDisplaySubtitle = "Elige un preset o una resolucion personalizada para el video pipe."
 	locale.DeleteVirtualDisplayConfirm = "Quitar este display virtual?"
+	locale.VirtualDisplayPrimary = "Hacerla la pantalla principal"
+	locale.VirtualDisplayPrimaryHint = "La barra de tareas y las ventanas nuevas se abren en ella. Desactivalo cuando quieras con el interruptor Principal."
+	locale.VirtualDisplayPrimaryToggle = "Principal"
+	locale.VirtualDisplayPrimaryFailed = "No se pudo cambiar la pantalla principal: %v"
 	locale.TailscaleRedirectHint = "Tras conectar, la redireccion se abrira en el navegador."
 	locale.AutoRegistrationBadge = "AUTO-REGISTRO"
 	locale.QRScanSuccess = "Codigo QR escaneado"
@@ -1762,6 +1774,10 @@ func UKProper() *LocalizedStrings {
 	locale.AddVirtualDisplayTitle = "Додати віртуальний дисплей"
 	locale.AddVirtualDisplaySubtitle = "Оберіть пресет або свою роздільність для video pipe."
 	locale.DeleteVirtualDisplayConfirm = "Прибрати цей віртуальний дисплей?"
+	locale.VirtualDisplayPrimary = "Зробити основним дисплеєм"
+	locale.VirtualDisplayPrimaryHint = "Панель завдань і нові вікна відкриваються на ньому. Вимкнути можна будь-коли перемикачем «Основний»."
+	locale.VirtualDisplayPrimaryToggle = "Основний"
+	locale.VirtualDisplayPrimaryFailed = "Не вдалося змінити основний дисплей: %v"
 	locale.TailscaleRedirectHint = "Після конекту редірект відкриється в браузері."
 	locale.AutoRegistrationBadge = "АВТОРЕЄСТРАЦІЯ"
 	locale.QRScanSuccess = "QR-код відскановано"

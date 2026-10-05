@@ -1,12 +1,16 @@
 package streamhost
 
 import (
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -52,6 +56,64 @@ var rustshineAdminHTTPClient = &http.Client{
 	Transport: &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
 	},
+}
+
+// VirtualDisplayPrimary reports the saved "make the virtual monitor the
+// primary display" choice (sunshine.conf `virtual_display_primary`; on unless
+// turned off).
+func (b *rustshineBackend) VirtualDisplayPrimary() bool {
+	v := strings.ToLower(strings.TrimSpace(b.ConfigKey("virtual_display_primary")))
+	return v != "false" && v != "0" && v != "no" && v != "off"
+}
+
+// SetVirtualDisplayPrimary saves the choice for the next virtual monitor and
+// applies it to the live one through the streamer's admin API
+// (/admin/virtual-display/primary) -- no restart. live reports whether a
+// virtual monitor existed to apply it to.
+func (b *rustshineBackend) SetVirtualDisplayPrimary(primary bool) (live bool, err error) {
+	if err := b.SetConfigKey("virtual_display_primary", strconv.FormatBool(primary)); err != nil {
+		return false, err
+	}
+	b.mu.Lock()
+	adminPort := b.adminPort
+	b.mu.Unlock()
+	if adminPort <= 0 {
+		adminPort = 47990
+	}
+	body, _ := json.Marshal(map[string]bool{"primary": primary})
+	url := fmt.Sprintf("https://%s:%d/admin/virtual-display/primary", adminHost(), adminPort)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return false, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(b.AdminUser(), b.AdminPass())
+	// Re-moding the desktop takes a moment; the shared client's 2 s cap is
+	// for polling.
+	client := &http.Client{Timeout: 15 * time.Second, Transport: rustshineAdminHTTPClient.Transport}
+	resp, err := client.Do(req)
+	if err != nil {
+		// Saved for the next start even when the streamer isn't up.
+		return false, nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		// A streamer from before this switch existed.
+		return false, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return false, fmt.Errorf("streamer: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+	}
+	var out struct {
+		VirtualDisplay bool `json:"virtual_display"`
+		Primary        bool `json:"primary"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return false, err
+	}
+	log.Printf("[rustshine] virtual display primary=%v requested -> live=%v primary=%v", primary, out.VirtualDisplay, out.Primary)
+	return out.VirtualDisplay, nil
 }
 
 // fetchStatus hits gamestream-server's own /api/status admin route directly

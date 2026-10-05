@@ -134,6 +134,13 @@ type CodecProbe interface {
 	// license, HDR is free). Independent of Color444Status/HdrStatus, which
 	// are the HEVC encoder's. (false, false) on backends without PyroWave.
 	PyroWaveColorStatus() (color444 bool, hdr bool)
+	// VirtualDisplayPrimary / SetVirtualDisplayPrimary: whether the virtual
+	// monitor is made the primary display (taskbar and new windows go there).
+	// Saved for the next virtual monitor and applied to the live one; live
+	// reports whether one existed. Backends without it report true / do
+	// nothing.
+	VirtualDisplayPrimary() bool
+	SetVirtualDisplayPrimary(primary bool) (live bool, err error)
 	// VirtualDisplaySupported reports whether this backend supports native
 	// virtual displays (creation and streaming) without external physical monitors.
 	VirtualDisplaySupported() bool

@@ -328,3 +328,10 @@ func fetchServerCodecFlags(adminPort int) (flags int, ok bool) {
 
 	return info.ServerCodecModeSupport, true
 }
+
+// VirtualDisplayPrimary: making the virtual monitor primary is RustShine's
+// (see rustshineBackend.SetVirtualDisplayPrimary); nothing to switch here.
+func (b *sunshineBackend) VirtualDisplayPrimary() bool { return false }
+
+// SetVirtualDisplayPrimary: see VirtualDisplayPrimary.
+func (b *sunshineBackend) SetVirtualDisplayPrimary(bool) (bool, error) { return false, nil }

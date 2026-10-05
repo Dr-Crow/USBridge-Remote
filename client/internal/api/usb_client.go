@@ -1984,11 +1984,12 @@ func (c *USBClient) SaveScript(path, content string) error {
 	return nil
 }
 
-func (c *USBClient) AddVirtualDisplay(width, height, fps int) (*models.APIResponse, error) {
-	payload := map[string]int{
-		"width":  width,
-		"height": height,
-		"fps":    fps,
+func (c *USBClient) AddVirtualDisplay(width, height, fps int, primary bool) (*models.APIResponse, error) {
+	payload := map[string]any{
+		"width":   width,
+		"height":  height,
+		"fps":     fps,
+		"primary": primary,
 	}
 	bodyBytes, err := json.Marshal(payload)
 	if err != nil {
@@ -2006,6 +2007,28 @@ func (c *USBClient) AddVirtualDisplay(width, height, fps int) (*models.APIRespon
 		return nil, fmt.Errorf("API error: %s", apiResp.Message)
 	}
 	return &apiResp, nil
+}
+
+// SetVirtualDisplayPrimary turns "the virtual display is the primary
+// display" on or off; the agent applies it to the live virtual display right
+// away.
+func (c *USBClient) SetVirtualDisplayPrimary(id string, primary bool) error {
+	body, err := json.Marshal(map[string]bool{"primary": primary})
+	if err != nil {
+		return err
+	}
+	resp, err := c.makeRequest("POST", "/api/video/virtual_displays/"+url.PathEscape(id)+"/primary", body)
+	if err != nil {
+		return err
+	}
+	var apiResp models.APIResponse
+	if err := json.Unmarshal(resp, &apiResp); err != nil {
+		return fmt.Errorf("failed to parse response: %v", err)
+	}
+	if !apiResp.Success {
+		return fmt.Errorf("API error: %s", apiResp.Message)
+	}
+	return nil
 }
 
 func (c *USBClient) RemoveVirtualDisplay(id string) (*models.APIResponse, error) {

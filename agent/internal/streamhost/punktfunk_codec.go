@@ -89,3 +89,10 @@ func (b *punktfunkBackend) VirtualDisplaySupported() bool { return true }
 func (b *punktfunkBackend) RawHIDSupported() bool {
 	return streamerHasUSBBridge(b.binaryPath(), "usbridge-bridge", nil)
 }
+
+// VirtualDisplayPrimary: making the virtual monitor primary is RustShine's
+// (see rustshineBackend.SetVirtualDisplayPrimary); nothing to switch here.
+func (b *punktfunkBackend) VirtualDisplayPrimary() bool { return false }
+
+// SetVirtualDisplayPrimary: see VirtualDisplayPrimary.
+func (b *punktfunkBackend) SetVirtualDisplayPrimary(bool) (bool, error) { return false, nil }
