@@ -1394,11 +1394,7 @@ func (w *Window) ShowAndRun(onClose func()) {
 				w.usbAccessCheck.requestDone()
 				return
 			case "darwin":
-				hint := w.usbLastStatus.DriverHint
-				if hint == "" {
-					hint = "Plug in the USBridge USB/IP dongle"
-				}
-				showErrorDialog(fmt.Errorf("%s", hint), win)
+				w.showUSBDongleInfoDialog(win)
 				w.usbAccessCheck.requestDone()
 				return
 			}

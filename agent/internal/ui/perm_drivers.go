@@ -4,12 +4,22 @@ import (
 	"net/url"
 	"runtime"
 
+	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/widget"
+
+	"usbridge_agent/internal/ui/design"
 	"usbridge_agent/internal/usbpass"
 )
 
 // usbipWin2ReleasesURL is where the Windows USB Passthrough "Download"
 // button sends the user: usbip-win2 ships its own signed installer.
 const usbipWin2ReleasesURL = "https://github.com/vadimgrn/usbip-win2/releases/latest"
+
+// usbridgeCreativeProURL is the USBridge marketing site's creative/pro
+// section -- stylus pressure/tilt, color accuracy -- linked from the macOS
+// dongle info dialog below instead of just explaining the technical cause.
+const usbridgeCreativeProURL = "https://www.usbridge.io/#creative-pro-graphics"
 
 // usbPermGranted is the USB Passthrough chip's tick: on Linux the one-time
 // polkit attach grant, on Windows whether usbip-win2's drivers are
@@ -75,4 +85,38 @@ func (w *Window) openUSBIPDriverDownload() {
 	if parsed, err := url.Parse(usbipWin2ReleasesURL); err == nil {
 		_ = w.app.OpenURL(parsed)
 	}
+}
+
+// showUSBDongleInfoDialog is the macOS USB Passthrough chip's "Info" tap
+// when no hardware dongle is plugged in yet. Replaces a bare
+// showErrorDialog(driverHint) -- a flat "plug in the dongle" error string --
+// with the same branded info-dialog chrome showWebClientInfoDialog uses:
+// a short explanation of why macOS needs a physical dongle here at all,
+// plus a CTA to the site's creative/pro section instead of leaving the
+// user to wonder what the dongle is even for.
+func (w *Window) showUSBDongleInfoDialog(parent fyne.Window) {
+	if parent == nil {
+		return
+	}
+
+	var popup *widget.PopUp
+	closeDialog := func() {
+		if popup != nil {
+			popup.Hide()
+		}
+	}
+
+	body := widget.NewLabel(loc().USBDongleInfoBody)
+	body.Wrapping = fyne.TextWrapWord
+	body.Alignment = fyne.TextAlignLeading
+
+	seeBtn := newDialogCTA(loc().USBDongleInfoCTA, func() {
+		if parsed, err := url.Parse(usbridgeCreativeProURL); err == nil && w.app != nil {
+			_ = w.app.OpenURL(parsed)
+		}
+	})
+
+	footer := container.NewCenter(seeBtn)
+	panel := newBrandedDialogPanelInsets(loc().USBDongleInfoTitle, statusDialogWidth, 20, 10, wrapDialogLabel(body, 11, design.ColorMutedOlive), footer, closeDialog)
+	popup = showOverlayPopup(parent, overlayPopupSpec{Panel: panel})
 }

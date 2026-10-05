@@ -69,7 +69,15 @@ type LocalizedStrings struct {
 	// USBHardwareDongle is the USB Passthrough chip's granted-state label on
 	// macOS specifically, when a physical USB/IP dongle is plugged in and
 	// working -- "HW USB", not translated (a technical badge, not prose).
-	USBHardwareDongle    string
+	USBHardwareDongle string
+	// USBDongleInfoTitle/Body/CTA: the macOS "Info" tap's dialog (no dongle
+	// plugged in yet) -- explains why a hardware dongle exists at all
+	// (macOS has no USB/IP driver of its own) and points at a live example
+	// instead of just stating the technical cause, see
+	// perm_drivers.go's showUSBDongleInfoDialog.
+	USBDongleInfoTitle   string
+	USBDongleInfoBody    string
+	USBDongleInfoCTA     string
 	VirtualDisplayAccess string
 	InstallUSBDriver     string
 	GetUSBIPDriver       string
@@ -380,6 +388,9 @@ func EN() *LocalizedStrings {
 		USBPassthrough:       "USB Passthrough Driver",
 		USBAccess:            "USB Passthrough",
 		USBHardwareDongle:    "HW USB",
+		USBDongleInfoTitle:   "USB Hardware Passthrough",
+		USBDongleInfoBody:    "macOS has no USB/IP driver of its own, so this works through a small hardware dongle instead of software. Plug one into this Mac and a USB device from the other side of the stream -- a graphics tablet, for example -- shows up here with full pressure and tilt, just like it were connected locally.",
+		USBDongleInfoCTA:     "See It In Action",
 		VirtualDisplayAccess: "Virtual Display",
 		InstallUSBDriver:     "Install USB Driver",
 		GetUSBIPDriver:       "Get USB/IP Driver",
