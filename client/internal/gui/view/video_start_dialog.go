@@ -95,6 +95,13 @@ type VideoStartDialog struct {
 	// hdrAgentAvailable: the agent offers HDR regardless of whether this
 	// client can display it -- only picks which "unavailable" hint to show.
 	hdrAgentAvailable bool
+	// The same two upgrades with PyroWave: the host offers them on any GPU
+	// that encodes PyroWave (models.VideoInfoData.PyroWave*Available), and
+	// this client must decode them (service.PyroWaveColorDecodeSupported).
+	// color444Available/hdrAvailable above are the H.265 halves.
+	pyroWave444Available      bool
+	pyroWaveHdrAvailable      bool
+	pyroWaveHdrAgentAvailable bool
 	// netGraphCheck/netGraphHint: the TF2 net_graph-style live HUD
 	// (client/internal/service/net_graph.go) -- draft until Apply/Start,
 	// same as AI Vision. Only built/shown when service.NetGraphSupported()
@@ -1703,19 +1710,19 @@ func (vsd *VideoStartDialog) createInterface() {
 	// videoDialogWrapText.SetSpans is what actually fills it in, called by
 	// refreshModeUI before this dialog is ever shown.
 	vsd.color444Check = newVideoDialogCheckbox(false, func(on bool) {
-		if on && vsd.selectedModeID() != models.VideoModeH265 {
-			vsd.setSelectedModeID(models.VideoModeH265)
+		if on {
+			vsd.switchToColorCodec(vsd.color444AppliesTo)
 		}
 	})
 	vsd.color444Check.OnTapWhileDisabled = func() {
-		if !vsd.color444Available {
+		if !vsd.color444Available && !vsd.pyroWave444Available {
 			ShowInfoDialog(i18n.Current.Color444, i18n.Current.Color444UnavailableMessage, vsd.parent)
 			return
 		}
-		if vsd.selectedModeID() == models.VideoModeH265 {
+		if vsd.color444AppliesTo(vsd.selectedModeID()) {
 			return
 		}
-		vsd.setSelectedModeID(models.VideoModeH265)
+		vsd.switchToColorCodec(vsd.color444AppliesTo)
 		vsd.color444Check.SetChecked(true)
 	}
 	vsd.color444Hint = newVideoDialogWrapText(videoDialogToggleDescWidthFor(hintPanelW), videoDialogHintTextSize, true)
@@ -1736,23 +1743,23 @@ func (vsd *VideoStartDialog) createInterface() {
 	// so hdrAvailable here only ever reflects hardware capability, never a
 	// license -- see hdrRow's badge below for the UI-side consequence.
 	vsd.hdrCheck = newVideoDialogCheckbox(false, func(on bool) {
-		if on && vsd.selectedModeID() != models.VideoModeH265 {
-			vsd.setSelectedModeID(models.VideoModeH265)
+		if on {
+			vsd.switchToColorCodec(vsd.hdrAppliesTo)
 		}
 	})
 	vsd.hdrCheck.OnTapWhileDisabled = func() {
-		if !vsd.hdrAvailable {
+		if !vsd.hdrAvailable && !vsd.pyroWaveHdrAvailable {
 			msg := i18n.Current.HdrUnavailableMessage
-			if vsd.hdrAgentAvailable {
+			if vsd.hdrAgentAvailable || vsd.pyroWaveHdrAgentAvailable {
 				msg = i18n.Current.HdrClientUnsupportedHint
 			}
 			ShowInfoDialog(i18n.Current.Hdr, msg, vsd.parent)
 			return
 		}
-		if vsd.selectedModeID() == models.VideoModeH265 {
+		if vsd.hdrAppliesTo(vsd.selectedModeID()) {
 			return
 		}
-		vsd.setSelectedModeID(models.VideoModeH265)
+		vsd.switchToColorCodec(vsd.hdrAppliesTo)
 		vsd.hdrCheck.SetChecked(true)
 	}
 	vsd.hdrHint = newVideoDialogWrapText(videoDialogToggleDescWidthFor(hintPanelW), videoDialogHintTextSize, true)
@@ -2013,20 +2020,73 @@ func (vsd *VideoStartDialog) createInterface() {
 		},
 	})
 }
+
+// color444AppliesTo: 4:4:4 can be streamed with codec modeID -- H.265 when
+// the host's HEVC encoder offers it, PyroWave when the host offers it there
+// and this client decodes it.
+func (vsd *VideoStartDialog) color444AppliesTo(modeID string) bool {
+	switch modeID {
+	case models.VideoModeH265:
+		return vsd.color444Available
+	case models.VideoModePyroWave:
+		return vsd.pyroWave444Available
+	}
+	return false
+}
+
+// hdrAppliesTo: HDR can be streamed with codec modeID (see color444AppliesTo).
+func (vsd *VideoStartDialog) hdrAppliesTo(modeID string) bool {
+	switch modeID {
+	case models.VideoModeH265:
+		return vsd.hdrAvailable
+	case models.VideoModePyroWave:
+		return vsd.pyroWaveHdrAvailable
+	}
+	return false
+}
+
+// switchToColorCodec: a color checkbox was ticked on a codec it doesn't apply
+// to -- move to one it does (H.265 first, then PyroWave), and keep the other
+// color option only where the new codec also carries it (refreshModeUI).
+func (vsd *VideoStartDialog) switchToColorCodec(applies func(string) bool) {
+	if applies(vsd.selectedModeID()) {
+		return
+	}
+	for _, m := range []string{models.VideoModeH265, models.VideoModePyroWave} {
+		if applies(m) && vsd.modeOffered(m) {
+			vsd.setSelectedModeID(m)
+			return
+		}
+	}
+}
+
+// modeOffered: codec modeID is one of the agent's stream modes in this dialog.
+func (vsd *VideoStartDialog) modeOffered(modeID string) bool {
+	for _, m := range vsd.streamModes {
+		if m.ID == modeID {
+			return true
+		}
+	}
+	return false
+}
+
 func (vsd *VideoStartDialog) Configure(info *models.VideoInfoData, defaultWidth, defaultHeight, defaultFPS int, defaultBitrate string) {
 	vsd.streamModes = nil
 	vsd.captureModes = nil
 	vsd.resolutionLabels = make(map[string]models.VideoCaptureMode)
 	vsd.resolutionHints = make(map[string]string)
 	vsd.color444Available = info != nil && info.Color444Available
-	if !vsd.color444Available {
-		vsd.color444Check.SetChecked(false)
-	}
 	// Both ends must do HDR: the agent encodes it (hardware + license), and
 	// this client must be able to display it (service.HdrDisplaySupported).
 	vsd.hdrAgentAvailable = info != nil && info.HdrAvailable
 	vsd.hdrAvailable = vsd.hdrAgentAvailable && service.HdrDisplaySupported()
-	if !vsd.hdrAvailable {
+	vsd.pyroWave444Available = info != nil && info.PyroWaveColor444Available && service.PyroWaveColorDecodeSupported(true, false)
+	vsd.pyroWaveHdrAgentAvailable = info != nil && info.PyroWaveHdrAvailable
+	vsd.pyroWaveHdrAvailable = vsd.pyroWaveHdrAgentAvailable && service.HdrDisplaySupported() && service.PyroWaveColorDecodeSupported(false, true)
+	if !vsd.color444Available && !vsd.pyroWave444Available {
+		vsd.color444Check.SetChecked(false)
+	}
+	if !vsd.hdrAvailable && !vsd.pyroWaveHdrAvailable {
 		vsd.hdrCheck.SetChecked(false)
 	}
 
@@ -2254,10 +2314,10 @@ func (vsd *VideoStartDialog) restoreAppliedToggles() {
 		vsd.vsyncCheck.SetChecked(vsd.appliedVSync)
 	}
 	if vsd.color444Check != nil {
-		vsd.color444Check.SetChecked(vsd.color444Available && vsd.appliedColor444)
+		vsd.color444Check.SetChecked((vsd.color444Available || vsd.pyroWave444Available) && vsd.appliedColor444)
 	}
 	if vsd.hdrCheck != nil {
-		vsd.hdrCheck.SetChecked(vsd.hdrAvailable && vsd.appliedHdr)
+		vsd.hdrCheck.SetChecked((vsd.hdrAvailable || vsd.pyroWaveHdrAvailable) && vsd.appliedHdr)
 	}
 }
 
@@ -2386,13 +2446,13 @@ func (vsd *VideoStartDialog) refreshModeUI() {
 	// On H.264 with hardware available, keep a normal empty checkbox — checking
 	// it switches to H.265.
 	switch {
-	case !vsd.color444Available:
+	case !vsd.color444Available && !vsd.pyroWave444Available:
 		vsd.color444Check.SetWarn(true)
 		vsd.color444Check.SetChecked(false)
 		vsd.color444Check.Disable()
 		vsd.color444Hint.SetSpans(videoDialogWrapSpan{Text: i18n.Current.Color444UnavailableHint, Color: videoDialogHintColor})
 		vsd.setColor444TitleEnabled(true)
-	case modeID != models.VideoModeH265:
+	case !vsd.color444AppliesTo(modeID):
 		vsd.color444Check.SetWarn(false)
 		vsd.color444Check.SetChecked(false)
 		vsd.color444Check.Enable()
@@ -2406,9 +2466,9 @@ func (vsd *VideoStartDialog) refreshModeUI() {
 	}
 
 	switch {
-	case !vsd.hdrAvailable:
+	case !vsd.hdrAvailable && !vsd.pyroWaveHdrAvailable:
 		hint := i18n.Current.HdrUnavailableHint
-		if vsd.hdrAgentAvailable {
+		if vsd.hdrAgentAvailable || vsd.pyroWaveHdrAgentAvailable {
 			hint = i18n.Current.HdrClientUnsupportedHint
 		}
 		vsd.hdrCheck.SetWarn(true)
@@ -2416,7 +2476,7 @@ func (vsd *VideoStartDialog) refreshModeUI() {
 		vsd.hdrCheck.Disable()
 		vsd.hdrHint.SetSpans(videoDialogWrapSpan{Text: hint, Color: videoDialogHintColor})
 		vsd.setHdrTitleEnabled(true)
-	case modeID != models.VideoModeH265:
+	case !vsd.hdrAppliesTo(modeID):
 		vsd.hdrCheck.SetWarn(false)
 		vsd.hdrCheck.SetChecked(false)
 		vsd.hdrCheck.Enable()
@@ -2660,8 +2720,8 @@ func (vsd *VideoStartDialog) handleStart() {
 		VideoMode:          vsd.selectedModeID(),
 		CapturePixelFormat: selectedMode.PixelFormat,
 		EnableVSync:        vsd.vsyncCheck.Checked,
-		Color444:           vsd.selectedModeID() == models.VideoModeH265 && vsd.color444Check.Checked,
-		Hdr:                vsd.selectedModeID() == models.VideoModeH265 && vsd.hdrCheck.Checked,
+		Color444:           vsd.color444AppliesTo(vsd.selectedModeID()) && vsd.color444Check.Checked,
+		Hdr:                vsd.hdrAppliesTo(vsd.selectedModeID()) && vsd.hdrCheck.Checked,
 		UpscaleMode:        vsd.upscaleLabels[vsd.upscaleSelect.Selected], // "" (unknown label) falls back to UpscaleModeBilinear's zero-value behavior
 	}
 

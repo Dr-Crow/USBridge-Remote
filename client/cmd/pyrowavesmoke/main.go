@@ -29,6 +29,8 @@ func main() {
 	fps := flag.Int("fps", 60, "stream fps")
 	bitrate := flag.Int("bitrate", 150000, "bitrate, kbps")
 	seconds := flag.Int("seconds", 10, "how long to stream")
+	color444 := flag.Bool("444", false, "ask for 4:4:4 (the host decides; see the negotiated format in the log)")
+	hdr := flag.Bool("hdr", false, "ask for HDR (only when this display is in HDR mode)")
 	flag.Parse()
 	logrus.SetLevel(logrus.InfoLevel)
 
@@ -38,6 +40,8 @@ func main() {
 	m.SetExpectedVideoSize(*width, *height)
 	m.SetFPS(*fps)
 	m.SetBitrate(*bitrate)
+	m.SetColor444(*color444)
+	m.SetHdr(*hdr)
 	var frames atomic.Int64
 	m.SetOnFrameReceived(func(image.Image) { frames.Add(1) })
 	m.SetOnError(func(err error) { logrus.Errorf("stream error: %v", err) })

@@ -210,6 +210,9 @@ func (b *sunshineBackend) Color444Status() (active bool, available bool) {
 
 // HdrStatus: mirrors Color444Status -- Sunshine never offers the RustShine
 // HDR color upgrade either, see CodecProbe's doc comment.
+// PyroWaveColorStatus: Sunshine has no PyroWave.
+func (b *sunshineBackend) PyroWaveColorStatus() (color444 bool, hdr bool) { return false, false }
+
 func (b *sunshineBackend) HdrStatus() (active bool, available bool) {
 	return false, false
 }

@@ -22,6 +22,12 @@
 // separate thread is needed. Every PyroWave frame is a keyframe; a frame with
 // a lost shard never reaches here (moonlight-common-c drops it).
 //
+// Color upgrades (VIDEO_FORMAT_PYROWAVE_444 / _HDR): the sequence header says
+// what a frame is -- chroma resolution (4:4:4 -> *_3PLANE_444 ring images) and
+// the transfer function (PQ -> 16-bit G16_B16_R16 planes, BT.2020; the wavelet
+// itself has no bit depth, the host fed it 10-bit samples). The renderer keys
+// its YCbCr conversion and the HDR10 swapchain off those formats.
+//
 // Own translation unit for the same cgo "multiple definition" reason as
 // vk_hwdev_bridge_windows.c.
 
@@ -67,6 +73,14 @@ static pyrowave_decoder g_pw_dec = NULL;
 static PwSlot g_pw_ring[PW_RING];
 static pyrowave_gpu_buffers g_pw_bufs[PW_RING];
 static int g_pw_w = 0, g_pw_h = 0, g_pw_next = 0;
+static int g_pw_444 = 0, g_pw_hdr = 0;
+static VkFormat g_pw_fmt = VK_FORMAT_UNDEFINED;
+
+// The ring image format for a stream: 8-bit SDR or 16-bit (PQ) planes, 4:2:0 or 4:4:4.
+static VkFormat pw_ring_format(int c444, int hdr) {
+    if (hdr) return c444 ? VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM : VK_FORMAT_G16_B16_R16_3PLANE_420_UNORM;
+    return c444 ? VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM : VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM;
+}
 static volatile LONG64 g_pw_frames = 0;
 static uint64_t g_pw_failures = 0;
 
@@ -198,6 +212,8 @@ static void pw_destroy_ring_and_decoder(void) {
         memset(s, 0, sizeof(*s));
     }
     g_pw_w = g_pw_h = 0;
+    g_pw_444 = g_pw_hdr = 0;
+    g_pw_fmt = VK_FORMAT_UNDEFINED;
     g_pw_next = 0;
 }
 
@@ -206,18 +222,37 @@ static int pw_ring_busy(void) {
     return 0;
 }
 
-static int pw_ensure_decoder(int w, int h) {
-    if (g_pw_dec && g_pw_w == w && g_pw_h == h) return 1;
+// pw_format_usable: the ring format can be written through R8/R16 plane
+// storage views and sampled through a YCbCr conversion on this GPU.
+static int pw_format_usable(VkFormat fmt) {
+    VkFormatProperties fp;
+    vkGetPhysicalDeviceFormatProperties(g_pw_phys, fmt, &fp);
+    if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) return 0;
+    VkImageFormatProperties ifp;
+    return vkGetPhysicalDeviceImageFormatProperties(g_pw_phys, fmt, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+               VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+               VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT, &ifp) == VK_SUCCESS;
+}
+
+static int pw_ensure_decoder(int w, int h, int c444, int hdr) {
+    if (g_pw_dec && g_pw_w == w && g_pw_h == h && g_pw_444 == c444 && g_pw_hdr == hdr) return 1;
     if (!pw_ensure_device()) return 0;
-    if (g_pw_dec && pw_ring_busy()) return 0; // size change: wait for the renderer to give the old slots back
+    if (g_pw_dec && pw_ring_busy()) return 0; // size/format change: wait for the renderer to give the old slots back
     pw_destroy_ring_and_decoder();
+    VkFormat fmt = pw_ring_format(c444, hdr);
+    if (!pw_format_usable(fmt)) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "pyrowave: this GPU cannot decode into %s%s planes", c444 ? "4:4:4" : "4:2:0", hdr ? " 16-bit" : "");
+        pw_log(msg);
+        return 0;
+    }
 
     pyrowave_decoder_create_info info;
     memset(&info, 0, sizeof(info));
     info.device = g_pw_dev;
     info.width = w;
     info.height = h;
-    info.chroma = PYROWAVE_CHROMA_SUBSAMPLING_420;
+    info.chroma = c444 ? PYROWAVE_CHROMA_SUBSAMPLING_444 : PYROWAVE_CHROMA_SUBSAMPLING_420;
     info.fragment_path = false;
     vk_video_queue_lock(); // creation may upload on queues the renderer also uses
     pyrowave_result r = pyrowave_decoder_create(&info, &g_pw_dec);
@@ -238,7 +273,7 @@ static int pw_ensure_decoder(int w, int h) {
         VkImageCreateInfo ici = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
         ici.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;
         ici.imageType = VK_IMAGE_TYPE_2D;
-        ici.format = VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM;
+        ici.format = fmt;
         ici.extent.width = w; ici.extent.height = h; ici.extent.depth = 1;
         ici.mipLevels = 1; ici.arrayLayers = 1; ici.samples = VK_SAMPLE_COUNT_1_BIT;
         ici.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -260,8 +295,8 @@ static int pw_ensure_decoder(int w, int h) {
             memset(v, 0, sizeof(*v));
             v->image = s->img;
             v->width = (uint32_t)w; v->height = (uint32_t)h;
-            v->image_format = VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM;
-            v->view_format = VK_FORMAT_R8_UNORM;
+            v->image_format = fmt;
+            v->view_format = hdr ? VK_FORMAT_R16_UNORM : VK_FORMAT_R8_UNORM;
             v->aspect = (VkImageAspectFlagBits)(VK_IMAGE_ASPECT_PLANE_0_BIT << pl);
             v->swizzle = VK_COMPONENT_SWIZZLE_IDENTITY;
             v->layout = VK_IMAGE_LAYOUT_GENERAL;
@@ -304,9 +339,12 @@ static int pw_ensure_decoder(int w, int h) {
         if (sr != VK_SUCCESS) goto fail;
     }
     g_pw_w = w; g_pw_h = h;
+    g_pw_444 = c444; g_pw_hdr = hdr;
+    g_pw_fmt = fmt;
     {
-        char msg[96];
-        snprintf(msg, sizeof(msg), "pyrowave: GPU decoder ready %dx%d (zero-copy, %d-image ring)", w, h, PW_RING);
+        char msg[160];
+        snprintf(msg, sizeof(msg), "pyrowave: GPU decoder ready %dx%d %s %s (zero-copy, %d-image ring)", w, h,
+                 c444 ? "4:4:4" : "4:2:0", hdr ? "HDR10 BT.2020 PQ 16-bit" : "BT.709 8-bit", PW_RING);
         pw_log(msg);
     }
     return 1;
@@ -331,19 +369,21 @@ int pyrowave_win_decode(const uint8_t *au, size_t len, void **out_img, int *out_
     InitOnceExecuteOnce(&g_pw_once, pw_init_once, NULL, NULL);
     // BitstreamSequenceHeader (pyrowave_common.hpp): width-1 in bits 0..13,
     // height-1 in 14..27, `extended` in bit 31 of word 0; chroma resolution in
-    // bit 26 of word 1. Same parse as pyrowave_decode_linux.c.
+    // bit 26 of word 1, transfer function (PQ) in bit 28. Same parse as
+    // pyrowave_decode_linux.c.
     if (len < 8) { pw_fail("too short", (int)len); return 0; }
     uint32_t w0 = (uint32_t)au[0] | (uint32_t)au[1] << 8 | (uint32_t)au[2] << 16 | (uint32_t)au[3] << 24;
     uint32_t w1 = (uint32_t)au[4] | (uint32_t)au[5] << 8 | (uint32_t)au[6] << 16 | (uint32_t)au[7] << 24;
     if (!(w0 >> 31)) { pw_fail("no sequence header", (int)len); return 0; }
     int w = (int)(w0 & 0x3fff) + 1;
     int h = (int)((w0 >> 14) & 0x3fff) + 1;
-    if ((w1 >> 26) & 1) { pw_fail("4:4:4 stream", (int)len); return 0; }
+    int c444 = (int)((w1 >> 26) & 1);
+    int hdr = (int)((w1 >> 28) & 1);
     if ((w | h) & 1) { pw_fail("odd size", w); return 0; }
 
     int ok = 0;
     EnterCriticalSection(&g_pw_cs);
-    if (!pw_ensure_decoder(w, h)) goto out;
+    if (!pw_ensure_decoder(w, h, c444, hdr)) goto out;
     PwSlot *slot = NULL;
     int si = 0;
     for (int i = 0; i < PW_RING; i++) {
@@ -367,15 +407,15 @@ int pyrowave_win_decode(const uint8_t *au, size_t len, void **out_img, int *out_
         goto release;
     }
     *out_img = (void *)slot->img;
-    *out_vkfmt = (int)VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM;
+    *out_vkfmt = (int)g_pw_fmt;
     *out_sem = (void *)g_pw_sem;
     *out_val = v;
     *out_w = w;
     *out_h = h;
     *out_slot = slot;
     if (InterlockedIncrement64(&g_pw_frames) == 1) {
-        char msg[96];
-        snprintf(msg, sizeof(msg), "pyrowave: first frame decoded on the GPU (%dx%d)", w, h);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "pyrowave: first frame decoded on the GPU (%dx%d%s%s)", w, h, c444 ? " 4:4:4" : "", hdr ? " HDR" : "");
         pw_log(msg);
     }
     ok = 1;
@@ -395,6 +435,14 @@ int pyrowave_win_supported(void) {
     int ok = pw_ensure_device();
     LeaveCriticalSection(&g_pw_cs);
     return ok;
+}
+
+// pyrowave_win_color_supported: whether this GPU can decode PyroWave 4:4:4
+// (c444) / HDR (hdr) streams -- the ring format must be storage-writable and
+// sampleable. Decides which VIDEO_FORMAT_PYROWAVE_* bits the client offers.
+int pyrowave_win_color_supported(int c444, int hdr) {
+    if (!pyrowave_win_supported()) return 0;
+    return pw_format_usable(pw_ring_format(c444, hdr));
 }
 
 uint64_t pyrowave_win_frames(void) {

@@ -4267,6 +4267,16 @@ func (a *App) HdrStatus() (active bool, available bool) {
 	return a.stream.HdrStatus()
 }
 
+// PyroWaveColorStatus: whether 4:4:4 / HDR can be offered with PyroWave
+// (streamhost.Backend.PyroWaveColorStatus; the license is already applied
+// by rust-shine).
+func (a *App) PyroWaveColorStatus() (color444 bool, hdr bool) {
+	if a.stream == nil {
+		return false, false
+	}
+	return a.stream.PyroWaveColorStatus()
+}
+
 // VirtualDisplaySupported reports whether the current stream backend
 // supports native virtual displays (without external physical monitors).
 func (a *App) VirtualDisplaySupported() bool {
