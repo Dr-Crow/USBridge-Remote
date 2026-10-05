@@ -326,6 +326,7 @@ func (b *punktfunkBackend) Start(adminPort int) error {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			log.Printf("[punktfunk] warning: could not create %s: %v", dir, err)
 		}
+		repairPunktfunkConfigDir(dir)
 	}
 
 	// Provisions the shared TLS identity (see shared_auth.go) into

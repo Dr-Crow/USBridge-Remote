@@ -11,3 +11,6 @@ import "os/exec"
 // on darwin (no macOS host build), so Start() never gets far enough to call
 // this.
 func afterStartPunktfunk(cmd *exec.Cmd) {}
+
+// repairPunktfunkConfigDir is Windows-only: see punktfunk_process_windows.go.
+func repairPunktfunkConfigDir(string) {}
