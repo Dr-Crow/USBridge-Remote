@@ -7,11 +7,14 @@ import (
 	"encoding/base64"
 	"fmt"
 	"image/png"
+	"strings"
 	"time"
 
 	"github.com/kbinani/screenshot"
 
 	"usbridge_agent/internal/api"
+	"usbridge_agent/internal/displaypower"
+	"usbridge_agent/internal/monitors"
 	"usbridge_agent/internal/streamhost"
 )
 
@@ -70,6 +73,7 @@ func (s *Service) Devices() []api.VideoDeviceInfo {
 	}
 	if len(devices) > 0 {
 		out := make([]api.VideoDeviceInfo, 0, len(devices))
+		gdi := make([]string, 0, len(devices))
 		for i, d := range devices {
 			name := d.DisplayName
 			out = append(out, api.VideoDeviceInfo{
@@ -80,8 +84,9 @@ func (s *Service) Devices() []api.VideoDeviceInfo {
 				Connected:      true,
 				SupportedModes: ModesForResolution(d.Width, d.Height),
 			})
+			gdi = append(gdi, d.GDIName)
 		}
-		return out
+		return withMonitorPower(out, gdi)
 	}
 
 	out := make([]api.VideoDeviceInfo, 0, screenshot.NumActiveDisplays())
@@ -94,6 +99,52 @@ func (s *Service) Devices() []api.VideoDeviceInfo {
 			Index:          i,
 			Connected:      true,
 			SupportedModes: GetDisplayModes(i),
+		})
+	}
+	// kbinani/screenshot indexes displays in EnumDisplayMonitors order.
+	return withMonitorPower(out, monitors.GDINames())
+}
+
+// withMonitorPower adds the on/off switch (displaypower) to the listed monitors -- gdi[i]
+// is out[i]'s GDI name, "" when unknown -- and lists the switched-off monitors after them,
+// so the client can switch them back on.
+func withMonitorPower(out []api.VideoDeviceInfo, gdi []string) []api.VideoDeviceInfo {
+	all, err := displaypower.List()
+	if err != nil {
+		return out
+	}
+	listed := map[string]bool{}
+	for i := range out {
+		if i >= len(gdi) || gdi[i] == "" {
+			continue
+		}
+		for _, m := range all {
+			if m.Active && strings.EqualFold(m.GDIName, gdi[i]) {
+				on := true
+				out[i].MonitorID, out[i].Enabled = m.ID, &on
+				listed[m.ID] = true
+				// The fallback's "Display N (WxH)" says nothing; the EDID name does.
+				if strings.HasPrefix(out[i].Name, "Display ") && m.Name != "" {
+					if j := strings.Index(out[i].Name, " ("); j >= 0 {
+						out[i].Name = m.Name + out[i].Name[j:]
+					}
+				}
+			}
+		}
+	}
+	for _, m := range all {
+		if m.Active || listed[m.ID] {
+			continue
+		}
+		off := false
+		out = append(out, api.VideoDeviceInfo{
+			Path:      "monitor:" + m.ID,
+			Name:      m.Name + " (off)",
+			Bus:       "dxgi",
+			Index:     len(out),
+			Connected: false,
+			MonitorID: m.ID,
+			Enabled:   &off,
 		})
 	}
 	return out

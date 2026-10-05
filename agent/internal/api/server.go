@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -21,6 +22,7 @@ import (
 
 	"usbridge_agent/internal/clipboard"
 	"usbridge_agent/internal/display"
+	"usbridge_agent/internal/displaypower"
 	"usbridge_agent/internal/hostload"
 	"usbridge_agent/internal/usbpass"
 	"usbridge_agent/internal/vdisplay"
@@ -229,6 +231,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/video/virtual_displays", sec.LimitPolling(s.virtualDisplayCreate))
 	mux.HandleFunc("DELETE /api/video/virtual_displays/{id}", sec.LimitPolling(s.virtualDisplayDelete))
 	mux.HandleFunc("POST /api/video/virtual_displays/{id}/primary", sec.LimitPolling(s.virtualDisplaySetPrimary))
+	mux.HandleFunc("POST /api/video/monitors/enabled", sec.LimitPolling(s.monitorSetEnabled))
 	mux.HandleFunc("/api/screen", sec.LimitPolling(s.screen))
 	mux.HandleFunc("GET /api/bench/status", sec.LimitPolling(s.benchStatus))
 	mux.HandleFunc("POST /api/bench/backend", sec.LimitPolling(s.benchBackend))
@@ -1094,6 +1097,35 @@ func (s *Server) virtualDisplayCreate(w http.ResponseWriter, r *http.Request) {
 	s.virtMu.Unlock()
 
 	s.ok(w, "virtual_display_created", vd)
+}
+
+// monitorSetEnabled switches a host monitor (physical, or the MttVDD virtual
+// monitor) on or off, like Windows' "Disconnect this display": its display path
+// is dropped or added, no elevation needed (displaypower). Switching off the
+// only active display is refused. Windows only.
+func (s *Server) monitorSetEnabled(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		MonitorID string `json:"monitor_id"`
+		Enabled   bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.MonitorID == "" {
+		s.fail(w, http.StatusBadRequest, "invalid_json", err)
+		return
+	}
+	err := displaypower.SetEnabled(req.MonitorID, req.Enabled)
+	switch {
+	case errors.Is(err, displaypower.ErrUnsupported):
+		s.fail(w, http.StatusNotImplemented, "monitor_power_unsupported", err)
+	case errors.Is(err, displaypower.ErrNotFound):
+		s.fail(w, http.StatusNotFound, "monitor_not_found", err)
+	case errors.Is(err, displaypower.ErrLastDisplay):
+		s.fail(w, http.StatusConflict, "monitor_last_display", err)
+	case err != nil:
+		s.fail(w, http.StatusInternalServerError, "monitor_power_failed", err)
+	default:
+		log.Printf("[api] monitor %s enabled=%v", req.MonitorID, req.Enabled)
+		s.ok(w, "monitor_enabled", map[string]any{"monitor_id": req.MonitorID, "enabled": req.Enabled})
+	}
 }
 
 // virtualDisplaySetPrimary turns "the virtual monitor is the primary display"

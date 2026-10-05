@@ -409,6 +409,9 @@ func (dw *DiskWidget) refreshDashboard() {
 				icon = view.DeviceDashboardCameraIconActive
 			}
 			var extras []fyne.CanvasObject
+			if t := dw.newDashboardMonitorPowerToggle(drive); t != nil {
+				extras = append(extras, t)
+			}
 			if drive.VideoDevice != nil && drive.VideoDevice.Bus == "virtual" {
 				if t := dw.newDashboardVirtualDisplayPrimaryToggle(drive); t != nil {
 					extras = append(extras, t)
@@ -1200,6 +1203,26 @@ func (dw *DiskWidget) newDashboardVideoSettingsButton(drive DriveItem) fyne.Canv
 		if dw.onVideoConfigRequested != nil {
 			dw.onVideoConfigRequested(deviceCopy.Path)
 		}
+	}, dw.dashboardVideoHover)
+	btn.SetDisabled(dw.controlsLocked())
+	return btn
+}
+
+// newDashboardMonitorPowerToggle is a monitor's "On" switch (Windows agents):
+// lit while the monitor is part of the remote desktop, tap to switch it off or
+// back on -- physical monitors and the virtual one alike. Nil when the agent
+// doesn't report it.
+func (dw *DiskWidget) newDashboardMonitorPowerToggle(drive DriveItem) fyne.CanvasObject {
+	if drive.VideoDevice == nil || drive.VideoDevice.MonitorID == "" || drive.VideoDevice.Enabled == nil {
+		return nil
+	}
+	id := drive.VideoDevice.MonitorID
+	on := *drive.VideoDevice.Enabled
+	btn := view.NewDeviceDashboardTextToggle(i18n.Current.MonitorPowerToggle, on, func() {
+		if dw.controlsLocked() {
+			return
+		}
+		dw.handleToggleMonitorPower(id, !on)
 	}, dw.dashboardVideoHover)
 	btn.SetDisabled(dw.controlsLocked())
 	return btn
