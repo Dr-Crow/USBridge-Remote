@@ -82,6 +82,7 @@ type TokenBackend interface {
 	DownloadRustShine(onProgress entitlement.ProgressFunc) error
 	CheckRustShineUpdateNow() error
 	CheckPunktfunkUpdateNow() error
+	CheckSunshineUpdateNow() error
 	SetStreamBackend(kind string) error
 	SetRustShineWebRTCEnabled(enabled bool) error
 
@@ -281,6 +282,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /token/download-rustshine", s.handleDownloadRustShine)
 	mux.HandleFunc("POST /token/check-rustshine-update", s.handleCheckRustShineUpdateNow)
 	mux.HandleFunc("POST /token/check-punktfunk-update", s.handleCheckPunktfunkUpdateNow)
+	mux.HandleFunc("POST /token/check-sunshine-update", s.handleCheckSunshineUpdateNow)
 	mux.HandleFunc("POST /token/set-stream-backend", s.handleSetStreamBackend)
 	mux.HandleFunc("POST /token/set-rustshine-webrtc-enabled", s.handleSetRustShineWebRTCEnabled)
 	mux.HandleFunc("GET /token/usb-driver-status", s.handleUSBPassthroughStatus)
@@ -744,6 +746,17 @@ func (s *Server) handleCheckPunktfunkUpdateNow(w http.ResponseWriter, r *http.Re
 	go func() {
 		if err := s.token.CheckPunktfunkUpdateNow(); err != nil {
 			logrus.WithError(err).Warn("punktfunk update check failed")
+		}
+	}()
+	writeJSON(w, http.StatusOK, struct{}{})
+}
+
+// handleCheckSunshineUpdateNow: the same for the Sunshine card
+// (SunshineUpdateInProgress/SunshineVersion/LastError).
+func (s *Server) handleCheckSunshineUpdateNow(w http.ResponseWriter, r *http.Request) {
+	go func() {
+		if err := s.token.CheckSunshineUpdateNow(); err != nil {
+			logrus.WithError(err).Warn("sunshine update check failed")
 		}
 	}()
 	writeJSON(w, http.StatusOK, struct{}{})

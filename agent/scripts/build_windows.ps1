@@ -4,8 +4,8 @@
     Builds usbridge_agent for Windows, driving MSYS2 UCRT64 entirely from PowerShell.
 
 .DESCRIPTION
-    build_windows.sh (the actual build logic: Go build, DLL bundling, Sunshine
-    staging) still runs inside the UCRT64 toolchain -- Go's cgo (needed for
+    build_windows.sh (the actual build logic: Go build, DLL bundling; Sunshine is
+    no longer bundled, the agent downloads it) still runs inside the UCRT64 toolchain -- Go's cgo (needed for
     Fyne/OpenGL) requires a GCC-compatible compiler, which on Windows means mingw-w64.
     This script just removes the manual steps around that: no more opening an "MSYS2
     UCRT64" terminal by hand and running pacman yourself. It installs MSYS2 itself (via

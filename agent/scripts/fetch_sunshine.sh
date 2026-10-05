@@ -12,9 +12,10 @@
 # bind_address -- and hands the client's USB devices to the USB broker (see
 # agent/internal/streamhost/usb_broker_bridge.go).
 #
-# macOS and Linux are built from source (the fork's master branch).
-# Windows still uses a prebuilt release from upstream (the feature is not
-# strictly needed on Windows where Moonlight normally connects over LAN).
+# macOS and Linux bundle it (a release asset, else a source build). Windows
+# doesn't any more: the agent downloads the fork's signed Windows release
+# itself (internal/forkrelease); fetch_sunshine_windows is left for local
+# experiments only.
 #
 # Env overrides:
 #   USBRIDGE_SKIP_SUNSHINE=1     skip bundling Sunshine entirely (offline/dev builds)
