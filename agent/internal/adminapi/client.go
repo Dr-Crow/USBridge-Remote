@@ -429,6 +429,10 @@ func (c *Client) CheckRustShineUpdateNow() error {
 	return c.do(http.MethodPost, "/token/check-rustshine-update", nil, nil)
 }
 
+func (c *Client) CheckPunktfunkUpdateNow() error {
+	return c.do(http.MethodPost, "/token/check-punktfunk-update", nil, nil)
+}
+
 func (c *Client) SetStreamBackend(kind string) error {
 	return c.do(http.MethodPost, "/token/set-stream-backend", map[string]string{"kind": kind}, nil)
 }
