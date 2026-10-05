@@ -4430,6 +4430,22 @@ func (a *App) PyroWaveColorStatus() (color444 bool, hdr bool) {
 	return a.stream.PyroWaveColorStatus()
 }
 
+// VirtualDisplayPrimary / SetVirtualDisplayPrimary: see
+// streamhost.Backend.SetVirtualDisplayPrimary.
+func (a *App) VirtualDisplayPrimary() bool {
+	if a.stream == nil {
+		return false
+	}
+	return a.stream.VirtualDisplayPrimary()
+}
+
+func (a *App) SetVirtualDisplayPrimary(primary bool) (live bool, err error) {
+	if a.stream == nil {
+		return false, fmt.Errorf("no stream backend")
+	}
+	return a.stream.SetVirtualDisplayPrimary(primary)
+}
+
 // VirtualDisplaySupported reports whether the current stream backend
 // supports native virtual displays (without external physical monitors).
 func (a *App) VirtualDisplaySupported() bool {

@@ -432,3 +432,6 @@ func TestClipboardWS_RequestRepliesWithCurrentClipboard(t *testing.T) {
 		t.Fatalf("request must not change the agent clipboard, got %+v", got)
 	}
 }
+
+func (s *stubApp) VirtualDisplayPrimary() bool                 { return false }
+func (s *stubApp) SetVirtualDisplayPrimary(bool) (bool, error) { return false, nil }

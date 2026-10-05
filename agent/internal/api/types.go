@@ -119,6 +119,9 @@ type VideoDeviceInfo struct {
 	Index          int                `json:"index"`
 	Connected      bool               `json:"connected"`
 	SupportedModes []VideoCaptureMode `json:"supported_modes,omitempty"`
+	// Primary: virtual displays only -- whether it is made the primary
+	// display (see Application.SetVirtualDisplayPrimary).
+	Primary *bool `json:"primary,omitempty"`
 }
 
 type LegacyDeviceInfo struct {

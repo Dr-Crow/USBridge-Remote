@@ -74,7 +74,11 @@ func (dw *DiskWidget) handleAddVirtualDisplay() {
 		},
 	)
 	presetRow := container.NewBorder(nil, nil, newVirtualDisplayFieldLabel("Preset"), nil, dropdown)
-	body := container.NewVBox(presetRow, customBox)
+	// On by default: the remote user can't see the physical screens, so
+	// windows opening there would be lost. Can be turned off later with the
+	// display's "Main" switch.
+	primaryRow, primaryChecked := view.NewOptionToggleRow(i18n.Current.VirtualDisplayPrimary, "", i18n.Current.VirtualDisplayPrimaryHint, 300, true, nil)
+	body := container.NewVBox(presetRow, customBox, primaryRow)
 
 	var closePopup func()
 	addBtn := newVirtualDisplayAddButton(func() {
@@ -93,7 +97,7 @@ func (dw *DiskWidget) handleAddVirtualDisplay() {
 		dw.userOperationInFlight.Store(true)
 		defer dw.userOperationInFlight.Store(false)
 
-		_, err := dw.usbClient.AddVirtualDisplay(w, h, f)
+		_, err := dw.usbClient.AddVirtualDisplay(w, h, f, primaryChecked())
 		if err != nil {
 			logrus.Errorf("Failed to add virtual display: %v", err)
 			view.ShowErrorDialog(fmt.Errorf("Failed to add virtual display: %v", err), dw.window)
@@ -199,6 +203,26 @@ func virtualDisplayDialogPanelSize(canvasSize fyne.Size, panel fyne.CanvasObject
 		h = maxH
 	}
 	return fyne.NewSize(w, h)
+}
+
+// handleToggleVirtualDisplayPrimary flips "the virtual display is the
+// primary display" (the dashboard's "Main" switch).
+func (dw *DiskWidget) handleToggleVirtualDisplayPrimary(id string, primary bool) {
+	if dw.usbClient == nil {
+		return
+	}
+	go func() {
+		dw.userOperationInFlight.Store(true)
+		defer dw.userOperationInFlight.Store(false)
+		if err := dw.usbClient.SetVirtualDisplayPrimary(id, primary); err != nil {
+			logrus.Errorf("Failed to switch the main display: %v", err)
+			fyne.Do(func() {
+				view.ShowErrorDialog(fmt.Errorf(i18n.Current.VirtualDisplayPrimaryFailed, err), dw.window)
+			})
+			return
+		}
+		dw.loadVideoDevices()
+	}()
 }
 
 func (dw *DiskWidget) handleDeleteVirtualDisplay(id string) {
