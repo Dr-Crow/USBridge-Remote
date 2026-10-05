@@ -391,6 +391,60 @@ PyroWave is a shader codec and has no fixed-function decoder.
 - At 150 Mbps and above, the Wi-Fi link drops packets ("Unrecoverable
   frame"). PyroWave's bitrates need a wired link or strong Wi-Fi.
 
+### Color modes: 4:4:4 and HDR
+
+A PyroWave stream can be 4:4:4, HDR, or both (see
+[COLOR_MODES.md](./COLOR_MODES.md#pyrowave)). The decoder reads each
+frame's sequence header and picks the ring format to match:
+
+| Stream | Ring image | Plane views | Renderer YCbCr model |
+|---|---|---|---|
+| 4:2:0 SDR | `G8_B8_R8_3PLANE_420` | R8 | BT.709 |
+| 4:4:4 SDR | `G8_B8_R8_3PLANE_444` | R8 | BT.709 |
+| 4:2:0 HDR | `G16_B16_R16_3PLANE_420` | R16 | BT.2020, HDR10 swapchain |
+| 4:4:4 HDR | `G16_B16_R16_3PLANE_444` | R16 | BT.2020, HDR10 swapchain |
+
+- **Bit depth.** The wavelet itself has no bit depth. The host feeds it the
+  tonemap's 10-bit samples, as P010-style values in R16. PyroWave decodes them
+  back into R16 planes, where Vulkan's narrow range for 16-bit formats matches
+  P010.
+- **Format changes.** A change of chroma or bit depth rebuilds the decoder
+  and ring, the same as a size change.
+- **Sampler.** The renderer only uses cosited chroma and linear chroma
+  filtering where the format supports them. The NVIDIA 4:4:4 formats don't
+  offer cosited chroma, and 4:4:4 has no chroma to reconstruct anyway.
+- **Capability.** `pyrowave_win_color_supported` checks that the GPU can
+  write and sample each ring format. Only then does the client offer the
+  matching `VIDEO_FORMAT_PYROWAVE_*` bit.
+
+`tools/decode_bench/pyrowave_color_bench.c` compiles the production
+`pyrowave_decode_windows.c` in, with stubs for the client hooks. For each
+mode it:
+
+1. Encodes 4K frames with PyroWave's encoder. The test content has
+   1-pixel red/blue chroma stripes, which 4:2:0 would average away.
+2. Stamps the header the way rust-shine does.
+3. Decodes through `pyrowave_win_decode`.
+4. Reads the ring back and compares it with PyroWave's CPU decode.
+5. Builds the renderer's YCbCr sampler for the format.
+
+Results, 3840x2160 at 400 Mbps (60 fps budget), 120 frames per mode. Latency
+is submit to timeline semaphore, unpaced:
+
+| Mode | RTX 3090 p50 / p95 | Radeon 780M p50 / p95 | vs CPU decode |
+|---|---|---|---|
+| 4:2:0 SDR | 1.06 / 1.85 ms | 2.38 / 2.85 ms | byte-exact |
+| 4:4:4 SDR | 1.67 / 3.43 ms | 3.71 / 4.40 ms | byte-exact, stripes kept |
+| 4:2:0 HDR | 1.30 / 3.53 ms | 2.62 / 3.36 ms | within 1 8-bit step |
+| 4:4:4 HDR | 1.41 / 3.49 ms | 4.77 / 5.59 ms | within 1 8-bit step, stripes kept |
+
+The renderer sampler builds for every format on both GPUs. The first frame of
+each mode takes 12–200 ms, because it creates the decoder and ring.
+
+The encoder's CPU input is 8-bit, so the 16-bit modes check the R16 path and
+its scaling, not 10-bit precision itself. Real 10-bit content comes from the
+host's tonemap.
+
 ### Building
 
 `scripts/build_pyrowave_windows.sh` builds the vendored tree with MSYS2

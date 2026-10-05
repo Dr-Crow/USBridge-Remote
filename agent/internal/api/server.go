@@ -71,6 +71,10 @@ type Application interface {
 	// upgrade -- unlike Color444Status, available is hardware-only: HDR is
 	// free-tier, no license check.
 	HdrStatus() (active bool, available bool)
+	// PyroWaveColorStatus reports whether 4:4:4 (Pro) and HDR can be offered
+	// with PyroWave, which takes them on any GPU it runs on -- independent of
+	// the HEVC encoder's Color444Status/HdrStatus.
+	PyroWaveColorStatus() (color444 bool, hdr bool)
 	// VirtualDisplaySupported reports whether the current stream backend
 	// supports native virtual displays.
 	VirtualDisplaySupported() bool
@@ -839,6 +843,7 @@ func (s *Server) videoInfo(w http.ResponseWriter, r *http.Request) {
 	sunshinePort := s.app.SunshineAdminPort()
 	color444Active, color444Available := s.app.Color444Status()
 	hdrActive, hdrAvailable := s.app.HdrStatus()
+	pyroWave444Available, pyroWaveHdrAvailable := s.app.PyroWaveColorStatus()
 	currentCodec := s.app.CurrentVideoCodec()
 	supportedCodecs := s.app.SupportedVideoCodecs()
 	log.Printf("🎯 [CODEC-TRACE] GET /api/video/info device=%q -> encoding=%q supported=%v", devicePath, currentCodec, supportedCodecs)
@@ -867,9 +872,13 @@ func (s *Server) videoInfo(w http.ResponseWriter, r *http.Request) {
 		// RustShine's HDR color upgrade -- mirrors color_444_active/
 		// color_444_available exactly, see Application.HdrStatus's doc
 		// comment.
-		"hdr_active":                hdrActive,
-		"hdr_available":             hdrAvailable,
-		"virtual_display_supported": s.app.VirtualDisplaySupported(),
+		"hdr_active":    hdrActive,
+		"hdr_available": hdrAvailable,
+		// The same two upgrades with PyroWave (any PyroWave GPU; 4:4:4 still
+		// license-gated) -- see Application.PyroWaveColorStatus.
+		"pyrowave_color_444_available": pyroWave444Available,
+		"pyrowave_hdr_available":       pyroWaveHdrAvailable,
+		"virtual_display_supported":    s.app.VirtualDisplaySupported(),
 	})
 }
 

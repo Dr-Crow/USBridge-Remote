@@ -56,6 +56,50 @@ func TestPyroWaveVideoFormat(t *testing.T) {
 	}
 }
 
+// TestPyroWaveColorVideoFormat: the color upgrades are extra PyroWave bits
+// (VIDEO_FORMAT_PYROWAVE_444 0x20000, _HDR 0x40000, _444_HDR 0x80000) on top
+// of plain PyroWave + H.264, only where this client decodes them; every one
+// of them reads back as pyrowave.
+func TestPyroWaveColorVideoFormat(t *testing.T) {
+	for _, neg := range []int32{0x20000, 0x40000, 0x80000} {
+		if got, ok := videoFormatCodecName(neg); !ok || got != models.VideoModePyroWave {
+			t.Errorf("videoFormatCodecName(0x%05X) = %q, %v, want pyrowave", neg, got, ok)
+		}
+	}
+	if !PyroWaveDecodeSupported() {
+		return
+	}
+	cases := []struct {
+		c444, hdr bool
+		want      int
+	}{
+		{true, false, 0x20000},
+		{false, true, 0x40000},
+		{true, true, 0x80000 | 0x40000 | 0x20000},
+	}
+	for _, c := range cases {
+		format := moonlightVideoFormat(models.VideoModePyroWave, c.c444, c.hdr)
+		if format&0x10001 != 0x10001 {
+			t.Errorf("pyrowave(444=%v, hdr=%v) = 0x%05X lost the plain PyroWave/H.264 fallbacks", c.c444, c.hdr, format)
+		}
+		want := 0x10001
+		if PyroWaveColorDecodeSupported(c.c444, c.hdr) {
+			want |= c.want
+		} else {
+			// Partial support still offers what does decode.
+			if c.c444 && PyroWaveColorDecodeSupported(true, false) {
+				want |= 0x20000
+			}
+			if c.hdr && PyroWaveColorDecodeSupported(false, true) {
+				want |= 0x40000
+			}
+		}
+		if format != want {
+			t.Errorf("pyrowave(444=%v, hdr=%v) = 0x%05X, want 0x%05X", c.c444, c.hdr, format, want)
+		}
+	}
+}
+
 func TestVideoFormatCodecNameUnknownAndUnset(t *testing.T) {
 	if _, ok := videoFormatCodecName(-1); ok {
 		t.Error("videoFormatCodecName(-1) should report no codec (sentinel for \"no session yet\")")

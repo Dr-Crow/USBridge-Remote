@@ -142,9 +142,14 @@ type VideoStatus struct {
 	// true). Unlike Color444Available, HdrAvailable is hardware probe only
 	// -- HDR is free-tier, no license check (rust-shine's
 	// AppState::hdr_licensed is always `true`).
-	HdrActive               bool `json:"hdr_active"`
-	HdrAvailable            bool `json:"hdr_available"`
-	VirtualDisplaySupported bool `json:"virtual_display_supported"`
+	HdrActive    bool `json:"hdr_active"`
+	HdrAvailable bool `json:"hdr_available"`
+	// PyroWaveColor444Available/PyroWaveHdrAvailable: the same upgrades with
+	// PyroWave, which the host encodes on any GPU that runs PyroWave (4:4:4
+	// still needs the host's Pro license). False from older agents.
+	PyroWaveColor444Available bool `json:"pyrowave_color_444_available"`
+	PyroWaveHdrAvailable      bool `json:"pyrowave_hdr_available"`
+	VirtualDisplaySupported   bool `json:"virtual_display_supported"`
 }
 
 const (

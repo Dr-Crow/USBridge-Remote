@@ -1101,7 +1101,20 @@ func moonlightVideoFormat(mode string, color444, hdr bool) int {
 		}
 		// VIDEO_FORMAT_PYROWAVE (USBridge extension), with H.264 as what
 		// RtspConnection.c falls back to against a host that does not offer it.
-		return 0x10000 | 0x0001
+		format := 0x10000 | 0x0001
+		// The color upgrades as extra PyroWave bits; RtspConnection.c takes the
+		// best one the host's DESCRIBE also offers (4:4:4 is license-gated
+		// there), down to plain PyroWave.
+		if color444 && PyroWaveColorDecodeSupported(true, false) {
+			format |= 0x20000 // VIDEO_FORMAT_PYROWAVE_444
+		}
+		if hdr && PyroWaveColorDecodeSupported(false, true) {
+			format |= 0x40000 // VIDEO_FORMAT_PYROWAVE_HDR
+		}
+		if color444 && hdr && PyroWaveColorDecodeSupported(true, true) {
+			format |= 0x80000 // VIDEO_FORMAT_PYROWAVE_444_HDR
+		}
+		return format
 	default:
 		return 0x0001 // VIDEO_FORMAT_H264
 	}

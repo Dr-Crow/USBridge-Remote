@@ -9,6 +9,11 @@ func PyroWaveDecodeSupported() bool {
 	return false
 }
 
+// PyroWaveColorDecodeSupported: see pyrowave_supported_windows.go.
+func PyroWaveColorDecodeSupported(color444, hdr bool) bool {
+	return false
+}
+
 // PyroWaveDecodedFrames: see pyrowave_supported_linux.go.
 func PyroWaveDecodedFrames() uint64 {
 	return 0
