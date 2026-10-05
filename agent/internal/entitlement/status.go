@@ -40,9 +40,18 @@ type Status struct {
 	// supporter can still choose Sunshine).
 	ActiveBackend string `json:"active_backend"`
 	// PunktfunkAvailable is true when a punktfunk-host binary was found on
-	// this machine (see streamhost.PunktfunkAvailable); the GUI offers the
-	// Punktfunk streamer only then.
+	// this machine (see streamhost.PunktfunkAvailable) or Streamers-Forks
+	// publishes one for this platform (picking it downloads it); the GUI
+	// offers the Punktfunk streamer only then.
 	PunktfunkAvailable bool `json:"punktfunk_available,omitempty"`
+	// PunktfunkStaged: the agent downloaded punktfunk-host itself
+	// (forkrelease), so its card offers "check for updates" (GitHub).
+	PunktfunkStaged bool `json:"punktfunk_staged,omitempty"`
+	// PunktfunkVersion is the staged punktfunk-host's release tag.
+	PunktfunkVersion string `json:"punktfunk_version,omitempty"`
+	// PunktfunkUpdateInProgress mirrors RustShineUpdateInProgress for
+	// CheckPunktfunkUpdateNow.
+	PunktfunkUpdateInProgress bool `json:"punktfunk_update_in_progress,omitempty"`
 	// RustShineStaged is true once the binary has actually been
 	// downloaded and verified onto disk -- switching to RustShine before
 	// this is true requires a download first.

@@ -3,6 +3,8 @@ package update
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"fmt"
+	"strings"
 )
 
 // appName identifies this binary in the signed update manifest — must match
@@ -34,4 +36,19 @@ func mustDecodePublicKey(b64 string) ed25519.PublicKey {
 		panic("update: invalid embedded public key")
 	}
 	return ed25519.PublicKey(raw)
+}
+
+// VerifySignature checks sigText (base64, as CI writes *.sig files) against
+// body with the embedded update key. Also the trust anchor for streamer
+// releases from Streamers-Forks (internal/forkrelease), which CI signs with
+// the same key.
+func VerifySignature(body, sigText []byte) error {
+	sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(sigText)))
+	if err != nil {
+		return fmt.Errorf("decode signature: %w", err)
+	}
+	if !ed25519.Verify(publicKey, body, sig) {
+		return fmt.Errorf("signature verification failed -- refusing to trust it")
+	}
+	return nil
 }

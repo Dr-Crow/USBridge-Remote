@@ -370,6 +370,7 @@ func (w *Window) refreshProtocolPickerVisuals(busy bool) {
 		row.SetIncluded(protocolRowIncluded(w.protocolApplied, w.protocolPick, row.key))
 		row.SetPreview(protocolHoverHighlights(w.protocolHover, paid, row.key))
 		row.SetDisabled(busy)
+		w.syncProtocolRowUpdate(row, st, acc)
 	}
 	needsBuy := protocolNeedsPurchase(w.protocolPick, st, acc)
 	if w.protocolChange != nil {
@@ -382,6 +383,33 @@ func (w *Window) refreshProtocolPickerVisuals(busy bool) {
 		}
 	}
 	w.refreshSupportButton(st)
+}
+
+// syncProtocolRowUpdate puts the "check for updates" glyph on every card
+// whose streamer is installed: the RustShine tiers once RustShine is staged
+// (one build for all of them; checked through the entitlement backend), and
+// Punktfunk once the agent downloaded it (checked against Streamers-Forks on
+// GitHub). Sunshine ships inside the agent and updates with it.
+func (w *Window) syncProtocolRowUpdate(row *protocolPickRow, st entitlement.Status, acc account.Status) {
+	switch row.key {
+	case protocolFree, protocolPro, protocolEnterprise:
+		show := st.RustShineStaged && !protocolNeedsPurchase(row.key, st, acc)
+		row.SetUpdate(show, st.RustShineUpdateInProgress || w.streamerUpdateChecking, w.beginStreamerUpdateCheck)
+	case protocolPunktfunk:
+		row.SetUpdate(st.PunktfunkStaged, st.PunktfunkUpdateInProgress || w.punktfunkUpdateChecking, w.beginPunktfunkUpdateCheck)
+	default:
+		row.SetUpdate(false, false, nil)
+	}
+}
+
+// refreshProtocolUpdateGlyphs re-syncs only the cards' update glyphs.
+func (w *Window) refreshProtocolUpdateGlyphs() {
+	st, acc := w.protocolStatus()
+	for _, row := range w.protocolRows {
+		if row != nil {
+			w.syncProtocolRowUpdate(row, st, acc)
+		}
+	}
 }
 
 func (w *Window) syncProtocolPicker(st entitlement.Status) {
@@ -579,6 +607,25 @@ type protocolPickRow struct {
 	onHover   func(bool)
 	infoHitX  float32
 	infoHitW  float32
+	// updatable: this card's streamer is installed and can be checked for
+	// a newer build (refresh glyph left of the info icon); updating greys it
+	// out while a check runs. onUpdate is the glyph's tap.
+	updatable  bool
+	updating   bool
+	onUpdate   func()
+	updateHitX float32
+	updateHitW float32
+}
+
+// SetUpdate shows or hides the card's "check for updates" glyph.
+func (r *protocolPickRow) SetUpdate(updatable, updating bool, onUpdate func()) {
+	r.onUpdate = onUpdate
+	if r.updatable == updatable && r.updating == updating {
+		return
+	}
+	r.updatable = updatable
+	r.updating = updating
+	r.Refresh()
 }
 
 func newProtocolPickRow(opt protocolOption, checked bool, onTap, onInfo func(), onHover func(bool)) *protocolPickRow {
@@ -674,18 +721,27 @@ func (r *protocolPickRow) CreateRenderer() fyne.WidgetRenderer {
 	info.FillMode = canvas.ImageFillStretch
 	info.SetMinSize(fyne.NewSize(14, 14))
 
+	update := canvas.NewImageFromResource(theme.NewColoredResource(theme.ViewRefreshIcon(), design.ColorNameMutedOlive))
+	update.FillMode = canvas.ImageFillStretch
+	update.SetMinSize(fyne.NewSize(14, 14))
+	updateBusy := canvas.NewImageFromResource(theme.NewColoredResource(theme.ViewRefreshIcon(), theme.ColorNameDisabled))
+	updateBusy.FillMode = canvas.ImageFillStretch
+	updateBusy.SetMinSize(fyne.NewSize(14, 14))
+
 	return &protocolPickRowRenderer{
-		row:     r,
-		bg:      bg,
-		border:  border,
-		radio:   radio,
-		dot:     dot,
-		title:   title,
-		sub:     sub,
-		badgeBg: badgeBg,
-		lock:    lock,
-		info:    info,
-		objects: []fyne.CanvasObject{bg, border, radio, dot, title, badgeBg, sub, lock, info},
+		row:        r,
+		bg:         bg,
+		border:     border,
+		radio:      radio,
+		dot:        dot,
+		title:      title,
+		sub:        sub,
+		badgeBg:    badgeBg,
+		lock:       lock,
+		info:       info,
+		update:     update,
+		updateBusy: updateBusy,
+		objects:    []fyne.CanvasObject{bg, border, radio, dot, title, badgeBg, sub, lock, info, update, updateBusy},
 	}
 }
 
@@ -700,6 +756,12 @@ func (r *protocolPickRow) Tapped(e *fyne.PointEvent) {
 	if e != nil && r.infoHitW > 0 && e.Position.X >= r.infoHitX && e.Position.X < r.infoHitX+r.infoHitW {
 		if r.onInfo != nil {
 			r.onInfo()
+		}
+		return
+	}
+	if e != nil && r.updatable && r.updateHitW > 0 && e.Position.X >= r.updateHitX && e.Position.X < r.updateHitX+r.updateHitW {
+		if !r.updating && r.onUpdate != nil {
+			r.onUpdate()
 		}
 		return
 	}
@@ -757,7 +819,11 @@ type protocolPickRowRenderer struct {
 	badgeBg *canvas.Rectangle
 	lock    *canvas.Image
 	info    *canvas.Image
-	objects []fyne.CanvasObject
+	// update / updateBusy: the "check for updates" glyph, idle and while a
+	// check runs.
+	update     *canvas.Image
+	updateBusy *canvas.Image
+	objects    []fyne.CanvasObject
 }
 
 func (r *protocolPickRowRenderer) Layout(size fyne.Size) {
@@ -785,6 +851,27 @@ func (r *protocolPickRowRenderer) Layout(size fyne.Size) {
 	r.row.infoHitW = infoSide + 8
 
 	trailX := infoX - 8
+	if r.row.updatable {
+		const up float32 = 14
+		trailX -= up
+		pos := fyne.NewPos(trailX, (size.Height-up)/2)
+		placeSquareIcon(r.update, pos, up)
+		placeSquareIcon(r.updateBusy, pos, up)
+		r.row.updateHitX = trailX - 4
+		r.row.updateHitW = up + 8
+		trailX -= 6
+		if r.row.updating {
+			r.update.Hide()
+			r.updateBusy.Show()
+		} else {
+			r.update.Show()
+			r.updateBusy.Hide()
+		}
+	} else {
+		r.update.Hide()
+		r.updateBusy.Hide()
+		r.row.updateHitW = 0
+	}
 	if r.row.locked && !r.row.checked {
 		const lk float32 = 14
 		trailX -= lk

@@ -1,0 +1,21 @@
+{
+  "app": "streamers-forks",
+  "version": "v2026.1004.1.usbridge",
+  "assets": {
+    "Sunshine-Linux-x86_64.tar.gz": {
+      "sha256": "e82df763aa46e0d1aa88a2d21c48360eb6d2ac9277cab60339d2ab5994890a1f"
+    },
+    "Sunshine-Windows-x86_64-portable.zip": {
+      "sha256": "87408a9c425f1078c29070a8ccbf122d75476a954925512468be00cd1559e369"
+    },
+    "Sunshine-macOS-arm64.dmg": {
+      "sha256": "3bdb223d31f0cf5018f855aad36cc9a338287c5e0795b82f0e85e04e33048291"
+    },
+    "punktfunk-host-Linux-x86_64.tar.gz": {
+      "sha256": "73337448fec2ccf93b0ef5ff5f679ae6ac785e96d942c24af13ece3dc1a15bac"
+    },
+    "punktfunk-host-Windows-x64.zip": {
+      "sha256": "8cfb943d486ff7cf31adc9eaef867bb3efbbe45cc683061eb1d64a8e5dc99eb4"
+    }
+  }
+}
