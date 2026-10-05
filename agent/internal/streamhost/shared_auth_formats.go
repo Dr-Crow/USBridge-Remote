@@ -54,7 +54,11 @@ func sunshineIdentityPaths(stateDir string) (certPath, keyPath string) {
 // caller would treat as fatal; see loadCanonicalStore's identical
 // discipline.
 func readSunshineTrusted(stateDir string) (serverUUID string, clients []trustedClient, err error) {
-	path := sunshineStatePath(stateDir)
+	return readSunshineTrustedFile(sunshineStatePath(stateDir))
+}
+
+// readSunshineTrustedFile is readSunshineTrusted for any sunshine_state.json.
+func readSunshineTrustedFile(path string) (serverUUID string, clients []trustedClient, err error) {
 	if path == "" {
 		return "", nil, nil
 	}

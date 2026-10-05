@@ -178,6 +178,8 @@ type App struct {
 	entPollCancel         context.CancelFunc // cancels an in-flight StartPurchase's post-checkout poll loop, if any
 	pendingStreamerUpdate string             // newer USBridge-streamer tag seen while auto-update is off
 	lastPunktfunkCheck    time.Time          // checkPunktfunkUpdate's last look at Streamers-Forks (entMu)
+	lastSunshineCheck     time.Time          // checkSunshineUpdate's, the same (entMu)
+	lastSunshineFetch     time.Time          // fetchSunshineInBackground's last first-run attempt (entMu)
 
 	// accMu guards the account-login fields below -- see StartAccountLogin's
 	// doc comment. Separate mutex/status from entMu above: this is a
@@ -608,6 +610,10 @@ func New() (*App, error) {
 	// Punktfunk needs no entitlement, only its binary; without one (it was
 	// uninstalled since) the agent comes back on Sunshine.
 	streamhost.SetPunktfunkStageDir(forkrelease.PunktfunkDir(cfg.StateDir))
+	// On Windows Sunshine is downloaded, not shipped (see sunshine_update.go).
+	if forkrelease.SunshineAssetName() != "" {
+		streamhost.SetSunshineStageBinary(forkrelease.SunshineBinary(cfg.StateDir))
+	}
 	if cfg.PreferredBackend == "punktfunk" && streamhost.PunktfunkAvailable(instance.exeDir) {
 		instance.setStreamKind("punktfunk")
 	}
@@ -1058,6 +1064,12 @@ func (a *App) startSunshineNow() {
 		if err := a.RestartSunshine(); err != nil {
 			log.Printf("[app] restart Sunshine after encoder change: %v", err)
 		}
+	}
+	if a.streamKind == "sunshine" && a.sunshineMissing() {
+		// First start of an agent that doesn't ship Sunshine: fetch it,
+		// then start it.
+		a.fetchSunshineInBackground()
+		return
 	}
 	if err := a.stream.Start(a.cfg.SunshinePort); err != nil {
 		log.Printf("[app] failed to start Sunshine: %v", err)
@@ -1569,6 +1581,12 @@ func (a *App) SetStreamBackend(kind string) error {
 			return err
 		}
 	}
+	// So is Sunshine where the agent doesn't ship it (Windows).
+	if kind == "sunshine" && sunshineDownloadable() && !a.sunshineOnDisk() {
+		if err := a.DownloadSunshine(nil); err != nil {
+			return err
+		}
+	}
 
 	a.streamMu.Lock()
 	defer a.streamMu.Unlock()
@@ -1854,6 +1872,8 @@ func (a *App) EntitlementStatus() entitlement.Status {
 	st.PunktfunkAvailable = streamhost.PunktfunkAvailable(a.exeDir) || forkrelease.PunktfunkAssetName() != ""
 	st.PunktfunkStaged = forkrelease.PunktfunkStaged(a.cfg.StateDir)
 	st.PunktfunkVersion = forkrelease.PunktfunkStagedVersion(a.cfg.StateDir)
+	st.SunshineUpdatable = sunshineDownloadable()
+	st.SunshineVersion = forkrelease.SunshineStagedVersion(a.cfg.StateDir)
 	st.RustShineVersion = entitlement.StagedVersion(a.cfg.StateDir)
 	st.WebRTCEnabled = !a.cfg.RustShineWebRTCDisabled
 	st.RustShineAvailableVersion = pending
@@ -2699,6 +2719,7 @@ func (a *App) streamerUpdateWatchdog(ctx context.Context) {
 
 func (a *App) tickStreamerUpdate(ctx context.Context) {
 	a.checkPunktfunkUpdate(ctx)
+	a.checkSunshineUpdate(ctx)
 	token := a.cfg.EntitlementToken
 	if strings.TrimSpace(token) == "" {
 		return

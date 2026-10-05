@@ -389,7 +389,8 @@ func (w *Window) refreshProtocolPickerVisuals(busy bool) {
 // whose streamer is installed: the RustShine tiers once RustShine is staged
 // (one build for all of them; checked through the entitlement backend), and
 // Punktfunk once the agent downloaded it (checked against Streamers-Forks on
-// GitHub). Sunshine ships inside the agent and updates with it.
+// GitHub), and Sunshine where the agent downloads it too (Windows); elsewhere
+// it ships inside the agent and updates with it.
 func (w *Window) syncProtocolRowUpdate(row *protocolPickRow, st entitlement.Status, acc account.Status) {
 	switch row.key {
 	case protocolFree, protocolPro, protocolEnterprise:
@@ -397,6 +398,8 @@ func (w *Window) syncProtocolRowUpdate(row *protocolPickRow, st entitlement.Stat
 		row.SetUpdate(show, st.RustShineUpdateInProgress || w.streamerUpdateChecking, w.beginStreamerUpdateCheck)
 	case protocolPunktfunk:
 		row.SetUpdate(st.PunktfunkStaged, st.PunktfunkUpdateInProgress || w.punktfunkUpdateChecking, w.beginPunktfunkUpdateCheck)
+	case protocolOpensource:
+		row.SetUpdate(st.SunshineUpdatable, st.SunshineUpdateInProgress || w.sunshineUpdateChecking, w.beginSunshineUpdateCheck)
 	default:
 		row.SetUpdate(false, false, nil)
 	}

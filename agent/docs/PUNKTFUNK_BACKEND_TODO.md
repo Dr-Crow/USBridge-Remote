@@ -384,4 +384,5 @@ x86_64.
   - RustShine (Free/Pro/Enterprise share one build) is checked through the
     entitlement backend (Cloudflare);
   - Punktfunk is checked against GitHub;
-  - Sunshine is bundled with the agent and updates with it.
+  - Sunshine is checked against GitHub on Windows (the agent downloads it
+    there); on Linux and macOS it is bundled with the agent and updates with it.

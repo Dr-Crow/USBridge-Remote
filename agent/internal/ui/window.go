@@ -115,6 +115,7 @@ type TokenProvider interface {
 	DownloadRustShine(onProgress entitlement.ProgressFunc) error
 	CheckRustShineUpdateNow() error
 	CheckPunktfunkUpdateNow() error
+	CheckSunshineUpdateNow() error
 	SetStreamBackend(kind string) error
 	SetRustShineWebRTCEnabled(enabled bool) error
 
@@ -396,6 +397,8 @@ type Window struct {
 	streamerUpdateChecking bool
 	// punktfunkUpdateChecking: the same for the Punktfunk card's glyph.
 	punktfunkUpdateChecking bool
+	// sunshineUpdateChecking: the same for the Sunshine card's glyph.
+	sunshineUpdateChecking bool
 	// streamerBgUpdateWatching is true while a background auto-update is in
 	// flight and this window didn't start it (the refresh button uses
 	// streamerUpdateChecking instead). Drives the footer spinner.
@@ -723,25 +726,45 @@ func (w *Window) maybeOfferStreamerUpdate(st entitlement.Status) {
 // the latest Streamers-Forks release on GitHub, signature-verified
 // (CheckPunktfunkUpdateNow). Footer feedback as for RustShine.
 func (w *Window) beginPunktfunkUpdateCheck() {
-	if w.token == nil || w.punktfunkUpdateChecking {
+	if w.token == nil {
 		return
 	}
-	w.punktfunkUpdateChecking = true
+	w.beginForkUpdateCheck("punktfunk", &w.punktfunkUpdateChecking, w.token.CheckPunktfunkUpdateNow,
+		func(st entitlement.Status) (bool, string) { return st.PunktfunkUpdateInProgress, st.PunktfunkVersion })
+}
+
+// beginSunshineUpdateCheck is the Sunshine card's: the same, for the Sunshine
+// the agent downloads from Streamers-Forks (CheckSunshineUpdateNow).
+func (w *Window) beginSunshineUpdateCheck() {
+	if w.token == nil {
+		return
+	}
+	w.beginForkUpdateCheck("sunshine", &w.sunshineUpdateChecking, w.token.CheckSunshineUpdateNow,
+		func(st entitlement.Status) (bool, string) { return st.SunshineUpdateInProgress, st.SunshineVersion })
+}
+
+// beginForkUpdateCheck runs a Streamers-Forks streamer's update check; state
+// reports its in-progress flag and installed version.
+func (w *Window) beginForkUpdateCheck(name string, checking *bool, check func() error, state func(entitlement.Status) (bool, string)) {
+	if w.token == nil || *checking {
+		return
+	}
+	*checking = true
 	before := w.token.EntitlementStatus()
+	_, beforeVer := state(before)
 	w.refreshProtocolUpdateGlyphs()
 	w.startFooterBusy(loc().CheckingUpdates)
 	go func() {
-		err := w.token.CheckPunktfunkUpdateNow()
+		err := check()
 		if err != nil {
-			logrus.WithError(err).Warn("punktfunk update check failed")
+			logrus.WithError(err).Warnf("%s update check failed", name)
 		}
 		if !w.ownsEngine && err == nil {
 			// Thin client: the admin API returned before the engine finished.
 			start := time.Now()
 			seen := false
 			for time.Since(start) < 3*time.Minute {
-				st := w.token.EntitlementStatus()
-				if st.PunktfunkUpdateInProgress {
+				if busy, _ := state(w.token.EntitlementStatus()); busy {
 					seen = true
 				} else if seen || time.Since(start) > 1500*time.Millisecond {
 					break
@@ -750,13 +773,14 @@ func (w *Window) beginPunktfunkUpdateCheck() {
 			}
 		}
 		fyne.Do(func() {
-			w.punktfunkUpdateChecking = false
+			*checking = false
 			st := w.token.EntitlementStatus()
+			_, ver := state(st)
 			w.refreshProtocolUpdateGlyphs()
 			switch {
 			case err != nil || (st.LastError != "" && st.LastError != before.LastError):
 				w.showFooterIdle(loc().UpdateFailed, footerIdleMessageDuration)
-			case st.PunktfunkVersion != before.PunktfunkVersion:
+			case ver != beforeVer:
 				w.showFooterIdle(loc().StreamerUpdated, footerIdleMessageDuration)
 			default:
 				w.showFooterIdle(loc().AlreadyUpToDate, footerIdleMessageDuration)
