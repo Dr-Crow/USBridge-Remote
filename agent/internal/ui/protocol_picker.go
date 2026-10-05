@@ -389,8 +389,9 @@ func (w *Window) refreshProtocolPickerVisuals(busy bool) {
 // whose streamer is installed: the RustShine tiers once RustShine is staged
 // (one build for all of them; checked through the entitlement backend), and
 // Punktfunk once the agent downloaded it (checked against Streamers-Forks on
-// GitHub), and Sunshine where the agent downloads it too (Windows); elsewhere
-// it ships inside the agent and updates with it.
+// GitHub), and Sunshine where the agent downloads it too (Windows, Linux
+// x86_64, Apple Silicon); elsewhere it ships inside the agent and updates
+// with it.
 func (w *Window) syncProtocolRowUpdate(row *protocolPickRow, st entitlement.Status, acc account.Status) {
 	switch row.key {
 	case protocolFree, protocolPro, protocolEnterprise:
@@ -731,7 +732,7 @@ func (r *protocolPickRow) CreateRenderer() fyne.WidgetRenderer {
 	updateBusy.FillMode = canvas.ImageFillStretch
 	updateBusy.SetMinSize(fyne.NewSize(14, 14))
 
-	return &protocolPickRowRenderer{
+	rr := &protocolPickRowRenderer{
 		row:        r,
 		bg:         bg,
 		border:     border,
@@ -746,6 +747,12 @@ func (r *protocolPickRow) CreateRenderer() fyne.WidgetRenderer {
 		updateBusy: updateBusy,
 		objects:    []fyne.CanvasObject{bg, border, radio, dot, title, badgeBg, sub, lock, info, update, updateBusy},
 	}
+	// Apply checked/locked/hover state now: the objects above start in
+	// their defaults (dot shown), and a card whose state never changes after
+	// the picker is built would otherwise look selected until a hover
+	// refreshed it.
+	rr.Refresh()
+	return rr
 }
 
 func (r *protocolPickRow) MinSize() fyne.Size {

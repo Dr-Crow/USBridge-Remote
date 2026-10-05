@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -11,12 +12,17 @@ import (
 	"fyne.io/fyne/v2/widget"
 
 	"usbridge_agent/assets"
+	"usbridge_agent/internal/entitlement"
 	"usbridge_agent/internal/ui/design"
 )
 
 const footerBusySpinnerSize float32 = 14
 const footerBusySpinnerInterval = 140 * time.Millisecond
 const footerIdleMessageDuration = 8 * time.Second
+
+// footerDownloadPoll: how often a busy footer looks for a streamer download
+// to report (name and percentage) in place of its own hint.
+const footerDownloadPoll = 300 * time.Millisecond
 
 // footerBusyHint is the agent footer's muted-olive dot spinner + status copy.
 type footerBusyHint struct {
@@ -168,6 +174,61 @@ func (w *Window) startFooterBusy(hint string) {
 	w.footerMsgGen++
 	w.protocolBusy.SetHint(hint)
 	w.protocolBusy.Start()
+	w.watchFooterDownload(w.footerMsgGen, hint)
+}
+
+// watchFooterDownload swaps the busy footer's hint for "Downloading <name>...
+// 42%" while a streamer download runs under it (switching to a streamer that
+// isn't on disk yet, or a card's update check), and back to hint after. It
+// ends with the footer message it was started for.
+func (w *Window) watchFooterDownload(gen uint64, hint string) {
+	if w.token == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(footerDownloadPoll)
+		defer ticker.Stop()
+		shown := hint
+		for range ticker.C {
+			next := footerDownloadHint(w.token.EntitlementStatus(), hint)
+			stop := false
+			fyne.DoAndWait(func() {
+				if w.footerMsgGen != gen || w.protocolBusy == nil {
+					stop = true
+					return
+				}
+				if next != shown {
+					w.protocolBusy.SetHint(next)
+					w.protocolBusy.Refresh()
+				}
+			})
+			if stop {
+				return
+			}
+			shown = next
+		}
+	}()
+}
+
+// footerDownloadHint is the footer copy for st: hint unless a streamer
+// download is running.
+func footerDownloadHint(st entitlement.Status, hint string) string {
+	if !st.DownloadInProgress {
+		return hint
+	}
+	name := st.DownloadName
+	if name == "" {
+		name = "USBridge Streamer" // an agent too old to name it
+	}
+	text := fmt.Sprintf(loc().DownloadingNamed, name)
+	if st.Progress >= 0 {
+		pct := int(st.Progress*100 + 0.5)
+		if pct > 100 {
+			pct = 100
+		}
+		text = fmt.Sprintf("%s %d%%", text, pct)
+	}
+	return text
 }
 
 func (w *Window) stopFooterBusy() {

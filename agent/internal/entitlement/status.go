@@ -52,8 +52,8 @@ type Status struct {
 	// PunktfunkUpdateInProgress mirrors RustShineUpdateInProgress for
 	// CheckPunktfunkUpdateNow.
 	PunktfunkUpdateInProgress bool `json:"punktfunk_update_in_progress,omitempty"`
-	// SunshineUpdatable: Sunshine comes from Streamers-Forks here (Windows)
-	// rather than with the agent, so its card offers "check for updates".
+	// SunshineUpdatable: Sunshine comes from Streamers-Forks here (Windows,
+	// Linux x86_64, Apple Silicon) rather than with the agent, so its card offers "check for updates".
 	SunshineUpdatable bool `json:"sunshine_updatable,omitempty"`
 	// SunshineVersion is the downloaded Sunshine's release tag, "" while
 	// a bundled one (older agent install) or none is in use.
@@ -96,9 +96,12 @@ type Status struct {
 	// LinkInProgress/DownloadInProgress + Progress (0..1, -1 if
 	// indeterminate/unknown total) describe an in-flight operation the GUI
 	// should show a spinner/progress bar for.
-	LinkInProgress     bool    `json:"link_in_progress"`
-	DownloadInProgress bool    `json:"download_in_progress"`
-	Progress           float64 `json:"progress"`
+	LinkInProgress     bool `json:"link_in_progress"`
+	DownloadInProgress bool `json:"download_in_progress"`
+	// DownloadName is the streamer DownloadInProgress is for ("Sunshine",
+	// "Punktfunk", "USBridge Streamer"), for the GUI's progress copy.
+	DownloadName string  `json:"download_name,omitempty"`
+	Progress     float64 `json:"progress"`
 
 	// LastError is a short, user-presentable message for the most recent
 	// failed operation (checkout failed, download failed, ...) — cleared

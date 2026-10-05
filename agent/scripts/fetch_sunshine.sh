@@ -12,10 +12,10 @@
 # bind_address -- and hands the client's USB devices to the USB broker (see
 # agent/internal/streamhost/usb_broker_bridge.go).
 #
-# macOS and Linux bundle it (a release asset, else a source build). Windows
-# doesn't any more: the agent downloads the fork's signed Windows release
-# itself (internal/forkrelease); fetch_sunshine_windows is left for local
-# experiments only.
+# Only Intel macOS still bundles it (a release asset, else a source build).
+# Windows, Linux x86_64 and Apple Silicon don't any more: the agent downloads
+# the fork's signed release itself (internal/forkrelease); the other
+# fetch_sunshine_* are left for local experiments only.
 #
 # Env overrides:
 #   USBRIDGE_SKIP_SUNSHINE=1     skip bundling Sunshine entirely (offline/dev builds)

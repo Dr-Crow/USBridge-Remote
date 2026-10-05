@@ -13,10 +13,11 @@ import (
 
 // appBundleName is the on-disk .app name for this binary — used both to
 // find *this* running bundle (to know where to install over) and to find
-// the freshly downloaded one inside the mounted .dmg. Note the agent
+// the freshly downloaded one inside the mounted .dmg. An Intel agent
 // bundle also carries a nested sunshine/Sunshine.app (see
 // scripts/build_macos.sh) — ditto below copies the whole tree, so that
-// comes along automatically.
+// comes along automatically. Apple Silicon has none: the agent downloads
+// Sunshine into its state dir, which an update doesn't touch.
 const appBundleName = "USBridgeAgent.app"
 
 // apply mounts the downloaded, already SHA-256-verified .dmg, independently

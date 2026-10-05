@@ -13,9 +13,9 @@ import (
 )
 
 // Sunshine from Streamers-Forks (forkrelease.PrepareSunshine) where the agent
-// no longer ships it (Windows): downloaded the first time Sunshine is the
-// streamer -- on a fresh install that is the first start -- and updated from
-// then on, like Punktfunk.
+// no longer ships it (Windows, Linux x86_64, Apple Silicon): downloaded the
+// first time Sunshine is the streamer -- on a fresh install that is the first
+// start -- and updated from then on, like Punktfunk.
 
 // sunshineUpdateInterval: as punktfunkUpdateInterval.
 const sunshineUpdateInterval = 6 * time.Hour
@@ -107,12 +107,14 @@ func (a *App) DownloadSunshine(onProgress forkrelease.ProgressFunc) error {
 func (a *App) downloadSunshine(onProgress forkrelease.ProgressFunc) error {
 	a.entMu.Lock()
 	a.entStatus.DownloadInProgress = true
+	a.entStatus.DownloadName = "Sunshine"
 	a.entStatus.Progress = -1
 	a.entStatus.LastError = ""
 	a.entMu.Unlock()
 	defer func() {
 		a.entMu.Lock()
 		a.entStatus.DownloadInProgress = false
+		a.entStatus.DownloadName = ""
 		a.entMu.Unlock()
 	}()
 	combined := func(downloaded, total int64) {
@@ -206,7 +208,9 @@ func (a *App) CheckSunshineUpdateNow() error {
 // updateSunshine installs the latest release's Sunshine when it differs from
 // the downloaded one (or there is no downloaded one yet). A Sunshine that is
 // the active streamer is stopped for the swap -- Windows can't replace a
-// running .exe -- and started again from the new tree.
+// running .exe -- and started again from the new tree. On Linux with KMS
+// capture the launcher keeps running the root-owned copy of the previous
+// tree until screen capture is granted again (permissions.installSunshineKMS).
 func (a *App) updateSunshine(ctx context.Context, spareStream bool) error {
 	staged := forkrelease.SunshineStaged(a.cfg.StateDir)
 	latest, err := forkrelease.LatestSunshineVersion(ctx)

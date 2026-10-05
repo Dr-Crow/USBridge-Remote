@@ -38,6 +38,13 @@ type LocalizedStrings struct {
 	PunktfunkCaptureInfo string
 	PermDownload         string
 	AutostartInfo        string
+	// AutostartInfoBody is the Autostart info dialog's how-to; %s is one of
+	// AutostartVia* below (the platform's mechanism).
+	AutostartInfoBody    string
+	AutostartViaService  string
+	AutostartViaLaunchd  string
+	AutostartViaSystemd  string
+	AutostartEntry       string
 	AutostartAtBoot      string
 	AutostartRebootHint  string
 	LockGPUClocks        string
@@ -113,7 +120,10 @@ type LocalizedStrings struct {
 	SupportUs     string
 
 	// Footer busy
-	ChangingProtocol    string
+	ChangingProtocol string
+	// DownloadingNamed: footer hint while a streamer downloads; %s is its
+	// name (Sunshine, Punktfunk, USBridge Streamer).
+	DownloadingNamed    string
 	CheckingUpdates     string
 	AlreadyUpToDate     string
 	UpdateFailed        string
@@ -239,8 +249,6 @@ type LocalizedStrings struct {
 	FeatVirtualDisplaySub      string
 	Feat444                    string
 	Feat444Sub                 string
-	FeatUSB                    string
-	FeatUSBSub                 string
 	FeatWacom                  string
 	FeatWacomSub               string
 	FeatRecording              string
@@ -344,7 +352,12 @@ func EN() *LocalizedStrings {
 		PermInfo:             "Info",
 		PunktfunkCaptureInfo: "Punktfunk has no KMS capture. It takes the picture from the desktop compositor (KWin, GNOME, Sway, Hyprland or gamescope), so it needs a running Wayland session: it cannot stream the login screen or anything before login, and it does not work on X11.\n\nFrames still go to the encoder on the GPU with no CPU copies, but the compositor copies each frame once more on the GPU, which KMS capture does not need. What that costs on this machine has not been measured: the benchmark in the client compares it with the other streamers.",
 		PermDownload:         "Download",
-		AutostartInfo:        "Autostart entry",
+		AutostartInfo:        "Autostart",
+		AutostartInfoBody:    "1. Put the agent file in any folder you like.\n2. Tick this checkbox: the agent registers itself to start %s.\n\nTo remove it from autostart, just untick the checkbox.\n\nMoved the agent file to another folder? Untick the checkbox and tick it again so autostart picks up the new location.",
+		AutostartViaService:  "automatically as a Windows service",
+		AutostartViaLaunchd:  "automatically when you log in",
+		AutostartViaSystemd:  "automatically at boot (systemd service)",
+		AutostartEntry:       "Registered entry:",
 		AutostartAtBoot:      "Autostart at Boot",
 		AutostartRebootHint:  "(Windows restart required)",
 		LockGPUClocks:        "Lock GPU Clocks",
@@ -408,6 +421,7 @@ func EN() *LocalizedStrings {
 		SupportUs:     "Support us",
 
 		ChangingProtocol:    "Changing protocol...",
+		DownloadingNamed:    "Downloading %s...",
 		CheckingUpdates:     "Checking for updates...",
 		AlreadyUpToDate:     "Already up to date",
 		UpdateFailed:        "Update check failed",
@@ -527,8 +541,6 @@ func EN() *LocalizedStrings {
 		FeatVirtualDisplaySub:      "Extra screens without extra hardware",
 		Feat444:                    "4:4:4 color fidelity",
 		Feat444Sub:                 "Full chroma for text and color-critical work",
-		FeatUSB:                    "USB device emulation",
-		FeatUSBSub:                 "Pass local USB devices through to the host",
 		FeatWacom:                  "Wacom tablet support",
 		FeatWacomSub:               "Pen pressure and tilt pass through to the host",
 		FeatRecording:              "Session recording and audit logs",
@@ -596,7 +608,12 @@ func ES() *LocalizedStrings {
 	locale.PermInfo = "Info"
 	locale.PunktfunkCaptureInfo = "Punktfunk no tiene captura KMS. Toma la imagen del compositor del escritorio (KWin, GNOME, Sway, Hyprland o gamescope), así que necesita una sesión Wayland en marcha: no puede transmitir la pantalla de inicio de sesión ni nada anterior al inicio de sesión, y no funciona en X11.\n\nLos fotogramas siguen llegando al codificador en la GPU sin copias en la CPU, pero el compositor copia cada fotograma una vez más en la GPU, algo que la captura KMS no necesita. No se ha medido cuánto cuesta eso en este equipo: el benchmark del cliente lo compara con los otros streamers."
 	locale.PermDownload = "Descargar"
-	locale.AutostartInfo = "Entrada de inicio automatico"
+	locale.AutostartInfo = "Inicio automatico"
+	locale.AutostartInfoBody = "1. Coloca el archivo del agente en la carpeta que quieras.\n2. Marca esta casilla: el agente se registra para iniciarse %s.\n\nPara quitarlo del inicio automatico, simplemente desmarca la casilla.\n\nHas movido el archivo del agente a otra carpeta? Desmarca la casilla y vuelve a marcarla para que el inicio automatico use la nueva ubicacion."
+	locale.AutostartViaService = "automaticamente como servicio de Windows"
+	locale.AutostartViaLaunchd = "automaticamente al iniciar sesion"
+	locale.AutostartViaSystemd = "automaticamente al arrancar (servicio systemd)"
+	locale.AutostartEntry = "Entrada registrada:"
 	locale.AutostartAtBoot = "Inicio automatico"
 	locale.AutostartRebootHint = "(se requiere reinicio de Windows)"
 	locale.LockGPUClocks = "Bloquear relojes GPU"
@@ -650,6 +667,7 @@ func ES() *LocalizedStrings {
 	locale.SupportUs = "Apoyanos"
 
 	locale.ChangingProtocol = "Cambiando protocolo..."
+	locale.DownloadingNamed = "Descargando %s..."
 	locale.CheckingUpdates = "Buscando actualizaciones..."
 	locale.AlreadyUpToDate = "Ya esta actualizado"
 	locale.UpdateFailed = "Fallo la busqueda de actualizaciones"
@@ -766,8 +784,6 @@ func ES() *LocalizedStrings {
 	locale.FeatVirtualDisplaySub = "Pantallas extra sin hardware extra"
 	locale.Feat444 = "Fidelidad de color 4:4:4"
 	locale.Feat444Sub = "Croma completo para texto y trabajo de color"
-	locale.FeatUSB = "Emulacion USB"
-	locale.FeatUSBSub = "Pasa dispositivos USB locales al host"
 	locale.FeatWacom = "Soporte de tablet Wacom"
 	locale.FeatWacomSub = "Presion y tilt del lapiz llegan al host"
 	locale.FeatRecording = "Grabacion de sesion y audit logs"
@@ -834,7 +850,12 @@ func UK() *LocalizedStrings {
 	locale.PermInfo = "Інфо"
 	locale.PunktfunkCaptureInfo = "Punktfunk не має захоплення через KMS. Він бере зображення з композитора робочого столу (KWin, GNOME, Sway, Hyprland або gamescope), тому потребує запущеного сеансу Wayland: не може транслювати екран входу чи будь-що до входу в систему і не працює на X11.\n\nКадри, як і раніше, потрапляють до кодувальника на GPU без копіювань на CPU, але композитор ще раз копіює кожен кадр на GPU, чого захоплення через KMS не потребує. Скільки це коштує на цій машині, не виміряно: бенчмарк у клієнті порівнює його з іншими стримерами."
 	locale.PermDownload = "Завантажити"
-	locale.AutostartInfo = "Запис автозапуску"
+	locale.AutostartInfo = "Автозапуск"
+	locale.AutostartInfoBody = "1. Покладіть файл агента в будь-яку папку.\n2. Поставте цю галочку: агент зареєструється, щоб запускатися %s.\n\nЩоб прибрати з автозапуску, просто зніміть галочку.\n\nПеренесли файл агента в іншу папку? Зніміть галочку й поставте її знову, щоб автозапуск підхопив нове розташування."
+	locale.AutostartViaService = "автоматично як служба Windows"
+	locale.AutostartViaLaunchd = "автоматично під час входу в систему"
+	locale.AutostartViaSystemd = "автоматично під час завантаження (служба systemd)"
+	locale.AutostartEntry = "Зареєстрований запис:"
 	locale.AutostartAtBoot = "Автозапуск"
 	locale.AutostartRebootHint = "(потрібен перезапуск Windows)"
 	locale.LockGPUClocks = "Фіксувати частоти GPU"
@@ -888,6 +909,7 @@ func UK() *LocalizedStrings {
 	locale.SupportUs = "Підтримати"
 
 	locale.ChangingProtocol = "Зміна протоколу..."
+	locale.DownloadingNamed = "Завантаження %s..."
 	locale.CheckingUpdates = "Перевірка оновлень..."
 	locale.AlreadyUpToDate = "Вже остання версія"
 	locale.UpdateFailed = "Не вдалося перевірити оновлення"
@@ -1004,8 +1026,6 @@ func UK() *LocalizedStrings {
 	locale.FeatVirtualDisplaySub = "Додаткові екрани без зайвого заліза"
 	locale.Feat444 = "Колір 4:4:4"
 	locale.Feat444Sub = "Повна хрома для тексту і роботи з кольором"
-	locale.FeatUSB = "Емуляція USB"
-	locale.FeatUSBSub = "Прокидання локальних USB-пристроїв на хост"
 	locale.FeatWacom = "Підтримка планшета Wacom"
 	locale.FeatWacomSub = "Тиск і нахил пера передаються на хост"
 	locale.FeatRecording = "Запис сесій і аудит"
