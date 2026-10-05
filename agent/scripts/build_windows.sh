@@ -28,9 +28,10 @@ if [[ $# -gt 0 ]]; then
     exit 1
 fi
 
-# The agent always bundles the open-source Sunshine backend at build time
-# (fetch_sunshine.sh below) -- RustShine is never built from source or
-# bundled here. streamhost.rustshineBackend is always compiled into the
+# No streamer is bundled on Windows: the agent downloads Sunshine (the
+# default) from Streamers-Forks' signed release on its first start
+# (internal/forkrelease, app/sunshine_update.go) and updates it from there.
+# RustShine is never built from source or bundled here either. streamhost.rustshineBackend is always compiled into the
 # agent binary regardless (see internal/streamhost/factory.go's own doc
 # comment: the old //go:build rustshine compile-time seam is gone, gating
 # is entirely runtime via internal/entitlement), so there was never a real
@@ -293,17 +294,12 @@ else
     echo "   Install: pacman -S --needed mingw-w64-ucrt-x86_64-binutils"
 fi
 
-# ── Streaming host (Sunshine, bundled at build time) ──────────────────────────
-# RustShine is never built from source or staged here -- see this script's
-# own top comment. An entitled supporter's agent gets it exclusively via
-# entitlement.StageRustShine's signed-release download at runtime. Remove
-# any dist/windows/rustshine left over from an older build of this same
-# script (back when `-streamer rustshine` did stage one here) before
-# zipping below -- otherwise a stale gamestream-server.exe from a previous
-# run would silently ride along in a build that's supposed to contain none.
-rm -rf "$DIST_DIR/rustshine"
-source "$SCRIPT_DIR/fetch_sunshine.sh"
-fetch_sunshine_windows "$DIST_DIR/sunshine"
+# ── Streaming hosts: none bundled ─────────────────────────────────────────────
+# Sunshine and RustShine are both downloaded by the agent at runtime -- see
+# this script's own top comment. Remove a dist/windows/sunshine or
+# rustshine left over from an older build of this same script before
+# zipping below, so a stale streamer can't silently ride along.
+rm -rf "$DIST_DIR/rustshine" "$DIST_DIR/sunshine"
 
 # ── Tailscale binaries/wintun not needed: agent uses embedded userspace tsnet library ───
 rm -f "$DIST_DIR/tailscale.exe" "$DIST_DIR/tailscaled.exe" "$DIST_DIR/wintun.dll"
@@ -317,9 +313,9 @@ Built from MSYS2 UCRT64.
 Run:
   USBridgeAgent.exe
 
-Video/input: Sunshine (Moonlight GameStream host) is bundled in .\sunshine\ and
-is started automatically by the agent (.\sunshine\sunshine.exe), including a
-one-time admin credential bootstrap. The agent itself is not in the
+Video/input: Sunshine (Moonlight GameStream host) is downloaded by the agent
+on its first start (signed Streamers-Forks release, kept up to date from there)
+and started automatically, including a one-time admin credential bootstrap. The agent itself is not in the
 video/input path; it only pairs with and relays PINs to Sunshine's local API
 (port 47990) on behalf of usbridge_client.
 

@@ -52,6 +52,14 @@ type Status struct {
 	// PunktfunkUpdateInProgress mirrors RustShineUpdateInProgress for
 	// CheckPunktfunkUpdateNow.
 	PunktfunkUpdateInProgress bool `json:"punktfunk_update_in_progress,omitempty"`
+	// SunshineUpdatable: Sunshine comes from Streamers-Forks here (Windows)
+	// rather than with the agent, so its card offers "check for updates".
+	SunshineUpdatable bool `json:"sunshine_updatable,omitempty"`
+	// SunshineVersion is the downloaded Sunshine's release tag, "" while
+	// a bundled one (older agent install) or none is in use.
+	SunshineVersion string `json:"sunshine_version,omitempty"`
+	// SunshineUpdateInProgress: a Sunshine download or update is running.
+	SunshineUpdateInProgress bool `json:"sunshine_update_in_progress,omitempty"`
 	// RustShineStaged is true once the binary has actually been
 	// downloaded and verified onto disk -- switching to RustShine before
 	// this is true requires a download first.

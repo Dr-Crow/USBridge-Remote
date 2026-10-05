@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -317,9 +318,24 @@ func generatePassword() string {
 	return hex.EncodeToString(b)
 }
 
+// sunshineStageBinary is the Sunshine the agent downloaded from
+// Streamers-Forks (forkrelease.SunshineBinary), set by the app on Windows,
+// where the agent no longer ships one. Once there it is preferred over a
+// bundled one an older agent install still has.
+var sunshineStageBinary atomic.Value // string
+
+// SetSunshineStageBinary tells binaryPath where the agent's own downloaded
+// Sunshine is.
+func SetSunshineStageBinary(path string) { sunshineStageBinary.Store(path) }
+
 // binaryPath returns the path to the sunshine binary, or "" if it can't be
 // found (not installed/bundled, or unsupported OS).
 func (b *sunshineBackend) binaryPath() string {
+	if p, _ := sunshineStageBinary.Load().(string); p != "" {
+		if info, err := os.Stat(p); err == nil && !info.IsDir() {
+			return p
+		}
+	}
 	exeDir := b.exeDir
 	switch runtime.GOOS {
 	case "linux":
@@ -572,6 +588,19 @@ func (b *sunshineBackend) Start(adminPort int) error {
 			return err
 		}
 	}
+	if runtime.GOOS == "windows" && b.proc == nil {
+		// The agent may have downloaded Sunshine since this backend was
+		// built (first run, or an update replacing a bundled one).
+		if p := b.binaryPath(); p != "" && p != b.launchPath {
+			if _, err := os.Stat(p); err == nil {
+				log.Printf("[sunshine] using %s", p)
+				b.launchPath = p
+				if b.windowsDir == "" {
+					b.windowsDir = filepath.Dir(p)
+				}
+			}
+		}
+	}
 	if b.launchPath == "" {
 		return nil
 	}
@@ -643,6 +672,7 @@ func (b *sunshineBackend) Start(adminPort int) error {
 	// Start() stays paired here too, instead of needing a fresh PIN just
 	// because the active backend changed. Best-effort: never blocks Start
 	// over it, same discipline as ensureSunshineStateFile above.
+	b.importLegacySunshinePairings()
 	ReconcileSharedAuth(b.stateDir)
 
 	// Set a fresh random admin password before starting Sunshine so the

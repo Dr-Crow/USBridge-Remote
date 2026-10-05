@@ -115,7 +115,7 @@ func (b *sunshineBackend) sunshineConfigArgs() []string {
 	if dir == "" {
 		return nil
 	}
-	return []string{
+	args := []string{
 		b.ConfigPath(),
 		// file_state is where Sunshine keeps root.uniqueid and
 		// root.named_devices (nvhttp.cpp); credentials_file only holds the
@@ -130,6 +130,65 @@ func (b *sunshineBackend) sunshineConfigArgs() []string {
 		"pkey=" + b.pkeyPath(),
 		"cert=" + b.certPath(),
 	}
+	if runtime.GOOS == "windows" {
+		// file_state holds the paired clients. Unset, Windows Sunshine kept
+		// it in config\ next to its exe, where shared pairing (shared_auth.go)
+		// never looked and a downloaded Sunshine's new folder lost it. It is
+		// the file credentials_file names, as in Sunshine's own defaults;
+		// importLegacySunshinePairings moves the old list over once.
+		args = append(args, "file_state="+b.credentialsFilePath())
+	}
+	return args
+}
+
+// importLegacySunshinePairings copies the clients paired in a Windows
+// Sunshine's old file_state (config\sunshine_state.json next to the bundled
+// or downloaded sunshine.exe, see sunshineConfigArgs) into the managed state
+// file, once; the marker file records it. Unpaired-since clients are dropped
+// again by ReconcileSharedAuth's tombstones.
+func (b *sunshineBackend) importLegacySunshinePairings() {
+	if runtime.GOOS != "windows" || b.stateDir == "" {
+		return
+	}
+	dir := b.sunshineDataDir()
+	if dir == "" {
+		return
+	}
+	marker := filepath.Join(dir, ".legacy_pairings_imported")
+	if _, err := os.Stat(marker); err == nil {
+		return
+	}
+	var candidates []string
+	if b.launchPath != "" {
+		candidates = append(candidates, filepath.Join(filepath.Dir(b.launchPath), "config", "sunshine_state.json"))
+	}
+	if b.exeDir != "" {
+		candidates = append(candidates, filepath.Join(b.exeDir, "sunshine", "config", "sunshine_state.json"))
+	}
+	uuid, merged, _ := readSunshineTrusted(b.stateDir)
+	seen := 0
+	for _, p := range candidates {
+		_, legacy, _ := readSunshineTrustedFile(p)
+		for _, c := range legacy {
+			seen++
+			merged = mergeClient(merged, c)
+			// Sunshine's own record names the client; a copy that came
+			// through another backend may not.
+			for i := range merged {
+				if merged[i].Fingerprint == c.Fingerprint && c.Name != "" {
+					merged[i].Name = c.Name
+				}
+			}
+		}
+	}
+	if seen > 0 {
+		if err := writeSunshineTrusted(b.stateDir, uuid, merged); err != nil {
+			log.Printf("[sunshine] could not import the paired clients from the old state file: %v", err)
+			return
+		}
+		log.Printf("[sunshine] took %d paired client(s) over from the old state file next to sunshine.exe", seen)
+	}
+	_ = os.WriteFile(marker, []byte("1\n"), 0o644)
 }
 
 // legacyDataDir returns the directory this agent's managed Sunshine used to
