@@ -137,6 +137,19 @@ func List() ([]Monitor, error) {
 	return out, nil
 }
 
+// GDINames is every active monitor's GDI name (`\.\DISPLAYn`) in
+// EnumDisplayMonitors order -- unsorted, the order kbinani/screenshot indexes
+// displays in, so its index i is GDINames()[i].
+func GDINames() []string {
+	var infos []monitorInfoEx
+	withDPIContext(dpiContextPerMonitorAware2, func() { infos = enumMonitors() })
+	out := make([]string, 0, len(infos))
+	for _, mi := range infos {
+		out = append(out, windows.UTF16ToString(mi.SzDevice[:]))
+	}
+	return out
+}
+
 // LogicalOrigin is the monitor's top-left corner as a DPI-unaware program
 // sees it -- the space ffplay's -left/-top (SDL) positions its window in.
 // With display scaling those are not the physical pixels List reports.

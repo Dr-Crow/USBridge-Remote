@@ -431,6 +431,11 @@ type SystemDevice struct {
 	// primary display (taskbar and new windows open there). Nil from agents
 	// that don't support it.
 	Primary *bool `json:"primary,omitempty"`
+	// MonitorID / Enabled: Windows agents only -- a monitor (physical, or the
+	// virtual one) the client can switch on and off. MonitorID is stable while
+	// the monitor is off; a switched-off one is listed with Enabled false.
+	MonitorID string `json:"monitor_id,omitempty"`
+	Enabled   *bool  `json:"enabled,omitempty"`
 }
 
 // AudioStartRequest request to start audio capture.

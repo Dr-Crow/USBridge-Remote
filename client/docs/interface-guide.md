@@ -51,6 +51,21 @@ screen you can't see.
 - Windows Agents only for now (RustShine 0.3.131+). On older Agents the
   checkbox has no effect and the **Main** switch doesn't appear.
 
+### Switching the remote computer's monitors on and off (Agent)
+
+Every monitor on a Windows Agent's Devices list has an **On** switch. This
+covers its physical screens and the virtual display. Lit means the monitor is
+part of the remote desktop. Tap it to switch the monitor off or back on: it
+does what Windows' own "Disconnect this display" does, and needs no
+administrator rights.
+
+- A switched-off monitor stays on the list as "(off)", so it can be switched
+  back on from here.
+- Switching off the main screen makes another one the main screen.
+- The Agent refuses to switch off the only active screen, so the remote
+  computer always has a desktop.
+- Windows Agents 3.0.99+ only; older Agents show no **On** switch.
+
 ---
 
 ## 3. Snapshots Tab

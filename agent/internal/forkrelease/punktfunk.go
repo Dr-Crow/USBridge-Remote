@@ -202,22 +202,54 @@ func PreparePunktfunk(ctx context.Context, stateDir string, onProgress ProgressF
 	return &PreparedPunktfunk{stateDir: stateDir, nextDir: next, Version: m.Version}, nil
 }
 
-// Commit swaps the prepared build in. On Windows punktfunk-host must not be
-// running (a running .exe can't be replaced); the caller stops it first.
+// Commit puts the prepared build's files (punktfunk-host, the Linux encode
+// worker, VERSION) into the live dir, one file at a time.
+//
+// The live dir is also punktfunk-host's config dir (the agent's
+// PUNKTFUNK_CONFIG_DIR): identity keys, pairings, settings. Swapping the whole
+// dir, as this used to, deleted all of that with the old build -- and on
+// Windows the rename failed with "Access is denied" whenever punktfunk-host
+// was running from it. A file in the way is renamed to <name>.old first:
+// Windows lets a running .exe be renamed though not overwritten, so this also
+// works while the old host is still shutting down. VERSION goes last, so a
+// failure part way leaves the old version recorded and the next check retries.
 func (p *PreparedPunktfunk) Commit() error {
 	live := PunktfunkDir(p.stateDir)
-	old := live + ".old"
-	_ = os.RemoveAll(old)
-	if _, err := os.Stat(live); err == nil {
-		if err := renameRetry(live, old); err != nil {
-			return fmt.Errorf("move the old punktfunk-host aside: %w", err)
+	if err := os.MkdirAll(live, 0o755); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(p.nextDir)
+	if err != nil {
+		return err
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && e.Name() != "VERSION" {
+			names = append(names, e.Name())
 		}
 	}
-	if err := renameRetry(p.nextDir, live); err != nil {
-		_ = os.Rename(old, live)
-		return fmt.Errorf("put the new punktfunk-host in place: %w", err)
+	names = append(names, "VERSION")
+	for _, name := range names {
+		src := filepath.Join(p.nextDir, name)
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		dst := filepath.Join(live, name)
+		old := dst + ".old"
+		_ = os.Remove(old)
+		if _, err := os.Stat(dst); err == nil {
+			if err := renameRetry(dst, old); err != nil {
+				return fmt.Errorf("move the old %s aside: %w", name, err)
+			}
+		}
+		if err := renameRetry(src, dst); err != nil {
+			_ = os.Rename(old, dst)
+			return fmt.Errorf("put the new %s in place: %w", name, err)
+		}
+		// Fails while the old .exe still runs; the next Commit clears it.
+		_ = os.Remove(old)
 	}
-	_ = os.RemoveAll(old)
+	_ = os.RemoveAll(p.nextDir)
 	return nil
 }
 

@@ -2031,6 +2031,28 @@ func (c *USBClient) SetVirtualDisplayPrimary(id string, primary bool) error {
 	return nil
 }
 
+// SetMonitorEnabled switches one of the agent's monitors (physical or
+// virtual) on or off, like Windows' "Disconnect this display". The agent
+// refuses to switch off its only active display.
+func (c *USBClient) SetMonitorEnabled(monitorID string, enabled bool) error {
+	body, err := json.Marshal(map[string]any{"monitor_id": monitorID, "enabled": enabled})
+	if err != nil {
+		return err
+	}
+	resp, err := c.makeRequest("POST", "/api/video/monitors/enabled", body)
+	if err != nil {
+		return err
+	}
+	var apiResp models.APIResponse
+	if err := json.Unmarshal(resp, &apiResp); err != nil {
+		return fmt.Errorf("failed to parse response: %v", err)
+	}
+	if !apiResp.Success {
+		return fmt.Errorf("API error: %s", apiResp.Message)
+	}
+	return nil
+}
+
 func (c *USBClient) RemoveVirtualDisplay(id string) (*models.APIResponse, error) {
 	resp, err := c.makeRequest("DELETE", "/api/video/virtual_displays/"+url.PathEscape(id), nil)
 	if err != nil {

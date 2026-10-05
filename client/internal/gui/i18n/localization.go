@@ -66,6 +66,9 @@ type LocalizedStrings struct {
 	VirtualDisplayPrimaryHint         string
 	VirtualDisplayPrimaryToggle       string
 	VirtualDisplayPrimaryFailed       string
+	MonitorPowerToggle                string
+	MonitorPowerFailed                string
+	MonitorPowerLastDisplay           string
 	TailscaleRedirectHint             string
 	AutoRegistrationBadge             string
 	ConnectionBadgeUnknown            string
@@ -729,6 +732,9 @@ func EN() *LocalizedStrings {
 		VirtualDisplayPrimaryHint:         "The taskbar and new windows open on it. Turn it off any time with the display's Main switch.",
 		VirtualDisplayPrimaryToggle:       "Main",
 		VirtualDisplayPrimaryFailed:       "Couldn't switch the main display: %v",
+		MonitorPowerToggle:                "On",
+		MonitorPowerFailed:                "Couldn't switch the monitor: %v",
+		MonitorPowerLastDisplay:           "This is the remote computer's only active screen -- switch another one on first.",
 		TailscaleRedirectHint:             "After connection, the redirect will open on the web.",
 		AutoRegistrationBadge:             "AUTO-REGISTRATION",
 		ConnectionBadgeUnknown:            "Unknown",
@@ -1383,6 +1389,9 @@ func ES() *LocalizedStrings {
 	locale.VirtualDisplayPrimaryHint = "La barra de tareas y las ventanas nuevas se abren en ella. Desactivalo cuando quieras con el interruptor Principal."
 	locale.VirtualDisplayPrimaryToggle = "Principal"
 	locale.VirtualDisplayPrimaryFailed = "No se pudo cambiar la pantalla principal: %v"
+	locale.MonitorPowerToggle = "Encendido"
+	locale.MonitorPowerFailed = "No se pudo cambiar el monitor: %v"
+	locale.MonitorPowerLastDisplay = "Es la única pantalla activa del equipo remoto: enciende otra primero."
 	locale.TailscaleRedirectHint = "Tras conectar, la redireccion se abrira en el navegador."
 	locale.AutoRegistrationBadge = "AUTO-REGISTRO"
 	locale.QRScanSuccess = "Codigo QR escaneado"
@@ -1778,6 +1787,9 @@ func UKProper() *LocalizedStrings {
 	locale.VirtualDisplayPrimaryHint = "Панель завдань і нові вікна відкриваються на ньому. Вимкнути можна будь-коли перемикачем «Основний»."
 	locale.VirtualDisplayPrimaryToggle = "Основний"
 	locale.VirtualDisplayPrimaryFailed = "Не вдалося змінити основний дисплей: %v"
+	locale.MonitorPowerToggle = "Увімк."
+	locale.MonitorPowerFailed = "Не вдалося перемкнути монітор: %v"
+	locale.MonitorPowerLastDisplay = "Це єдиний активний екран віддаленого комп'ютера -- спершу увімкніть інший."
 	locale.TailscaleRedirectHint = "Після конекту редірект відкриється в браузері."
 	locale.AutoRegistrationBadge = "АВТОРЕЄСТРАЦІЯ"
 	locale.QRScanSuccess = "QR-код відскановано"

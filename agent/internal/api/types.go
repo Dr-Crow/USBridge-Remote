@@ -122,6 +122,12 @@ type VideoDeviceInfo struct {
 	// Primary: virtual displays only -- whether it is made the primary
 	// display (see Application.SetVirtualDisplayPrimary).
 	Primary *bool `json:"primary,omitempty"`
+	// MonitorID / Enabled: Windows monitors the client can switch on and off
+	// (displaypower; physical ones and the MttVDD virtual monitor). MonitorID
+	// is the monitor's device path, stable while it is off. A switched-off
+	// monitor is listed with Connected false and Enabled false.
+	MonitorID string `json:"monitor_id,omitempty"`
+	Enabled   *bool  `json:"enabled,omitempty"`
 }
 
 type LegacyDeviceInfo struct {
