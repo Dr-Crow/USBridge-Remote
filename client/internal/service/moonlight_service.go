@@ -496,9 +496,18 @@ func (m *MoonlightService) ConnectToMoonlight() error {
 	// think we're asking for" and "what the server says it supports" is
 	// visible without needing to attach a debugger. Safe to leave in --
 	// one line per connection attempt, not a hot path.
-	requestedVideoFormat := moonlightVideoFormat(m.videoMode, m.color444, m.hdr)
+	// Only ask for HDR if this client can show it right now (the checkbox
+	// may have been saved while Windows HDR was on, or on another monitor):
+	// an HDR stream the display can't show would have to be tone-mapped
+	// client-side, which is expensive. See HdrDisplaySupported.
+	hdr := m.hdr
+	if hdr && !HdrDisplaySupported() {
+		hdr = false
+		logrus.Infof("🌕 [Moonlight/HDR-debug] HDR requested but this display/decoder can't show it now -- asking the host for SDR")
+	}
+	requestedVideoFormat := moonlightVideoFormat(m.videoMode, m.color444, hdr)
 	logrus.Infof("🌕 [Moonlight/HDR-debug] mode=%s color444=%v hdr=%v -> requestedVideoFormat=0x%04X, serverCodecModeSupport=0x%08X",
-		m.videoMode, m.color444, m.hdr, requestedVideoFormat, serverInfo.ServerCodecModeSupport)
+		m.videoMode, m.color444, hdr, requestedVideoFormat, serverInfo.ServerCodecModeSupport)
 	logrus.Infof("🎯 [CODEC-TRACE] ConnectToMoonlight: about to call wrapper.StartStream with requestedVideoFormat=0x%04X (from videoMode=%q) -- this bitmask is what actually drives RTSP codec negotiation with the server, independent of /launch's \"mode\" param",
 		requestedVideoFormat, m.videoMode)
 

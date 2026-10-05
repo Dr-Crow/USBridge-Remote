@@ -1,6 +1,6 @@
 //go:build windows && cgo
 
-// Cache-bust (rev 10): go build's cache doesn't see changes to libmoonlight-common-c.a
+// Cache-bust (rev 12): go build's cache doesn't see changes to libmoonlight-common-c.a
 // (only referenced via CGO_LDFLAGS -l, not a tracked Go source dependency), so
 // a C-only submodule edit silently relinks against a stale .a unless some .go
 // file in this package also changes. Bump this comment whenever that happens.
@@ -11,7 +11,7 @@ package service
 #cgo CFLAGS: -I${SRCDIR}/../../moonlight-common-c/src -I${SRCDIR}/../../moonlight-common-c/enet/include
 #cgo LDFLAGS: -L${SRCDIR}/../../moonlight-common-c/build -L${SRCDIR}/../../moonlight-common-c/build/enet -lmoonlight-common-c -lenet -lws2_32 -lwinmm
 #cgo LDFLAGS: -lavcodec -lavutil -lswscale
-#cgo LDFLAGS: -lole32 -loleaut32 -luuid -lmfplat -lmfuuid
+#cgo LDFLAGS: -lole32 -loleaut32 -luuid -lmfplat -lmfuuid -ld3d11 -ldxgi
 
 #define COBJMACROS
 #define INITGUID
@@ -67,9 +67,14 @@ extern int vk_video_try_submit(uint8_t *rgba, int width, int height, int stride)
 // for GPU-side YCbCr sampling (see win_deliver_frame's AV_PIX_FMT_VULKAN
 // branch below). release_ctx/release_fn let the renderer free the AVFrame
 // ref that keeps the VkImage's memory alive once its own GPU work retires.
+// wait_sem/wait_value: the AVVkFrame's timeline semaphore and the value its
+// decode signals -- the render thread waits on exactly that instead of
+// idling ffmpeg's whole decode queue.
+// external: the image is imported from D3D11 (d3d11_interop_windows.c) and
+// must be acquired from / released to VK_QUEUE_FAMILY_EXTERNAL.
 extern int vk_video_try_submit_vkframe(void *vk_image, int vk_format, int vk_layout, int width, int height,
-                                        int narrow_range, void *release_ctx,
-                                        void (*release_fn)(void *));
+                                        int narrow_range, void *wait_sem, uint64_t wait_value, int external,
+                                        void *release_ctx, void (*release_fn)(void *));
 // GDI fallback (gl_video_impl_windows.c) — BGRA format.
 extern int gl_video_is_active(void);
 extern int gl_video_try_submit(uint8_t *bgra, int width, int height, int stride);
@@ -296,6 +301,16 @@ static void ar_decode(char *data, int len) {
 extern int  goAIVisionShouldSample(void);
 extern void goAIVisionSample(uint8_t *rgba, int width, int height, int stride);
 extern AVBufferRef *win_vk_hwdev_ctx_ref(void);
+// D3D11VA decode -> Vulkan renderer bridge (d3d11_interop_windows.c).
+extern AVBufferRef *d3dx_device_ref(void);
+extern int d3dx_deliver(AVFrame *frame, void **out_img, int *out_vkfmt, void **out_sem, uint64_t *out_val, void **out_release_ctx);
+extern void d3dx_release_slot(void *ctx);
+extern AVFrame *d3dx_download(AVFrame *frame);
+// PyroWave GPU decode (pyrowave_decode_windows.c).
+extern int pyrowave_win_decode(const uint8_t *au, size_t len, void **out_img, int *out_vkfmt, void **out_sem,
+                               uint64_t *out_val, int *out_w, int *out_h, void **out_slot);
+extern void pyrowave_win_release_slot(void *ctx);
+extern void pyrowave_win_stream_reset(void);
 extern void vk_frame_release_avframe(void *ctx);
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -307,6 +322,8 @@ static struct SwsContext *g_sws         = NULL;
 static AVBufferRef       *g_hw_dev_ctx  = NULL;
 static enum AVPixelFormat g_hw_pix_fmt  = AV_PIX_FMT_NONE;
 static int                g_using_vulkan_decode = 0; // set once the Vulkan zero-copy tier is committed for this session
+static int                g_using_d3dx_decode   = 0; // D3D11VA decode copied into Vulkan (d3d11_interop_windows.c)
+static int                g_using_pyrowave      = 0; // VIDEO_FORMAT_PYROWAVE: pyrowave_decode_windows.c, no libavcodec
 static enum AVPixelFormat g_av_dst_fmt  = AV_PIX_FMT_NONE;
 static int                g_av_w        = 0;
 static int                g_av_h        = 0;
@@ -322,6 +339,21 @@ static uint64_t           g_av_frame_cnt = 0;
 // silently breaks HEVC/AV1 sessions (the decoder rejects bitstream it can't
 // parse as H264).
 static int g_video_format = 0x0001;
+static int g_stream_w = 0, g_stream_h = 0, g_stream_fps = 0; // also from dr_setup
+
+// win_vk_decode_threads: libavcodec threads for the Vulkan Video decoder.
+// With one thread ffmpeg decodes strictly one frame at a time -- measured on
+// a Radeon 780M, 4K HEVC tops out at ~104fps (9.6ms/frame), so a 4K@120
+// stream can never keep up. Two frame threads keep two decodes in flight
+// (~200fps) at the cost of exactly one frame of added latency (frame
+// threading needs AV_CODEC_FLAG_LOW_DELAY off), which is why it's only used
+// above a 4K@60 pixel rate. USBRIDGE_DECODE_THREADS overrides.
+static int win_vk_decode_threads(void) {
+    const char *v = getenv("USBRIDGE_DECODE_THREADS");
+    if (v && atoi(v) > 0) return atoi(v);
+    double px_rate = (double)g_stream_w * (double)g_stream_h * (double)g_stream_fps;
+    return px_rate > 3840.0 * 2160.0 * 60.0 ? 2 : 1;
+}
 
 static enum AVPixelFormat win_get_hw_format(AVCodecContext *ctx,
                                              const enum AVPixelFormat *fmts) {
@@ -403,7 +435,37 @@ static void win_av_init(void) {
         return;
     }
 
-    // Tier 0: real Vulkan Video Decode (VK_KHR_video_decode_h264/h265),
+    // Tier 0: D3D11VA decode -- what moonlight-qt uses on Windows -- copied
+    // on the GPU into images the Vulkan renderer imports
+    // (d3d11_interop_windows.c). On a Radeon 780M it decodes 4K HEVC at
+    // ~232 fps on one thread vs ~151 fps for ffmpeg's Vulkan decoder, with
+    // lower tail latency at 120 fps (docs/WINDOWS_DECODE_PIPELINE.md), and
+    // the renderer never touches an image libavcodec still uses as a
+    // reference. USBRIDGE_DECODER=vulkan skips it.
+    {
+        const char *dec_env = getenv("USBRIDGE_DECODER");
+        AVBufferRef *dx_ref = (dec_env && _stricmp(dec_env, "vulkan") == 0) ? NULL : d3dx_device_ref();
+        if (dx_ref) {
+            g_hw_pix_fmt = AV_PIX_FMT_D3D11;
+            g_avctx = avcodec_alloc_context3(codec);
+            g_avctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+            g_avctx->hw_device_ctx = dx_ref; // ownership transferred
+            g_avctx->get_format = win_get_hw_format;
+            if (avcodec_open2(g_avctx, codec, NULL) == 0) {
+                g_using_d3dx_decode = 1;
+                char msg[160];
+                snprintf(msg, sizeof(msg), "libavcodec/win: using %s (hardware D3D11VA -> Vulkan zero-copy interop, %dx%d@%d)",
+                         codec_label, g_stream_w, g_stream_h, g_stream_fps);
+                goVTLog(msg);
+                return;
+            }
+            avcodec_free_context(&g_avctx);
+            g_hw_pix_fmt = AV_PIX_FMT_NONE;
+            goVTLog((char*)"libavcodec/win: D3D11VA interop decoder rejected this codec/profile -- trying Vulkan Video Decode");
+        }
+    }
+
+    // Tier 1: real Vulkan Video Decode (VK_KHR_video_decode_h264/h265),
     // zero-copy -- decode and presentation share one VkDevice/VkImage, no
     // CPU readback, no sws_scale. Validated standalone (decode, same-device
     // plane readback, and a real VkSamplerYcbcrConversion render pass all
@@ -431,13 +493,21 @@ static void win_av_init(void) {
             int openErr = avcodec_open2(test, codec, NULL);
             avcodec_free_context(&test);
             if (openErr == 0) {
+                int threads = win_vk_decode_threads();
                 g_avctx = avcodec_alloc_context3(codec);
+                if (threads > 1) {
+                    g_avctx->thread_count = threads;
+                    g_avctx->thread_type = FF_THREAD_FRAME;
+                } else {
+                    g_avctx->flags |= AV_CODEC_FLAG_LOW_DELAY; // same as moonlight-qt: no reorder delay
+                }
                 g_avctx->hw_device_ctx = vk_ref; // ownership transferred
                 g_avctx->get_format = win_get_hw_format;
                 if (avcodec_open2(g_avctx, codec, NULL) == 0) {
                     g_using_vulkan_decode = 1;
-                    char msg[96];
-                    snprintf(msg, sizeof(msg), "libavcodec/win: using %s (hardware Vulkan Video Decode, zero-copy)", codec_label);
+                    char msg[160];
+                    snprintf(msg, sizeof(msg), "libavcodec/win: using %s (hardware Vulkan Video Decode, zero-copy, %d decode thread%s, %dx%d@%d)",
+                             codec_label, threads, threads > 1 ? "s" : "", g_stream_w, g_stream_h, g_stream_fps);
                     goVTLog(msg);
                     return;
                 }
@@ -496,6 +566,7 @@ static void win_av_init(void) {
     }
 
     g_avctx = avcodec_alloc_context3(codec);
+    g_avctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
     if (g_hw_dev_ctx) {
         g_avctx->hw_device_ctx = av_buffer_ref(g_hw_dev_ctx);
         g_avctx->get_format    = win_get_hw_format;
@@ -519,10 +590,10 @@ static double win_mono_ms(void) {
     return (double)now.QuadPart * 1000.0 / (double)freq.QuadPart;
 }
 
-// win_deliver_frame runs synchronously on the RTP video-receive thread (see
-// dr_submit's call site -- CAPABILITY_DIRECT_SUBMIT means there is no separate
-// decode thread on this path). Anything slow in here delays draining the video
-// UDP socket, not just presentation: a stall long enough can overflow the
+// win_deliver_frame runs on the decode thread (pull/thread modes), or -- with
+// USBRIDGE_DECODE_MODE=direct only -- synchronously on the RTP video-receive
+// thread. In direct mode anything slow in here delays draining the video UDP
+// socket, not just presentation: a stall long enough can overflow the
 // kernel receive buffer and look identical to real network packet loss in the
 // Moonlight/RFI logs (many frames "unrecoverable" in the same instant, then a
 // full IDR resync) even though nothing was actually lost on the wire. The
@@ -541,6 +612,165 @@ static double win_mono_ms(void) {
 // vk_frame_release_avframe (passed as the release callback) drops that ref
 // at that point. If the renderer rejects the frame (not active / not yet
 // initialized), the ref is dropped immediately instead of leaking.
+// win_readback_thread: GPU->CPU copy of a decoded Vulkan frame for the two
+// consumers that need real pixels -- the GUI's first frame / pre-overlay
+// display (goVTFrame) and AI Vision's detector (goAIVisionSample). Single
+// slot: a frame posted while one is still being converted is dropped. The
+// cloned AVFrame keeps its hw frames context (and so the VkImage) alive even
+// if the stream stops meanwhile; this thread has its own sws context.
+static CRITICAL_SECTION g_rb_cs;
+static HANDLE   g_rb_event  = NULL;
+static HANDLE   g_rb_thread = NULL;
+static AVFrame *g_rb_frame  = NULL;
+static int      g_rb_vtframe = 0;
+static LONG     g_rb_gen = 0;
+static int      g_vk_session_frames = 0; // frames this stream; reset in dr_setup
+static int      g_vk_overlay_seen = 0;   // overlay was active at some point this stream
+// g_stream_gen changes at every stream start and stop. A readback job is
+// only delivered if the generation it was taken in is still current: a
+// conversion finishing after its stream stopped (or after the next one
+// started) used to reach the GUI as that stream's "first frame" and create a
+// second Vulkan overlay on top of the live one -- broken swapchain, fence
+// timeouts, a frozen picture left over the UI.
+static volatile LONG g_stream_gen = 0;
+
+static DWORD WINAPI win_readback_thread(LPVOID arg) {
+    (void)arg;
+    struct SwsContext *sws = NULL;
+    int sws_w = 0, sws_h = 0, sws_fmt = -1;
+    for (;;) {
+        WaitForSingleObject(g_rb_event, INFINITE);
+        EnterCriticalSection(&g_rb_cs);
+        AVFrame *frame = g_rb_frame;
+        int vtframe = g_rb_vtframe;
+        LONG gen = g_rb_gen;
+        g_rb_frame = NULL;
+        LeaveCriticalSection(&g_rb_cs);
+        if (!frame) continue;
+        if (gen != g_stream_gen) { av_frame_free(&frame); continue; }
+
+        // D3D11VA frames go through d3dx_download, which never waits for
+        // the GPU while holding the device lock D3D11VA decode needs.
+        AVFrame *sw = NULL;
+        int got = 0;
+        if (frame->format == AV_PIX_FMT_D3D11) {
+            sw = d3dx_download(frame);
+            got = sw != NULL;
+        } else {
+            sw = av_frame_alloc();
+            got = sw && av_hwframe_transfer_data(sw, frame, 0) == 0;
+        }
+        if (got) {
+            int w = frame->width, h = frame->height;
+            if (!sws || w != sws_w || h != sws_h || sw->format != sws_fmt) {
+                if (sws) sws_freeContext(sws);
+                sws = sws_getContext(w, h, (enum AVPixelFormat)sw->format, w, h, AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL);
+                sws_w = w; sws_h = h; sws_fmt = sw->format;
+            }
+            uint8_t *pixels = sws ? (uint8_t*)malloc((size_t)w * (size_t)h * 4) : NULL;
+            if (pixels) {
+                uint8_t *dst[4]   = { pixels, NULL, NULL, NULL };
+                int dst_stride[4] = { w * 4, 0, 0, 0 };
+                sws_scale(sws, (const uint8_t *const *)sw->data, sw->linesize, 0, h, dst, dst_stride);
+                if (gen == g_stream_gen) {
+                    goAIVisionSample(pixels, w, h, w * 4);
+                    if (vtframe && !(vk_video_is_active() || gl_video_is_active())) goVTFrame(pixels, w, h, w * 4);
+                }
+                free(pixels);
+            }
+        }
+        if (sw) av_frame_free(&sw);
+        av_frame_free(&frame);
+    }
+    return 0;
+}
+
+// win_readback_cancel drops a queued (not yet started) readback job.
+static void win_readback_cancel(void) {
+    if (!g_rb_thread) return;
+    EnterCriticalSection(&g_rb_cs);
+    if (g_rb_frame) av_frame_free(&g_rb_frame);
+    LeaveCriticalSection(&g_rb_cs);
+}
+
+static void win_readback_post(AVFrame *frame, int vtframe) {
+    if (!g_rb_thread) {
+        InitializeCriticalSection(&g_rb_cs);
+        g_rb_event = CreateEvent(NULL, FALSE, FALSE, NULL);
+        g_rb_thread = CreateThread(NULL, 0, win_readback_thread, NULL, 0, NULL);
+        // Background work (AI Vision sampling): never ahead of decode.
+        if (g_rb_thread) SetThreadPriority(g_rb_thread, THREAD_PRIORITY_BELOW_NORMAL);
+    }
+    EnterCriticalSection(&g_rb_cs);
+    if (!g_rb_frame) {
+        g_rb_frame = av_frame_clone(frame);
+        g_rb_vtframe = vtframe;
+        g_rb_gen = g_stream_gen;
+    }
+    LeaveCriticalSection(&g_rb_cs);
+    SetEvent(g_rb_event);
+}
+
+// win_frame_notify: per-frame GUI/stats notification shared by the
+// zero-copy paths (Vulkan Video decode and D3D11VA interop).
+static void win_frame_notify(AVFrame *frame) {
+    // The readback itself runs on win_readback_thread, never here: a 4K
+    // transfer + sws_scale costs ~270ms, and on the decode thread that
+    // overflowed moonlight-common-c's 15-frame queue on the first frame of
+    // every session (flush -> ~1.5s of "Waiting for IDR frame").
+    //
+    // No CPU copy is needed to bring the overlay up: a nil-pixels goVTFrame
+    // on frame 1 already makes the video widget create the Vulkan overlay
+    // (handleVideoFrame's frame == nil branch), with the size taken from
+    // noteNativeFrameSize. Pixels are only read back if the overlay still
+    // isn't up ~2s in (fallback to the Fyne canvas), or for AI Vision.
+    // Only while the overlay has never come up this stream: it is also
+    // briefly inactive while a stream is being torn down or restarted, and a
+    // readback taken then is exactly the stale frame g_stream_gen guards
+    // against.
+    int native_overlay_active = vk_video_is_active() || gl_video_is_active();
+    if (native_overlay_active) g_vk_overlay_seen = 1;
+    int session_frame = ++g_vk_session_frames;
+    if (!native_overlay_active && !g_vk_overlay_seen && session_frame > 2 * (g_stream_fps > 0 ? g_stream_fps : 60)) {
+        win_readback_post(frame, 1);
+    } else {
+        if (goAIVisionShouldSample()) win_readback_post(frame, 0);
+        // Stats-only notification (first-frame log, FPS counter, overlay
+        // bootstrap on frame 1).
+        goVTFrame(NULL, frame->width, frame->height, 0);
+    }
+
+}
+
+// win_deliver_frame_d3dx: D3D11VA frame -> GPU copy into an imported image
+// (d3dx_deliver) -> renderer. The ring slot comes back to d3dx via
+// d3dx_release_slot once the renderer's read of it has retired.
+static void win_deliver_frame_d3dx(AVFrame *frame) {
+    double t_start = win_mono_ms();
+    win_frame_notify(frame);
+    void *img = NULL, *sem = NULL, *slot = NULL;
+    int vkfmt = 0;
+    uint64_t val = 0;
+    if (d3dx_deliver(frame, &img, &vkfmt, &sem, &val, &slot)) {
+        if (!vk_video_try_submit_vkframe(img, vkfmt, 0, frame->width, frame->height,
+                                          1, sem, val, 1, slot, d3dx_release_slot)) {
+            d3dx_release_slot(slot);
+        }
+    }
+    if (++g_av_frame_cnt == 1) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "libavcodec/win: first video frame decoded (D3D11VA -> Vulkan) %dx%d", frame->width, frame->height);
+        goVTLog(msg);
+    }
+    double t_end = win_mono_ms();
+    g_last_decode_ms = t_end - t_start;
+    if (t_end - t_start > WIN_DELIVER_SLOW_MS) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "SLOW win_deliver_frame(d3d11) %.0fms", t_end - t_start);
+        goVTLog(msg);
+    }
+}
+
 static void win_deliver_frame_vulkan(AVFrame *frame) {
     double t_start = win_mono_ms();
     AVVkFrame *vkf = (AVVkFrame*)frame->data[0];
@@ -582,42 +812,15 @@ static void win_deliver_frame_vulkan(AVFrame *frame) {
     // macOS), fed by pushNetGraphOverlayToVulkan/pushAIVisionOverlayToVulkan
     // via vk_hud_set_pixels/vk_aivision_set_pixels, independent of this
     // function entirely.
-    int native_overlay_active = vk_video_is_active() || gl_video_is_active();
-    if (goAIVisionShouldSample() || !native_overlay_active) {
-        AVFrame *sw = av_frame_alloc();
-        if (sw && av_hwframe_transfer_data(sw, frame, 0) == 0) {
-            sw->width = frame->width; sw->height = frame->height;
-            int w = sw->width, h = sw->height;
-            if (!g_sws || w != g_av_w || h != g_av_h || g_av_dst_fmt != AV_PIX_FMT_RGBA) {
-                if (g_sws) sws_freeContext(g_sws);
-                g_sws = sws_getContext(w, h, (enum AVPixelFormat)sw->format, w, h, AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL);
-                g_av_w = w; g_av_h = h; g_av_dst_fmt = AV_PIX_FMT_RGBA;
-            }
-            if (g_sws) {
-                uint8_t *pixels = (uint8_t*)malloc((size_t)w * (size_t)h * 4);
-                if (pixels) {
-                    uint8_t *dst[4]   = { pixels, NULL, NULL, NULL };
-                    int dst_stride[4] = { w * 4, 0, 0, 0 };
-                    sws_scale(g_sws, (const uint8_t *const *)sw->data, sw->linesize, 0, h, dst, dst_stride);
-                    goAIVisionSample(pixels, w, h, w * 4);
-                    goVTFrame(pixels, w, h, w * 4);
-                    free(pixels);
-                }
-            }
-        }
-        if (sw) av_frame_free(&sw);
-    } else {
-        // Stats-only notification (first-frame log, FPS counter) -- matches
-        // goVTFrame's own NativeVideoOverlayIsActive() nil-pixels branch.
-        goVTFrame(NULL, frame->width, frame->height, 0);
-    }
+    win_frame_notify(frame);
 
     // narrow_range=1: Moonlight/H264/HEVC streams are limited-range BT.601/709.
     AVFrame *ref = av_frame_clone(frame);
     if (ref) {
         if (!vk_video_try_submit_vkframe((void*)vkf->img[0], (int)vkfctx->format[0], (int)vkf->layout[0],
                                           frame->width, frame->height,
-                                          1, (void*)ref, vk_frame_release_avframe)) {
+                                          1, (void*)vkf->sem[0], vkf->sem_value[0], 0,
+                                          (void*)ref, vk_frame_release_avframe)) {
             av_frame_free(&ref);
         }
     }
@@ -640,6 +843,10 @@ static void win_deliver_frame_vulkan(AVFrame *frame) {
 static void win_deliver_frame(AVFrame *frame) {
     if (frame->format == AV_PIX_FMT_VULKAN) {
         win_deliver_frame_vulkan(frame);
+        return;
+    }
+    if (frame->format == AV_PIX_FMT_D3D11 && g_using_d3dx_decode) {
+        win_deliver_frame_d3dx(frame);
         return;
     }
     double t_start = win_mono_ms();
@@ -714,13 +921,101 @@ static void win_deliver_frame(AVFrame *frame) {
 // ── Video callbacks ───────────────────────────────────────────────────────────
 
 static int  dr_setup(int fmt, int w, int h, int rate, void *ctx, int flags) {
-    (void)w; (void)h; (void)rate; (void)ctx; (void)flags;
+    (void)ctx; (void)flags;
     g_video_format = fmt ? fmt : 0x0001;
+    g_stream_w = w; g_stream_h = h; g_stream_fps = rate;
+    g_vk_session_frames = 0;
+    g_vk_overlay_seen = 0;
+    InterlockedIncrement(&g_stream_gen);
+    g_using_pyrowave = (g_video_format & 0x10000) != 0; // VIDEO_FORMAT_MASK_PYROWAVE
+    if (g_using_pyrowave) {
+        pyrowave_win_stream_reset();
+        goVTLog((char*)"pyrowave: stream negotiated -- decoding on the GPU (pyrowave_decode_windows.c)");
+    } else {
+        // Create the decoder now (moonlight-qt does the same in its setup)
+        // rather than on the first frame: Vulkan Video session setup takes
+        // about a second, and frames queued behind it overflowed the 15-frame
+        // queue.
+        if (!g_av_cs_init) { InitializeCriticalSection(&g_av_cs); g_av_cs_init = 1; }
+        EnterCriticalSection(&g_av_cs);
+        if (!g_avctx) win_av_init();
+        LeaveCriticalSection(&g_av_cs);
+    }
     goVideoFormatNegotiated(fmt);
     return 0;
 }
-static void dr_start(void)   {}
-static void dr_stop(void)    {}
+// -- Decode threading mode --------------------------------------------------
+//
+// USBRIDGE_DECODE_MODE picks who calls into libavcodec:
+//   direct -- CAPABILITY_DIRECT_SUBMIT: decode runs on moonlight-common-c's
+//             RTP receive thread. Every millisecond spent decoding is a
+//             millisecond the video socket isn't drained; once decode costs
+//             more than a frame interval (4K HEVC at 120fps on an iGPU), the
+//             backlog piles up in the kernel socket buffer -- seconds of
+//             video at low bitrates -- and shows up as growing input lag.
+//   thread -- no capability bit: moonlight-common-c's own "VideoDec" thread
+//             calls dr_submit off its bounded 15-frame queue; an overflow
+//             flushes the queue and requests an IDR instead of piling up lag.
+//   pull   -- CAPABILITY_PULL_RENDERER (default, what moonlight-qt does): our
+//             own thread pulls from that same bounded queue and keeps the
+//             decoder fed while it waits for output (win_pull_decode_thread).
+enum { WIN_DECODE_DIRECT = 0, WIN_DECODE_THREAD = 1, WIN_DECODE_PULL = 2 };
+static int g_playout_buffer_on = 0;
+static void set_playout_buffer_on(int on) { g_playout_buffer_on = on; }
+static int g_decode_mode = WIN_DECODE_PULL;
+static HANDLE g_pull_thread = NULL;
+static volatile LONG g_pull_quit = 0;
+static DWORD WINAPI win_pull_decode_thread(LPVOID arg);
+
+static int win_decode_mode_from_env(void) {
+    const char *v = getenv("USBRIDGE_DECODE_MODE");
+    if (v && _stricmp(v, "direct") == 0) return WIN_DECODE_DIRECT;
+    if (v && _stricmp(v, "thread") == 0) return WIN_DECODE_THREAD;
+    return WIN_DECODE_PULL;
+}
+
+// Decode-thread bookkeeping. g_dec_in/g_dec_out count packets libavcodec
+// accepted and frames it returned (frame threading holds some in between);
+// g_dec_stage/g_dec_stage_ms say what the decode thread is doing right now,
+// for win_decode_watchdog's stall report.
+enum { DEC_STAGE_IDLE = 0, DEC_STAGE_WAIT, DEC_STAGE_SEND, DEC_STAGE_DRAIN, DEC_STAGE_DELIVER, DEC_STAGE_POLL, DEC_STAGE_SLEEP };
+static volatile unsigned int g_dec_in = 0, g_dec_out = 0;
+static volatile LONG g_dec_stage = DEC_STAGE_IDLE;
+static volatile double g_dec_stage_ms = 0;
+static volatile unsigned int g_dec_eagain = 0, g_dec_send_err = 0, g_dec_recv_err = 0;
+static volatile int g_dec_last_send_err = 0, g_dec_last_recv_err = 0;
+static void dec_stage(LONG st) { g_dec_stage = st; g_dec_stage_ms = win_mono_ms(); }
+static int win_decode_drain(void);
+
+static HANDLE g_dec_watchdog = NULL;
+static DWORD WINAPI win_decode_watchdog(LPVOID arg);
+
+static void dr_start(void) {
+    g_dec_in = g_dec_out = 0;
+    g_dec_eagain = g_dec_send_err = g_dec_recv_err = 0;
+    InterlockedExchange(&g_pull_quit, 0);
+    if (!g_dec_watchdog) g_dec_watchdog = CreateThread(NULL, 0, win_decode_watchdog, NULL, 0, NULL);
+    if (g_decode_mode != WIN_DECODE_PULL || g_pull_thread) return;
+    g_pull_thread = CreateThread(NULL, 0, win_pull_decode_thread, NULL, 0, NULL);
+    // Decode must keep pace with the network even when AI Vision's detector
+    // or anything else saturates the CPU; a 125ms scheduling gap overflows
+    // moonlight-common-c's 15-frame queue at 120 fps.
+    if (g_pull_thread) SetThreadPriority(g_pull_thread, THREAD_PRIORITY_ABOVE_NORMAL);
+}
+static void dr_stop(void) {
+    InterlockedExchange(&g_pull_quit, 1);
+    if (g_pull_thread) {
+        LiWakeWaitForVideoFrame();
+        WaitForSingleObject(g_pull_thread, INFINITE);
+        CloseHandle(g_pull_thread);
+        g_pull_thread = NULL;
+    }
+    if (g_dec_watchdog) {
+        WaitForSingleObject(g_dec_watchdog, INFINITE);
+        CloseHandle(g_dec_watchdog);
+        g_dec_watchdog = NULL;
+    }
+}
 static void dr_cleanup(void) {}
 
 // Latency breakdown, logged periodically so the ~500ms of perceived glass-to-
@@ -762,7 +1057,60 @@ extern volatile uint64_t g_total_video_bytes;
 
 #include "bench_frames.h"
 
-static int dr_submit(PDECODE_UNIT du) {
+// win_decode_send feeds one decode unit to libavcodec without pulling any
+// output -- the receive half is win_decode_drain. dr_submit (direct/thread
+// modes) does both back to back; the pull-mode thread interleaves them the
+// way moonlight-qt's FFmpegVideoDecoder::decoderThreadProc does.
+// win_pyrowave_send: one PyroWave access unit -> GPU decode straight into a
+// ring image on the renderer's device (pyrowave_decode_windows.c) -> renderer,
+// sampled in place (external mode 2: same device, GENERAL layout). The decode
+// call only records and submits GPU work; the renderer waits on the timeline
+// semaphore value. No CPU copy of the picture anywhere -- AI Vision sampling
+// is not available for PyroWave streams.
+static uint8_t *g_pw_au = NULL;
+static size_t   g_pw_au_cap = 0;
+static int win_pyrowave_send(PDECODE_UNIT du) {
+    size_t total = 0;
+    for (PLENTRY e = du->bufferList; e; e = e->next) total += (size_t)e->length;
+    if (total == 0) return DR_OK;
+    if (g_pw_au_cap < total) {
+        uint8_t *grown = (uint8_t *)realloc(g_pw_au, total);
+        if (!grown) return DR_OK;
+        g_pw_au = grown;
+        g_pw_au_cap = total;
+    }
+    size_t off = 0;
+    for (PLENTRY e = du->bufferList; e; e = e->next) { memcpy(g_pw_au + off, e->data, (size_t)e->length); off += (size_t)e->length; }
+
+    dec_stage(DEC_STAGE_SEND);
+    void *img = NULL, *sem = NULL, *slot = NULL;
+    int vkfmt = 0, w = 0, h = 0;
+    uint64_t val = 0;
+    g_dec_in++;
+    if (!pyrowave_win_decode(g_pw_au, total, &img, &vkfmt, &sem, &val, &w, &h, &slot)) {
+        g_dec_out++;
+        return DR_OK; // every frame is a keyframe: nothing to recover
+    }
+    g_dec_out++;
+    dec_stage(DEC_STAGE_DELIVER);
+    int native_overlay_active = vk_video_is_active() || gl_video_is_active();
+    if (native_overlay_active) g_vk_overlay_seen = 1;
+    ++g_vk_session_frames;
+    goVTFrame(NULL, w, h, 0); // stats + overlay bootstrap on frame 1
+    // layout 1 = VK_IMAGE_LAYOUT_GENERAL
+    if (!vk_video_try_submit_vkframe(img, vkfmt, 1, w, h, 1, sem, val, 2,
+                                      slot, pyrowave_win_release_slot)) {
+        pyrowave_win_release_slot(slot);
+    }
+    if (++g_av_frame_cnt == 1) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "pyrowave: first frame handed to the renderer (%dx%d)", w, h);
+        goVTLog(msg);
+    }
+    return DR_OK;
+}
+
+static int win_decode_send(PDECODE_UNIT du) {
     g_last_host_latency_tenths_ms = du->frameHostProcessingLatency;
     g_total_video_bytes += (uint64_t)du->fullLength;
     bench_frames_note(du);
@@ -793,6 +1141,8 @@ static int dr_submit(PDECODE_UNIT du) {
     // host can fix by resending an IDR frame.
     if (vk_video_is_device_lost()) return DR_OK;
 
+    if (g_using_pyrowave) return win_pyrowave_send(du);
+
     if (!g_av_cs_init) { InitializeCriticalSection(&g_av_cs); g_av_cs_init = 1; }
     EnterCriticalSection(&g_av_cs);
     if (!g_avctx) win_av_init();
@@ -815,24 +1165,138 @@ static int dr_submit(PDECODE_UNIT du) {
     AVPacket *pkt = av_packet_alloc();
     pkt->data = data; pkt->size = total;
     double t_decode0 = win_mono_ms();
-    int ret = avcodec_send_packet(ctx, pkt);
+    // EAGAIN means libavcodec did NOT take the packet: with frame threads its
+    // input is full until a finished frame is received. Dropping the packet
+    // there (as this used to, treating EAGAIN as success) silently breaks
+    // the reference chain with no IDR request. Drain output and retry.
+    int ret;
+    for (int tries = 0;; tries++) {
+        dec_stage(DEC_STAGE_SEND);
+        ret = avcodec_send_packet(ctx, pkt);
+        if (ret != AVERROR(EAGAIN) || tries >= 100) break;
+        g_dec_eagain++;
+        if (win_decode_drain() == 0) { dec_stage(DEC_STAGE_SLEEP); Sleep(1); }
+    }
     av_packet_free(&pkt);
     av_free(data);
-    if (ret < 0 && ret != AVERROR(EAGAIN)) return DR_NEED_IDR;
-
-    AVFrame *frame = av_frame_alloc();
+    if (ret == 0) g_dec_in++;
     double t_decode1 = win_mono_ms();
     if (t_decode1 - t_decode0 > WIN_DELIVER_SLOW_MS) {
         char msg[96];
         snprintf(msg, sizeof(msg), "SLOW avcodec_send_packet %.0fms", t_decode1 - t_decode0);
         goVTLog(msg);
     }
-    while (avcodec_receive_frame(ctx, frame) == 0) {
+    if (ret < 0) {
+        g_dec_send_err++;
+        g_dec_last_send_err = ret;
+        return DR_NEED_IDR;
+    }
+    return DR_OK;
+}
+
+// win_decode_drain delivers every frame libavcodec has ready and returns how
+// many it delivered (0 = the decoder wants more input first).
+static int win_decode_drain(void) {
+    AVCodecContext *ctx = g_avctx;
+    if (!ctx) return 0;
+    AVFrame *frame = av_frame_alloc();
+    if (!frame) return 0;
+    int n = 0, err;
+    for (;;) {
+        dec_stage(DEC_STAGE_DRAIN);
+        double t_recv0 = win_mono_ms();
+        err = avcodec_receive_frame(ctx, frame);
+        double t_recv = win_mono_ms() - t_recv0;
+        if (t_recv > WIN_DELIVER_SLOW_MS) {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "SLOW avcodec_receive_frame %.0fms", t_recv);
+            goVTLog(msg);
+        }
+        if (err != 0) break;
+        g_dec_out++;
+        dec_stage(DEC_STAGE_DELIVER);
         win_deliver_frame(frame);
         av_frame_unref(frame);
+        n++;
+    }
+    if (err != AVERROR(EAGAIN) && err != AVERROR_EOF) {
+        g_dec_recv_err++;
+        g_dec_last_recv_err = err;
     }
     av_frame_free(&frame);
-    return DR_OK;
+    return n;
+}
+
+static int dr_submit(PDECODE_UNIT du) {
+    int ret = win_decode_send(du);
+    if (ret == DR_OK) win_decode_drain();
+    return ret;
+}
+
+// Pull mode's decode thread, modeled on moonlight-qt's
+// FFmpegVideoDecoder::decoderThreadProc: block for input only once every
+// submitted frame has come back out; otherwise poll for output and keep
+// feeding newly arrived input while the GPU works.
+static DWORD WINAPI win_pull_decode_thread(LPVOID arg) {
+    (void)arg;
+    while (!InterlockedCompareExchange(&g_pull_quit, 0, 0)) {
+        VIDEO_FRAME_HANDLE handle;
+        PDECODE_UNIT du;
+        // A decode error can swallow frames for good, so never trust
+        // out to catch up with in by more than libavcodec's thread depth.
+        unsigned int pending = g_dec_in - g_dec_out;
+        if (pending == 0 || pending > 8) {
+            g_dec_out = g_dec_in;
+            dec_stage(DEC_STAGE_WAIT);
+            if (!LiWaitForNextVideoFrame(&handle, &du)) continue;
+            LiCompleteVideoFrame(handle, win_decode_send(du));
+        }
+        while (g_dec_in != g_dec_out && !InterlockedCompareExchange(&g_pull_quit, 0, 0)) {
+            if (win_decode_drain() > 0) break;
+            dec_stage(DEC_STAGE_POLL);
+            if (LiPollNextVideoFrame(&handle, &du)) {
+                LiCompleteVideoFrame(handle, win_decode_send(du));
+            } else {
+                dec_stage(DEC_STAGE_SLEEP);
+                Sleep(1);
+            }
+        }
+    }
+    dec_stage(DEC_STAGE_IDLE);
+    return 0;
+}
+
+// win_decode_watchdog: logs what the decode thread is doing whenever no
+// frame has come out of libavcodec for a second -- the evidence for any
+// "no video frame for Ns" reconnect.
+static DWORD WINAPI win_decode_watchdog(LPVOID arg) {
+    (void)arg;
+    static const char *names[] = { "idle", "wait-for-input", "send_packet", "receive_frame", "deliver", "poll-input", "sleep" };
+    unsigned int last_out = g_dec_out;
+    double last_change = win_mono_ms(), last_log = 0;
+    while (!InterlockedCompareExchange(&g_pull_quit, 0, 0)) {
+        Sleep(250);
+        double now = win_mono_ms();
+        if (g_dec_out != last_out) { last_out = g_dec_out; last_change = now; continue; }
+        if (now - last_change < 1000 || now - last_log < 1000) continue;
+        last_log = now;
+        LONG st = g_dec_stage;
+        // RTP counters tell "no packets arriving" (host/tunnel) apart from
+        // "packets arrive but no frame completes" (loss/FEC) apart from "frames
+        // complete but aren't pulled" (this side).
+        const RTP_VIDEO_STATS *rs = LiGetRTPVideoStats();
+        uint32_t rtt = 0, rttVar = 0;
+        LiGetEstimatedRttInfo(&rtt, &rttVar);
+        char msg[480];
+        snprintf(msg, sizeof(msg),
+                 "decode stall: no frame out for %.0fms, thread in %s for %.0fms, in=%u out=%u eagain=%u send_err=%u(last %d) recv_err=%u(last %d) | rtp video=%u fec=%u fecRecovered=%u fecFailed=%u oos=%u invalid=%u rtt=%ums",
+                 now - last_change, (st >= 0 && st <= DEC_STAGE_SLEEP) ? names[st] : "?", now - g_dec_stage_ms,
+                 g_dec_in, g_dec_out, g_dec_eagain, g_dec_send_err, g_dec_last_send_err, g_dec_recv_err, g_dec_last_recv_err,
+                 rs ? rs->packetCountVideo : 0, rs ? rs->packetCountFec : 0, rs ? rs->packetCountFecRecovered : 0,
+                 rs ? rs->packetCountFecFailed : 0, rs ? rs->packetCountOOS : 0, rs ? rs->packetCountInvalid : 0, rtt);
+        goVTLog(msg);
+    }
+    return 0;
 }
 
 // do_get_rtp_video_stats / do_get_estimated_rtt_info /
@@ -907,7 +1371,29 @@ static int do_li_start(
     // bits are added here too -- both sides (host DESCRIBE flag + this
     // capability bit) are required before moonlight-common-c actually uses
     // reference-frame-invalidation recovery instead of a full IDR request.
-    dr.capabilities = CAPABILITY_DIRECT_SUBMIT | CAPABILITY_REFERENCE_FRAME_INVALIDATION_AVC | CAPABILITY_REFERENCE_FRAME_INVALIDATION_HEVC | CAPABILITY_REFERENCE_FRAME_INVALIDATION_AV1;
+    dr.capabilities = CAPABILITY_REFERENCE_FRAME_INVALIDATION_AVC | CAPABILITY_REFERENCE_FRAME_INVALIDATION_HEVC | CAPABILITY_REFERENCE_FRAME_INVALIDATION_AV1;
+    g_decode_mode = win_decode_mode_from_env();
+    if (g_decode_mode == WIN_DECODE_DIRECT) dr.capabilities |= CAPABILITY_DIRECT_SUBMIT;
+    if (g_decode_mode == WIN_DECODE_PULL) {
+        // LiStartConnection rejects a pull renderer that also has a
+        // submitDecodeUnit callback (Connection.c) -- win_pull_decode_thread
+        // pulls the frames itself.
+        dr.capabilities |= CAPABILITY_PULL_RENDERER;
+        dr.submitDecodeUnit = NULL;
+    }
+    // moonlight-common-c's playout buffer (our fork's VideoDepacketizer.c)
+    // sleeps before handing each frame to the decoder -- delay the official
+    // clients never add. Driven by the video settings checkbox (off by
+    // default, see service.SetPlayoutBufferEnabled); the fork re-reads the
+    // variable at the start of every stream.
+    _putenv(g_playout_buffer_on ? "USBRIDGE_PLAYOUT_BUFFER=1" : "USBRIDGE_PLAYOUT_BUFFER=0");
+    {
+        static const char *mode_names[] = { "direct (RTP receive thread)", "thread (moonlight-common-c VideoDec)", "pull (own decode thread, moonlight-qt style)" };
+        char msg[160];
+        snprintf(msg, sizeof(msg), "libavcodec/win: decode mode = %s, playout buffer %s",
+                 mode_names[g_decode_mode], strcmp(getenv("USBRIDGE_PLAYOUT_BUFFER"), "0") == 0 ? "off" : "on");
+        goVTLog(msg);
+    }
 
     AUDIO_RENDERER_CALLBACKS ar; LiInitializeAudioCallbacks(&ar);
     ar.init = ar_init; ar.start = ar_start; ar.stop = ar_stop;
@@ -932,7 +1418,9 @@ static int do_li_start(
 static void do_li_stop(void) {
     if (!g_li_active) return;
     g_li_active = 0;
+    InterlockedIncrement(&g_stream_gen); // in-flight readbacks belong to a dead stream now
     LiStopConnection();
+    win_readback_cancel();
     if (g_sws) { sws_freeContext(g_sws); g_sws = NULL; }
     if (g_avctx) avcodec_free_context(&g_avctx);
     if (g_hw_dev_ctx) av_buffer_unref(&g_hw_dev_ctx);
@@ -942,6 +1430,8 @@ static void do_li_stop(void) {
     // resets so the next session's win_av_init() re-probes cleanly (e.g. if
     // the codec changed to AV1, which has no Vulkan decode extension here).
     g_using_vulkan_decode = 0;
+    g_using_d3dx_decode = 0;
+    g_using_pyrowave = 0;
 }
 
 static void do_li_interrupt(void) {
@@ -1024,6 +1514,8 @@ func windowsVideoFormatCodecName(format int32) (string, bool) {
 	switch {
 	case format < 0:
 		return "", false
+	case format&0x10000 != 0: // VIDEO_FORMAT_PYROWAVE
+		return models.VideoModePyroWave, true
 	case format&0x0F00 != 0:
 		return models.VideoModeH265, true
 	case format&0xF000 != 0:
@@ -1140,6 +1632,11 @@ func (w *MoonlightCgoWrapper) StartStream(
 		logrus.Infof("🌕 [Moonlight/CGO/Win] LiStartConnection: host=%s %dx%d@%d bitrate=%d",
 			w.host, width, height, fps, bitrate)
 
+		playoutOn := 0
+		if PlayoutBufferEnabled() {
+			playoutOn = 1
+		}
+		C.set_playout_buffer_on(C.int(playoutOn))
 		ret := C.do_li_start(
 			host, appVer, gfeVer, rtsp,
 			C.int(serverCodecModeSupport), C.int(videoFormat),

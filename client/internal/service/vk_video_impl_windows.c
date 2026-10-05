@@ -396,6 +396,35 @@ void vk_set_fsr(int enable) {
 static VkImage                 *g_swap_imgs    = NULL;
 static VkImageView             *g_swap_views   = NULL;
 static VkFormat                 g_swap_fmt     = VK_FORMAT_UNDEFINED;
+// HDR10 output. g_want_hdr follows the content (10-bit frames = HDR10);
+// g_swap_hdr is what the current swapchain actually is (HDR10_ST2084 +
+// A2B10G10R10) -- only when the surface offers it, i.e. Windows HDR is on
+// for that display. g_hdr_display_avail is published for the decoder side
+// (d3d11_interop_windows.c), which tone-maps HDR to SDR itself otherwise.
+// g_vkq_cs: taken around this renderer's vkQueueSubmit and vkDeviceWaitIdle
+// calls, and by PyroWave's queue-lock callbacks (pyrowave_decode_windows.c),
+// which decodes on this same VkDevice. Not around vkQueuePresentKHR: that can
+// block for a vblank, and PyroWave never touches the present queue per frame.
+static INIT_ONCE        g_vkq_once = INIT_ONCE_STATIC_INIT;
+static CRITICAL_SECTION g_vkq_cs;
+static BOOL CALLBACK vkq_init(PINIT_ONCE o, PVOID p, PVOID *c) { (void)o; (void)p; (void)c; InitializeCriticalSection(&g_vkq_cs); return TRUE; }
+void vk_video_queue_lock(void)   { InitOnceExecuteOnce(&g_vkq_once, vkq_init, NULL, NULL); EnterCriticalSection(&g_vkq_cs); }
+void vk_video_queue_unlock(void) { LeaveCriticalSection(&g_vkq_cs); }
+static VkResult vkq_submit(VkQueue q, uint32_t n, const VkSubmitInfo *si, VkFence f) {
+    vk_video_queue_lock();
+    VkResult r = vkQueueSubmit(q, n, si, f);
+    vk_video_queue_unlock();
+    return r;
+}
+static VkResult vkq_device_wait_idle(VkDevice d) {
+    vk_video_queue_lock();
+    VkResult r = vkDeviceWaitIdle(d);
+    vk_video_queue_unlock();
+    return r;
+}
+static int                      g_want_hdr     = 0;
+static int                      g_swap_hdr     = 0;
+static atomic_int               g_hdr_display_avail = 0;
 static VkExtent2D               g_swap_ext     = {0,0};
 
 // 1 when g_inst/g_pdev/g_dev were adopted from win_vk_hwdev_get() (ffmpeg
@@ -423,6 +452,7 @@ typedef struct {
     VkPipeline               pipeline;
     VkDescriptorPool         dpool;
     VkFormat                 fmt; // VK_FORMAT_UNDEFINED = unused slot
+    VkFormat                 swap_fmt; // color attachment format the pipeline was built for
 } VkYcbcrPipeline;
 #define VK_YCBCR_PIPELINE_CACHE_SIZE 4
 static VkYcbcrPipeline g_ycbcr_pipelines[VK_YCBCR_PIPELINE_CACHE_SIZE];
@@ -436,8 +466,18 @@ typedef struct {
     VkDescriptorSet dset;
     VkFormat      fmt; // which g_ycbcr_pipelines[] entry dset was built against
 } VkImgViewCacheEntry;
-#define VK_IMGVIEW_CACHE_SIZE 8
+// 32 covers ffmpeg's whole Vulkan frame pool (HEVC's DPB alone can be 16
+// surfaces); at 8 the pool's surfaces kept evicting each other.
+#define VK_IMGVIEW_CACHE_SIZE 32
 static VkImgViewCacheEntry g_imgview_cache[VK_IMGVIEW_CACHE_SIZE];
+static int g_imgview_evict_next = 0;
+// Images about to be destroyed by their owner (d3d11_interop_windows.c's
+// ring), queued from the decode thread and evicted from g_imgview_cache on
+// the render thread before the next lookup -- a later VkImage can reuse the
+// same handle value.
+#define VK_FORGET_MAX 16
+static VkImage g_forget[VK_FORGET_MAX];
+static int g_forget_n = 0;
 
 // Pending zero-copy frame — single-slot, parallel to g_buf/g_ready above.
 static VkImage    g_vkf_img          = VK_NULL_HANDLE;
@@ -446,6 +486,9 @@ static VkImageLayout g_vkf_layout    = VK_IMAGE_LAYOUT_UNDEFINED;
 static int        g_vkf_w = 0, g_vkf_h = 0;
 static void      *g_vkf_release_ctx  = NULL;
 static void      (*g_vkf_release_fn)(void*) = NULL;
+static VkSemaphore g_vkf_sem         = VK_NULL_HANDLE;
+static int        g_vkf_external     = 0; // image imported from D3D11 (d3d11_interop_windows.c)
+static uint64_t   g_vkf_sem_value    = 0;
 static volatile int g_vkf_ready      = 0;
 
 // Previous frame's release context — freed once the NEXT frame's render
@@ -1021,6 +1064,28 @@ static int vk_create_swapchain(int w, int h) {
             g_swap_fmt = fmts[i].format; csp = fmts[i].colorSpace; break;
         }
     }
+    // HDR10: the surface only offers HDR10_ST2084 while Windows HDR is on for
+    // this display (and VK_EXT_swapchain_colorspace is enabled, see
+    // vk_hwdev_bridge_windows.c).
+    int hdr_idx = -1;
+    for (uint32_t i = 0; i < nfmt; i++) {
+        if (fmts[i].colorSpace == VK_COLOR_SPACE_HDR10_ST2084_EXT &&
+            (fmts[i].format == VK_FORMAT_A2B10G10R10_UNORM_PACK32 || fmts[i].format == VK_FORMAT_A2R10G10B10_UNORM_PACK32)) {
+            hdr_idx = (int)i; break;
+        }
+    }
+    atomic_store(&g_hdr_display_avail, hdr_idx >= 0);
+    g_swap_hdr = 0;
+    if (g_want_hdr && hdr_idx >= 0) {
+        g_swap_fmt = fmts[hdr_idx].format; csp = fmts[hdr_idx].colorSpace;
+        g_swap_hdr = 1;
+    }
+    {
+        char m[160];
+        snprintf(m, sizeof(m), "swapchain format: %s (HDR10 %s on this display)",
+                 g_swap_hdr ? "HDR10 PQ BT.2020 10-bit" : "SDR 8-bit", hdr_idx >= 0 ? "available" : "not available");
+        goVKLog(m, 0);
+    }
     free(fmts);
 
     // Present mode preference depends on g_vsync (see vk_video_create's vsync arg):
@@ -1129,7 +1194,7 @@ static int  vk_create_sync_semaphores(void);  // forward declaration
 // Also resizes the popup overlay to match the stored atomic rect.
 static int vk_recreate_swapchain(void) {
     if (!g_dev || !g_surf) return 0;
-    vkDeviceWaitIdle(g_dev);
+    vkq_device_wait_idle(g_dev);
     vk_destroy_swapchain();
 
     // Reposition popup overlay to current stored rect.
@@ -1220,7 +1285,7 @@ static int vk_ensure_tex(int w, int h) {
 
     // Destroy old
     if (g_tex != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(g_dev);
+        vkq_device_wait_idle(g_dev);
         vkFreeMemory(g_dev, g_tex_mem, NULL); g_tex_mem = VK_NULL_HANDLE;
         vkDestroyImage(g_dev, g_tex, NULL);   g_tex     = VK_NULL_HANDLE;
     }
@@ -1348,6 +1413,86 @@ static VkShaderModule vk_shader_from_spv(const uint32_t *code, size_t code_size)
 // vk_aivision_ensure_tex (further down) creates/resizes AI Vision's texture,
 // sized to the live video resolution rather than fixed.
 
+// vk_hud_create_pipeline builds the HUD/AI Vision overlay pipeline for the
+// current swapchain format: the SDR shader on an SDR swapchain, the PQ one
+// (hud_hdr.frag, shader_arrays.h) on an HDR10 swapchain.
+static VkFormat g_hud_pipeline_fmt = VK_FORMAT_UNDEFINED;
+static int      g_hud_pipeline_hdr = 0;
+static int vk_hud_create_pipeline(void) {
+    // Pipeline: a small positioned quad, alpha-blended over whatever the
+    // video draw already wrote into the swapchain image -- unlike
+    // vk_ycbcr_pipeline_get's opaque fullscreen-triangle video pipeline,
+    // blendEnable is on here and the quad's screen position comes from a
+    // push constant (see vk_hud_record_draw) rather than being fixed.
+    {
+        VkShaderModule vs = vk_shader_from_spv(g_hud_vert_spv, sizeof(g_hud_vert_spv));
+        VkShaderModule fs = g_swap_hdr ? vk_shader_from_spv(g_hud_hdr_frag_spv, sizeof(g_hud_hdr_frag_spv))
+                                : vk_shader_from_spv(g_hud_frag_spv, sizeof(g_hud_frag_spv));
+        if (!vs || !fs) {
+            if (vs) vkDestroyShaderModule(g_dev, vs, NULL);
+            if (fs) vkDestroyShaderModule(g_dev, fs, NULL);
+            return 0;
+        }
+        VkPipelineShaderStageCreateInfo stages[2] = {0};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT; stages[0].module = vs; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
+
+        VkPipelineVertexInputStateCreateInfo vi = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+        VkPipelineInputAssemblyStateCreateInfo ia = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo vpState = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+        vpState.viewportCount = 1; vpState.scissorCount = 1; // dynamic
+        VkDynamicState dynStates[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dynCI = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+        dynCI.dynamicStateCount = 2; dynCI.pDynamicStates = dynStates;
+        VkPipelineRasterizationStateCreateInfo rs = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE; rs.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo ms = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineColorBlendAttachmentState cba = {0};
+        cba.blendEnable = VK_TRUE;
+        cba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        cba.colorBlendOp = VK_BLEND_OP_ADD;
+        cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        cba.alphaBlendOp = VK_BLEND_OP_ADD;
+        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo cb = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+        cb.attachmentCount = 1; cb.pAttachments = &cba;
+
+        VkPipelineRenderingCreateInfo renderingCI = { VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+        renderingCI.colorAttachmentCount = 1; renderingCI.pColorAttachmentFormats = &g_swap_fmt;
+
+        VkGraphicsPipelineCreateInfo pipeCI = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+        pipeCI.pNext = &renderingCI;
+        pipeCI.stageCount = 2; pipeCI.pStages = stages;
+        pipeCI.pVertexInputState = &vi; pipeCI.pInputAssemblyState = &ia;
+        pipeCI.pViewportState = &vpState; pipeCI.pRasterizationState = &rs;
+        pipeCI.pMultisampleState = &ms; pipeCI.pColorBlendState = &cb;
+        pipeCI.pDynamicState = &dynCI;
+        pipeCI.layout = g_hud_playout;
+        VkResult pr = vkCreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pipeCI, NULL, &g_hud_pipeline);
+        vkDestroyShaderModule(g_dev, vs, NULL);
+        vkDestroyShaderModule(g_dev, fs, NULL);
+        if (pr != VK_SUCCESS) return 0;
+    }
+    g_hud_pipeline_fmt = g_swap_fmt;
+    g_hud_pipeline_hdr = g_swap_hdr;
+    return 1;
+}
+
+// vk_hud_pipeline_current rebuilds the overlay pipeline after an SDR <->
+// HDR10 swapchain switch. Render thread, after the fence wait.
+static int vk_hud_pipeline_current(void) {
+    if (g_hud_pipeline && g_hud_pipeline_fmt == g_swap_fmt && g_hud_pipeline_hdr == g_swap_hdr) return 1;
+    if (g_hud_pipeline) { vkDestroyPipeline(g_dev, g_hud_pipeline, NULL); g_hud_pipeline = VK_NULL_HANDLE; }
+    return vk_hud_create_pipeline();
+}
+
 // vk_hud_ensure_resources lazily creates the sampler, descriptor set layout,
 // alpha-blended pipeline and descriptor pool shared by both overlays, plus
 // this HUD's own persistent VK_HUD_W x VK_HUD_H texture + dedicated staging
@@ -1402,66 +1547,7 @@ static int vk_hud_ensure_resources(void) {
         if (vkAllocateDescriptorSets(g_dev, &dsai, &g_aivision_dset) != VK_SUCCESS) goto fail;
     }
 
-    // Pipeline: a small positioned quad, alpha-blended over whatever the
-    // video draw already wrote into the swapchain image -- unlike
-    // vk_ycbcr_pipeline_get's opaque fullscreen-triangle video pipeline,
-    // blendEnable is on here and the quad's screen position comes from a
-    // push constant (see vk_hud_record_draw) rather than being fixed.
-    {
-        VkShaderModule vs = vk_shader_from_spv(g_hud_vert_spv, sizeof(g_hud_vert_spv));
-        VkShaderModule fs = vk_shader_from_spv(g_hud_frag_spv, sizeof(g_hud_frag_spv));
-        if (!vs || !fs) {
-            if (vs) vkDestroyShaderModule(g_dev, vs, NULL);
-            if (fs) vkDestroyShaderModule(g_dev, fs, NULL);
-            goto fail;
-        }
-        VkPipelineShaderStageCreateInfo stages[2] = {0};
-        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT; stages[0].module = vs; stages[0].pName = "main";
-        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
-
-        VkPipelineVertexInputStateCreateInfo vi = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
-        VkPipelineInputAssemblyStateCreateInfo ia = { VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
-        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-        VkPipelineViewportStateCreateInfo vpState = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
-        vpState.viewportCount = 1; vpState.scissorCount = 1; // dynamic
-        VkDynamicState dynStates[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
-        VkPipelineDynamicStateCreateInfo dynCI = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
-        dynCI.dynamicStateCount = 2; dynCI.pDynamicStates = dynStates;
-        VkPipelineRasterizationStateCreateInfo rs = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
-        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE; rs.lineWidth = 1.0f;
-        VkPipelineMultisampleStateCreateInfo ms = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
-        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-
-        VkPipelineColorBlendAttachmentState cba = {0};
-        cba.blendEnable = VK_TRUE;
-        cba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
-        cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        cba.colorBlendOp = VK_BLEND_OP_ADD;
-        cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-        cba.alphaBlendOp = VK_BLEND_OP_ADD;
-        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-        VkPipelineColorBlendStateCreateInfo cb = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
-        cb.attachmentCount = 1; cb.pAttachments = &cba;
-
-        VkPipelineRenderingCreateInfo renderingCI = { VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
-        renderingCI.colorAttachmentCount = 1; renderingCI.pColorAttachmentFormats = &g_swap_fmt;
-
-        VkGraphicsPipelineCreateInfo pipeCI = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
-        pipeCI.pNext = &renderingCI;
-        pipeCI.stageCount = 2; pipeCI.pStages = stages;
-        pipeCI.pVertexInputState = &vi; pipeCI.pInputAssemblyState = &ia;
-        pipeCI.pViewportState = &vpState; pipeCI.pRasterizationState = &rs;
-        pipeCI.pMultisampleState = &ms; pipeCI.pColorBlendState = &cb;
-        pipeCI.pDynamicState = &dynCI;
-        pipeCI.layout = g_hud_playout;
-        VkResult pr = vkCreateGraphicsPipelines(g_dev, VK_NULL_HANDLE, 1, &pipeCI, NULL, &g_hud_pipeline);
-        vkDestroyShaderModule(g_dev, vs, NULL);
-        vkDestroyShaderModule(g_dev, fs, NULL);
-        if (pr != VK_SUCCESS) goto fail;
-    }
+    if (!vk_hud_create_pipeline()) goto fail;
 
     // Persistent HUD texture (device-local, sampled + transfer dst).
     {
@@ -1588,6 +1674,7 @@ static void vk_hud_maybe_upload_cmds(VkCommandBuffer cb) {
 // bound (reuses whatever the video draw just set).
 static void vk_hud_record_draw(VkCommandBuffer cb, int fw, int fh) {
     if (!g_hud_active || g_hud_resources_ok <= 0) return;
+    if (!vk_hud_pipeline_current()) return;
     if (fw <= 0 || fh <= 0) return;
 
     int pct = atomic_load(&g_hud_scale_pct);
@@ -1626,7 +1713,7 @@ static int vk_aivision_ensure_tex(int w, int h) {
     if (g_aivision_tex != VK_NULL_HANDLE && g_aivision_tex_w == w && g_aivision_tex_h == h) return 1;
 
     if (g_aivision_tex != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(g_dev);
+        vkq_device_wait_idle(g_dev);
         if (g_aivision_tex_view) { vkDestroyImageView(g_dev, g_aivision_tex_view, NULL); g_aivision_tex_view = VK_NULL_HANDLE; }
         vkFreeMemory(g_dev, g_aivision_tex_mem, NULL); g_aivision_tex_mem = VK_NULL_HANDLE;
         vkDestroyImage(g_dev, g_aivision_tex, NULL);   g_aivision_tex     = VK_NULL_HANDLE;
@@ -1760,6 +1847,7 @@ static void vk_aivision_maybe_upload_cmds(VkCommandBuffer cb, int fw, int fh) {
 // already bound.
 static void vk_aivision_record_draw(VkCommandBuffer cb, int fw, int fh) {
     if (!g_aivision_active || g_hud_resources_ok <= 0) return;
+    if (!vk_hud_pipeline_current()) return;
     if (g_aivision_tex == VK_NULL_HANDLE || g_aivision_tex_w != fw || g_aivision_tex_h != fh) return;
 
     float rect[4] = { -1.0f, -1.0f, 1.0f, 1.0f }; // full frame, no anchoring math needed
@@ -1774,9 +1862,40 @@ static void vk_aivision_record_draw(VkCommandBuffer cb, int fw, int fh) {
 // the given multi-planar VkFormat (NV12 8-bit and P010 10-bit HDR each get
 // their own entry — the sampler's YCbCr conversion is format-specific),
 // creating it on first use. Returns NULL on failure.
+// vk_format_is_ycbcr: multi-planar formats sampled through a
+// VkSamplerYcbcrConversion. Anything else (BGRA/RGB10A2 frames the D3D11
+// video processor already converted, d3d11_interop_windows.c) is sampled as
+// plain RGB by the same pipeline without a conversion.
+static int vk_format_is_ycbcr(VkFormat fmt) {
+    return fmt == VK_FORMAT_G8_B8R8_2PLANE_420_UNORM ||
+           fmt == VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM ||
+           fmt == VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16;
+}
+
+// vk_ycbcr_pipeline_drop destroys one cache entry and every cached view /
+// descriptor set built against it (the sets live in its pool). Render thread
+// only, after the fence wait, so nothing in flight references them.
+static void vk_ycbcr_pipeline_drop(VkYcbcrPipeline *p) {
+    for (int i = 0; i < VK_IMGVIEW_CACHE_SIZE; i++) {
+        if (g_imgview_cache[i].fmt != p->fmt) continue;
+        if (g_imgview_cache[i].view) vkDestroyImageView(g_dev, g_imgview_cache[i].view, NULL);
+        memset(&g_imgview_cache[i], 0, sizeof(g_imgview_cache[i]));
+    }
+    if (p->pipeline) vkDestroyPipeline(g_dev, p->pipeline, NULL);
+    if (p->playout)  vkDestroyPipelineLayout(g_dev, p->playout, NULL);
+    if (p->dpool)    vkDestroyDescriptorPool(g_dev, p->dpool, NULL);
+    if (p->dsl)      vkDestroyDescriptorSetLayout(g_dev, p->dsl, NULL);
+    if (p->sampler)  vkDestroySampler(g_dev, p->sampler, NULL);
+    if (p->conv)     vkDestroySamplerYcbcrConversion(g_dev, p->conv, NULL);
+    memset(p, 0, sizeof(*p));
+}
+
 static VkYcbcrPipeline *vk_ycbcr_pipeline_get(VkFormat fmt) {
     for (int i = 0; i < VK_YCBCR_PIPELINE_CACHE_SIZE; i++) {
-        if (g_ycbcr_pipelines[i].fmt == fmt) return &g_ycbcr_pipelines[i];
+        if (g_ycbcr_pipelines[i].fmt != fmt) continue;
+        if (g_ycbcr_pipelines[i].swap_fmt == g_swap_fmt) return &g_ycbcr_pipelines[i];
+        vk_ycbcr_pipeline_drop(&g_ycbcr_pipelines[i]); // swapchain format changed (SDR <-> HDR10)
+        break;
     }
     int slot = -1;
     for (int i = 0; i < VK_YCBCR_PIPELINE_CACHE_SIZE; i++) {
@@ -1787,7 +1906,12 @@ static VkYcbcrPipeline *vk_ycbcr_pipeline_get(VkFormat fmt) {
 
     VkSamplerYcbcrConversionCreateInfo convCI = { VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_CREATE_INFO };
     convCI.format = fmt;
-    convCI.ycbcrModel = VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601;
+    // 10-bit (P010) only ever carries HDR10 here, which is BT.2020; 8-bit
+    // streams are BT.601 (moonlight-common-c's default colorspace).
+    // 3-plane 4:2:0 is only PyroWave here, whose hosts convert to BT.709.
+    convCI.ycbcrModel = fmt == VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16 ? VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_2020
+                      : fmt == VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM ? VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709
+                      : VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601;
     convCI.ycbcrRange = VK_SAMPLER_YCBCR_RANGE_ITU_NARROW;
     convCI.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
     convCI.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -1796,7 +1920,7 @@ static VkYcbcrPipeline *vk_ycbcr_pipeline_get(VkFormat fmt) {
     convCI.xChromaOffset = VK_CHROMA_LOCATION_COSITED_EVEN;
     convCI.yChromaOffset = VK_CHROMA_LOCATION_COSITED_EVEN;
     convCI.chromaFilter = VK_FILTER_LINEAR;
-    if (vkCreateSamplerYcbcrConversion(g_dev, &convCI, NULL, &p->conv) != VK_SUCCESS) {
+    if (vk_format_is_ycbcr(fmt) && vkCreateSamplerYcbcrConversion(g_dev, &convCI, NULL, &p->conv) != VK_SUCCESS) {
         goVKLog("vk_ycbcr_pipeline_get: vkCreateSamplerYcbcrConversion failed", 2);
         memset(p, 0, sizeof(*p)); return NULL;
     }
@@ -1804,7 +1928,7 @@ static VkYcbcrPipeline *vk_ycbcr_pipeline_get(VkFormat fmt) {
     VkSamplerYcbcrConversionInfo convInfo = { VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO };
     convInfo.conversion = p->conv;
     VkSamplerCreateInfo sampCI = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
-    sampCI.pNext = &convInfo;
+    sampCI.pNext = p->conv ? &convInfo : NULL;
     sampCI.magFilter = VK_FILTER_LINEAR;
     sampCI.minFilter = VK_FILTER_LINEAR;
     sampCI.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
@@ -1835,7 +1959,13 @@ static VkYcbcrPipeline *vk_ycbcr_pipeline_get(VkFormat fmt) {
     // Pool sized for the small image-view cache — one descriptor set per
     // cached VkImage, all bound to this format's immutable sampler.
     {
-        VkDescriptorPoolSize poolSize = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_IMGVIEW_CACHE_SIZE };
+        // A YCbCr combined image sampler can take several descriptors per set
+        // (VkSamplerYcbcrConversionImageFormatProperties::
+        // combinedImageSamplerDescriptorCount -- 3 on AMD for NV12/P010). Sized
+        // at 1 per set, the pool ran dry after a few of ffmpeg's images and
+        // every frame decoded into any other image was silently not drawn
+        // ("vkAllocateDescriptorSets failed" thousands of times per session).
+        VkDescriptorPoolSize poolSize = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_IMGVIEW_CACHE_SIZE * 3 };
         VkDescriptorPoolCreateInfo poolCI = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
         poolCI.maxSets = VK_IMGVIEW_CACHE_SIZE; poolCI.poolSizeCount = 1; poolCI.pPoolSizes = &poolSize;
         if (vkCreateDescriptorPool(g_dev, &poolCI, NULL, &p->dpool) != VK_SUCCESS) goto fail;
@@ -1890,6 +2020,7 @@ static VkYcbcrPipeline *vk_ycbcr_pipeline_get(VkFormat fmt) {
     }
 
     p->fmt = fmt;
+    p->swap_fmt = g_swap_fmt;
     return p;
 
 fail:
@@ -1908,25 +2039,48 @@ fail:
 // and caching the VkImageView + VkDescriptorSet on first sight of this
 // VkImage. ffmpeg's internal Vulkan frame pool round-robins a small fixed set
 // of images, so this cache stays tiny (VK_IMGVIEW_CACHE_SIZE) in practice.
+static void vk_imgview_cache_apply_forget(void) {
+    if (!g_cs_init) return;
+    VkImage gone[VK_FORGET_MAX];
+    int n;
+    EnterCriticalSection(&g_cs);
+    n = g_forget_n;
+    memcpy(gone, g_forget, sizeof(VkImage) * (size_t)n);
+    g_forget_n = 0;
+    LeaveCriticalSection(&g_cs);
+    for (int k = 0; k < n; k++) {
+        for (int i = 0; i < VK_IMGVIEW_CACHE_SIZE; i++) {
+            if (g_imgview_cache[i].img != gone[k]) continue;
+            if (g_imgview_cache[i].view) vkDestroyImageView(g_dev, g_imgview_cache[i].view, NULL);
+            g_imgview_cache[i].view = VK_NULL_HANDLE;
+            g_imgview_cache[i].img = VK_NULL_HANDLE; // dset is kept for reuse
+        }
+    }
+}
+
 static VkDescriptorSet vk_imgview_cache_get(VkImage img, VkFormat fmt, VkYcbcrPipeline *pl) {
+    vk_imgview_cache_apply_forget();
     int free_slot = -1;
     for (int i = 0; i < VK_IMGVIEW_CACHE_SIZE; i++) {
         if (g_imgview_cache[i].img == img && g_imgview_cache[i].fmt == fmt) return g_imgview_cache[i].dset;
         if (free_slot < 0 && g_imgview_cache[i].img == VK_NULL_HANDLE) free_slot = i;
     }
     if (free_slot < 0) {
-        // Cache full — reuse slot 0. vkDeviceWaitIdle in the caller's fence
-        // wait already guarantees no in-flight command buffer references the
-        // old view before we get here (single command buffer, single frame
-        // in flight, same as the RGBA path above).
-        free_slot = 0;
-        if (g_imgview_cache[0].view) vkDestroyImageView(g_dev, g_imgview_cache[0].view, NULL);
+        // Cache full -- evict round-robin. This runs before the caller's own
+        // fence wait, so wait for the in-flight frame here first: it may be
+        // sampling through the very view/descriptor set being replaced.
+        free_slot = g_imgview_evict_next;
+        g_imgview_evict_next = (g_imgview_evict_next + 1) % VK_IMGVIEW_CACHE_SIZE;
+        vkWaitForFences(g_dev, 1, &g_fence, VK_TRUE, 2000000000ULL);
+        if (g_imgview_cache[free_slot].view) vkDestroyImageView(g_dev, g_imgview_cache[free_slot].view, NULL);
+        g_imgview_cache[free_slot].view = VK_NULL_HANDLE;
+        g_imgview_cache[free_slot].img  = VK_NULL_HANDLE;
     }
 
     VkSamplerYcbcrConversionInfo convInfo = { VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO };
     convInfo.conversion = pl->conv;
     VkImageViewCreateInfo viewCI = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-    viewCI.pNext = &convInfo;
+    viewCI.pNext = pl->conv ? &convInfo : NULL;
     viewCI.image = img;
     viewCI.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewCI.format = fmt;
@@ -1944,7 +2098,8 @@ static VkDescriptorSet vk_imgview_cache_get(VkImage img, VkFormat fmt, VkYcbcrPi
         VkDescriptorSetAllocateInfo dsAI = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
         dsAI.descriptorPool = pl->dpool; dsAI.descriptorSetCount = 1; dsAI.pSetLayouts = &pl->dsl;
         if (vkAllocateDescriptorSets(g_dev, &dsAI, &dset) != VK_SUCCESS) {
-            goVKLog("vk_imgview_cache_get: vkAllocateDescriptorSets failed", 2);
+            static int logged = 0;
+            if (!logged++) goVKLog("vk_imgview_cache_get: vkAllocateDescriptorSets failed", 2);
             vkDestroyImageView(g_dev, view, NULL);
             return VK_NULL_HANDLE;
         }
@@ -1966,7 +2121,8 @@ static VkDescriptorSet vk_imgview_cache_get(VkImage img, VkFormat fmt, VkYcbcrPi
 // vk_render_frame_vkimage — zero-copy counterpart to vk_render_frame: samples
 // a decoded VkImage directly into the swapchain instead of blitting an
 // uploaded RGBA staging texture. Same acquire/fence/present machinery.
-static int vk_render_frame_vkimage(VkImage img, VkFormat fmt, VkImageLayout src_layout, int fw, int fh) {
+static int vk_render_frame_vkimage(VkImage img, VkFormat fmt, VkImageLayout src_layout, int fw, int fh,
+                                   VkSemaphore wait_sem, uint64_t wait_value, int external) {
     if (!g_dev || !g_swap) return 0;
     char _dbg[96];
 
@@ -1975,15 +2131,25 @@ static int vk_render_frame_vkimage(VkImage img, VkFormat fmt, VkImageLayout src_
     VkDescriptorSet dset = vk_imgview_cache_get(img, fmt, pl);
     if (!dset) return 0;
 
-    // In-order-execution sync: our own graphics-queue command buffer is
-    // recorded/submitted strictly after this wait, so waiting for the
-    // decode queue to go idle here guarantees the image's decode write has
-    // completed before we sample it — the same mechanism proven correct in
-    // the standalone same-device prototype (vk_samedev_readback_test.c /
-    // vk_ycbcr_render_test.c), used here instead of the AVVkFrame timeline-
-    // semaphore fields to avoid also having to hand ffmpeg's frame state
-    // back in sync (layout/access/sem_value) after an external read.
-    if (g_decode_queue) vkQueueWaitIdle(g_decode_queue);
+    // Host-side wait for this frame's decode: our graphics-queue command
+    // buffer is recorded/submitted strictly after it, so the decode write has
+    // completed before we sample. Waiting on the AVVkFrame's own timeline
+    // semaphore value (read-only -- ffmpeg's frame state is untouched) rather
+    // than vkQueueWaitIdle(decode queue): that also waited for every *newer*
+    // frame ffmpeg had queued since, and touched a VkQueue ffmpeg submits to
+    // from the decode thread without its queue lock.
+    if (wait_sem != VK_NULL_HANDLE) {
+        VkSemaphoreWaitInfo wi = { VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO };
+        wi.semaphoreCount = 1; wi.pSemaphores = &wait_sem; wi.pValues = &wait_value;
+        VkResult wr = vkWaitSemaphores(g_dev, &wi, 1000000000ULL);
+        if (wr != VK_SUCCESS) {
+            vk_check_device_lost(wr);
+            goVKLog("vkWaitSemaphores(decode) failed/timed out -- skipping frame", 2);
+            return 0;
+        }
+    } else if (g_decode_queue) {
+        vkQueueWaitIdle(g_decode_queue);
+    }
 
     uint32_t img_idx = 0;
     // See g_img_sems's doc comment: rotate through the pool since the
@@ -2043,7 +2209,7 @@ static int vk_render_frame_vkimage(VkImage img, VkFormat fmt, VkImageLayout src_
     // why they carry COLOR_ATTACHMENT_BIT on this path). Skipped entirely
     // while the feature is off, so the happy path never allocates this GPU
     // memory or adds the extra render pass below.
-    int conceal_capture = atomic_load(&g_conceal_enabled) && vk_conceal_ensure_tex2(fw, fh);
+    int conceal_capture = !g_swap_hdr && atomic_load(&g_conceal_enabled) && vk_conceal_ensure_tex2(fw, fh);
     int conceal_slot = conceal_capture ? (1 - g_conceal_cur) : -1;
 
     vkResetCommandBuffer(g_cmdbuf, 0);
@@ -2067,12 +2233,21 @@ static int vk_render_frame_vkimage(VkImage img, VkFormat fmt, VkImageLayout src_
     // frame (correct decode, garbage/discarded data by the time the shader
     // sampled it), exactly the bug the standalone prototype's real-layout
     // barrier (vk_ycbcr_render_test.c) never hit.
+    //
+    // An image imported from D3D11 (external) is acquired from
+    // VK_QUEUE_FAMILY_EXTERNAL in GENERAL layout, which keeps what D3D11
+    // wrote, and released back the same way at the end of this command
+    // buffer (verified byte-exact against a CPU copy in
+    // tools/decode_bench/d3d11_interop_bench.c).
     {
         VkImageMemoryBarrier b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-        b.oldLayout = src_layout;
+        // external == 2: a PyroWave image on this same device, written in
+        // GENERAL by a compute queue (concurrent sharing, no ownership
+        // transfer) and handed back in GENERAL at the end of this buffer.
+        b.oldLayout = external ? VK_IMAGE_LAYOUT_GENERAL : src_layout;
         b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.srcQueueFamilyIndex = external == 1 ? VK_QUEUE_FAMILY_EXTERNAL : VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = external == 1 ? g_qfam : VK_QUEUE_FAMILY_IGNORED;
         b.image = img;
         b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         b.subresourceRange.levelCount = 1; b.subresourceRange.layerCount = 1;
@@ -2182,6 +2357,21 @@ static int vk_render_frame_vkimage(VkImage img, VkFormat fmt, VkImageLayout src_
         g_conceal_tex_layout[conceal_slot] = VK_IMAGE_LAYOUT_GENERAL;
     }
 
+    if (external) {
+        VkImageMemoryBarrier b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        b.srcQueueFamilyIndex = external == 1 ? g_qfam : VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = external == 1 ? VK_QUEUE_FAMILY_EXTERNAL : VK_QUEUE_FAMILY_IGNORED;
+        b.image = img;
+        b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        b.subresourceRange.levelCount = 1; b.subresourceRange.layerCount = 1;
+        b.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        b.dstAccessMask = 0;
+        vkCmdPipelineBarrier(g_cmdbuf, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                             0, 0, NULL, 0, NULL, 1, &b);
+    }
+
     vkEndCommandBuffer(g_cmdbuf);
 
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -2191,7 +2381,7 @@ static int vk_render_frame_vkimage(VkImage img, VkFormat fmt, VkImageLayout src_
     si.signalSemaphoreCount = 1; si.pSignalSemaphores = &g_rnd_sems[img_idx];
     vk_conceal_note_real_frame(conceal_slot);
     g_render_stage = 5; // queue-submit
-    vk_check_device_lost(vkQueueSubmit(g_queue, 1, &si, g_fence));
+    vk_check_device_lost(vkq_submit(g_queue, 1, &si, g_fence));
 
     VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
     pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &g_rnd_sems[img_idx];
@@ -2278,7 +2468,7 @@ static int vk_render_frame(uint8_t *pixels, int fw, int fh, int fs) {
     // this frame's resolution. Skipped entirely while the feature is off, so
     // the happy path never allocates this GPU memory. Failure here just means
     // no concealment material this frame -- never fails vk_render_frame itself.
-    int conceal_capture = atomic_load(&g_conceal_enabled) && vk_conceal_ensure_tex2(fw, fh);
+    int conceal_capture = !g_swap_hdr && atomic_load(&g_conceal_enabled) && vk_conceal_ensure_tex2(fw, fh);
 
     // Upload frame to staging buffer.
     size_t row = (size_t)fw * 4;
@@ -2457,7 +2647,7 @@ static int vk_render_frame(uint8_t *pixels, int fw, int fh, int fs) {
     vk_conceal_note_real_frame(conceal_slot);
 
     g_render_stage = 5; // queue-submit
-    vk_check_device_lost(vkQueueSubmit(g_queue, 1, &si, g_fence));
+    vk_check_device_lost(vkq_submit(g_queue, 1, &si, g_fence));
 
     VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
     pi.waitSemaphoreCount = 1;
@@ -2526,7 +2716,7 @@ static int vk_conceal_ensure_tex2(int w, int h) {
     if (g_conceal_tex[0] != VK_NULL_HANDLE && g_conceal_tex_w == w && g_conceal_tex_h == h) return 1;
 
     if (g_conceal_tex[0] != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(g_dev);
+        vkq_device_wait_idle(g_dev);
         for (int i = 0; i < 2; i++) {
             if (g_conceal_tex_view[i]) { vkDestroyImageView(g_dev, g_conceal_tex_view[i], NULL); g_conceal_tex_view[i] = VK_NULL_HANDLE; }
             if (g_conceal_tex_mem[i])  { vkFreeMemory(g_dev, g_conceal_tex_mem[i], NULL); g_conceal_tex_mem[i] = VK_NULL_HANDLE; }
@@ -2588,7 +2778,7 @@ static int vk_conceal_ensure_flow_synth(int w, int h) {
                         g_synth_tex == VK_NULL_HANDLE || g_conceal_tex_w != w || g_conceal_tex_h != h);
     if (!need_resize) return 1;
 
-    vkDeviceWaitIdle(g_dev);
+    vkq_device_wait_idle(g_dev);
     if (g_flow_view)  { vkDestroyImageView(g_dev, g_flow_view, NULL); g_flow_view = VK_NULL_HANDLE; }
     if (g_flow_mem)   { vkFreeMemory(g_dev, g_flow_mem, NULL); g_flow_mem = VK_NULL_HANDLE; }
     if (g_flow_tex)   { vkDestroyImage(g_dev, g_flow_tex, NULL); g_flow_tex = VK_NULL_HANDLE; }
@@ -3358,7 +3548,7 @@ static int vk_render_frame_conceal(void) {
     si.waitSemaphoreCount = 1; si.pWaitSemaphores = &this_img_sem; si.pWaitDstStageMask = &wait_stage;
     si.commandBufferCount = 1; si.pCommandBuffers = &g_cmdbuf;
     si.signalSemaphoreCount = 1; si.pSignalSemaphores = &g_rnd_sems[img_idx];
-    vk_check_device_lost(vkQueueSubmit(g_queue, 1, &si, g_fence));
+    vk_check_device_lost(vkq_submit(g_queue, 1, &si, g_fence));
 
     g_conceal_consecutive++;
     g_stat_concealed_frames++;
@@ -3487,18 +3677,28 @@ static DWORD WINAPI vk_render_thread(LPVOID unused) {
             VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
             void *rel_ctx = NULL;
             void (*rel_fn)(void*) = NULL;
+            VkSemaphore wsem = VK_NULL_HANDLE; uint64_t wval = 0; int wext = 0;
             EnterCriticalSection(&g_cs);
             if (g_vkf_ready) {
                 img = g_vkf_img; fmt = g_vkf_fmt; layout = g_vkf_layout; fw = g_vkf_w; fh = g_vkf_h;
+                wsem = g_vkf_sem; wval = g_vkf_sem_value; wext = g_vkf_external;
                 rel_ctx = g_vkf_release_ctx; rel_fn = g_vkf_release_fn;
                 g_vkf_ready = 0;
             }
             LeaveCriticalSection(&g_cs);
 
             if (img != VK_NULL_HANDLE) {
+                // 10-bit frames are HDR10 (PQ, BT.2020): switch the swapchain
+                // when the content does, if the display can show it.
+                int content_hdr = fmt == VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16 ||
+                                  fmt == VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+                if (content_hdr != g_want_hdr) {
+                    g_want_hdr = content_hdr;
+                    if (g_swap_hdr != (content_hdr && atomic_load(&g_hdr_display_avail))) vk_recreate_swapchain();
+                }
                 g_has_frame = 1;
                 g_render_stage = 1; // got frame — entering vk_render_frame_vkimage
-                rf = vk_render_frame_vkimage(img, fmt, layout, fw, fh);
+                rf = vk_render_frame_vkimage(img, fmt, layout, fw, fh, wsem, wval, wext);
                 if (rf) {
                     // Fence-wait at the top of the NEXT call confirms this
                     // frame's GPU read has retired before its ref is dropped.
@@ -3686,7 +3886,8 @@ int vk_video_try_submit(uint8_t *rgba, int width, int height, int stride) {
 // Returns 1 if the frame was accepted (release_fn will be called later), 0
 // if rejected (caller must release immediately).
 int vk_video_try_submit_vkframe(void *vk_image, int vk_format, int vk_layout, int width, int height,
-                                 int narrow_range, void *release_ctx, void (*release_fn)(void *)) {
+                                 int narrow_range, void *wait_sem, uint64_t wait_value, int external,
+                                 void *release_ctx, void (*release_fn)(void *)) {
     (void)narrow_range; // reserved: VK_SAMPLER_YCBCR_RANGE_ITU_NARROW is currently hardcoded, matches Moonlight's H264/HEVC streams
     if (!atomic_load(&g_active) || !g_cs_init) return 0;
     EnterCriticalSection(&g_cs);
@@ -3705,6 +3906,9 @@ int vk_video_try_submit_vkframe(void *vk_image, int vk_format, int vk_layout, in
     g_vkf_fmt = (VkFormat)vk_format;
     g_vkf_layout = (VkImageLayout)vk_layout;
     g_vkf_w = width; g_vkf_h = height;
+    g_vkf_sem = (VkSemaphore)wait_sem;
+    g_vkf_sem_value = wait_value;
+    g_vkf_external = external;
     g_vkf_release_ctx = release_ctx;
     g_vkf_release_fn  = release_fn;
     g_vkf_ready = 1;
@@ -3712,6 +3916,21 @@ int vk_video_try_submit_vkframe(void *vk_image, int vk_format, int vk_layout, in
     LeaveCriticalSection(&g_cs);
     SetEvent(g_event);
     return 1;
+}
+
+// vk_video_hdr_display_available: the current swapchain's surface offers
+// HDR10 (Windows HDR is on for the display the video is on). Any thread.
+int vk_video_hdr_display_available(void) {
+    return atomic_load(&g_hdr_display_avail);
+}
+
+// vk_video_forget_image: the owner of an image the renderer may have cached
+// a view for is about to destroy it (any thread). See g_forget.
+void vk_video_forget_image(void *vk_image) {
+    if (!g_cs_init) return;
+    EnterCriticalSection(&g_cs);
+    if (g_forget_n < VK_FORGET_MAX) g_forget[g_forget_n++] = (VkImage)vk_image;
+    LeaveCriticalSection(&g_cs);
 }
 
 // vk_hud_set_pixels is called from Go (net_graph_windows.go's push hook,
@@ -3832,7 +4051,7 @@ static void vk_full_cleanup(void) {
     if (g_event)   { CloseHandle(g_event); g_event = NULL; }
 
     if (g_dev) {
-        vkDeviceWaitIdle(g_dev);
+        vkq_device_wait_idle(g_dev);
         if (g_stage_ptr && g_stage_mem) { vkUnmapMemory(g_dev, g_stage_mem); g_stage_ptr = NULL; }
         if (g_stage_buf)  { vkDestroyBuffer(g_dev, g_stage_buf, NULL); g_stage_buf = VK_NULL_HANDLE; }
         if (g_stage_mem)  { vkFreeMemory(g_dev, g_stage_mem, NULL);  g_stage_mem = VK_NULL_HANDLE; }
@@ -3882,6 +4101,7 @@ static void vk_full_cleanup(void) {
             if (g_imgview_cache[i].view) vkDestroyImageView(g_dev, g_imgview_cache[i].view, NULL);
             memset(&g_imgview_cache[i], 0, sizeof(g_imgview_cache[i]));
         }
+        g_imgview_evict_next = 0;
         for (int i = 0; i < VK_YCBCR_PIPELINE_CACHE_SIZE; i++) {
             VkYcbcrPipeline *p = &g_ycbcr_pipelines[i];
             if (p->pipeline) vkDestroyPipeline(g_dev, p->pipeline, NULL);
@@ -3924,9 +4144,14 @@ static void vk_full_cleanup(void) {
         g_aivision_dset = VK_NULL_HANDLE;
         g_aivision_tex_layout = VK_IMAGE_LAYOUT_UNDEFINED;
         g_aivision_tex_w = 0; g_aivision_tex_h = 0;
+        // vk_aivision_set_pixels (AI Vision's goroutine) writes this buffer
+        // under g_cs at any time, including mid-teardown -- freeing it
+        // without the lock was a use-after-free crash on stream restart.
+        if (g_cs_init) EnterCriticalSection(&g_cs);
         g_aivision_active = 0; g_aivision_dirty = 0;
         free(g_aivision_pixels); g_aivision_pixels = NULL; g_aivision_pixels_sz = 0;
         g_aivision_pending_w = 0; g_aivision_pending_h = 0;
+        if (g_cs_init) LeaveCriticalSection(&g_cs);
 
         vk_destroy_sync_semaphores();
         if (g_fence)   { vkDestroyFence(g_dev, g_fence, NULL);       g_fence = VK_NULL_HANDLE; }
