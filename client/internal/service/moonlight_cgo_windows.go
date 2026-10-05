@@ -1,6 +1,6 @@
 //go:build windows && cgo
 
-// Cache-bust (rev 12): go build's cache doesn't see changes to libmoonlight-common-c.a
+// Cache-bust (rev 13): go build's cache doesn't see changes to libmoonlight-common-c.a
 // (only referenced via CGO_LDFLAGS -l, not a tracked Go source dependency), so
 // a C-only submodule edit silently relinks against a stale .a unless some .go
 // file in this package also changes. Bump this comment whenever that happens.
@@ -927,7 +927,7 @@ static int  dr_setup(int fmt, int w, int h, int rate, void *ctx, int flags) {
     g_vk_session_frames = 0;
     g_vk_overlay_seen = 0;
     InterlockedIncrement(&g_stream_gen);
-    g_using_pyrowave = (g_video_format & 0x10000) != 0; // VIDEO_FORMAT_MASK_PYROWAVE
+    g_using_pyrowave = (g_video_format & 0xF0000) != 0; // VIDEO_FORMAT_MASK_PYROWAVE
     if (g_using_pyrowave) {
         pyrowave_win_stream_reset();
         goVTLog((char*)"pyrowave: stream negotiated -- decoding on the GPU (pyrowave_decode_windows.c)");
@@ -1514,7 +1514,7 @@ func windowsVideoFormatCodecName(format int32) (string, bool) {
 	switch {
 	case format < 0:
 		return "", false
-	case format&0x10000 != 0: // VIDEO_FORMAT_PYROWAVE
+	case format&0xF0000 != 0: // VIDEO_FORMAT_MASK_PYROWAVE
 		return models.VideoModePyroWave, true
 	case format&0x0F00 != 0:
 		return models.VideoModeH265, true

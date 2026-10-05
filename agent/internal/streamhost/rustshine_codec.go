@@ -22,6 +22,10 @@ type statusResponse struct {
 	Color444Available bool   `json:"color_444_available"`
 	ActiveHdr         bool   `json:"active_hdr"`
 	HdrAvailable      bool   `json:"hdr_available"`
+	// PyroWave's color upgrades (license halves only, see
+	// PyroWaveColorStatus); absent on older rust-shine builds -> false.
+	PyroWaveColor444Available bool `json:"pyrowave_color_444_available"`
+	PyroWaveHdrAvailable      bool `json:"pyrowave_hdr_available"`
 }
 
 // rustshineAdminHTTPClient is shared across every CurrentVideoCodec call --
@@ -136,6 +140,16 @@ func (b *rustshineBackend) HdrStatus() (active bool, available bool) {
 		return false, false
 	}
 	return status.ActiveHdr, status.HdrAvailable
+}
+
+// PyroWaveColorStatus: see Backend.PyroWaveColorStatus. (false, false) if the
+// server isn't reachable yet or predates the fields.
+func (b *rustshineBackend) PyroWaveColorStatus() (color444 bool, hdr bool) {
+	status := b.fetchStatus()
+	if status == nil {
+		return false, false
+	}
+	return status.PyroWaveColor444Available, status.PyroWaveHdrAvailable
 }
 
 // VirtualDisplaySupported reports whether this backend supports native

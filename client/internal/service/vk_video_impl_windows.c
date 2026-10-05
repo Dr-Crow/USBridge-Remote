@@ -1869,7 +1869,20 @@ static void vk_aivision_record_draw(VkCommandBuffer cb, int fw, int fh) {
 static int vk_format_is_ycbcr(VkFormat fmt) {
     return fmt == VK_FORMAT_G8_B8R8_2PLANE_420_UNORM ||
            fmt == VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM ||
+           fmt == VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM ||
+           fmt == VK_FORMAT_G16_B16_R16_3PLANE_420_UNORM ||
+           fmt == VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM ||
            fmt == VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16;
+}
+
+// vk_format_is_hdr10: frames of this format are HDR10 (PQ, BT.2020). P010
+// only ever carries HDR10 here; the 16-bit 3-plane formats are PyroWave HDR
+// (pyrowave_decode_windows.c); RGB10A2 is the D3D11 video processor's PQ output.
+static int vk_format_is_hdr10(VkFormat fmt) {
+    return fmt == VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16 ||
+           fmt == VK_FORMAT_G16_B16_R16_3PLANE_420_UNORM ||
+           fmt == VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM ||
+           fmt == VK_FORMAT_A2B10G10R10_UNORM_PACK32;
 }
 
 // vk_ycbcr_pipeline_drop destroys one cache entry and every cached view /
@@ -1906,11 +1919,12 @@ static VkYcbcrPipeline *vk_ycbcr_pipeline_get(VkFormat fmt) {
 
     VkSamplerYcbcrConversionCreateInfo convCI = { VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_CREATE_INFO };
     convCI.format = fmt;
-    // 10-bit (P010) only ever carries HDR10 here, which is BT.2020; 8-bit
-    // streams are BT.601 (moonlight-common-c's default colorspace).
-    // 3-plane 4:2:0 is only PyroWave here, whose hosts convert to BT.709.
-    convCI.ycbcrModel = fmt == VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16 ? VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_2020
-                      : fmt == VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM ? VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709
+    // HDR10 formats (P010, PyroWave 16-bit) are BT.2020; 8-bit NV12 streams
+    // are BT.601 (moonlight-common-c's default colorspace). 8-bit 3-plane is
+    // only PyroWave SDR here, whose hosts convert to BT.709.
+    convCI.ycbcrModel = vk_format_is_hdr10(fmt) ? VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_2020
+                      : (fmt == VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM || fmt == VK_FORMAT_G8_B8_R8_3PLANE_444_UNORM)
+                          ? VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709
                       : VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601;
     convCI.ycbcrRange = VK_SAMPLER_YCBCR_RANGE_ITU_NARROW;
     convCI.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -1920,6 +1934,18 @@ static VkYcbcrPipeline *vk_ycbcr_pipeline_get(VkFormat fmt) {
     convCI.xChromaOffset = VK_CHROMA_LOCATION_COSITED_EVEN;
     convCI.yChromaOffset = VK_CHROMA_LOCATION_COSITED_EVEN;
     convCI.chromaFilter = VK_FILTER_LINEAR;
+    if (vk_format_is_ycbcr(fmt)) {
+        // Only what the format supports: 4:4:4 formats often lack cosited
+        // chroma and linear chroma filtering (nothing to reconstruct anyway).
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(g_pdev, fmt, &fp);
+        VkFormatFeatureFlags ff = fp.optimalTilingFeatures;
+        if (!(ff & VK_FORMAT_FEATURE_COSITED_CHROMA_SAMPLES_BIT)) {
+            convCI.xChromaOffset = VK_CHROMA_LOCATION_MIDPOINT;
+            convCI.yChromaOffset = VK_CHROMA_LOCATION_MIDPOINT;
+        }
+        if (!(ff & VK_FORMAT_FEATURE_SAMPLED_IMAGE_YCBCR_CONVERSION_LINEAR_FILTER_BIT)) convCI.chromaFilter = VK_FILTER_NEAREST;
+    }
     if (vk_format_is_ycbcr(fmt) && vkCreateSamplerYcbcrConversion(g_dev, &convCI, NULL, &p->conv) != VK_SUCCESS) {
         goVKLog("vk_ycbcr_pipeline_get: vkCreateSamplerYcbcrConversion failed", 2);
         memset(p, 0, sizeof(*p)); return NULL;
@@ -3690,8 +3716,7 @@ static DWORD WINAPI vk_render_thread(LPVOID unused) {
             if (img != VK_NULL_HANDLE) {
                 // 10-bit frames are HDR10 (PQ, BT.2020): switch the swapchain
                 // when the content does, if the display can show it.
-                int content_hdr = fmt == VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16 ||
-                                  fmt == VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+                int content_hdr = vk_format_is_hdr10(fmt);
                 if (content_hdr != g_want_hdr) {
                     g_want_hdr = content_hdr;
                     if (g_swap_hdr != (content_hdr && atomic_load(&g_hdr_display_avail))) vk_recreate_swapchain();

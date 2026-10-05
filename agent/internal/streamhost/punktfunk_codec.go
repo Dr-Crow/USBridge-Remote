@@ -69,6 +69,9 @@ func (b *punktfunkBackend) Color444Status() (active bool, available bool) { retu
 // always (false, false) until a real endpoint is found.
 func (b *punktfunkBackend) HdrStatus() (active bool, available bool) { return false, false }
 
+// PyroWaveColorStatus: this backend's PyroWave is 8-bit 4:2:0 only.
+func (b *punktfunkBackend) PyroWaveColorStatus() (color444 bool, hdr bool) { return false, false }
+
 // VirtualDisplaySupported is true: Punktfunk's pf-vdisplay crate creates a
 // virtual output per session on every supported compositor (KWin, Mutter,
 // Hyprland, wlroots, gamescope) and via the Windows IddCx driver -- confirmed
