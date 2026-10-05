@@ -114,6 +114,7 @@ type TokenProvider interface {
 	ClearLicense() error
 	DownloadRustShine(onProgress entitlement.ProgressFunc) error
 	CheckRustShineUpdateNow() error
+	CheckPunktfunkUpdateNow() error
 	SetStreamBackend(kind string) error
 	SetRustShineWebRTCEnabled(enabled bool) error
 
@@ -357,14 +358,14 @@ type Window struct {
 	// dialog's local pendingTierSwitch).
 	pendingTierSwitch string
 
-	protocolPick    string
-	protocolApplied string
-	protocolHover   string
-	protocolRows    []*protocolPickRow
-	protocolChange  *cardHeaderButton
-	protocolBusy    *footerBusyHint
+	protocolPick      string
+	protocolApplied   string
+	protocolHover     string
+	protocolRows      []*protocolPickRow
+	protocolChange    *cardHeaderButton
+	protocolBusy      *footerBusyHint
 	protocolSwitching bool
-	footerMsgGen    uint64
+	footerMsgGen      uint64
 
 	// streamerNameLabel / streamerKindLabel show StreamerName() split into
 	// the product ("Sunshine" / "USBridge Streamer") and the smaller
@@ -393,6 +394,8 @@ type Window struct {
 	// (and the footer idle copy is shown). Keeps the button disabled
 	// even before EntitlementStatus.RustShineUpdateInProgress flips on.
 	streamerUpdateChecking bool
+	// punktfunkUpdateChecking: the same for the Punktfunk card's glyph.
+	punktfunkUpdateChecking bool
 	// streamerBgUpdateWatching is true while a background auto-update is in
 	// flight and this window didn't start it (the refresh button uses
 	// streamerUpdateChecking instead). Drives the footer spinner.
@@ -716,11 +719,58 @@ func (w *Window) maybeOfferStreamerUpdate(st entitlement.Status) {
 	}, w.guiWin)
 }
 
+// beginPunktfunkUpdateCheck is the Punktfunk card's "check for updates":
+// the latest Streamers-Forks release on GitHub, signature-verified
+// (CheckPunktfunkUpdateNow). Footer feedback as for RustShine.
+func (w *Window) beginPunktfunkUpdateCheck() {
+	if w.token == nil || w.punktfunkUpdateChecking {
+		return
+	}
+	w.punktfunkUpdateChecking = true
+	before := w.token.EntitlementStatus()
+	w.refreshProtocolUpdateGlyphs()
+	w.startFooterBusy(loc().CheckingUpdates)
+	go func() {
+		err := w.token.CheckPunktfunkUpdateNow()
+		if err != nil {
+			logrus.WithError(err).Warn("punktfunk update check failed")
+		}
+		if !w.ownsEngine && err == nil {
+			// Thin client: the admin API returned before the engine finished.
+			start := time.Now()
+			seen := false
+			for time.Since(start) < 3*time.Minute {
+				st := w.token.EntitlementStatus()
+				if st.PunktfunkUpdateInProgress {
+					seen = true
+				} else if seen || time.Since(start) > 1500*time.Millisecond {
+					break
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+		}
+		fyne.Do(func() {
+			w.punktfunkUpdateChecking = false
+			st := w.token.EntitlementStatus()
+			w.refreshProtocolUpdateGlyphs()
+			switch {
+			case err != nil || (st.LastError != "" && st.LastError != before.LastError):
+				w.showFooterIdle(loc().UpdateFailed, footerIdleMessageDuration)
+			case st.PunktfunkVersion != before.PunktfunkVersion:
+				w.showFooterIdle(loc().StreamerUpdated, footerIdleMessageDuration)
+			default:
+				w.showFooterIdle(loc().AlreadyUpToDate, footerIdleMessageDuration)
+			}
+		})
+	}()
+}
+
 func (w *Window) beginStreamerUpdateCheck() {
 	if w.token == nil || w.streamerUpdateChecking {
 		return
 	}
 	w.streamerUpdateChecking = true
+	w.refreshProtocolUpdateGlyphs()
 	if w.rustshineUpdateBtn != nil {
 		w.rustshineUpdateBtn.Disable()
 	}
@@ -762,6 +812,7 @@ func (w *Window) waitUntilRustShineUpdateSettles() {
 
 func (w *Window) finishStreamerUpdateCheck(before entitlement.Status, checkErr error) {
 	w.streamerUpdateChecking = false
+	w.refreshProtocolUpdateGlyphs()
 	st := entitlement.Status{}
 	if w.token != nil {
 		st = w.token.EntitlementStatus()
@@ -1410,14 +1461,13 @@ func (w *Window) ShowAndRun(onClose func()) {
 	// until the check (and any download) finishes; a thin-client GUI
 	// gets a fire-and-forget HTTP 200 and polls EntitlementStatus
 	// instead (see handleCheckRustShineUpdateNow).
-	w.rustshineUpdateBtn = newTinyGlyphButtonColored(theme.ViewRefreshIcon(), design.ColorNameMutedOlive, func() {
-		w.beginStreamerUpdateCheck()
-	})
+	// "Check for updates" lives on each streamer's card in the Protocol
+	// picker (syncProtocolRowUpdate), not here.
 	streamerLabel := newStatusRow(
 		container.New(&tightHBoxLayout{gap: 6},
 			makeStatusLabel(loc().Streamer), statusDotBox(w.streamerStatusDot),
 			w.streamerNameLabel, w.streamerKindLabel),
-		w.rustshineUpdateBtn,
+		nil,
 	)
 
 	// usbBrokerRow -- see its field doc comment. Built unconditionally (like

@@ -344,3 +344,44 @@ treats a gap between FEC blocks as a corrupt frame, so every frame bigger
 than one FEC block (each PyroWave frame above ~40 Mb/s at packet size 1024,
 and large H.26x IDRs) was dropped. Fixed in the same fork commit; verified
 live at 150 and 300 Mb/s with no corrupt frames.
+
+## Download and updates (2026-10-05)
+
+The agent does not ship punktfunk-host. Picking Punktfunk in the protocol
+picker downloads it (`App.SetStreamBackend` -> `DownloadPunktfunk`). The card
+is offered wherever Streamers-Forks publishes a build: Windows x64 and Linux
+x86_64.
+
+- **Source.** The latest release of `USBridge-Technologies/Streamers-Forks`
+  (`releases/latest/download/`). It uses `manifest.json`, `manifest.json.sig`
+  and `punktfunk-host-<platform>`, all from that one release.
+- **Verification** (`internal/forkrelease`):
+  - the manifest's Ed25519 signature is checked with the agent's own update
+    key (`update.VerifySignature`, the same key
+    `scripts/verify_release_manifest.go` uses for Sunshine);
+  - `app` must be `streamers-forks`;
+  - the archive's SHA-256 must match the signed manifest.
+
+  Anything else is refused before it touches disk outside a temp file.
+- **Location.** `<stateDir>/punktfunk/`, with `VERSION` holding the release
+  tag. The archive is unpacked flat into `punktfunk.next` and swapped in as a
+  whole directory, so the Linux `punktfunk-encode-worker` comes along.
+  `streamhost.SetPunktfunkStageDir` makes `punktfunkBinaryPath` look there,
+  after a bundled copy and before `USBRIDGE_PUNKTFUNK_HOST` / `PATH`.
+- **Updates.**
+  - Automatic: `checkPunktfunkUpdate` runs on the streamer update tick, at
+    most every 6 h.
+  - Manual: the refresh glyph on the Punktfunk card
+    (`CheckPunktfunkUpdateNow`, `POST /token/check-punktfunk-update` for a
+    thin-client GUI).
+  - A newer release is downloaded and verified while the old build keeps
+    running. Then a running Punktfunk is stopped, the directories are swapped
+    (a running `.exe` can't be replaced on Windows), and it is started again.
+  - Only a build the agent downloaded itself is updated. A bundled or
+    system-installed one is left alone.
+- **Streamer cards.** Each streamer card in the protocol picker carries its
+  own "check for updates" glyph, and the Status card no longer has one:
+  - RustShine (Free/Pro/Enterprise share one build) is checked through the
+    entitlement backend (Cloudflare);
+  - Punktfunk is checked against GitHub;
+  - Sunshine is bundled with the agent and updates with it.

@@ -30,6 +30,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -155,11 +156,19 @@ func (b *punktfunkBackend) DisplayName() string { return "Punktfunk (GameStream)
 // punktfunkBinEnv names a punktfunk-host outside the agent's own bundle.
 const punktfunkBinEnv = "USBRIDGE_PUNKTFUNK_HOST"
 
+// punktfunkStageDir is where the agent downloads punktfunk-host to
+// (forkrelease.PunktfunkDir: <stateDir>/punktfunk, signature-verified from
+// Streamers-Forks' latest release); set once at startup.
+var punktfunkStageDir atomic.Value // string
+
+// SetPunktfunkStageDir tells punktfunkBinaryPath where the agent's own
+// downloaded punktfunk-host lives.
+func SetPunktfunkStageDir(dir string) { punktfunkStageDir.Store(dir) }
+
 // punktfunkBinaryPath locates punktfunk-host, or returns "" when there is
 // none: the copy bundled next to the agent (<exeDir>/punktfunk/), then the
-// one punktfunkBinEnv names, then a system-installed one on PATH. Nothing
-// bundles Punktfunk into the agent's own build yet, so the last two are how
-// a host gets one today. On KDE the path matters beyond finding the binary:
+// one the agent downloaded (SetPunktfunkStageDir), then the one
+// punktfunkBinEnv names, then a system-installed one on PATH. On KDE the path matters beyond finding the binary:
 // KWin only lets a punktfunk-host capture when an installed .desktop file
 // names that exact executable path (see ListCaptureDevices' doc comment),
 // which a copy inside an AppImage's per-run mount point can never satisfy.
@@ -177,6 +186,12 @@ func punktfunkBinaryPath(exeDir string) string {
 	}
 	if exeDir != "" {
 		p := filepath.Join(exeDir, "punktfunk", name)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	if dir, _ := punktfunkStageDir.Load().(string); dir != "" {
+		p := filepath.Join(dir, name)
 		if _, err := os.Stat(p); err == nil {
 			return p
 		}

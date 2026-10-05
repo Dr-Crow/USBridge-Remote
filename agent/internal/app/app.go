@@ -37,6 +37,7 @@ import (
 	"usbridge_agent/internal/config"
 	"usbridge_agent/internal/devicecert"
 	"usbridge_agent/internal/entitlement"
+	"usbridge_agent/internal/forkrelease"
 	"usbridge_agent/internal/hwid"
 	"usbridge_agent/internal/input"
 	"usbridge_agent/internal/netutil"
@@ -172,6 +173,7 @@ type App struct {
 	entStatus             entitlement.Status
 	entPollCancel         context.CancelFunc // cancels an in-flight StartPurchase's post-checkout poll loop, if any
 	pendingStreamerUpdate string             // newer USBridge-streamer tag seen while auto-update is off
+	lastPunktfunkCheck    time.Time          // checkPunktfunkUpdate's last look at Streamers-Forks (entMu)
 
 	// accMu guards the account-login fields below -- see StartAccountLogin's
 	// doc comment. Separate mutex/status from entMu above: this is a
@@ -601,6 +603,7 @@ func New() (*App, error) {
 	}
 	// Punktfunk needs no entitlement, only its binary; without one (it was
 	// uninstalled since) the agent comes back on Sunshine.
+	streamhost.SetPunktfunkStageDir(forkrelease.PunktfunkDir(cfg.StateDir))
 	if cfg.PreferredBackend == "punktfunk" && streamhost.PunktfunkAvailable(instance.exeDir) {
 		instance.setStreamKind("punktfunk")
 	}
@@ -1513,6 +1516,13 @@ func (a *App) SetStreamBackend(kind string) error {
 	if kind != "sunshine" && kind != "rustshine" && kind != "punktfunk" {
 		return fmt.Errorf("unknown stream backend %q", kind)
 	}
+	// Punktfunk is downloaded when picked (DownloadPunktfunk), not shipped
+	// with the agent.
+	if kind == "punktfunk" && !streamhost.PunktfunkAvailable(a.exeDir) {
+		if err := a.DownloadPunktfunk(nil); err != nil {
+			return err
+		}
+	}
 
 	a.streamMu.Lock()
 	defer a.streamMu.Unlock()
@@ -1793,7 +1803,11 @@ func (a *App) EntitlementStatus() entitlement.Status {
 	a.entMu.Unlock()
 	st.ActiveBackend = a.currentStreamKind()
 	st.RustShineStaged = a.rustshineStaged()
-	st.PunktfunkAvailable = streamhost.PunktfunkAvailable(a.exeDir)
+	// Offered wherever it's installed or Streamers-Forks publishes a build
+	// for this platform (picking it downloads it, see SetStreamBackend).
+	st.PunktfunkAvailable = streamhost.PunktfunkAvailable(a.exeDir) || forkrelease.PunktfunkAssetName() != ""
+	st.PunktfunkStaged = forkrelease.PunktfunkStaged(a.cfg.StateDir)
+	st.PunktfunkVersion = forkrelease.PunktfunkStagedVersion(a.cfg.StateDir)
 	st.RustShineVersion = entitlement.StagedVersion(a.cfg.StateDir)
 	st.WebRTCEnabled = !a.cfg.RustShineWebRTCDisabled
 	st.RustShineAvailableVersion = pending
@@ -2272,6 +2286,144 @@ func (a *App) LogoutAccount() error {
 	return nil
 }
 
+// DownloadPunktfunk downloads punktfunk-host from Streamers-Forks' latest
+// release into <stateDir>/punktfunk (forkrelease: the manifest's Ed25519
+// signature and the archive's SHA-256 are checked before anything is put in
+// place). Progress goes through entStatus like DownloadRustShine's. Does not
+// switch to it -- SetStreamBackend("punktfunk") calls this itself when the
+// binary is missing.
+func (a *App) DownloadPunktfunk(onProgress forkrelease.ProgressFunc) error {
+	a.entMu.Lock()
+	a.entStatus.DownloadInProgress = true
+	a.entStatus.Progress = -1
+	a.entStatus.LastError = ""
+	a.entMu.Unlock()
+	defer func() {
+		a.entMu.Lock()
+		a.entStatus.DownloadInProgress = false
+		a.entMu.Unlock()
+	}()
+	combined := func(downloaded, total int64) {
+		frac := -1.0
+		if total > 0 {
+			frac = float64(downloaded) / float64(total)
+		}
+		a.entMu.Lock()
+		a.entStatus.Progress = frac
+		a.entMu.Unlock()
+		if onProgress != nil {
+			onProgress(downloaded, total)
+		}
+	}
+	log.Printf("[app] downloading punktfunk-host (Streamers-Forks latest release)")
+	prep, err := forkrelease.PreparePunktfunk(context.Background(), a.cfg.StateDir, combined)
+	if err == nil {
+		err = prep.Commit()
+	}
+	if err != nil {
+		a.setEntError(fmt.Sprintf("punktfunk download failed: %v", err))
+		return fmt.Errorf("punktfunk-host download failed: %w", err)
+	}
+	log.Printf("[app] punktfunk-host %s downloaded and verified", prep.Version)
+	return nil
+}
+
+// punktfunkUpdateInterval: Streamers-Forks releases are rare; the streamer
+// update tick runs far more often than this needs.
+const punktfunkUpdateInterval = 6 * time.Hour
+
+// checkPunktfunkUpdate re-downloads punktfunk-host when Streamers-Forks'
+// latest release carries a newer one than the agent downloaded earlier --
+// only for a build the agent itself staged (a bundled or system install is
+// the user's to update). A running Punktfunk backend is stopped for the
+// swap and started again; on Windows its .exe can't be replaced while it
+// runs.
+func (a *App) checkPunktfunkUpdate(ctx context.Context) {
+	if !forkrelease.PunktfunkStaged(a.cfg.StateDir) {
+		return
+	}
+	a.entMu.Lock()
+	due := time.Since(a.lastPunktfunkCheck) >= punktfunkUpdateInterval && !a.entStatus.PunktfunkUpdateInProgress
+	if due {
+		a.lastPunktfunkCheck = time.Now()
+		a.entStatus.PunktfunkUpdateInProgress = true
+	}
+	a.entMu.Unlock()
+	if !due {
+		return
+	}
+	defer a.endPunktfunkUpdate()
+	if err := a.updatePunktfunk(ctx); err != nil {
+		log.Printf("[app] punktfunk update failed (will retry): %v", err)
+	}
+}
+
+func (a *App) endPunktfunkUpdate() {
+	a.entMu.Lock()
+	a.entStatus.PunktfunkUpdateInProgress = false
+	a.entMu.Unlock()
+}
+
+// CheckPunktfunkUpdateNow is the Punktfunk card's "check for updates":
+// checkPunktfunkUpdate's GitHub check, right now. Errors also land in
+// entStatus.LastError for a thin-client GUI.
+func (a *App) CheckPunktfunkUpdateNow() error {
+	if !forkrelease.PunktfunkStaged(a.cfg.StateDir) {
+		return fmt.Errorf("punktfunk-host was not downloaded by the agent")
+	}
+	a.entMu.Lock()
+	if a.entStatus.PunktfunkUpdateInProgress {
+		a.entMu.Unlock()
+		return fmt.Errorf("punktfunk update already in progress")
+	}
+	a.entStatus.PunktfunkUpdateInProgress = true
+	a.entStatus.LastError = ""
+	a.lastPunktfunkCheck = time.Now()
+	a.entMu.Unlock()
+	defer a.endPunktfunkUpdate()
+	if err := a.updatePunktfunk(context.Background()); err != nil {
+		a.setEntError(fmt.Sprintf("punktfunk update failed: %v", err))
+		return err
+	}
+	return nil
+}
+
+// updatePunktfunk installs the latest release's punktfunk-host if it is
+// newer than the staged one; see checkPunktfunkUpdate.
+func (a *App) updatePunktfunk(ctx context.Context) error {
+	latest, err := forkrelease.LatestPunktfunkVersion(ctx)
+	if err != nil {
+		return err
+	}
+	if latest == "" || latest == forkrelease.PunktfunkStagedVersion(a.cfg.StateDir) {
+		return nil
+	}
+	log.Printf("[app] punktfunk-host %s available -- downloading", latest)
+	prep, err := forkrelease.PreparePunktfunk(ctx, a.cfg.StateDir, nil)
+	if err != nil {
+		return err
+	}
+	a.streamMu.Lock()
+	defer a.streamMu.Unlock()
+	running := a.streamKind == "punktfunk" && a.stream != nil
+	if running {
+		a.stopStreamAndWait(a.stream)
+	}
+	commitErr := prep.Commit()
+	if commitErr != nil {
+		prep.Discard()
+		commitErr = fmt.Errorf("punktfunk update not applied: %w", commitErr)
+	} else {
+		log.Printf("[app] punktfunk-host updated to %s", prep.Version)
+	}
+	if running {
+		if err := a.RestartSunshineStartOnly(); err != nil {
+			log.Printf("[app] punktfunk restart after update failed: %v", err)
+		}
+	}
+	return commitErr
+}
+
 // DownloadRustShine downloads and stages the RustShine build for this
 // platform. onProgress mirrors entitlement.ProgressFunc's threading
 // contract exactly (internal/update.ProgressFunc's twin) — called from
@@ -2500,6 +2652,7 @@ func (a *App) streamerUpdateWatchdog(ctx context.Context) {
 }
 
 func (a *App) tickStreamerUpdate(ctx context.Context) {
+	a.checkPunktfunkUpdate(ctx)
 	token := a.cfg.EntitlementToken
 	if strings.TrimSpace(token) == "" {
 		return
