@@ -53,14 +53,36 @@ val appVersionName = rootProject.file("../VERSION")
 // entirely: it's deterministic, reproducible from a shallow/fresh checkout,
 // and -- since it's parsed from the exact same file that already gates
 // every other platform's build -- guaranteed to move whenever the version
-// that's supposed to be new actually is. major.minor.patch each get two
-// decimal digits (i.e. capped at 99), which comfortably covers this
-// project's actual version history (2.1.x) with a lot of headroom left.
+// that's supposed to be new actually is. major/minor get two decimal
+// digits (0-99 -- this project has sat on 3.0.x for its entire history, so
+// that's enormous headroom for a component that essentially never moves)
+// and patch, which moves roughly once per release and is the one that
+// actually runs out, gets five (0-99999). Giving all three the same
+// 0-9999 budget (requested, reasonably, for symmetry) isn't possible
+// within Android's own versionCode ceiling (Play Console caps it at
+// 2,100,000,000): 10000^3 alone overflows that by three orders of
+// magnitude, so patch -- the one under real pressure -- gets the extra
+// digit major/minor give up. The old 2-digit-everywhere version of this
+// scheme silently *coerced* 3.0.104 down to 3.0.99 (coerceIn, not a build
+// failure) and collided with that exact version's already-uploaded Play
+// Store versionCode (30099) -- confirmed live, "Version code 30099 has
+// already been used" on the 3.0.104 upload. require() below replaces that
+// silent clamp with a loud build failure instead, so the next overflow
+// (whenever major/minor/patch actually exceeds its new, much larger
+// budget) fails obviously here rather than quietly reproducing the same
+// collision.
 val appVersionCode = appVersionName
     .split(".")
-    .mapNotNull { it.toIntOrNull()?.coerceIn(0, 99) }
+    .mapNotNull { it.toIntOrNull() }
     .let { parts ->
-        if (parts.size == 3) parts[0] * 10000 + parts[1] * 100 + parts[2] else null
+        if (parts.size != 3) null
+        else {
+            val (major, minor, patch) = parts
+            require(major in 0..99) { "VERSION major '$major' out of range (0-99) for versionCode: $appVersionName" }
+            require(minor in 0..99) { "VERSION minor '$minor' out of range (0-99) for versionCode: $appVersionName" }
+            require(patch in 0..99999) { "VERSION patch '$patch' out of range (0-99999) for versionCode: $appVersionName" }
+            major * 10_000_000 + minor * 100_000 + patch
+        }
     }
     ?: 1
 
