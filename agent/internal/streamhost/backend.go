@@ -131,6 +131,22 @@ type CodecProbe interface {
 	// VirtualDisplaySupported reports whether this backend supports native
 	// virtual displays (creation and streaming) without external physical monitors.
 	VirtualDisplaySupported() bool
+	// RawHIDSupported reports whether this backend's streamer process
+	// understands LiSendRawHidEvent -- the USBridge-proprietary moonlight-
+	// common-c extension that carries a Wacom tablet's live input reports
+	// over the stream's control channel instead of USB/IP (see
+	// client/docs/TABLETS.md, "Over the video stream instead of USB/IP").
+	// rust-shine's own streamer rebuilds the tablet from that stream
+	// (usb-passthrough/src/virtual_rawhid.rs), and a punktfunk-host or
+	// Sunshine with the USBridge patch hands it to the USB broker to
+	// rebuild (see usbBrokerEnv). Stock Sunshine and Punktfunk have no
+	// handler, so the client must not switch a tablet into stream mode
+	// against them: it would silently stop working (no USB/IP fallback
+	// kicks in once the client has committed to stream mode).
+	// The client learns this over MasterSyncResponse.RawHIDSupported
+	// (agent/internal/api/sync.go), refreshed on every sync, and gates
+	// DiskWidget.splitRawHID on it.
+	RawHIDSupported() bool
 }
 
 // Client is a Moonlight client paired with the streaming host.
@@ -203,4 +219,24 @@ type Backend interface {
 	PairingAPI
 	CaptureDeviceLister
 	NetworkPorts
+}
+
+// BackendKind identifies which concrete backend b is, as the short string
+// shared_auth.go's RemoveTrustedClientEverywhere/resolveFingerprint use to
+// know which native trust-file format and unpair-identifier semantics apply
+// (see UnpairClient's per-backend doc comments: a uniqueid for Sunshine/
+// rust-shine, a certificate fingerprint for punktfunk). "" for any other
+// Backend implementation (e.g. a test fake) -- callers must treat that as
+// "don't know how to sync this one" rather than guessing.
+func BackendKind(b Backend) string {
+	switch b.(type) {
+	case *sunshineBackend:
+		return "sunshine"
+	case *rustshineBackend:
+		return "rustshine"
+	case *punktfunkBackend:
+		return "punktfunk"
+	default:
+		return ""
+	}
 }

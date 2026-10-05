@@ -4,7 +4,7 @@ package service
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
-#cgo LDFLAGS: -framework UIKit -framework CoreVideo -framework QuartzCore -framework CoreFoundation
+#cgo LDFLAGS: -framework UIKit -framework CoreVideo -framework QuartzCore -framework CoreFoundation -framework Metal
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -30,6 +30,7 @@ extern void   metal_video_set_hud_overlay(const uint8_t *rgba, int w, int h, int
 extern void   metal_video_clear_hud_overlay(void);
 extern void   metal_video_set_hud_scale(float s);
 extern double metal_video_last_decode_ms(void);
+extern void   metal_video_get_gpu_name(char *out, int out_len);
 
 // Forward declaration matching the CGO-generated export signature.
 extern void goMetalLog(char *msg, int level);
@@ -58,6 +59,7 @@ func init() {
 	}
 	netGraphRenderFPS = MetalVideoLastFPS
 	netGraphDecodeMs = MetalVideoLastDecodeMs
+	netGraphGPUNameFn = MetalVideoGPUName
 }
 
 // netGraphMetalWasActive tracks MetalVideoIsActive()'s last-seen value --
@@ -97,6 +99,17 @@ func MetalVideoClearHudOverlay() {
 // inactive or no sample has landed yet.
 func MetalVideoLastDecodeMs() float64 {
 	return float64(C.metal_video_last_decode_ms())
+}
+
+// MetalVideoGPUName returns the system default Metal device's name, for Net
+// Graph's GPU line -- see metal_video_impl_darwin.m's
+// metal_video_get_gpu_name doc comment (this iOS copy has the same
+// rationale). ok is false only if Metal itself is unavailable.
+func MetalVideoGPUName() (string, bool) {
+	buf := make([]C.char, 256)
+	C.metal_video_get_gpu_name(&buf[0], C.int(len(buf)))
+	name := C.GoString(&buf[0])
+	return name, name != ""
 }
 
 // goMetalLog is called from C (metal_video_impl_ios.m) to log via logrus.

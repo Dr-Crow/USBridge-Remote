@@ -31,7 +31,7 @@ func TestPlayerOpensOnEachRealMonitor(t *testing.T) {
 	defer p.Stop()
 	for _, m := range list {
 		m := m
-		info, err := p.Start(context.Background(), &m)
+		info, err := p.Start(context.Background(), &m, "")
 		if err != nil {
 			t.Fatalf("start on %s: %v", m.ID, err)
 		}
@@ -105,7 +105,7 @@ func TestHoldPlayerOnMonitor(t *testing.T) {
 	secs, _ := time.ParseDuration(os.Getenv("USBRIDGE_BENCH_HOLD_SECONDS") + "s")
 	p := New(t.TempDir())
 	defer p.Stop()
-	info, err := p.Start(context.Background(), &m)
+	info, err := p.Start(context.Background(), &m, "")
 	if err != nil {
 		t.Fatal(err)
 	}

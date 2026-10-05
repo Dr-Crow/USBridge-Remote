@@ -25,9 +25,28 @@ func (mw *MainWindow) wireVideoHotkeys() {
 			if mw.diskWidget == nil {
 				return
 			}
-			if mw.diskWidget.GetMouseMode() == controller.MouseModeAbsolute {
-				mw.diskWidget.SetMouseMode(controller.MouseModeTouchPad)
+			if view.IsMobile() {
+				// Touchpad only exists on mobile (mouseConfigOptions'
+				// own doc comment) -- unchanged binary toggle there.
+				if mw.diskWidget.GetMouseMode() == controller.MouseModeAbsolute {
+					mw.diskWidget.SetMouseMode(controller.MouseModeTouchPad)
+				} else {
+					mw.diskWidget.SetMouseMode(controller.MouseModeAbsolute)
+				}
+				return
+			}
+			// Desktop only ever offers Absolute and Capture -- simple toggle.
+			if mw.diskWidget.GetMouseMode() == controller.MouseModeCapture {
+				mw.diskWidget.SetMouseMode(controller.MouseModeAbsolute)
 			} else {
+				mw.diskWidget.SetMouseMode(controller.MouseModeCapture)
+			}
+		},
+		ReleaseMouseCapture: func() {
+			if mw.diskWidget == nil {
+				return
+			}
+			if mw.diskWidget.GetMouseMode() == controller.MouseModeCapture {
 				mw.diskWidget.SetMouseMode(controller.MouseModeAbsolute)
 			}
 		},
@@ -138,6 +157,7 @@ func (mw *MainWindow) showHotkeysDialog() {
 		{"X", i18n.Current.HotkeyFullscreen},
 		{"S", i18n.Current.HotkeyStats},
 		{"M", i18n.Current.HotkeyMouseMode},
+		{"Z", i18n.Current.HotkeyMouseRelease},
 		{"N", i18n.Current.HotkeyCursor},
 		{"V", i18n.Current.HotkeyPaste},
 		{"F1 … F12", i18n.Current.HotkeyDisplays},

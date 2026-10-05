@@ -9,6 +9,7 @@
 #import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/QuartzCore.h>
 #import <CoreGraphics/CoreGraphics.h>
+#import <Metal/Metal.h>
 #include <stdatomic.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -224,6 +225,17 @@ double metal_video_last_fps(void) {
 double metal_video_last_decode_ms(void) {
     if (!atomic_load(&g_active)) return 0.0;
     return g_lastKnownDecodeMs;
+}
+
+// See metal_video_impl_darwin.m's identical function for the rationale
+// (queried fresh, no active-stream dependency).
+void metal_video_get_gpu_name(char *out, int out_len) {
+    if (!out || out_len <= 0) return;
+    out[0] = '\0';
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+    if (!dev) return;
+    const char *name = [dev.name UTF8String];
+    if (name) snprintf(out, out_len, "%s", name);
 }
 
 static _Atomic int g_submit_call_count = 0;

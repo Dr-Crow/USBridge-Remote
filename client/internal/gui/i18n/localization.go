@@ -77,6 +77,7 @@ type LocalizedStrings struct {
 	HotkeyFullscreen                  string
 	HotkeyStats                       string
 	HotkeyMouseMode                   string
+	HotkeyMouseRelease                string
 	HotkeyCursor                      string
 	HotkeyPaste                       string
 	HotkeyDisplays                    string
@@ -540,11 +541,13 @@ type LocalizedStrings struct {
 	DeviceAbsoluteRight2                 string // "Abs R/2" (absolute, right display of 2)
 	DeviceVirtualCursor                  string // "Cursor" (virtual cursor mode, Android only)
 	DeviceGyroMouse                      string // "GyroMouse" (gyroscope cursor mode, Android only)
+	DeviceCapture                        string // "Capture" (desktop-only raw relative mouse capture mode)
 	DeviceNetworkCard                    string // "Network Card (RNDIS)"
 	DeviceGamepad                        string // "Gamepad"
 	DeviceDirectInput                    string // "DirectInput"
 	DeviceXInput                         string // "XInput"
 	DeviceMapX360                        string // software agent: gamepad mapped to a virtual Xbox 360 pad
+	DeviceDualShock4                     string // software agent: gamepad mapped to a virtual DualShock 4 pad
 	XInputIncompatibleWithHID            string // error: XInput + keyboard/mouse
 	GamepadDisconnectHIDConfirm          string // toast: connecting XInput gamepad will drop keyboard/mouse
 	HIDDisconnectGamepadConfirm          string // toast: connecting keyboard/mouse will drop the XInput gamepad
@@ -595,6 +598,9 @@ type LocalizedStrings struct {
 	FrameSmoothing                       string // "Smooth Motion" checkbox title, video parameters dialog -- motion-extrapolated stall concealment, pure local rendering fallback like AI Vision
 	FrameSmoothingHint                   string // hint shown under the Smooth Motion checkbox
 	FrameSmoothingBadge                  string // small badge next to the Smooth Motion title, e.g. "BETA"
+	PlayoutBuffer                        string // "Jitter Buffer" checkbox title, video parameters dialog -- moonlight-common-c fork's playout delay, Windows only, off by default
+	PlayoutBufferHint                    string // hint shown under the Jitter Buffer checkbox
+	PlayoutBufferBadge                   string // small platform badge next to the Jitter Buffer title
 	OtherSettings                        string // labeled divider above the video-parameters toggle list, same style as OrEnterManually
 	MuteAudio                            string // "Mute Audio"
 	UnmuteAudio                          string // "Unmute Audio"
@@ -729,7 +735,8 @@ func EN() *LocalizedStrings {
 		HotkeyQuit:                        "Stop the stream",
 		HotkeyFullscreen:                  "Toggle fullscreen",
 		HotkeyStats:                       "Show / hide the Net Graph statistics",
-		HotkeyMouseMode:                   "Switch mouse mode (touchpad / absolute)",
+		HotkeyMouseMode:                   "Switch mouse mode (absolute / capture)",
+		HotkeyMouseRelease:                "Release Capture mode back to absolute (only does anything while captured)",
 		HotkeyCursor:                      "Show / hide the host's mouse cursor",
 		HotkeyPaste:                       "Type the clipboard text into the host",
 		HotkeyDisplays:                    "Switch the host monitor (Sunshine)",
@@ -1190,11 +1197,13 @@ func EN() *LocalizedStrings {
 		DeviceAbsoluteRight2:                 "Abs R/2",
 		DeviceVirtualCursor:                  "Cursor",
 		DeviceGyroMouse:                      "GyroMouse",
+		DeviceCapture:                        "Capture",
 		DeviceNetworkCard:                    "Network Card (RNDIS)",
 		DeviceGamepad:                        "Gamepad",
 		DeviceDirectInput:                    "DirectInput",
 		DeviceXInput:                         "XInput",
 		DeviceMapX360:                        "Map Xbox 360",
+		DeviceDualShock4:                     "DualShock 4",
 		XInputIncompatibleWithHID:            "XInput gamepad cannot be used together with keyboard or mouse. Connect gamepad separately.",
 		GamepadDisconnectHIDConfirm:          "Connecting the gamepad will disconnect the keyboard and mouse.",
 		HIDDisconnectGamepadConfirm:          "Connecting the keyboard or mouse will disconnect the gamepad.",
@@ -1245,6 +1254,9 @@ func EN() *LocalizedStrings {
 		FrameSmoothing:                       "Smooth Motion",
 		FrameSmoothingHint:                   "When the network stalls, fills the gap with a motion-extrapolated frame instead of freezing -- never delays real frames, only bridges a late/lost one.",
 		FrameSmoothingBadge:                  "Beta",
+		PlayoutBuffer:                        "Jitter Buffer",
+		PlayoutBufferHint:                    "Holds each frame back by a few milliseconds to even out a jittery network. Smoother cadence on bad Wi-Fi, but adds latency -- leave it off on a good connection.",
+		PlayoutBufferBadge:                   "Win",
 		OtherSettings:                        "OTHER SETTINGS",
 		MuteAudio:                            "Mute Audio",
 		UnmuteAudio:                          "Unmute Audio",
@@ -1652,7 +1664,8 @@ func ES() *LocalizedStrings {
 	locale.HotkeyQuit = "Detener la transmisión"
 	locale.HotkeyFullscreen = "Pantalla completa"
 	locale.HotkeyStats = "Mostrar / ocultar estadísticas (Net Graph)"
-	locale.HotkeyMouseMode = "Cambiar modo de ratón (touchpad / absoluto)"
+	locale.HotkeyMouseMode = "Cambiar modo de ratón (absoluto / captura)"
+	locale.HotkeyMouseRelease = "Liberar el modo Captura al modo absoluto (solo hace algo si está capturado)"
 	locale.HotkeyCursor = "Mostrar / ocultar el cursor del host"
 	locale.HotkeyPaste = "Escribir el texto del portapapeles en el host"
 	locale.HotkeyDisplays = "Cambiar el monitor del host (Sunshine)"
@@ -2041,7 +2054,8 @@ func UKProper() *LocalizedStrings {
 	locale.HotkeyQuit = "Зупинити стрім"
 	locale.HotkeyFullscreen = "Повний екран"
 	locale.HotkeyStats = "Показати / сховати статистику (Net Graph)"
-	locale.HotkeyMouseMode = "Перемкнути режим миші (тачпад / абсолютний)"
+	locale.HotkeyMouseMode = "Перемкнути режим миші (абсолютний / захоплення)"
+	locale.HotkeyMouseRelease = "Звільнити режим захоплення назад в абсолютний (діє лише під час захоплення)"
 	locale.HotkeyCursor = "Показати / сховати курсор хоста"
 	locale.HotkeyPaste = "Надрукувати текст із буфера на хості"
 	locale.HotkeyDisplays = "Перемкнути монітор хоста (Sunshine)"

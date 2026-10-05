@@ -28,6 +28,8 @@ extern void do_send_multi_controller(
     unsigned char leftTrigger, unsigned char rightTrigger,
     short leftStickX, short leftStickY,
     short rightStickX, short rightStickY);
+extern void do_send_controller_arrival(unsigned short controllerNumber, unsigned short activeGamepadMask,
+    unsigned char controllerType, unsigned int supportedButtonFlags, unsigned short capabilities);
 extern void do_send_utf8_text(const char *text, unsigned int len);
 extern void do_send_pen(unsigned char eventType, unsigned char toolType, unsigned char penButtons,
                         float x, float y, float pressureOrDistance,
@@ -484,6 +486,19 @@ func (w *MoonlightCgoWrapper) SendMoonlightControllerEvent(
 	)
 }
 
+func (w *MoonlightCgoWrapper) SendMoonlightControllerArrival(
+	controllerNumber uint16, activeGamepadMask uint16, controllerType uint8,
+	supportedButtonFlags uint32, capabilities uint16,
+) {
+	if !liStartConnectionActive.Load() {
+		return
+	}
+	C.do_send_controller_arrival(
+		C.ushort(controllerNumber), C.ushort(activeGamepadMask), C.uchar(controllerType),
+		C.uint(supportedButtonFlags), C.ushort(capabilities),
+	)
+}
+
 func (w *MoonlightCgoWrapper) SendMoonlightPenEvent(
 	eventType, toolType, penButtons uint8,
 	x, y, pressureOrDistance float32,
@@ -610,6 +625,8 @@ func videoFormatCodecName(format int32) (string, bool) {
 	switch {
 	case format < 0:
 		return "", false
+	case format&0x10000 != 0: // VIDEO_FORMAT_PYROWAVE
+		return models.VideoModePyroWave, true
 	case format&0x0F00 != 0:
 		return models.VideoModeH265, true
 	case format&0xF000 != 0:

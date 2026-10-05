@@ -27,7 +27,11 @@ const (
 //
 // Scoped on purpose: only a usbip binary in a root-owned system location
 // (never a user-writable path) and only the three subcommands the broker
-// uses -- not `bind`/`unbind`, and not any other program.
+// uses -- not `bind`/`unbind`, and not any other program. `--tcp-port N`
+// may precede the subcommand: that is how the broker attaches an exporter on
+// this machine that took a free loopback port (attach_local: a tablet or a
+// gamepad rebuilt from the stream). Without it in the pattern that attach
+// waited on a password dialog -- confirmed live.
 const polkitRuleContent = `polkit.addRule(function(action, subject) {
     if (action.id != "org.freedesktop.policykit.exec") return;
     if (!subject.isInGroup("` + AttachGroupName + `")) return;
@@ -35,7 +39,7 @@ const polkitRuleContent = `polkit.addRule(function(action, subject) {
     if (!/^\/(usr\/)?s?bin\/usbip$/.test(prog) &&
         !/^\/usr\/lib\/linux-tools[^\/]*\/[^\/]+\/usbip$/.test(prog)) return;
     var cmd = action.lookup("command_line") || "";
-    if (/^\S+ (attach|detach|port)( |$)/.test(cmd)) return polkit.Result.YES;
+    if (/^\S+ (--tcp-port \d+ )?(attach|detach|port)( |$)/.test(cmd)) return polkit.Result.YES;
 });
 `
 

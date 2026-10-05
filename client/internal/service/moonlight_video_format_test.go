@@ -37,6 +37,25 @@ func TestVideoFormatRoundTrip(t *testing.T) {
 	}
 }
 
+// TestPyroWaveVideoFormat: the request carries H.264 as the fallback for a
+// host that does not offer PyroWave, but the negotiated PYROWAVE bit alone
+// must read back as pyrowave -- and a client without the decoder never asks.
+func TestPyroWaveVideoFormat(t *testing.T) {
+	format := moonlightVideoFormat(models.VideoModePyroWave, false, false)
+	if !PyroWaveDecodeSupported() {
+		if format != 0x0001 {
+			t.Fatalf("pyrowave on a client without the decoder -> 0x%04X, want H.264 only", format)
+		}
+		return
+	}
+	if format != 0x10001 {
+		t.Fatalf("pyrowave -> 0x%05X, want 0x10001", format)
+	}
+	if got, ok := videoFormatCodecName(0x10000); !ok || got != models.VideoModePyroWave {
+		t.Fatalf("videoFormatCodecName(0x10000) = %q, %v", got, ok)
+	}
+}
+
 func TestVideoFormatCodecNameUnknownAndUnset(t *testing.T) {
 	if _, ok := videoFormatCodecName(-1); ok {
 		t.Error("videoFormatCodecName(-1) should report no codec (sentinel for \"no session yet\")")

@@ -117,6 +117,13 @@ func (b *sunshineBackend) sunshineConfigArgs() []string {
 	}
 	return []string{
 		b.ConfigPath(),
+		// file_state is where Sunshine keeps root.uniqueid and
+		// root.named_devices (nvhttp.cpp); credentials_file only holds the
+		// web UI username/password. Without file_state Sunshine reads its
+		// pairing state from its own default appdata() file, so the shared
+		// identity's uuid and trust list (shared_auth.go) never reach it.
+		// Must come before credentials_file, which defaults to file_state.
+		"file_state=" + b.credentialsFilePath(),
 		"credentials_file=" + b.credentialsFilePath(),
 		"file_apps=" + b.appsFilePath(),
 		"log_path=" + b.LogPath(),

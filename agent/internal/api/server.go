@@ -74,6 +74,9 @@ type Application interface {
 	// VirtualDisplaySupported reports whether the current stream backend
 	// supports native virtual displays.
 	VirtualDisplaySupported() bool
+	// RawHIDSupported reports whether the active stream backend understands
+	// LiSendRawHidEvent -- see app.App.RawHIDSupported's doc comment.
+	RawHIDSupported() bool
 	AudioSinks() ([]AudioSink, error)
 	CurrentAudioSink() (string, error)
 	SetAudioSink(sink string) error
@@ -879,6 +882,7 @@ var videoCodecModeInfo = []map[string]string{
 	{"id": "h264", "name": "H.264", "description": "H.264 (AVC) Hardware Encoding", "transport": "rtp", "encoding": "h264"},
 	{"id": "h265", "name": "H.265", "description": "H.265 (HEVC) Hardware Encoding", "transport": "rtp", "encoding": "h265"},
 	{"id": "av1", "name": "AV1", "description": "AV1 Hardware Encoding", "transport": "rtp", "encoding": "av1"},
+	{"id": "pyrowave", "name": "PyroWave", "description": "PyroWave intra-only wavelet codec for a fast local link", "transport": "rtp", "encoding": "pyrowave"},
 }
 
 func videoCodecModes(supported []string) []map[string]string {

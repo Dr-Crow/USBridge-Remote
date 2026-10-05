@@ -148,11 +148,15 @@ type VideoStatus struct {
 }
 
 const (
-	VideoModeH264    = "h264"
-	VideoModeH265    = "h265"
-	VideoModeAV1     = "av1"
-	VideoModeJPEGRTP = "jpeg_rtp"
-	VideoModeRawYUYV = "raw_yuyv"
+	VideoModeH264 = "h264"
+	VideoModeH265 = "h265"
+	VideoModeAV1  = "av1"
+	// VideoModePyroWave is the intra-only wavelet codec a USBridge host
+	// (rust-shine, Punktfunk) can send; decoded with Vulkan compute, see
+	// service.PyroWaveDecodeSupported.
+	VideoModePyroWave = "pyrowave"
+	VideoModeJPEGRTP  = "jpeg_rtp"
+	VideoModeRawYUYV  = "raw_yuyv"
 )
 
 // UpscaleMode selects how the decoded video frame is resized to fit the

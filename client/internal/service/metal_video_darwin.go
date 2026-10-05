@@ -4,13 +4,21 @@ package service
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc
-#cgo LDFLAGS: -framework AppKit -framework CoreVideo -framework QuartzCore -framework CoreFoundation -framework Metal
+#cgo LDFLAGS: -framework AppKit -framework CoreVideo -framework QuartzCore -framework CoreFoundation -framework Metal -framework AVFoundation -framework CoreMedia
+// PyroWave decode (pyrowave_decode_darwin.m): one static archive from
+// scripts/build_pyrowave_macos.sh that exports only the pyrowave_* C API.
+// Vulkan headers come from the vendored tree (pinned to what the bitstream was built
+// against, see PUNKTFUNK-VENDOR.txt) -- MoltenVK itself is a runtime-only dependency
+// (dlopen'd, see pyrowave_decode_darwin.m's moltenvk_preload), not linked here.
+#cgo CFLAGS: -I${SRCDIR}/../../third_party/pyrowave/vendor/pyrowave -I${SRCDIR}/../../third_party/pyrowave/vendor/pyrowave/Granite/third_party/khronos/vulkan-headers/include
+#cgo LDFLAGS: -L${SRCDIR}/../../third_party/pyrowave/build -lusbridge-pyrowave -lstdc++ -lm
 
 #include <stdint.h>
 #include <CoreVideo/CoreVideo.h>
 
 // Implemented in metal_video_impl_darwin.m (compiled as a separate translation unit).
 extern int  metal_video_is_active(void);
+extern int64_t metal_video_rendered_count(void);
 extern int  metal_video_try_submit(CVImageBufferRef img);
 extern int  metal_video_create(uintptr_t nsWinPtr, float x, float y, float w, float h);
 extern void metal_video_update_frame(float x, float y, float w, float h);
@@ -28,6 +36,8 @@ extern void metal_video_set_hud_overlay(const uint8_t *rgba, int w, int h, int s
 extern void metal_video_clear_hud_overlay(void);
 extern void metal_video_set_hud_scale(float s);
 extern double metal_video_last_decode_ms(void);
+extern int    metal_video_decode_ms_available(void);
+extern void metal_video_get_gpu_name(char *out, int out_len);
 
 extern void metal_video_debug_link_counts(int64_t *created, int64_t *invalidated);
 
@@ -74,6 +84,9 @@ func init() {
 	}
 	netGraphRenderFPS = MetalVideoLastFPS
 	netGraphDecodeMs = MetalVideoLastDecodeMs
+	netGraphDecodeMsValid = MetalVideoDecodeMsAvailable
+	netGraphGPUNameFn = MetalVideoGPUName
+	benchRenderedFramesFn = MetalVideoRenderedCount
 
 	// UpscaleMode (upscale_mode.go's cross-platform SetUpscaleMode) -- see
 	// that file's own doc comment for why this hook indirection exists.
@@ -189,6 +202,17 @@ func MetalVideoLastFPS() float64 {
 	return float64(C.metal_video_last_fps())
 }
 
+// MetalVideoRenderedCount is benchRenderedFramesFn's darwin implementation --
+// the streamer benchmark's client-side render-fps counter (bench_recorder.go
+// diffs this between polling ticks). Valid only while the overlay is active,
+// same convention as the Linux/Windows VKVideoGetStats().Rendered equivalent.
+func MetalVideoRenderedCount() (int64, bool) {
+	if !MetalVideoIsActive() {
+		return 0, false
+	}
+	return int64(C.metal_video_rendered_count()), true
+}
+
 // MetalVideoGetLastFrameRGBA returns the last rendered VT frame as an image.RGBA.
 // Returns nil if no frame has been rendered yet. Called once on stream stop — cost is acceptable.
 func MetalVideoGetLastFrameRGBA() *image.RGBA {
@@ -254,6 +278,28 @@ func MetalVideoClearHudOverlay() {
 // the overlay is inactive or no sample has landed yet.
 func MetalVideoLastDecodeMs() float64 {
 	return float64(C.metal_video_last_decode_ms())
+}
+
+// MetalVideoDecodeMsAvailable reports whether MetalVideoLastDecodeMs
+// reflects a real measurement for the current session -- see
+// metal_video_impl_darwin.m's metal_video_decode_ms_available doc comment.
+// false on the AVSampleBufferDisplayLayer path (the main H.264/H.265
+// pipeline), which has no equivalent measurement; Net Graph shows "DEC --"
+// instead of a frozen, misleading "0.0ms" in that case.
+func MetalVideoDecodeMsAvailable() bool {
+	return C.metal_video_decode_ms_available() != 0
+}
+
+// MetalVideoGPUName returns the system default Metal device's name (e.g.
+// "Apple M3 Pro"), for Net Graph's GPU line -- see
+// metal_video_impl_darwin.m's metal_video_get_gpu_name doc comment for why
+// this needs no active stream to answer. ok is false only if Metal itself
+// is unavailable.
+func MetalVideoGPUName() (string, bool) {
+	buf := make([]C.char, 256)
+	C.metal_video_get_gpu_name(&buf[0], C.int(len(buf)))
+	name := C.GoString(&buf[0])
+	return name, name != ""
 }
 
 // MetalVideoDebugLinkCounts returns how many CADisplayLinks

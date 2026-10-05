@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"usbridge-client/internal/models"
 	"usbridge-client/internal/platform"
 	"usbridge-client/internal/service"
 
@@ -44,11 +45,15 @@ func (dw *DiskWidget) syncGamepadCaptures() {
 		dw.activeCaptures = make(map[string]gamepadCaptureHandle)
 	}
 
-	// Build the set of gamepad IDs that should be captured (mounted & has ID).
+	// Build the set of gamepad IDs that should be captured (mounted & has ID),
+	// and each one's requested mode -- needed below to announce its type when
+	// capture actually starts (see the newIDs loop's own comment).
 	wanted := make(map[string]bool)
+	wantedMode := make(map[string]string)
 	for _, drive := range dw.allDrives {
 		if drive.IsGamepad && drive.IsMounted && drive.GamepadID != "" {
 			wanted[drive.GamepadID] = true
+			wantedMode[drive.GamepadID] = drive.GamepadMode
 		}
 	}
 
@@ -91,6 +96,7 @@ func (dw *DiskWidget) syncGamepadCaptures() {
 		}
 		dw.activeCaptures[id] = cap
 		dw.startTouchpad(id)
+		dw.announceGamepadArrival(slot, dw.effectiveGamepadMode(wantedMode[id]))
 	}
 }
 
@@ -180,6 +186,29 @@ func (dw *DiskWidget) releasePadSlot(id string) {
 	}
 }
 
+// announceGamepadArrival tells a Sunshine-compatible host what kind of pad
+// just took this controller slot (LiSendControllerArrivalEvent/LI_CTYPE_* --
+// see MoonlightInputSender.SendMoonlightControllerArrival's own doc comment),
+// so it can create a matching virtual pad (Xbox 360 vs DualShock 4) instead
+// of always assuming Xbox. Safe to call even when nothing is listening: the
+// arrival event is a Sunshine protocol extension the client always also
+// backs with an ordinary (zero) multi-controller event, and this method
+// itself no-ops before a Moonlight session exists.
+func (dw *DiskWidget) announceGamepadArrival(slot int, mode string) {
+	if dw.moonlightProvider == nil {
+		return
+	}
+	sender := dw.moonlightProvider()
+	if sender == nil || !sender.IsInputActive() {
+		return
+	}
+	ctype := platform.MoonlightCtypeXbox
+	if mode == gamepadModeDualShock4 {
+		ctype = platform.MoonlightCtypePS
+	}
+	sender.SendMoonlightControllerArrival(uint16(slot), dw.padSlots.mask(), ctype, 0xFFFF, 0)
+}
+
 // onHostRumble applies the host's rumble request to the pad that holds that
 // controller number. It runs on moonlight-common-c's callback thread.
 func (dw *DiskWidget) onHostRumble(controller, lowFreq, highFreq uint16) {
@@ -261,4 +290,80 @@ func gamepadIdentityMatches(driveVID, drivePID, deviceVID, devicePID string) boo
 		return true
 	}
 	return norm(driveVID) == norm(deviceVID) && norm(drivePID) == norm(devicePID)
+}
+
+// isMountedGamepadDevice reports whether a mounted-device entry is a gamepad
+// gadget/session: a software agent reports the requested mode ("mapx360",
+// "xinput", ...) as the type, not "gamepad:<mode>" like the KVM hardware, so
+// this also matches the device kind.
+func isMountedGamepadDevice(d *models.DeviceInfo) bool {
+	return d.Status == "connected" && (d.Device == "gamepad" || d.Type == "gamepad" || strings.HasPrefix(d.Type, "gamepad:"))
+}
+
+// gamepadIdentityExactMatch is gamepadIdentityMatches without its "either
+// side blank counts as a match" fallback -- both identities must actually be
+// present and equal.
+func gamepadIdentityExactMatch(driveVID, drivePID, deviceVID, devicePID string) bool {
+	norm := func(s string) string {
+		s = strings.ToLower(strings.TrimSpace(s))
+		s = strings.TrimPrefix(s, "0x")
+		return strings.TrimLeft(s, "0")
+	}
+	if norm(driveVID) == "" || norm(drivePID) == "" || norm(deviceVID) == "" || norm(devicePID) == "" {
+		return false
+	}
+	return norm(driveVID) == norm(deviceVID) && norm(drivePID) == norm(devicePID)
+}
+
+// gamepadDeviceAssignment maps each gamepad row in drives (by index) to the
+// dw.mountedDevices index it belongs to, marking claimed entries in
+// usedMountedIdx. Resolved in two passes rather than the single
+// first-available-wins search every other drive kind in updateDevicesStatus
+// uses: gamepadIdentityMatches treats a blank identity on either side as
+// "could be anyone", which is right for a single-pad KVM gadget (neither
+// side has a real VID/PID to compare) but wrong the moment a second pad is
+// in the picture and ANY row or device has no identity of its own -- e.g. a
+// vendor driver's virtual XInput-compatibility pad sitting next to the real
+// controller, which IOKit exposes with no kIOHIDVendorIDKey/kIOHIDProductIDKey
+// at all (see gamepad_darwin.go). Without an exact-match pass first,
+// whichever gamepad row updateDevicesStatus happened to check first could
+// steal another pad's mount confirmation purely by having no identity to
+// disqualify it. Confirmed live with a Razer Raiju plus Razer's own virtual
+// pad: toggling the Raiju on lit up the virtual pad's row instead, every
+// time, because the virtual row (blank identity) was reached first and
+// matched regardless of which pad the agent actually confirmed.
+func gamepadDeviceAssignment(drives []DriveItem, devices []*models.DeviceInfo, agentOS string, usedMountedIdx map[int]bool) map[int]int {
+	assignment := make(map[int]int)
+	multiPad := IsSoftwareAgentOS(agentOS)
+
+	assign := func(exactOnly bool) {
+		for i := range drives {
+			if !drives[i].IsGamepad {
+				continue
+			}
+			if _, done := assignment[i]; done {
+				continue
+			}
+			for j, device := range devices {
+				if usedMountedIdx[j] || !isMountedGamepadDevice(device) {
+					continue
+				}
+				if multiPad {
+					if exactOnly {
+						if !gamepadIdentityExactMatch(drives[i].GamepadVendorID, drives[i].GamepadProductID, device.VendorID, device.ProductID) {
+							continue
+						}
+					} else if !gamepadIdentityMatches(drives[i].GamepadVendorID, drives[i].GamepadProductID, device.VendorID, device.ProductID) {
+						continue
+					}
+				}
+				assignment[i] = j
+				usedMountedIdx[j] = true
+				break
+			}
+		}
+	}
+	assign(true)  // exact VID/PID matches first
+	assign(false) // today's wildcard fallback for whatever's left
+	return assignment
 }

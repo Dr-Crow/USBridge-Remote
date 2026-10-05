@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 
+	"usbridge_agent/internal/account"
 	"usbridge_agent/internal/benchvideo"
 	"usbridge_agent/internal/monitors"
 	"usbridge_agent/internal/streamhost"
@@ -25,7 +26,30 @@ func (a *App) BenchStreamBackends() (active string, available []string) {
 	if a.rustshineStaged() {
 		available = append(available, "rustshine")
 	}
+	if streamhost.PunktfunkAvailable(a.exeDir) {
+		available = append(available, "punktfunk")
+	}
 	return a.currentStreamKind(), available
+}
+
+// BenchHostGPU names this host's GPU, for the client's Net Graph HUD (which
+// shows both ends of the stream: this plus the client's own decode GPU, see
+// usbridge-client's net_graph.go netGraphGPUNameFn). Reuses
+// account.CollectDeviceInfo's existing platform detection (cached after its
+// first call, shared with the device-code login telemetry) instead of
+// duplicating it.
+func (a *App) BenchHostGPU() string {
+	return account.CollectDeviceInfo().GPU
+}
+
+// BenchVideoOutput is the virtual display the active streamer streams
+// instead of a monitor, by name prefix ("" for none) -- where the
+// benchmark's test video has to be moved for it to be in the picture.
+func (a *App) BenchVideoOutput() string {
+	if v, ok := a.stream.(interface{ VirtualOutputPrefix() string }); ok {
+		return v.VirtualOutputPrefix()
+	}
+	return ""
 }
 
 // BenchMonitors lists the host's monitors for the benchmark's monitor pick,
@@ -154,9 +178,12 @@ func (a *App) restoreBenchOutputs(deferRestart bool) error {
 	for kind, orig := range a.benchOrigOutput {
 		b := a.stream
 		if kind != a.streamKind || b == nil {
-			if kind == "rustshine" {
+			switch kind {
+			case "rustshine":
 				b = streamhost.NewRustshine(a.exeDir, a.cfg.StateDir, a.logPath)
-			} else {
+			case "punktfunk":
+				b = streamhost.NewPunktfunk(a.exeDir, a.cfg.StateDir, a.logPath)
+			default:
 				b = streamhost.NewSunshine(a.exeDir, a.cfg.StateDir, a.logPath)
 			}
 		}

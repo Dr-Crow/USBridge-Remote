@@ -9,6 +9,8 @@
 #import <CoreVideo/CoreVideo.h>
 #import <QuartzCore/QuartzCore.h>
 #import <Metal/Metal.h>
+#import <AVFoundation/AVFoundation.h>
+#import <CoreMedia/CoreMedia.h>
 #include <stdatomic.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -28,6 +30,47 @@ extern void goMetalLog(char *msg, int level);
 // ─────────────────────────────────────────────────────────────────────────────
 static NSView  *g_view   = nil;
 static CALayer *g_layer  = nil;
+
+// AVSampleBufferDisplayLayer video path -- sibling of g_layer/g_metal_layer,
+// takes over as the actual on-screen video presentation (see
+// metal_video_submit_compressed_sample below). Unlike g_layer's
+// VTDecompressionSession + CVPixelBuffer + CADisplayLink "whatever's newest
+// wins" polling, this hands the still-*compressed* CMSampleBuffer straight
+// to AVFoundation, which decodes AND schedules presentation itself -- the
+// same approach the official Moonlight client uses (moonlight-ios's
+// VideoDecoderRenderer.m), instead of a hand-rolled decode+present pipeline.
+// No controlTimebase is attached (official doesn't set one either), AND
+// every sample fed in via metal_video_submit_compressed_sample carries the
+// kCMSampleAttachmentKey_DisplayImmediately attachment (set in
+// moonlight_cgo_apple.go's platform_dr_submit, see its own doc comment) --
+// without that attachment, AVSampleBufferDisplayLayer still paces display
+// against each sample's presentationTimeStamp via its own internally
+// created timebase even with no controlTimebase attached, which reproduces
+// the host's encode/network jitter as on-screen judder. The attachment is
+// what actually makes it display each sample the instant it's ready, the
+// right behavior for low-latency game streaming, not a video player's "play
+// back at the recorded rate".
+static AVSampleBufferDisplayLayer *g_avsbdl = nil;
+
+// Set whenever a *fresh* g_avsbdl is created (metal_video_create), cleared
+// once a real IDR has been fed to it. Needed because this overlay is only
+// created reactively -- off the Go side's frameNum==1 bootstrap, itself
+// only reachable once a frame has already been decoded (see
+// platform_dr_submit's own goVTFrame call) -- so by the time g_avsbdl
+// actually exists, the stream's *real* opening IDR is long gone: every
+// frame that arrived during the create race (dispatch_sync to the main
+// thread, a goroutine hop, ...) was silently dropped (g_avsbdl was still
+// nil), and what's arriving now is an ordinary delta frame referencing
+// decoder state this brand-new layer never had. Unlike the old
+// VTDecompressionSession path -- which decoded continuously regardless of
+// whether a CALayer existed to show the result, so by the time one did,
+// its reference-frame state was already caught up -- AVSampleBufferDisplayLayer
+// only starts decoding once *we* feed it something, cold, so its first
+// sample must actually be a valid IDR. Without requesting one, the fix was
+// to wait for whatever periodic refresh/RFI cadence the host happened to
+// be running -- confirmed live as the "took several minutes to show a
+// picture" report this flag exists to fix.
+static _Atomic int g_avsbdl_needs_idr = 0;
 
 // AI Vision overlay layer, stacked directly above g_layer (the video
 // IOSurface layer) and sharing its frame/gravity so a box drawn at pixel
@@ -654,6 +697,20 @@ static void metal_render_main_with_buf(CVPixelBufferRef buf, double latencyMs) {
         return;
     }
 
+    // Stutter Profiler: how long THIS call itself takes on the main thread.
+    // Pinning CADisplayLink's preferredFrameRateRange didn't recover the
+    // fire rate in the field (still ~23-29Hz with the pin in place), which
+    // means the OS isn't throttling the link's own scheduling -- something
+    // in this call (IOSurface import, metal_spike_render, or the
+    // CATransaction commit below) is itself slow enough to push the next
+    // tick out, which a fixed preferredFrameRateRange can't fix because it
+    // only picks a target cadence, it can't make a slow handler return
+    // faster. This brackets the same window the "AppKit/DisplayLink
+    // stalled" check measures, so the two can be directly compared in the
+    // log to tell "render call is slow" apart from "something else on the
+    // main thread between calls is slow".
+    double renderCallStart = mono_sec();
+
     int w = (int)CVPixelBufferGetWidth(buf);
     int h = (int)CVPixelBufferGetHeight(buf);
 
@@ -692,13 +749,32 @@ static void metal_render_main_with_buf(CVPixelBufferRef buf, double latencyMs) {
     }
 
     // Save a retained copy for the pause snapshot (cheap retain; releases old).
+    // Guarded by g_mu: metal_video_get_last_frame_rgba() reads g_lastRenderedBuf
+    // from an arbitrary background goroutine (VideoWidget.clearVideo, via
+    // getMetalLastFrame) with no thread-hopping of its own, concurrently with
+    // this main-thread (CADisplayLink) write -- an unguarded read-then-retain
+    // racing this reassign+release could retain/read a buffer mid-free
+    // (use-after-free) the moment a stream stop/restart lands while frames
+    // are still actively rendering, e.g. switching virtual monitor or codec
+    // mid-stream.
     CVPixelBufferRetain(buf);
+    pthread_mutex_lock(&g_mu);
     CVPixelBufferRef old_last = g_lastRenderedBuf;
     g_lastRenderedBuf = buf;
+    pthread_mutex_unlock(&g_mu);
     if (old_last) CVPixelBufferRelease(old_last);
 
     // Release the caller's ref (g_lastRenderedBuf holds its own).
     CVPixelBufferRelease(buf);
+
+    double renderCallMs = (mono_sec() - renderCallStart) * 1000.0;
+    if (renderCallMs > 20.0) {
+        char msg[128];
+        snprintf(msg, sizeof(msg),
+                 "⚠️ [Profiler] Metal render call itself took %.1f ms (main-thread render stall)",
+                 renderCallMs);
+        goMetalLog(msg, 2); // warn
+    }
 
     // ── Logging ──────────────────────────────────────────────────────────────
     int64_t n = ++g_renderCount;
@@ -783,35 +859,81 @@ static double g_dl_diag_start = 0.0;
         metal_video_apply_pending_hud_overlay();
     }
 
-    g_dl_fire_count++;
-    double diagNow = mono_sec();
-    if (g_dl_diag_start == 0.0) g_dl_diag_start = diagNow;
-    double diagElapsed = diagNow - g_dl_diag_start;
-    if (diagElapsed >= 2.0) {
-        char diagMsg[160];
-        snprintf(diagMsg, sizeof(diagMsg),
-                 "[DIAG] DisplayLink fire_rate=%.1fHz hit_rate=%.1fHz (fires=%llu hits=%llu window=%.1fs)",
-                 (double)g_dl_fire_count / diagElapsed, (double)g_dl_hit_count / diagElapsed,
-                 (unsigned long long)g_dl_fire_count, (unsigned long long)g_dl_hit_count, diagElapsed);
-        goMetalLog(diagMsg, 0);
-        g_dl_fire_count = 0;
-        g_dl_hit_count = 0;
-        g_dl_diag_start = diagNow;
+    // AVSampleBufferDisplayLayer health check: g_avsbdl can report
+    // status=Rendering and a perfectly healthy submit fps while the LAYER
+    // ITSELF is detached from the window (no superlayer) or has collapsed
+    // to a zero-size frame -- decode succeeds independent of presentation
+    // geometry, so neither condition trips the Failed-status recovery in
+    // metal_video_submit_compressed_sample. Confirmed live: a rapid
+    // benchmark-driven stop/switch-backend/start reconnect cycle left
+    // exactly this state -- "AVSBDL: submit fps=60.0 status=1" logging
+    // continuously while the actual screen stayed solid black. Checked
+    // every tick (cheap: two property reads) and self-healed by
+    // re-attaching/re-sizing rather than just logged, since by the time a
+    // human notices the black screen the diagnostic window has long since
+    // passed -- next time this fires, the fix should already be visible by
+    // the time anyone looks.
+    if (g_avsbdl && g_view) {
+        BOOL detached = (g_avsbdl.superlayer == nil);
+        BOOL collapsed = CGRectIsEmpty(g_avsbdl.frame);
+        if (detached || collapsed) {
+            char msg[160];
+            snprintf(msg, sizeof(msg),
+                     "AVSBDL: self-heal -- detached=%d collapsed=%d (frame=%.0fx%.0f) -- re-attaching",
+                     detached, collapsed, g_avsbdl.frame.size.width, g_avsbdl.frame.size.height);
+            goMetalLog(msg, 1); // warn
+            if (detached) [g_view.layer addSublayer:g_avsbdl];
+            g_avsbdl.frame = g_view.bounds;
+        }
     }
 
-    // Stutter Profiler: DisplayLink stall detection
+    g_dl_fire_count++;
+
+    // Stutter Profiler: DisplayLink stall detection, plus a gap histogram --
+    // the 50ms-threshold warning below only catches a single dropped frame
+    // outright; a sustained 60->45Hz degradation (what's actually reported)
+    // is many *small* ~4-6ms-over-budget gaps, not occasional big ones, and
+    // would never trip that threshold even once. Bucketed here so a 2s
+    // window shows the actual shape of the jank instead of just an average.
+    static uint64_t g_gap_bucket_ok = 0;    // <18ms: one healthy ~60Hz tick
+    static uint64_t g_gap_bucket_1 = 0;     // 18-25ms: ~1 tick missed
+    static uint64_t g_gap_bucket_2 = 0;     // 25-50ms: 2+ ticks missed
     uint64_t now = mach_absolute_time();
     if (g_last_dl_time != 0) {
         mach_timebase_info_data_t tb;
         mach_timebase_info(&tb);
         uint64_t elapsed_ns = (now - g_last_dl_time) * tb.numer / tb.denom;
-        if (elapsed_ns > 50000000) { // 50ms
+        uint64_t elapsed_ms = elapsed_ns / 1000000;
+        if (elapsed_ms > 50) {
             char msg[128];
-            snprintf(msg, sizeof(msg), "⚠️ [Profiler] AppKit/DisplayLink stalled for %llu ms (UI freeze!)", elapsed_ns / 1000000);
+            snprintf(msg, sizeof(msg), "⚠️ [Profiler] AppKit/DisplayLink stalled for %llu ms (UI freeze!)", (unsigned long long)elapsed_ms);
             goMetalLog(msg, 2); // warn
+        } else if (elapsed_ms >= 25) {
+            g_gap_bucket_2++;
+        } else if (elapsed_ms >= 18) {
+            g_gap_bucket_1++;
+        } else {
+            g_gap_bucket_ok++;
         }
     }
     g_last_dl_time = now;
+
+    double diagNow = mono_sec();
+    if (g_dl_diag_start == 0.0) g_dl_diag_start = diagNow;
+    double diagElapsed = diagNow - g_dl_diag_start;
+    if (diagElapsed >= 2.0) {
+        char diagMsg[220];
+        snprintf(diagMsg, sizeof(diagMsg),
+                 "[DIAG] DisplayLink fire_rate=%.1fHz hit_rate=%.1fHz (fires=%llu hits=%llu window=%.1fs) gaps: ok=%llu 1tick(18-25ms)=%llu 2tick(25-50ms)=%llu",
+                 (double)g_dl_fire_count / diagElapsed, (double)g_dl_hit_count / diagElapsed,
+                 (unsigned long long)g_dl_fire_count, (unsigned long long)g_dl_hit_count, diagElapsed,
+                 (unsigned long long)g_gap_bucket_ok, (unsigned long long)g_gap_bucket_1, (unsigned long long)g_gap_bucket_2);
+        goMetalLog(diagMsg, 0);
+        g_dl_fire_count = 0;
+        g_dl_hit_count = 0;
+        g_dl_diag_start = diagNow;
+        g_gap_bucket_ok = 0; g_gap_bucket_1 = 0; g_gap_bucket_2 = 0;
+    }
 
     pthread_mutex_lock(&g_mu);
     CVPixelBufferRef buf = g_pendingBuf;
@@ -834,11 +956,65 @@ int metal_video_is_active(void) {
     return atomic_load(&g_active);
 }
 
+// Running count of frames actually presented (g_renderCount, incremented in
+// metal_render_main_with_buf on the main thread) -- the streamer
+// benchmark's client-side render-fps counter (see bench_recorder.go's
+// benchRenderedFramesFn) diffs this between ticks instead of relying on
+// metal_video_last_fps's own 2s window, same as the Linux/Windows
+// VKVideoGetStats().Rendered equivalent. Read cross-thread without a lock,
+// same tolerated race as g_submitCount above: a plain monotonic counter,
+// never torn in practice on this platform's int64 alignment.
+// Also incremented by metal_video_submit_compressed_sample further down
+// (the AVSampleBufferDisplayLayer path) -- declared up here so
+// metal_video_rendered_count below can read it; see that function's own
+// doc comment for why the two counters are summed.
+static _Atomic uint64_t g_avsbdl_submit_count = 0;
+// g_avsbdl_fps_start/g_avsbdl_fps_frames/g_lastKnownAvsbdlFps: also declared
+// up here (full definitions live with metal_video_submit_compressed_sample
+// further down) so metal_video_last_fps above that function can read them
+// too -- same forward-declare-for-an-earlier-reader reason as
+// g_avsbdl_submit_count just above.
+static _Atomic double   g_avsbdl_fps_start     = 0.0;
+static _Atomic uint64_t g_avsbdl_fps_frames    = 0;
+static _Atomic double   g_lastKnownAvsbdlFps   = 0.0;
+
+int64_t metal_video_rendered_count(void) {
+    // g_renderCount (the old CAMetalLayer/CADisplayLink path) stays 0 for
+    // H.264/H.265 now that g_avsbdl handles that pipeline instead -- and
+    // vice versa, g_avsbdl_submit_count stays 0 if that path is never
+    // reached (e.g. PyroWave's own route, or iOS). Exactly one of the two
+    // is live in a given build/session, so summing them is safe and keeps
+    // this counter meaningful for both -- the streamer benchmark's
+    // client-side render-fps stat (bench_recorder.go) reads this, and
+    // reported a flat 0.0 fps for every AVSBDL-path run before this fix.
+    return g_renderCount + (int64_t)atomic_load(&g_avsbdl_submit_count);
+}
+
 // Returns the Metal render FPS from the current measurement window.
 // Falls back to the last known value during the brief reset gap so callers
 // never see a spurious zero while frames are still being rendered.
+//
+// Checks the AVSBDL path first: g_fpsFrames/g_fpsStart (and therefore
+// g_lastKnownFps) are only ever touched by metal_render_main_with_buf, the
+// legacy CVPixelBuffer+CADisplayLink path -- which metal_video_rendered_count's
+// own doc comment already established stays completely untouched for
+// H.264/H.265 now that g_avsbdl handles that pipeline instead. Before this
+// check, Net Graph's FPS line silently stayed frozen at 0 for the whole
+// session on every AVSBDL-path stream (the common case on macOS) -- same
+// bug class metal_video_rendered_count was fixed for, just never ported to
+// this getter too.
 double metal_video_last_fps(void) {
     if (!atomic_load(&g_active)) return 0.0;
+    if (atomic_load(&g_avsbdl_submit_count) > 0) {
+        double start = atomic_load(&g_avsbdl_fps_start);
+        if (start == 0.0) return 0.0; // no frames at all yet
+        double elapsed = mono_sec() - start;
+        uint64_t frames = atomic_load(&g_avsbdl_fps_frames);
+        if (frames == 0 || elapsed < 0.5) {
+            return atomic_load(&g_lastKnownAvsbdlFps);
+        }
+        return (double)frames / elapsed;
+    }
     if (g_fpsStart == 0.0) return 0.0; // no frames at all yet
     double elapsed = mono_sec() - g_fpsStart;
     if (g_fpsFrames == 0 || elapsed < 0.5) {
@@ -856,9 +1032,134 @@ double metal_video_last_fps(void) {
 // reset gap, same as metal_video_last_fps. 0 if no sample has ever landed
 // (e.g. overlay inactive, or every submit happened before any pendingBuf
 // timestamp was set).
+//
+// Meaningless on the AVSBDL path (see metal_video_decode_ms_available's doc
+// comment for why there's no equivalent measurement there yet) -- callers
+// MUST check that first, since this still returns g_lastKnownDecodeMs's
+// frozen initial 0.0 in that case, not a real number.
 double metal_video_last_decode_ms(void) {
     if (!atomic_load(&g_active)) return 0.0;
     return g_lastKnownDecodeMs;
+}
+
+// metal_video_decode_ms_available reports whether metal_video_last_decode_ms
+// reflects a real measurement for the CURRENT session. The legacy
+// CVPixelBuffer+CADisplayLink path (metal_render_main_with_buf) times
+// submit-to-display directly; the newer AVSampleBufferDisplayLayer path
+// (metal_video_submit_compressed_sample, now the main H.264/H.265 pipeline
+// -- see g_avsbdl's doc comment) hands decode+presentation to AVFoundation
+// internally with no per-sample completion callback this code hooks, so it
+// has never fed g_decodeMsSum/g_lastKnownDecodeMs at all. Net Graph's DEC
+// line used to show a flat, misleading "0.0ms" for the entire session on
+// every AVSBDL-path stream (the common case) instead of admitting there's
+// no measurement -- same root cause metal_video_last_fps was just fixed
+// for, except there's no equivalent AVSBDL-side counter to fall back to
+// here, since no timestamp is captured on that path at all.
+//
+// g_avsbdl_submit_count never resets mid-session (only at metal_video_create),
+// and the two paths are mutually exclusive per session (see
+// metal_video_rendered_count's doc comment), so count==0 reliably means
+// "the legacy path is the one actually running."
+int metal_video_decode_ms_available(void) {
+    return atomic_load(&g_avsbdl_submit_count) == 0;
+}
+
+// metal_video_get_gpu_name copies the system default Metal device's name
+// (e.g. "Apple M3 Pro") into out, NUL-terminated and truncated to out_len.
+// Queried fresh rather than cached off g_mtl_device/ml.device (the FSR
+// upscale and overlay layers' own devices, both only created once a stream
+// starts) -- a plain MTLCreateSystemDefaultDevice() call is cheap and this
+// way Net Graph's GPU line reads correctly even before the first stream of
+// the session, same as macOS's automatic-graphics-switching Macs report
+// whichever GPU is actually active right now. Empty if Metal is
+// unavailable (never expected on a supported macOS version).
+void metal_video_get_gpu_name(char *out, int out_len) {
+    if (!out || out_len <= 0) return;
+    out[0] = '\0';
+    id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+    if (!dev) return;
+    const char *name = [dev.name UTF8String];
+    if (name) snprintf(out, out_len, "%s", name);
+}
+
+// metal_video_submit_compressed_sample feeds one ready-to-decode
+// CMSampleBuffer (built zero-copy in moonlight_cgo_apple.go's
+// platform_dr_submit) to g_avsbdl -- see that global's own doc comment for
+// why this replaces the VTDecompressionSession+CVPixelBuffer+CADisplayLink
+// path below for the main H.264/H.265 video pipeline. Called from the
+// DIRECT_SUBMIT thread (same thread that reads the video UDP socket), not
+// the main thread -- intentional and the documented way to feed this layer
+// from a real-time decode pipeline, same as official Moonlight does.
+// Returns 1 if enqueued, 0 if dropped (overlay inactive/torn down -- caller
+// treats this like any other dropped frame, not a fatal error), or 2 if the
+// layer had failed and was just flushed to recover -- caller should request
+// a fresh IDR (this sample was NOT enqueued) rather than just dropping it.
+// (g_avsbdl_fps_start/g_avsbdl_fps_frames/g_lastKnownAvsbdlFps are declared
+// up near g_avsbdl_submit_count, for the same earlier-reader reason.)
+
+// metal_video_avsbdl_needs_fresh_idr: see g_avsbdl_needs_idr's own doc
+// comment. Peeks (does not clear) the flag -- platform_dr_submit clears it
+// itself, only once it actually has an IDR in hand to feed, via
+// metal_video_avsbdl_clear_needs_idr below.
+int metal_video_avsbdl_needs_fresh_idr(void) {
+    return atomic_load(&g_avsbdl_needs_idr) != 0;
+}
+void metal_video_avsbdl_clear_needs_idr(void) {
+    atomic_store(&g_avsbdl_needs_idr, 0);
+}
+
+int metal_video_submit_compressed_sample(CMSampleBufferRef sample) {
+    if (!atomic_load(&g_active) || !g_avsbdl) return 0;
+
+    // Once AVSampleBufferDisplayLayer hits AVQueuedSampleBufferRenderingStatusFailed
+    // (2), it silently ignores every further enqueueSampleBuffer: call -- no
+    // crash, no exception, the frame just never appears -- until -flush is
+    // called to reset it back to a working state (Apple's own documented
+    // recovery for this status). Without this check, a single bad early
+    // sample (e.g. a decode error on whatever happened to be the very first
+    // frame) meant the screen stayed black for the rest of the session: every
+    // later frame, including real IDRs, kept getting silently dropped here.
+    // Confirmed live: exactly this (a report of "black screen for up to a
+    // minute") with zero evidence in the log before this check existed.
+    if (g_avsbdl.status == AVQueuedSampleBufferRenderingStatusFailed) {
+        NSError *err = g_avsbdl.error;
+        char msg[160];
+        snprintf(msg, sizeof(msg), "AVSBDL: status=Failed, flushing to recover (%s)",
+                 err ? err.localizedDescription.UTF8String : "no error info");
+        goMetalLog(msg, 1); // warn
+        [g_avsbdl flush];
+        // Don't also enqueue this sample: it's almost certainly not an IDR
+        // (those are rare/periodic), so it'll just fail again immediately
+        // post-flush. Tell the caller to request a fresh IDR instead of
+        // waiting for whatever RFI/periodic-refresh cadence would otherwise
+        // eventually send one -- recovers in roughly one round-trip instead
+        // of up to several seconds.
+        return 2;
+    }
+
+    [g_avsbdl enqueueSampleBuffer:sample];
+
+    if (atomic_fetch_add(&g_avsbdl_submit_count, 1) == 0) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "AVSBDL: first sample enqueued (status=%ld)", (long)g_avsbdl.status);
+        goMetalLog(msg, 0);
+    }
+    double now = mono_sec();
+    double start = atomic_load(&g_avsbdl_fps_start);
+    if (start == 0.0) { atomic_store(&g_avsbdl_fps_start, now); return 1; }
+    atomic_fetch_add(&g_avsbdl_fps_frames, 1);
+    double elapsed = now - start;
+    if (elapsed >= 2.0) {
+        uint64_t frames = atomic_exchange(&g_avsbdl_fps_frames, 0);
+        atomic_store(&g_avsbdl_fps_start, now);
+        double fps = (double)frames / elapsed;
+        atomic_store(&g_lastKnownAvsbdlFps, fps);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "AVSBDL: submit fps=%.1f (frames=%llu window=%.1fs) status=%ld",
+                 fps, (unsigned long long)frames, elapsed, (long)g_avsbdl.status);
+        goMetalLog(msg, 0);
+    }
+    return 1;
 }
 
 // One-shot diagnostic for the HDR black-screen investigation (2026-09-14):
@@ -1150,6 +1451,7 @@ int metal_video_create(uintptr_t nsWinPtr, float x, float y, float w, float h) {
             g_overlay_layer = nil;
             g_hud_layer = nil;
             g_metal_layer = nil;
+            g_avsbdl = nil;
         }
 
         // Replace path: metal_video_create can be called again while a
@@ -1213,6 +1515,18 @@ int metal_video_create(uintptr_t nsWinPtr, float x, float y, float w, float h) {
         ml.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
         [ov.layer addSublayer:ml];
 
+        // AVSampleBufferDisplayLayer -- the actual video presentation path
+        // now (see g_avsbdl's own doc comment). Sibling of vl/ml at the same
+        // depth, so AI Vision/Net Graph overlays (ol/hl below) stay on top
+        // of it the same way they do for vl/ml.
+        AVSampleBufferDisplayLayer *sl = [AVSampleBufferDisplayLayer new];
+        sl.frame = ov.bounds;
+        sl.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
+        sl.videoGravity = AVLayerVideoGravityResizeAspect;
+        sl.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+        sl.contentsScale = NSScreen.mainScreen.backingScaleFactor;
+        [ov.layer addSublayer:sl];
+
         CALayer *ol = [CALayer layer];
         ol.frame = ov.bounds;
         ol.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
@@ -1235,6 +1549,8 @@ int metal_video_create(uintptr_t nsWinPtr, float x, float y, float w, float h) {
         g_overlay_layer = ol;
         g_hud_layer = hl;
         g_metal_layer = ml;
+        g_avsbdl = sl;
+        atomic_store(&g_avsbdl_needs_idr, 1);
 
         g_submitCount = 0; g_renderCount = 0;
         g_fpsFrames = 0;   g_fpsStart = 0;   g_lastKnownFps = 0.0;
@@ -1271,6 +1587,23 @@ int metal_video_create(uintptr_t nsWinPtr, float x, float y, float w, float h) {
         g_display_link = [ov displayLinkWithTarget:g_dl_target
                                           selector:@selector(displayLinkFired:)];
         atomic_fetch_add(&g_display_link_created_count, 1);
+
+        // Pin min==max==preferred to the display's own refresh rate. Without
+        // this, CADisplayLink's adaptive duty-cycle picks its own rate from
+        // observed commit cadence -- and a long gap with nothing to present
+        // (e.g. a slow host-switch leaving the stream frame-less for 2+
+        // seconds, as seen with a Punktfunk backend switch) makes it latch
+        // onto a low fire rate (observed: ~23Hz) that never climbs back to
+        // 60Hz even once frames resume arriving at full rate. A fixed range
+        // leaves the OS nothing to adapt, so it can't get stuck low again.
+        CGFloat maxFPS = 60.0;
+        if (ov.window && ov.window.screen) {
+            NSInteger screenMax = ov.window.screen.maximumFramesPerSecond;
+            if (screenMax > 0) maxFPS = (CGFloat)screenMax;
+        }
+        g_display_link.preferredFrameRateRange =
+            (CAFrameRateRange){.minimum = (float)maxFPS, .maximum = (float)maxFPS, .preferred = (float)maxFPS};
+
         [g_display_link addToRunLoop:[NSRunLoop mainRunLoop]
                              forMode:NSRunLoopCommonModes];
 
@@ -1309,12 +1642,15 @@ void metal_video_update_frame(float x, float y, float w, float h) {
 
 // Copies the last rendered frame to a caller-owned RGBA buffer.
 // Returns 1 on success; caller must free(*out) with free().
-// Safe to call from any thread; uses the main queue for pixel access.
+// Safe to call from any thread: the read-then-retain of g_lastRenderedBuf is
+// guarded by g_mu against metal_render_main_with_buf's main-thread
+// reassign+release of the same pointer (see that function's doc comment).
 int metal_video_get_last_frame_rgba(int *outW, int *outH, uint8_t **out) {
-    if (!g_lastRenderedBuf) return 0;
-
+    pthread_mutex_lock(&g_mu);
     CVPixelBufferRef buf = g_lastRenderedBuf;
-    CVPixelBufferRetain(buf);
+    if (buf) CVPixelBufferRetain(buf);
+    pthread_mutex_unlock(&g_mu);
+    if (!buf) return 0;
 
     int w = (int)CVPixelBufferGetWidth(buf);
     int h = (int)CVPixelBufferGetHeight(buf);
@@ -1443,6 +1779,7 @@ void metal_video_destroy(void) {
             g_overlay_layer = nil;
             g_hud_layer = nil;
             g_metal_layer = nil;
+            g_avsbdl = nil;
         }
         atomic_store(&g_hud_dirty, 0);
         pthread_mutex_lock(&g_hud_pending_mu);
@@ -1455,10 +1792,11 @@ void metal_video_destroy(void) {
         pthread_mutex_unlock(&g_mu);
         if (old) CVPixelBufferRelease(old);
 
-        if (g_lastRenderedBuf) {
-            CVPixelBufferRelease(g_lastRenderedBuf);
-            g_lastRenderedBuf = NULL;
-        }
+        pthread_mutex_lock(&g_mu);
+        CVPixelBufferRef old_last_render = g_lastRenderedBuf;
+        g_lastRenderedBuf = NULL;
+        pthread_mutex_unlock(&g_mu);
+        if (old_last_render) CVPixelBufferRelease(old_last_render);
 
         char msg[192];
         snprintf(msg, sizeof(msg),

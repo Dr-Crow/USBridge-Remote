@@ -223,6 +223,9 @@ type Window struct {
 	// known-broken combination; see capture.AutoCaptureMode's doc. On other
 	// platforms it's just the OS screen-recording permission.
 	screenCaptureCheck *permStatusChip
+	// screenCaptureInfo explains Punktfunk's capture; the Screen capture
+	// chip's button runs it while Punktfunk is the active streamer.
+	screenCaptureInfo func()
 
 	// clipboardToolRow: Linux only, shown only while no CLI clipboard helper
 	// (xclip/wl-clipboard/xsel) is installed -- see
@@ -525,6 +528,14 @@ func (w *Window) linuxCaptureUIEnabled() bool {
 func (w *Window) refreshScreenCaptureUI() {
 	if w.screenCaptureCheck == nil {
 		return
+	}
+
+	// Punktfunk has no KMS capture to grant, so once its own capture works
+	// the button says why instead of sitting there as a dead "Granted".
+	if w.protocolApplied == protocolPunktfunk && w.screenCaptureInfo != nil {
+		w.screenCaptureCheck.SetInfo(loc().PermInfo, w.screenCaptureInfo)
+	} else {
+		w.screenCaptureCheck.SetInfo("", nil)
 	}
 
 	if w.linuxCaptureUIEnabled() {
@@ -1052,6 +1063,9 @@ func (w *Window) ShowAndRun(onClose func()) {
 
 	w.accessCheck = newPermStatusChip(accessLabelBase, onRequestAccess)
 	w.screenCaptureCheck = newPermStatusChip(loc().ScreenCapture, onRequestCapture)
+	w.screenCaptureInfo = func() {
+		showInfoDialog(loc().ScreenCapture, loc().PunktfunkCaptureInfo, win)
+	}
 	permStatusRow := container.New(&tightVBoxLayout{gap: 2}, w.accessCheck, w.screenCaptureCheck)
 
 	// Autostart at Boot: installs the OS-native autostart mechanism (a
@@ -2590,6 +2604,16 @@ func (w *Window) performRefresh() {
 		}
 		if w.perms != nil {
 			status.accessGranted = w.perms.AccessibilityGranted()
+			// Shown right away rather than with everything below: the
+			// permission is a local check, and the calls that follow go to
+			// the engine and its helpers, where one slow answer used to
+			// leave it looking ungranted.
+			granted := status.accessGranted
+			fyne.Do(func() {
+				if w.accessCheck != nil {
+					w.accessCheck.SetChecked(granted)
+				}
+			})
 		}
 		var entStatus entitlement.Status
 		var certStatus tlshost.CertStatus

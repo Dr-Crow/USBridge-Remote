@@ -44,17 +44,25 @@ type VideoStartDialog struct {
 	resolutionSelect *HeaderDropdown
 	fpsSelect        *HeaderDropdown
 	bitrateSlider    *videoDialogBitrateSlider
-	bitrateBlock     *fyne.Container
-	modeDetailsSlot  *fyne.Container
-	jpegHint         *widget.Label
-	deviceLabel      *widget.Label
-	vsyncCheck       *videoDialogCheckbox
-	vsyncHint        *videoDialogWrapText
-	upscaleSelect    *HeaderDropdown
-	upscaleLabels    map[string]string // display label -> models.UpscaleMode* value
-	fsrHint          *videoDialogWrapText
-	aiVisionCheck    *videoDialogCheckbox
-	aiVisionHint     *videoDialogWrapText
+	// The slider's Low/High bound hints, rewritten when the range changes
+	// (see applyBitrateRange).
+	bitrateLowHint  *canvas.Text
+	bitrateHighHint *canvas.Text
+	// The bitrate last picked in each range, so switching codecs back and
+	// forth keeps both.
+	bitrateByRange  map[bool]float64
+	bitrateRangePW  bool
+	bitrateBlock    *fyne.Container
+	modeDetailsSlot *fyne.Container
+	jpegHint        *widget.Label
+	deviceLabel     *widget.Label
+	vsyncCheck      *videoDialogCheckbox
+	vsyncHint       *videoDialogWrapText
+	upscaleSelect   *HeaderDropdown
+	upscaleLabels   map[string]string // display label -> models.UpscaleMode* value
+	fsrHint         *videoDialogWrapText
+	aiVisionCheck   *videoDialogCheckbox
+	aiVisionHint    *videoDialogWrapText
 	// color444Check/color444Hint: the RustShine Pro 4:4:4 color upgrade.
 	// Unlike AI Vision this row is always shown, on any codec -- it just
 	// reads as an inactive/grayed item (dim title, disabled checkbox, a
@@ -99,6 +107,12 @@ type VideoStartDialog struct {
 	// service.FrameSmoothingSupported() is true (Windows today).
 	frameSmoothingCheck *videoDialogCheckbox
 	frameSmoothingHint  *videoDialogWrapText
+	// playoutBufferCheck/playoutBufferHint: the moonlight-common-c fork's
+	// jitter buffer (service.SetPlayoutBufferEnabled) -- draft until
+	// Apply/Start, off by default. Only built/shown when
+	// service.PlayoutBufferSupported() is true (Windows today).
+	playoutBufferCheck *videoDialogCheckbox
+	playoutBufferHint  *videoDialogWrapText
 
 	startBtn  *videoDialogPillButton
 	cancelBtn *videoDialogPillButton
@@ -1524,6 +1538,11 @@ func newVideoDialogToggleRowInner(check *videoDialogCheckbox, titleText fyne.Can
 // design: the checkbox and a bold title + badge share the first line, and
 // the description sits on its own line below, indented to the title's own
 // left edge. The whole row is tappable (see videoDialogToggleTap).
+// showFrameSmoothingToggle hides the Smooth Motion row: in live use its
+// synthesized frames looked worse than holding the last real frame, with no
+// visible benefit. The feature itself stays off (service default).
+const showFrameSmoothingToggle = false
+
 func newVideoDialogToggleRow(check *videoDialogCheckbox, titleText fyne.CanvasObject, badge fyne.CanvasObject, description fyne.CanvasObject) fyne.CanvasObject {
 	return newVideoDialogToggleTap(check, newVideoDialogToggleRowInner(check, titleText, badge, description))
 }
@@ -1618,8 +1637,9 @@ func (vsd *VideoStartDialog) createInterface() {
 
 	vsd.fpsSelect = newVideoDialogPicker(nil)
 
-	vsd.bitrateSlider = newVideoDialogBitrateSlider(1000, 150000, 1000)
-	vsd.bitrateSlider.Value = 20000
+	vsd.bitrateSlider = newVideoDialogBitrateSlider(bitrateMinKbps, bitrateMaxKbps, bitrateStepKbps)
+	vsd.bitrateSlider.Value = bitrateDefaultKbps
+	vsd.bitrateByRange = map[bool]float64{false: bitrateDefaultKbps, true: pyroWaveBitrateDefault}
 
 	vsd.jpegHint = widget.NewLabel(i18n.Current.VideoJPEGRTPHint)
 	vsd.jpegHint.Wrapping = fyne.TextWrapWord
@@ -1763,8 +1783,10 @@ func (vsd *VideoStartDialog) createInterface() {
 	}
 
 	// Frame Smoothing: draft until Apply/Start, same as AI Vision/Net Graph.
+	// Hidden for now (showFrameSmoothingToggle): in live use the synthesized
+	// frames looked worse than simply holding the last real one.
 	var frameSmoothingRow fyne.CanvasObject
-	if service.FrameSmoothingSupported() {
+	if showFrameSmoothingToggle && service.FrameSmoothingSupported() {
 		vsd.frameSmoothingCheck = newVideoDialogCheckbox(service.FrameSmoothingEnabled(), nil)
 		vsd.frameSmoothingHint = newVideoDialogDescription(i18n.Current.FrameSmoothingHint, videoDialogToggleDescWidthFor(hintPanelW))
 		frameSmoothingRow = newVideoDialogToggleRow(
@@ -1772,6 +1794,19 @@ func (vsd *VideoStartDialog) createInterface() {
 			newVideoDialogRowTitle(i18n.Current.FrameSmoothing),
 			newVideoDialogBadge(i18n.Current.FrameSmoothingBadge, design.ColorConnectionBadgeText),
 			vsd.frameSmoothingHint,
+		)
+	}
+
+	// Jitter buffer: draft until Apply/Start, same as the toggles above.
+	var playoutBufferRow fyne.CanvasObject
+	if service.PlayoutBufferSupported() {
+		vsd.playoutBufferCheck = newVideoDialogCheckbox(service.PlayoutBufferEnabled(), nil)
+		vsd.playoutBufferHint = newVideoDialogDescription(i18n.Current.PlayoutBufferHint, videoDialogToggleDescWidthFor(hintPanelW))
+		playoutBufferRow = newVideoDialogToggleRow(
+			vsd.playoutBufferCheck,
+			newVideoDialogRowTitle(i18n.Current.PlayoutBuffer),
+			newVideoDialogBadge(i18n.Current.PlayoutBufferBadge, design.ColorConnectionBadgeText),
+			vsd.playoutBufferHint,
 		)
 	}
 
@@ -1785,6 +1820,9 @@ func (vsd *VideoStartDialog) createInterface() {
 	}
 	if frameSmoothingRow != nil {
 		frameSmoothingRow = NewInsetExact(frameSmoothingRow, videoDialogToggleAlignLeft, 0, 0, 0)
+	}
+	if playoutBufferRow != nil {
+		playoutBufferRow = NewInsetExact(playoutBufferRow, videoDialogToggleAlignLeft, 0, 0, 0)
 	}
 
 	vsd.startBtn = newVideoDialogApplyButton(i18n.Current.StartVideo, vsd.handleStart)
@@ -1826,6 +1864,7 @@ func (vsd *VideoStartDialog) createInterface() {
 	lowHint.TextSize = videoDialogHintTextSize
 	highHint := canvas.NewText(fmt.Sprintf(i18n.Current.VideoHighFidelityFmt, vsd.bitrateSlider.Max/1000, i18n.Current.UnitMbps), videoDialogHintColor)
 	highHint.TextSize = videoDialogHintTextSize
+	vsd.bitrateLowHint, vsd.bitrateHighHint = lowHint, highHint
 	bitrateHintsRow := container.NewBorder(nil, nil, lowHint, highHint, nil)
 
 	bitrateCardBG := canvas.NewRectangle(videoDialogCardBG)
@@ -1917,6 +1956,9 @@ func (vsd *VideoStartDialog) createInterface() {
 	if frameSmoothingRow != nil {
 		otherRows = append(otherRows, frameSmoothingRow)
 	}
+	if playoutBufferRow != nil {
+		otherRows = append(otherRows, playoutBufferRow)
+	}
 	bodyChildren = append(bodyChildren, newVideoDialogOtherSettingsCard(otherRows...), videoDialogVSpace(4))
 	bodyContent := container.NewVBox(bodyChildren...)
 
@@ -1991,6 +2033,10 @@ func (vsd *VideoStartDialog) Configure(info *models.VideoInfoData, defaultWidth,
 	// Only Moonlight-compatible encodings are supported; filter out legacy JPEG/RAW modes
 	// that older server versions may still advertise.
 	moonlightEncodings := map[string]bool{"h264": true, "h265": true, "av1": true}
+	// PyroWave is offered only where this client can decode it.
+	if service.PyroWaveDecodeSupported() {
+		moonlightEncodings[models.VideoModePyroWave] = true
+	}
 	if info != nil {
 		for _, m := range info.SupportedModes {
 			if moonlightEncodings[m.Encoding] {
@@ -2123,10 +2169,16 @@ func (vsd *VideoStartDialog) Configure(info *models.VideoInfoData, defaultWidth,
 	vsd.refreshAvailableModesAndSelect(false)
 	vsd.setSelectedModeID(selectedMode)
 
+	// The saved bitrate belongs to the range it was picked in: a PyroWave
+	// figure above the regular maximum seeds PyroWave's range only.
 	if bitrate, ok := parseBitrate(defaultBitrate); ok {
-		vsd.bitrateSlider.SetValue(float64(bitrate))
-	} else {
-		vsd.bitrateSlider.SetValue(20000)
+		inPyroWaveRange := bitrate > bitrateMaxKbps
+		vsd.bitrateByRange[inPyroWaveRange] = float64(bitrate)
+		if inPyroWaveRange == vsd.bitrateRangePW {
+			vsd.bitrateSlider.SetValue(float64(bitrate))
+		}
+	} else if !vsd.bitrateRangePW {
+		vsd.bitrateSlider.SetValue(bitrateDefaultKbps)
 	}
 
 	vsd.refreshFPSOptions()
@@ -2156,6 +2208,9 @@ func (vsd *VideoStartDialog) syncHintWrapWidths() {
 	if vsd.frameSmoothingHint != nil {
 		vsd.frameSmoothingHint.SetWrapWidth(videoDialogToggleDescWidthFor(panelW))
 	}
+	if vsd.playoutBufferHint != nil {
+		vsd.playoutBufferHint.SetWrapWidth(videoDialogToggleDescWidthFor(panelW))
+	}
 }
 
 func (vsd *VideoStartDialog) Show(onApply func(request *models.VideoStartRequest)) {
@@ -2168,6 +2223,9 @@ func (vsd *VideoStartDialog) Show(onApply func(request *models.VideoStartRequest
 	}
 	if vsd.frameSmoothingCheck != nil {
 		vsd.frameSmoothingCheck.SetChecked(service.FrameSmoothingEnabled())
+	}
+	if vsd.playoutBufferCheck != nil {
+		vsd.playoutBufferCheck.SetChecked(service.PlayoutBufferEnabled())
 	}
 	vsd.syncHintWrapWidths()
 	if vsd.dialog != nil && vsd.parent != nil {
@@ -2438,7 +2496,49 @@ func (vsd *VideoStartDialog) setSelectedModeID(modeID string) {
 	for id, button := range vsd.modeButtons {
 		button.SetActive(id == modeID)
 	}
+	vsd.applyBitrateRange(modeID == models.VideoModePyroWave)
 	vsd.refreshModeUI()
+}
+
+// Bitrate slider ranges, kbps. PyroWave is an intra-only wavelet codec for a
+// fast local link: every frame is a full picture, so it needs several times
+// the bitrate of H.264/HEVC/AV1 for the same quality (4K60 looks clean from
+// about 300 Mbps). The figure is the whole stream on the wire, FEC included.
+const (
+	bitrateMinKbps          = 1000
+	bitrateMaxKbps          = 150000
+	bitrateStepKbps         = 1000
+	bitrateDefaultKbps      = 20000
+	pyroWaveBitrateMinKbps  = 50000
+	pyroWaveBitrateMaxKbps  = 1000000
+	pyroWaveBitrateStepKbps = 10000
+	pyroWaveBitrateDefault  = 300000
+)
+
+// applyBitrateRange switches the bitrate slider between the regular range and
+// PyroWave's, keeping the value last picked in each.
+func (vsd *VideoStartDialog) applyBitrateRange(pyroWave bool) {
+	s := vsd.bitrateSlider
+	if s == nil || pyroWave == vsd.bitrateRangePW {
+		return
+	}
+	vsd.bitrateByRange[vsd.bitrateRangePW] = s.Value
+	vsd.bitrateRangePW = pyroWave
+	if pyroWave {
+		s.Min, s.Max, s.Step = pyroWaveBitrateMinKbps, pyroWaveBitrateMaxKbps, pyroWaveBitrateStepKbps
+	} else {
+		s.Min, s.Max, s.Step = bitrateMinKbps, bitrateMaxKbps, bitrateStepKbps
+	}
+	s.Value = -1 // force SetValue to refresh and notify
+	s.SetValue(vsd.bitrateByRange[pyroWave])
+	if vsd.bitrateLowHint != nil {
+		vsd.bitrateLowHint.Text = fmt.Sprintf(i18n.Current.VideoLowLatencyFmt, s.Min/1000, i18n.Current.UnitMbps)
+		vsd.bitrateLowHint.Refresh()
+	}
+	if vsd.bitrateHighHint != nil {
+		vsd.bitrateHighHint.Text = fmt.Sprintf(i18n.Current.VideoHighFidelityFmt, s.Max/1000, i18n.Current.UnitMbps)
+		vsd.bitrateHighHint.Refresh()
+	}
 }
 
 func (vsd *VideoStartDialog) rebuildModeButtons() {
@@ -2466,6 +2566,8 @@ func videoCodecButtonLabel(modeID string) string {
 		return "H.265"
 	case models.VideoModeAV1:
 		return "AV1"
+	case models.VideoModePyroWave:
+		return "PyroWave"
 	default:
 		return "H.264"
 	}
@@ -2587,6 +2689,9 @@ func (vsd *VideoStartDialog) applyLocalOverlaySettings() {
 	if vsd.frameSmoothingCheck != nil {
 		service.SetFrameSmoothingEnabled(vsd.frameSmoothingCheck.Checked)
 	}
+	if vsd.playoutBufferCheck != nil {
+		service.SetPlayoutBufferEnabled(vsd.playoutBufferCheck.Checked)
+	}
 }
 
 func (vsd *VideoStartDialog) revertLocalOverlayDrafts() {
@@ -2599,6 +2704,9 @@ func (vsd *VideoStartDialog) revertLocalOverlayDrafts() {
 	}
 	if vsd.frameSmoothingCheck != nil {
 		vsd.frameSmoothingCheck.SetChecked(service.FrameSmoothingEnabled())
+	}
+	if vsd.playoutBufferCheck != nil {
+		vsd.playoutBufferCheck.SetChecked(service.PlayoutBufferEnabled())
 	}
 }
 
@@ -2664,24 +2772,27 @@ func allowedModesForPixelFormat(format string) map[string]bool {
 	switch normalizePixelFormat(format) {
 	case "MJPG", "MJPEG", "JPEG":
 		return map[string]bool{
-			models.VideoModeH264:    true,
-			models.VideoModeH265:    true,
-			models.VideoModeAV1:     true,
-			models.VideoModeJPEGRTP: true,
+			models.VideoModeH264:     true,
+			models.VideoModeH265:     true,
+			models.VideoModeAV1:      true,
+			models.VideoModePyroWave: true,
+			models.VideoModeJPEGRTP:  true,
 		}
 	case "YUYV", "YUYV422", "YUY2":
 		return map[string]bool{
-			models.VideoModeH264:    true,
-			models.VideoModeH265:    true,
-			models.VideoModeAV1:     true,
-			models.VideoModeJPEGRTP: true,
-			models.VideoModeRawYUYV: true,
+			models.VideoModeH264:     true,
+			models.VideoModeH265:     true,
+			models.VideoModeAV1:      true,
+			models.VideoModePyroWave: true,
+			models.VideoModeJPEGRTP:  true,
+			models.VideoModeRawYUYV:  true,
 		}
 	default:
 		return map[string]bool{
-			models.VideoModeH264: true,
-			models.VideoModeH265: true,
-			models.VideoModeAV1:  true,
+			models.VideoModeH264:     true,
+			models.VideoModeH265:     true,
+			models.VideoModeAV1:      true,
+			models.VideoModePyroWave: true,
 		}
 	}
 }

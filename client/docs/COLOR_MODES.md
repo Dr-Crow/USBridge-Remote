@@ -47,7 +47,7 @@ same desktop is tonemapped back to SDR on the host, so it doesn't look grey.
 |---|---|---|
 | macOS | decodes (not re-checked in this pass) | **yes**: VideoToolbox decodes to 10-bit, Core Animation shows it with EDR |
 | Linux | decodes via the CPU fallback (`sws_scale` to RGBA), slower than the GPU NV12 path | no: the option is disabled (8-bit render path, no PQ handling) |
-| Windows | decodes | no: the option is disabled (8-bit Vulkan swapchain) |
+| Windows | decodes | **yes** when Windows HDR is on for the monitor the client window is on and D3D11VA decodes HEVC Main10: HDR10 Vulkan swapchain (PQ, BT.2020); otherwise the option is disabled and the client asks the host for SDR. See [WINDOWS_DECODE_PIPELINE.md](./WINDOWS_DECODE_PIPELINE.md#hdr10-output) |
 | Android / iOS / Web | not checked | no: the option is disabled |
 
 ## Host load (Linux NVIDIA, RTX 2080 Ti, 3840x2160 at 60 fps)

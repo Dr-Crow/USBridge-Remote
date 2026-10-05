@@ -31,7 +31,8 @@ two 0..255 triggers, four 16-bit sticks with up positive).
 | Windows | PlayStation-layout DirectInput pad in the [SDL database](../third_party/SDL_GameControllerDB/) (Razer Raiju TE, DualShock 4 and clones, ~860 pads) | WinMM read through the pad's SDL mapping, listed as `winmm:N` with the model name | analog axes or buttons, whatever the mapping says | ✅ Razer Raiju TE · 🧪 others |
 | Windows | DirectInput pad *not* in the database | WinMM with an assumed Xbox layout | one guess (Z / V axes) | 🧪 may be wrong |
 | Linux | any pad the kernel exposes through evdev | `/dev/input/event*`, state read from the kernel at start and after `SYN_DROPPED` | as the driver reports them | 🧪 (rumble ✅ on a Razer Wolverine V2) |
-| macOS | HID gamepad | IOKit | as the device reports them | 🧪 |
+| macOS | PlayStation-layout pad in the SDL database (Razer Raiju TE, DualShock 4 and clones) | IOKit read through the pad's SDL mapping | analog axes or buttons, whatever the mapping says | ✅ Razer Raiju TE |
+| macOS | HID gamepad *not* in the database | IOKit with an assumed Xbox layout | one guess (Z axis for LT, Rz for RT) | 🧪 may be wrong |
 | Android, iOS, Web | physical pads | not captured by this path | ➖ | ➖ |
 
 Notes for Windows:
@@ -49,6 +50,13 @@ Notes for Windows:
   need it checked.
 - The list of pads is read when the client starts and on *Refresh*; it is not
   hot-plug aware.
+
+Notes for macOS: IOKit hands over Generic Desktop axes already tagged by usage
+(X/Y/Z/Rx/Ry/Rz), so unlike WinMM there is no report-order quirk to correct for
+(`sdlAxisToJoy` is a WinMM-only table) -- the SDL entry's `a0`..`a5` map onto
+those usages directly. The gamepad list is polled every second
+(`gamepadPollInterval`), so a pad plugged in mid-session appears without a
+manual *Refresh*.
 
 The touchpad reads the pad's own HID input report next to the normal capture
 (`gamepad_touchpad*.go`): finger 1 sits in bytes 35..38 (contact flag + tracking id, then

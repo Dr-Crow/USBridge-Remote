@@ -156,7 +156,7 @@ type App struct {
 	// click racing the entitlement watchdog's own downgrade, say) --
 	// a.stream/a.streamKind must only ever be read/written while held.
 	streamMu   sync.Mutex
-	streamKind string // "sunshine" | "rustshine" -- bookkeeping only, mirrors which concrete type a.stream currently is
+	streamKind string // "sunshine" | "rustshine" | "punktfunk" -- bookkeeping only, mirrors which concrete type a.stream currently is
 	// streamKindView mirrors streamKind for readers that must not wait on
 	// streamMu: SetStreamBackend holds it through the new backend's whole
 	// startup (~25-40 s for Sunshine), and currentStreamKind used to take
@@ -599,10 +599,17 @@ func New() (*App, error) {
 			}
 		}
 	}
+	// Punktfunk needs no entitlement, only its binary; without one (it was
+	// uninstalled since) the agent comes back on Sunshine.
+	if cfg.PreferredBackend == "punktfunk" && streamhost.PunktfunkAvailable(instance.exeDir) {
+		instance.setStreamKind("punktfunk")
+	}
 	if instance.streamKind == "rustshine" {
 		instance.stream = streamhost.NewRustshine(instance.exeDir, cfg.StateDir, instance.logPath)
 		applyStreamSharedSecret(instance.stream, masterKeyBytes)
 		applyStreamWebRTCEnabled(instance.stream, !cfg.RustShineWebRTCDisabled)
+	} else if instance.streamKind == "punktfunk" {
+		instance.stream = streamhost.NewPunktfunk(instance.exeDir, cfg.StateDir, instance.logPath)
 	} else {
 		instance.stream = streamhost.NewDefault(instance.exeDir, cfg.StateDir, instance.logPath)
 	}
@@ -1493,8 +1500,8 @@ func (a *App) RestartSunshineStartOnly() error {
 }
 
 // SetStreamBackend switches the active streamhost.Backend at runtime
-// between "sunshine" and "rustshine" -- stops whichever is running, builds
-// the other, and starts it. No-op if kind is already active. "rustshine"
+// between "sunshine", "rustshine" and "punktfunk" -- stops whichever is
+// running, builds the other, and starts it. No-op if kind is already active. "rustshine"
 // requires the binary to already be staged (see entitlement.StageRustShine)
 // -- this method never downloads it itself, so callers (the GUI's license
 // dialog) must download-then-switch, not switch-then-download.
@@ -1503,7 +1510,7 @@ func (a *App) RestartSunshineStartOnly() error {
 // (see New()'s local, offline re-derivation of the initial backend) without
 // needing to ask the entitlement backend again just to boot.
 func (a *App) SetStreamBackend(kind string) error {
-	if kind != "sunshine" && kind != "rustshine" {
+	if kind != "sunshine" && kind != "rustshine" && kind != "punktfunk" {
 		return fmt.Errorf("unknown stream backend %q", kind)
 	}
 
@@ -1531,6 +1538,19 @@ func (a *App) SetStreamBackend(kind string) error {
 			return fmt.Errorf("rustshine is not downloaded yet")
 		}
 	}
+	if kind == "punktfunk" && !streamhost.PunktfunkAvailable(a.exeDir) {
+		return fmt.Errorf("punktfunk-host is not installed")
+	}
+
+	// The two backends number monitors differently (Sunshine: its own KMS
+	// index; RustShine: "cardPath|connector"), so each keeps its own pin
+	// and a switch would otherwise come up on whatever the other one was
+	// last left on -- live: RustShine on HDMI-A-1, then Sunshine captured
+	// its stale "0", which by then was the vkms Virtual-1 (cursor on black).
+	pinnedConnector := ""
+	if a.stream != nil {
+		pinnedConnector = pinConnector(a.stream)
+	}
 
 	stopStart := time.Now()
 	if a.stream != nil {
@@ -1545,12 +1565,15 @@ func (a *App) SetStreamBackend(kind string) error {
 	defer func() { a.lastSwitch.StartMs = time.Since(startStart).Milliseconds() }()
 
 	var next streamhost.Backend
-	if kind == "rustshine" {
+	switch kind {
+	case "rustshine":
 		next = streamhost.NewRustshine(a.exeDir, a.cfg.StateDir, a.logPath)
 		applyStreamSharedSecret(next, []byte(a.cfg.MasterKey))
 		applyStreamWebRTCEnabled(next, !a.cfg.RustShineWebRTCDisabled)
 		applyStreamUSBPassBridgeAddr(next, a.usbPassBridgeAddr)
-	} else {
+	case "punktfunk":
+		next = streamhost.NewPunktfunk(a.exeDir, a.cfg.StateDir, a.logPath)
+	default:
 		next = streamhost.NewSunshine(a.exeDir, a.cfg.StateDir, a.logPath)
 	}
 	// Fully configure next before publishing it -- see syncCapExecTo.
@@ -1564,6 +1587,7 @@ func (a *App) SetStreamBackend(kind string) error {
 	if pw, ok := next.(streamhost.ProcessWatcher); ok {
 		pw.SetOnExit(a.startSunshine)
 	}
+	carryPin(next, pinnedConnector)
 	// Before the start, so the backend comes up on the benchmark's monitor.
 	_, benchPinned := a.applyBenchMonitor(next, kind)
 
@@ -1582,6 +1606,13 @@ func (a *App) SetStreamBackend(kind string) error {
 	// own retry/backoff to eventually paper over it.
 	a.stream.WaitReady(a.cfg.SunshinePort, streamReadyTimeout)
 	a.waitForMonitorCorrelation()
+	if !benchPinned && a.benchMonitor == "" && carryPin(a.stream, pinnedConnector) {
+		// Sunshine's index for the connector is only known for certain from
+		// its own log of this start.
+		if err := a.RestartSunshine(); err != nil {
+			log.Printf("[app] restarting %s on %s: %v", kind, pinnedConnector, err)
+		}
+	}
 	if !benchPinned && a.benchMonitor != "" {
 		// Sunshine names monitors by a GUID only its own log reveals, so a
 		// Sunshine that never ran here could only be pinned once it's up.
@@ -1599,6 +1630,48 @@ func (a *App) SetStreamBackend(kind string) error {
 		log.Printf("[app] warning: failed to persist preferred stream backend: %v", err)
 	}
 	return nil
+}
+
+// pinConnector is the connector name ("HDMI-A-1") b is pinned to capture, or
+// "" when the pin is not a connector (unset, a virtual display spec, or a
+// platform without correlation by name).
+func pinConnector(b streamhost.Backend) string {
+	pin := b.OutputName()
+	if pin == "" || strings.HasPrefix(pin, "virtual:") {
+		return ""
+	}
+	if _, conn, ok := strings.Cut(pin, "|"); ok {
+		return conn
+	}
+	for _, d := range b.ListCaptureDevices() {
+		if d.OutputName == pin {
+			return d.Key
+		}
+	}
+	return ""
+}
+
+// carryPin pins b to connector in b's own numbering, when b knows the
+// connector and is pinned elsewhere. Reports whether the pin changed.
+func carryPin(b streamhost.Backend, connector string) bool {
+	if connector == "" {
+		return false
+	}
+	for _, d := range b.ListCaptureDevices() {
+		if d.Key != connector || d.OutputName == "" {
+			continue
+		}
+		if d.OutputName == b.OutputName() {
+			return false
+		}
+		if err := b.SetOutputName(d.OutputName); err != nil {
+			log.Printf("[app] carrying the %s pin over: %v", connector, err)
+			return false
+		}
+		log.Printf("[app] output pin %s carried over as %q", connector, d.OutputName)
+		return true
+	}
+	return false
 }
 
 // streamReadyTimeout bounds how long a backend (re)start waits for the
@@ -1720,6 +1793,7 @@ func (a *App) EntitlementStatus() entitlement.Status {
 	a.entMu.Unlock()
 	st.ActiveBackend = a.currentStreamKind()
 	st.RustShineStaged = a.rustshineStaged()
+	st.PunktfunkAvailable = streamhost.PunktfunkAvailable(a.exeDir)
 	st.RustShineVersion = entitlement.StagedVersion(a.cfg.StateDir)
 	st.WebRTCEnabled = !a.cfg.RustShineWebRTCDisabled
 	st.RustShineAvailableVersion = pending
@@ -2539,6 +2613,38 @@ const deviceCertPendingRetry = time.Minute
 // routing table for IP address / interface changes.
 const deviceCertPollInterval = 3 * time.Second
 
+// deviceCertTickOutcome decides how deviceCertWatchdog's runTick should
+// update its retry bookkeeping after one attempt at ip, given the error (if
+// any) tickDeviceCert returned. Pulled out as a pure function so this
+// decision is unit-testable without a real 3-second ticker.
+//
+// Every outcome other than ErrPending backs off the full
+// deviceCertRegisterInterval, success or not -- this function must ALWAYS
+// return a non-zero registerTime and the attempted ip, never the zero
+// values, on every path. An earlier version only did this for err == nil,
+// ErrPending, and ErrRateLimited; any OTHER error (a network failure, a
+// non-JSON response such as an edge/WAF block page, hwid unavailable, ...)
+// fell through without updating either return value. Since the caller's
+// outer ticker loop retries whenever registeredIP != the current IP OR
+// registerTime is its zero value, leaving both untouched made that
+// "never registered yet" condition permanently true for as long as the
+// error kept recurring -- retrying on every single deviceCertPollInterval
+// (3s) tick forever instead of backing off. That turned a transient
+// backend problem into a self-reinforcing request storm: more failures (an
+// account-wide rate limit, say) produced more non-JSON error responses,
+// which produced more unthrottled retries, which kept the backend further
+// over its limit. See usbridge-entitlement-backend's 2026-10-04 incident
+// writeup. Fixed by making the fallback case identical to the success case.
+func deviceCertTickOutcome(err error, ip string, now time.Time) (registeredIP string, registerTime time.Time) {
+	if errors.Is(err, devicecert.ErrPending) {
+		// Registered fine, cert just not issued yet: poll again in
+		// ~deviceCertPendingRetry instead of waiting a full
+		// deviceCertRegisterInterval.
+		return ip, now.Add(deviceCertPendingRetry - deviceCertRegisterInterval)
+	}
+	return ip, now
+}
+
 // deviceCertWatchdog keeps this machine's <label>.device.usbridge.io DNS
 // record and per-device TLS cert (see internal/tlshost,
 // internal/devicecert) up to date -- what lets the browser-based web
@@ -2559,27 +2665,10 @@ func (a *App) deviceCertWatchdog(ctx context.Context) {
 			return
 		}
 		err := a.tickDeviceCert(ctx)
-		if errors.Is(err, devicecert.ErrPending) {
-			// Registered fine, cert just not issued yet: poll again in
-			// ~deviceCertPendingRetry instead of every deviceCertPollInterval.
-			lastRegisteredIP = ip
-			lastRegisterTime = time.Now().Add(deviceCertPendingRetry - deviceCertRegisterInterval)
-			return
+		if err == nil && lastRegisteredIP != "" && lastRegisteredIP != ip {
+			log.Printf("🌐 [app] device-cert: local IP changed (%s -> %s), registered domain", lastRegisteredIP, ip)
 		}
-		if errors.Is(err, devicecert.ErrRateLimited) {
-			// Backend or Let's Encrypt quota hit: hammering every 3 s only
-			// makes it worse, wait out a full heartbeat interval.
-			lastRegisteredIP = ip
-			lastRegisterTime = time.Now()
-			return
-		}
-		if err == nil {
-			if lastRegisteredIP != "" && lastRegisteredIP != ip {
-				log.Printf("🌐 [app] device-cert: local IP changed (%s -> %s), registered domain", lastRegisteredIP, ip)
-			}
-			lastRegisteredIP = ip
-			lastRegisterTime = time.Now()
-		}
+		lastRegisteredIP, lastRegisterTime = deviceCertTickOutcome(err, ip, time.Now())
 	}
 
 	runTick()
@@ -3456,6 +3545,12 @@ func (a *App) rustshineLauncherPathFor(b streamhost.Backend) string {
 // KMSCaptureGranted reports whether the file KMS capture actually needs
 // CAP_SYS_ADMIN on for the active backend (see kmsCaptureTarget) has it.
 func (a *App) KMSCaptureGranted() bool {
+	// A streamer that captures through the compositor (Punktfunk) has no
+	// KMS grant to check; without this the row asked permissions.Service
+	// about an empty launcher path and showed a Grant that did nothing.
+	if ca, ok := a.compositorCapture(); ok {
+		return ca.CaptureGranted()
+	}
 	if a.perms == nil {
 		return false
 	}
@@ -3471,11 +3566,32 @@ func (a *App) KMSCaptureGranted() bool {
 	return a.perms.KMSCaptureGranted(a.kmsCaptureTarget())
 }
 
+// compositorCapture is the active backend's own capture-permission check,
+// for the one that has it (see streamhost.CaptureAccess).
+// Read without streamMu, like KMSCaptureGranted's own look at a.stream: the
+// GUI asks on every refresh, and a backend switch holds that lock for as
+// long as the switch takes.
+func (a *App) compositorCapture() (streamhost.CaptureAccess, bool) {
+	ca, ok := a.stream.(streamhost.CaptureAccess)
+	return ca, ok
+}
+
 // RequestKMSCapture grants CAP_SYS_ADMIN to whichever file KMS capture
 // actually needs it on for the active backend (see kmsCaptureTarget) —
 // prompts for elevation via pkexec — then restarts the stream host so the
 // newly-granted capability is actually picked up.
 func (a *App) RequestKMSCapture() bool {
+	if ca, ok := a.compositorCapture(); ok {
+		if err := ca.RequestCapture(); err != nil {
+			log.Printf("[app] screen capture for %s: %v", a.StreamerName(), err)
+			return false
+		}
+		// A streamer that was refused at startup keeps that answer.
+		if err := a.RestartSunshine(); err != nil {
+			log.Printf("[app] failed to restart %s after granting screen capture: %v", a.StreamerName(), err)
+		}
+		return true
+	}
 	if a.perms == nil {
 		return false
 	}
@@ -4021,6 +4137,21 @@ func (a *App) StreamerName() string {
 	return a.stream.DisplayName()
 }
 
+// RawHIDSupported reports whether the active streaming backend understands
+// LiSendRawHidEvent (a Wacom tablet sent over the stream's control channel
+// instead of USB/IP) -- see streamhost.CodecProbe's doc comment. Surfaced to
+// the remote client via MasterSyncResponse.RawHIDSupported
+// (agent/internal/api/sync.go), which gates DiskWidget.splitRawHID: without
+// this check the client would switch a tablet into stream mode against a
+// backend that cannot rebuild it, and the tablet would silently stop
+// working (no USB/IP fallback once stream mode is chosen).
+func (a *App) RawHIDSupported() bool {
+	if a.stream == nil {
+		return false
+	}
+	return a.stream.RawHIDSupported()
+}
+
 // StreamerRunning reports whether the active streaming host backend's own
 // child process is currently alive -- for the GUI's status traffic light
 // (see ui/window.go's streamerStatusDot), distinct from StreamerName (which
@@ -4145,8 +4276,21 @@ func (a *App) VirtualDisplaySupported() bool {
 	return a.stream.VirtualDisplaySupported()
 }
 
-// UnpairSunshineClient removes the Moonlight client with the given UUID from
-// Sunshine's authorized client list.
+// UnpairSunshineClient removes the Moonlight client identified by uniqueID
+// (meaning depends on the active backend -- see streamhost's UnpairClient
+// doc comments) from every stream-host backend's trust list, not just the
+// currently active one -- see streamhost.RemoveTrustedClientEverywhere's
+// doc comment for why a shared trust store means a client unpaired here
+// must disappear from Sunshine's, rust-shine's, AND punktfunk's own files,
+// or switching backends would silently resurrect it.
+//
+// The live admin-API call against the active backend runs first (so an
+// already-running process drops the client immediately, in memory, not
+// just on its next restart) but its failure is only logged, never
+// returned: RemoveTrustedClientEverywhere's direct file rewrite is the
+// authoritative removal and is what actually fixes the originally-reported
+// bug (Sunshine's own admin-API unpair silently not persisting) -- a
+// caller only needs to know whether the durable removal succeeded.
 func (a *App) UnpairSunshineClient(uniqueID string) error {
 	a.streamMu.Lock()
 	defer a.streamMu.Unlock()
@@ -4157,7 +4301,14 @@ func (a *App) UnpairSunshineClient(uniqueID string) error {
 	if port == 0 {
 		port = 47990
 	}
-	return a.stream.UnpairClient(port, uniqueID)
+	if err := a.stream.UnpairClient(port, uniqueID); err != nil {
+		log.Printf("[app] live unpair against the active backend failed (will still remove it from the shared trust store): %v", err)
+	}
+	kind := streamhost.BackendKind(a.stream)
+	if kind == "" || a.cfg.StateDir == "" {
+		return nil
+	}
+	return streamhost.RemoveTrustedClientEverywhere(a.cfg.StateDir, kind, uniqueID)
 }
 
 // UpdateListenAddr updates the agent's HTTP listen host and port, persists the
@@ -4384,7 +4535,27 @@ func (a *App) SubmitMoonlightPIN(pin string) error {
 	if port == 0 {
 		port = 47990
 	}
-	return a.stream.SubmitPIN(port, pin)
+	kind := streamhost.BackendKind(a.stream)
+	var before map[string]bool
+	if kind != "" && a.cfg.StateDir != "" {
+		before = streamhost.TrustedFingerprints(a.cfg.StateDir, kind)
+	}
+	if err := a.stream.SubmitPIN(port, pin); err != nil {
+		return err
+	}
+	// Propagates the client that just paired to the other two backends'
+	// trust lists, instead of waiting for either of them to next Start() --
+	// see streamhost.AwaitPairingAndSync's doc comment for why this has to
+	// wait for the client to finish the handshake first. Also the only
+	// thing allowed to lift a prior tombstone (RemoveTrustedClientEverywhere),
+	// since it runs in direct response to a real pairing ceremony, not a
+	// passive file scan. In the background: the client is still mid-pairing
+	// and must get this PIN response now.
+	if before != nil {
+		stateDir := a.cfg.StateDir
+		go streamhost.AwaitPairingAndSync(stateDir, kind, before, 2*time.Minute)
+	}
+	return nil
 }
 
 // SetAudioSink points Sunshine at the given audio device (sunshine.conf's

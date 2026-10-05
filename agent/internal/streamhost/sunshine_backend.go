@@ -636,6 +636,15 @@ func (b *sunshineBackend) Start(adminPort int) error {
 		log.Printf("[sunshine] warning: could not pre-create sunshine_state.json: %v", err)
 	}
 
+	// Provisions the shared TLS identity (see shared_auth.go) into
+	// pkey.pem/cert.pem and root.uniqueid, and converges root.named_devices
+	// with rust-shine's/punktfunk's own trust lists -- so a Moonlight
+	// client already paired with whichever backend was active before this
+	// Start() stays paired here too, instead of needing a fresh PIN just
+	// because the active backend changed. Best-effort: never blocks Start
+	// over it, same discipline as ensureSunshineStateFile above.
+	ReconcileSharedAuth(b.stateDir)
+
 	// Set a fresh random admin password before starting Sunshine so the
 	// process always starts with credentials we generated (not a stale or
 	// default password). --creds writes directly to sunshine_state.json.
@@ -727,6 +736,7 @@ func (b *sunshineBackend) Start(adminPort int) error {
 	} else {
 		cmd := exec.Command(launchExe, launchArgs...)
 		configureProcess(cmd)
+		cmd.Env = append(os.Environ(), usbBrokerEnviron())
 		if launchDir != "" && launchDir != "." {
 			cmd.Dir = launchDir
 		}

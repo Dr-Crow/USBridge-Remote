@@ -37,7 +37,10 @@ func (a *App) nvencPrefKeys(kind string) map[string]string {
 // reporting whether anything changed (a running streamer then needs a
 // restart to pick it up).
 func (a *App) applyNvencPrefs(b streamhost.Backend, kind string) (changed bool) {
-	if b == nil {
+	// These are Sunshine's keys. Punktfunk's settings store rejects them
+	// ("unknown setting"), which cost two failed punktfunk-host runs and
+	// four log lines on every watchdog tick.
+	if b == nil || kind == "punktfunk" {
 		return false
 	}
 	for key, value := range a.nvencPrefKeys(kind) {

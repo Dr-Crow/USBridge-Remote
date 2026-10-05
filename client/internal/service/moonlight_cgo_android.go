@@ -659,6 +659,10 @@ void do_send_scroll(signed char c) { LiSendScrollEvent(c); }
 void do_send_multi_controller(unsigned short cn, unsigned short am, unsigned short b, unsigned char lt, unsigned char rt, short lx, short ly, short rx, short ry) {
     LiSendMultiControllerEvent(cn, am, b, lt, rt, lx, ly, rx, ry);
 }
+void do_send_controller_arrival(unsigned short cn, unsigned short am, unsigned char ctype,
+    unsigned int supportedButtonFlags, unsigned short capabilities) {
+    LiSendControllerArrivalEvent((uint8_t)cn, am, ctype, supportedButtonFlags, capabilities);
+}
 void do_send_pen(unsigned char eventType, unsigned char toolType, unsigned char penButtons,
                   float x, float y, float pressureOrDistance,
                   unsigned short rotation, unsigned char tilt) {
@@ -974,6 +978,12 @@ func (w *MoonlightCgoWrapper) SendMoonlightScroll(c int8) {
 func (w *MoonlightCgoWrapper) SendMoonlightControllerEvent(cn uint16, am uint16, b uint16, lt uint8, rt uint8, lx int16, ly int16, rx int16, ry int16) {
 	if liStartConnectionActive.Load() {
 		C.do_send_multi_controller(C.ushort(cn), C.ushort(am), C.ushort(b), C.uchar(lt), C.uchar(rt), C.short(lx), C.short(ly), C.short(rx), C.short(ry))
+	}
+}
+
+func (w *MoonlightCgoWrapper) SendMoonlightControllerArrival(cn uint16, am uint16, ctype uint8, supportedButtonFlags uint32, capabilities uint16) {
+	if liStartConnectionActive.Load() {
+		C.do_send_controller_arrival(C.ushort(cn), C.ushort(am), C.uchar(ctype), C.uint(supportedButtonFlags), C.ushort(capabilities))
 	}
 }
 

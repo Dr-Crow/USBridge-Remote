@@ -60,13 +60,34 @@ func linuxGPU() string {
 		}
 		class := strings.ToLower(f[1])
 		if strings.Contains(class, "vga") || strings.Contains(class, "3d controller") || strings.Contains(class, "display controller") {
-			gpus = append(gpus, f[2]+" "+f[3])
+			gpus = append(gpus, shortGPUName(f[2], f[3]))
 		}
 	}
 	if len(gpus) > 2 {
 		gpus = gpus[:2]
 	}
 	return strings.Join(gpus, " + ")
+}
+
+// shortGPUName turns pci.ids' raw vendor+device strings (e.g. vendor
+// "NVIDIA Corporation", device "TU102 [GeForce RTX 2080]") into just the
+// marketing name a user actually recognizes ("GeForce RTX 2080") instead of
+// "NVIDIA Corporation TU102 [GeForce RTX 2080]" -- long enough on its own
+// to push the decoder/codec text off the client's Net Graph HUD line (see
+// usbridge-client's net_graph.go, which prefixes this with "GPU " and joins
+// it with the client's own GPU name on the same row). pci.ids brackets the
+// marketing name after the chip codename for NVIDIA and most Intel/AMD
+// entries; devices without one (uncommon, e.g. some older/generic entries)
+// fall back to the full "vendor device" string, same as before this existed.
+func shortGPUName(vendor, device string) string {
+	if i := strings.IndexByte(device, '['); i >= 0 {
+		if j := strings.LastIndexByte(device, ']'); j > i {
+			if name := strings.TrimSpace(device[i+1 : j]); name != "" {
+				return name
+			}
+		}
+	}
+	return vendor + " " + device
 }
 
 // splitQuoted splits an `lspci -mm` line: `slot "class" "vendor" "device" ...`.

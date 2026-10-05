@@ -200,9 +200,14 @@ type permStatusChip struct {
 	// really means "a physical dongle is plugged in and working" rather
 	// than an OS permission having been handed out. See SetGrantedLabel.
 	grantedLabel string
-	onRequest    func()
-	granted      bool
-	busy         bool
+	// infoLabel/onInfo turn the granted button from an inactive "Granted"
+	// into a live one that explains something about how it was granted --
+	// see SetInfo.
+	infoLabel string
+	onInfo    func()
+	onRequest func()
+	granted   bool
+	busy      bool
 }
 
 // newPermStatusChip builds one Permissions line: [✓/✗] Label ...... [button].
@@ -220,6 +225,10 @@ func newPermStatusChip(label string, onRequest func()) *permStatusChip {
 	var right fyne.CanvasObject
 	if onRequest != nil {
 		c.btn = newIconActionButton(loc().PermGrant, nil, func() {
+			if c.granted && c.onInfo != nil {
+				c.onInfo()
+				return
+			}
 			if c.busy {
 				return
 			}
@@ -273,6 +282,22 @@ func (c *permStatusChip) SetGrantedLabel(label string) {
 	c.refreshVisuals()
 }
 
+// SetInfo makes the granted state's button a tappable one labelled label
+// that runs onInfo, for a permission that is in place but worth a note
+// (Punktfunk's screen capture: no KMS, through the compositor instead). A
+// nil onInfo puts the plain inactive "Granted" back. Needs a chip built
+// with an onRequest, since that is what gives it a button at all.
+func (c *permStatusChip) SetInfo(label string, onInfo func()) {
+	if c == nil {
+		return
+	}
+	if c.infoLabel == label && (c.onInfo == nil) == (onInfo == nil) {
+		return
+	}
+	c.infoLabel, c.onInfo = label, onInfo
+	c.refreshVisuals()
+}
+
 func (c *permStatusChip) SetChecked(on bool) {
 	if c == nil {
 		return
@@ -294,7 +319,13 @@ func (c *permStatusChip) refreshVisuals() {
 	c.labelT.Text = c.baseLabel
 	c.labelT.Refresh()
 	if c.btn != nil {
-		if c.granted {
+		if c.granted && c.onInfo != nil {
+			c.btn.Accent = false
+			c.btn.CTA = false
+			c.btn.Soft = true
+			c.btn.Enable()
+			c.btn.SetText(c.infoLabel)
+		} else if c.granted {
 			c.btn.Accent = false
 			c.btn.CTA = false
 			c.btn.Soft = true

@@ -26,6 +26,10 @@ import (
 type MainWindow struct {
 	app    fyne.App
 	window fyne.Window
+	// keepAliveWindow is never shown and never closed -- see
+	// keepalive_window_desktop.go's doc comment for why losing it would
+	// let the fullscreen dialog's window.Close() silently quit the app.
+	keepAliveWindow fyne.Window
 
 	// Widgets
 	diskWidget        *controller.DiskWidget
@@ -308,9 +312,10 @@ func NewMainWindow(cfg *models.AppConfig) *MainWindow {
 	view.SetWhatsNewHost(w)
 
 	mw := &MainWindow{
-		app:    a,
-		window: w,
-		config: cfg,
+		app:             a,
+		window:          w,
+		keepAliveWindow: newKeepAliveWindow(a),
+		config:          cfg,
 		appState: &models.AppState{
 			IsConnected: false,
 		},

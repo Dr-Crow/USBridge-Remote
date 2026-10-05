@@ -165,6 +165,9 @@ const (
 	scmHEVCRext10444 = 0x00100000
 	scmAV1High8444   = 0x00200000
 	scmAV1High10444  = 0x00400000
+	// USBridge extension (rust-shine, the Punktfunk fork): the host encodes
+	// PyroWave. Outside the bits a stock Moonlight client reads.
+	scmUSBridgePyroWave = 0x01000000
 
 	scmMaskH264 = scmH264 | scmH264High8444
 	scmMaskHEVC = scmHEVC | scmHEVCMain10 | scmHEVCRext8444 | scmHEVCRext10444
@@ -217,6 +220,13 @@ func (b *sunshineBackend) VirtualDisplaySupported() bool {
 	return false
 }
 
+// RawHIDSupported is true only for a Sunshine built with the USBridge patch
+// (Streamers-Forks, src/usbridge.cpp), which hands LiSendRawHidEvent to the
+// USB broker -- see usbBrokerEnv. Stock Sunshine has no handler for it.
+func (b *sunshineBackend) RawHIDSupported() bool {
+	return streamerHasUSBBridge(b.launchPath, "--usbridge-bridge", configureProcess)
+}
+
 func (b *sunshineBackend) SupportedVideoCodecs(adminPort int) []string {
 	b.supportedCodecsCache.mu.Lock()
 	if !b.supportedCodecsCache.fetchedAt.IsZero() && time.Since(b.supportedCodecsCache.fetchedAt) < supportedCodecsCacheTTL {
@@ -267,6 +277,9 @@ func codecsFromFlags(flags int, ok bool) []string {
 	}
 	if flags&scmMaskAV1 != 0 {
 		codecs = append(codecs, "av1")
+	}
+	if flags&scmUSBridgePyroWave != 0 {
+		codecs = append(codecs, "pyrowave")
 	}
 	log.Printf("🎯 [CODEC-TRACE] [sunshine] serverinfo codec support: flags=0x%08X -> %v", flags, codecs)
 	return codecs

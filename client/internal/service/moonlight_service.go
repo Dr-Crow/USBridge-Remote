@@ -496,9 +496,18 @@ func (m *MoonlightService) ConnectToMoonlight() error {
 	// think we're asking for" and "what the server says it supports" is
 	// visible without needing to attach a debugger. Safe to leave in --
 	// one line per connection attempt, not a hot path.
-	requestedVideoFormat := moonlightVideoFormat(m.videoMode, m.color444, m.hdr)
+	// Only ask for HDR if this client can show it right now (the checkbox
+	// may have been saved while Windows HDR was on, or on another monitor):
+	// an HDR stream the display can't show would have to be tone-mapped
+	// client-side, which is expensive. See HdrDisplaySupported.
+	hdr := m.hdr
+	if hdr && !HdrDisplaySupported() {
+		hdr = false
+		logrus.Infof("🌕 [Moonlight/HDR-debug] HDR requested but this display/decoder can't show it now -- asking the host for SDR")
+	}
+	requestedVideoFormat := moonlightVideoFormat(m.videoMode, m.color444, hdr)
 	logrus.Infof("🌕 [Moonlight/HDR-debug] mode=%s color444=%v hdr=%v -> requestedVideoFormat=0x%04X, serverCodecModeSupport=0x%08X",
-		m.videoMode, m.color444, m.hdr, requestedVideoFormat, serverInfo.ServerCodecModeSupport)
+		m.videoMode, m.color444, hdr, requestedVideoFormat, serverInfo.ServerCodecModeSupport)
 	logrus.Infof("🎯 [CODEC-TRACE] ConnectToMoonlight: about to call wrapper.StartStream with requestedVideoFormat=0x%04X (from videoMode=%q) -- this bitmask is what actually drives RTSP codec negotiation with the server, independent of /launch's \"mode\" param",
 		requestedVideoFormat, m.videoMode)
 
@@ -755,6 +764,12 @@ func (m *MoonlightService) SendMoonlightScroll(clicks int8) {
 func (m *MoonlightService) SendMoonlightControllerEvent(controllerNumber uint16, activeGamepadMask uint16, buttons uint16, leftTrigger uint8, rightTrigger uint8, leftStickX int16, leftStickY int16, rightStickX int16, rightStickY int16) {
 	if m.activeWrapper != nil {
 		m.activeWrapper.SendMoonlightControllerEvent(controllerNumber, activeGamepadMask, buttons, leftTrigger, rightTrigger, leftStickX, leftStickY, rightStickX, rightStickY)
+	}
+}
+
+func (m *MoonlightService) SendMoonlightControllerArrival(controllerNumber uint16, activeGamepadMask uint16, controllerType uint8, supportedButtonFlags uint32, capabilities uint16) {
+	if m.activeWrapper != nil {
+		m.activeWrapper.SendMoonlightControllerArrival(controllerNumber, activeGamepadMask, controllerType, supportedButtonFlags, capabilities)
 	}
 }
 
@@ -1079,6 +1094,14 @@ func moonlightVideoFormat(mode string, color444, hdr bool) int {
 		}
 	case models.VideoModeAV1:
 		return 0x1000 // VIDEO_FORMAT_AV1_MAIN8
+	case models.VideoModePyroWave:
+		// A saved "pyrowave" on a client that cannot decode it streams H.264.
+		if !PyroWaveDecodeSupported() {
+			return 0x0001
+		}
+		// VIDEO_FORMAT_PYROWAVE (USBridge extension), with H.264 as what
+		// RtspConnection.c falls back to against a host that does not offer it.
+		return 0x10000 | 0x0001
 	default:
 		return 0x0001 // VIDEO_FORMAT_H264
 	}

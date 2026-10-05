@@ -441,6 +441,9 @@ func (t *TouchpadWrapper) scrollbarAxisAt(pos fyne.Position) string {
 // to the widget under the cursor on release, so we won't get MouseUp when releasing outside the widget.
 // Tapped, however, only fires on a completed click on the widget — we use it for tap detection.
 func (t *TouchpadWrapper) Tapped(ev *fyne.PointEvent) {
+	if t.inCaptureMode() {
+		return
+	}
 	if !t.videoWidget.isMouseConnected {
 		return
 	}
@@ -470,6 +473,9 @@ func (t *TouchpadWrapper) Tapped(ev *fyne.PointEvent) {
 // then a single right-button click. A touch_position(down)+touch_position(up) pair is often interpreted
 // by the host as a left click, which resulted in a "double left" instead of a right click.
 func (t *TouchpadWrapper) TappedSecondary(ev *fyne.PointEvent) {
+	if t.inCaptureMode() {
+		return
+	}
 	if !t.videoWidget.isMouseConnected {
 		return
 	}
@@ -493,9 +499,21 @@ func (t *TouchpadWrapper) TappedSecondary(ev *fyne.PointEvent) {
 	t.videoWidget.enqueueMouseClick(2)
 }
 
+// inCaptureMode reports whether Capture mode is active. All input in that
+// mode comes from the native platform engine (mouse_capture_*.go) feeding
+// Moonlight directly, so every desktop pointer-gesture handler below is a
+// deliberate no-op while it's active -- Fyne's own (bounded, OS-cursor-
+// position-based) pointer events must never also be forwarded on top.
+func (t *TouchpadWrapper) inCaptureMode() bool {
+	return t.videoWidget.IsCaptureInputMode()
+}
+
 // MouseDown handles a mouse button press (desktop)
 func (t *TouchpadWrapper) MouseDown(ev *desktop.MouseEvent) {
 	t.requestFocus()
+	if t.inCaptureMode() {
+		return
+	}
 	if !t.videoWidget.isMouseConnected {
 		return
 	}
@@ -554,6 +572,9 @@ func (t *TouchpadWrapper) MouseDown(ev *desktop.MouseEvent) {
 
 // MouseUp handles a mouse button release (desktop)
 func (t *TouchpadWrapper) MouseUp(ev *desktop.MouseEvent) {
+	if t.inCaptureMode() {
+		return
+	}
 	if !t.videoWidget.isMouseConnected {
 		return
 	}
@@ -632,6 +653,9 @@ func (t *TouchpadWrapper) MouseUp(ev *desktop.MouseEvent) {
 
 // MouseMoved handles mouse movement (desktop)
 func (t *TouchpadWrapper) MouseMoved(ev *desktop.MouseEvent) {
+	if t.inCaptureMode() {
+		return
+	}
 	if !t.videoWidget.isMouseConnected {
 		return
 	}
@@ -666,6 +690,9 @@ func (t *TouchpadWrapper) MouseMoved(ev *desktop.MouseEvent) {
 
 // MouseIn handles the cursor entering the area (desktop)
 func (t *TouchpadWrapper) MouseIn(ev *desktop.MouseEvent) {
+	if t.inCaptureMode() {
+		return
+	}
 	if !t.videoWidget.isMouseConnected {
 		return
 	}
@@ -703,6 +730,9 @@ func (t *TouchpadWrapper) MouseIn(ev *desktop.MouseEvent) {
 // `reason` is only for the log line (e.g. "contextmenu", "window-blur") --
 // this same safety net is reused for more than one trigger.
 func (t *TouchpadWrapper) ForceReleaseStuckButton(reason string) {
+	if t.inCaptureMode() {
+		return
+	}
 	if !t.videoWidget.isMouseConnected {
 		return
 	}
@@ -747,6 +777,9 @@ func (t *TouchpadWrapper) ForceReleaseStuckButton(reason string) {
 
 // MouseOut handles the cursor leaving the area (desktop)
 func (t *TouchpadWrapper) MouseOut() {
+	if t.inCaptureMode() {
+		return
+	}
 	if !t.videoWidget.isMouseConnected {
 		return
 	}
@@ -800,6 +833,9 @@ func (t *TouchpadWrapper) MouseOut() {
 func (t *TouchpadWrapper) Scrolled(ev *fyne.ScrollEvent) {
 	logrus.Debugf("🖱️ Scrolled: %v", ev.Scrolled)
 
+	if t.inCaptureMode() {
+		return
+	}
 	if !t.videoWidget.isMouseConnected {
 		return
 	}
@@ -1395,6 +1431,9 @@ func (t *TouchpadWrapper) TouchCancel(ev *mobile.TouchEvent) {
 // Dragged handles a drag (implementation of fyne.Draggable)
 // On desktop — updates the position for polling. On Android — the primary way finger movement is tracked.
 func (t *TouchpadWrapper) Dragged(ev *fyne.DragEvent) {
+	if t.inCaptureMode() {
+		return
+	}
 	if !t.videoWidget.isMouseConnected {
 		if atomic.CompareAndSwapInt32(&touchMouseCheckPending, 0, 1) {
 			go func() {

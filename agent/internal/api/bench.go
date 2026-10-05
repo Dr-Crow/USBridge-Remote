@@ -23,8 +23,16 @@ type benchApplication interface {
 	SetStreamBackend(kind string) error
 	BenchMonitors() ([]monitors.Monitor, error)
 	BenchMonitor() string
+	// BenchHostGPU names this host's GPU, surfaced on /api/bench/status for
+	// the client's Net Graph HUD (see app.App.BenchHostGPU's own doc
+	// comment).
+	BenchHostGPU() string
 	SetBenchMonitor(id string, deferRestart bool) error
 	LastBackendSwitch() BackendSwitchTiming
+	// BenchVideoOutput names (by prefix) the compositor output the test
+	// video has to play on because the active streamer shows only that
+	// one, "" when it shows a monitor the video opens on anyway.
+	BenchVideoOutput() string
 }
 
 // BackendSwitchTiming splits a bench/backend switch for the benchmark's
@@ -46,6 +54,9 @@ type BenchStatus struct {
 	// enumerate them), and the one it's pinned to now ("" for none).
 	Monitors []monitors.Monitor `json:"monitors,omitempty"`
 	Monitor  string             `json:"monitor,omitempty"`
+	// GPU names this host's GPU -- see benchApplication.BenchHostGPU's doc
+	// comment. Empty if the host's platform detection couldn't determine it.
+	GPU string `json:"gpu,omitempty"`
 }
 
 func (s *Server) benchApp(w http.ResponseWriter) (benchApplication, bool) {
@@ -72,6 +83,7 @@ func (s *Server) benchStatus(w http.ResponseWriter, r *http.Request) {
 		Video:             b.BenchPlayer().Status(),
 		Monitors:          mons,
 		Monitor:           b.BenchMonitor(),
+		GPU:               b.BenchHostGPU(),
 	})
 }
 
@@ -178,7 +190,7 @@ func (s *Server) benchVideoStart(w http.ResponseWriter, r *http.Request) {
 		}
 		target = &m
 	}
-	info, err := b.BenchPlayer().Start(ctx, target)
+	info, err := b.BenchPlayer().Start(ctx, target, b.BenchVideoOutput())
 	if err != nil {
 		log.Printf("[api] bench video start failed: %v", err)
 		s.fail(w, http.StatusInternalServerError, "bench_video_failed", err)
@@ -204,11 +216,20 @@ func (s *Server) benchLoadStart(w http.ResponseWriter, r *http.Request) {
 }
 
 // benchLoadStop ends the sampling and returns its samples (empty where the
-// host can't read its load).
+// host can't read its load). Error names why, whenever samples came back
+// empty -- see hostload.Sampler.LastError's doc comment for why this used
+// to be an agent-log-only detail the client (and whoever read its
+// benchmark table) had no way to see.
 func (s *Server) benchLoadStop(w http.ResponseWriter, r *http.Request) {
 	samples := s.benchLoad.Stop()
 	if samples == nil {
 		samples = []hostload.Sample{}
 	}
-	s.ok(w, "bench_load", map[string]any{"samples": samples})
+	resp := map[string]any{"samples": samples}
+	if len(samples) == 0 {
+		if err := s.benchLoad.LastError(); err != nil {
+			resp["error"] = err.Error()
+		}
+	}
+	s.ok(w, "bench_load", resp)
 }

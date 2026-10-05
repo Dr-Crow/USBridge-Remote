@@ -46,6 +46,16 @@ func init() {
 	netGraphMetalPush = pushNetGraphOverlayToVulkan
 	netGraphMetalClear = func() { C.vk_hud_clear() }
 	netGraphScalePush = func(scale float32) { C.vk_hud_set_scale(C.float(scale)) }
+	// GPU name: only the Vulkan path tracks a physical device (g_pdev in
+	// vk_video_impl_linux.c) -- the GL path has no equivalent, so this
+	// reads "--" there, same "no data yet" convention as netGraphDecodeMs
+	// above.
+	netGraphGPUNameFn = func() (string, bool) {
+		if !VKVideoIsActive() {
+			return "", false
+		}
+		return VKVideoGetGPUName()
+	}
 }
 
 func pushNetGraphOverlayToVulkan(img *image.RGBA) {

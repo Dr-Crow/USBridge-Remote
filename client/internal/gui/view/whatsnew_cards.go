@@ -175,19 +175,6 @@ func whatsNewCatalog() []whatsNewCard {
 					Kind: whatsNewKindPro,
 					Points: []whatsNewPoint{
 						{
-							Glyph: whatsNewGlyphUSB,
-							Title: whatsNewCopy{
-								EN: "USB Emulation & Passthrough",
-								ES: "Emulacion y passthrough USB",
-								UK: "USB-емуляція та проброс",
-							},
-							Body: whatsNewCopy{
-								EN: "Pass local USB devices through to the host.",
-								ES: "Pasa dispositivos USB locales al host.",
-								UK: "Прокидання локальних USB-пристроїв на хост.",
-							},
-						},
-						{
 							Glyph: whatsNewGlyphColor,
 							Title: whatsNewCopy{
 								EN: "4:4:4 True Color Fidelity",

@@ -79,6 +79,15 @@ func (mw *MainWindow) syncWithBridgeV2(ctx context.Context, bootstrapHost, input
 
 	logrus.Info("✅ [SYNC] Master sync successful.")
 
+	// Refresh whether the paired agent's active streaming backend
+	// understands LiSendRawHidEvent -- see DiskWidget.SetRawHIDSupported's
+	// doc comment. Only rust-shine's own streamer implements the host side;
+	// gating here keeps a Sunshine/Punktfunk-backed agent from silently
+	// breaking a Wacom tablet.
+	if mw.diskWidget != nil {
+		mw.diskWidget.SetRawHIDSupported(resp.RawHIDSupported)
+	}
+
 	// If server returned a Tailscale IP, remember it so the Tailscale protocol
 	// can connect directly without an additional API call.
 	tailscaleReady := false

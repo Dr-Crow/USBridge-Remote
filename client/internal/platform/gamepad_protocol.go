@@ -25,3 +25,12 @@ const (
 	MoonlightButtonX             uint16 = 0x4000
 	MoonlightButtonY             uint16 = 0x8000
 )
+
+// MoonlightCtype* are LI_CTYPE_* from Limelight.h, LiSendControllerArrivalEvent's
+// controllerType -- what kind of physical pad this is, so a Sunshine-compatible
+// host can emulate the matching virtual pad instead of always assuming Xbox.
+const (
+	MoonlightCtypeUnknown uint8 = 0x00
+	MoonlightCtypeXbox    uint8 = 0x01
+	MoonlightCtypePS      uint8 = 0x02
+)

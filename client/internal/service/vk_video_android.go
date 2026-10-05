@@ -29,6 +29,7 @@ extern void android_vk_set_cursor_pixels(const uint8_t *src_rgba, int w, int h);
 extern void android_vk_get_stats(float *fps, int *fps_ready,
                                   long long *rendered, long long *submitted);
 extern void android_vk_get_video_dest(int *dx, int *dy, int *dw, int *dh, int *sw, int *sh);
+extern void android_vk_get_gpu_name(char *out, int out_len);
 */
 import "C"
 
@@ -184,6 +185,16 @@ func VKVideoAndroidSetCursorPixels(pixels []byte, w, h int) {
 		(*C.uint8_t)(unsafe.Pointer(&pixels[0])),
 		C.int(w), C.int(h),
 	)
+}
+
+// VKVideoAndroidGetGPUName returns the active Vulkan physical device's
+// name, for Net Graph's GPU line. ok is false before any device has been
+// selected (no stream started this session yet).
+func VKVideoAndroidGetGPUName() (string, bool) {
+	buf := make([]C.char, 256)
+	C.android_vk_get_gpu_name(&buf[0], C.int(len(buf)))
+	name := C.GoString(&buf[0])
+	return name, name != ""
 }
 
 func nativeVideoDestRect() (NativeVideoDest, bool) {

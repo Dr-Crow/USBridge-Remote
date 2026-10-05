@@ -97,12 +97,15 @@ func SetAIVisionEnabled(enabled bool) {
 		usbapi.LazyInitLocalUIParse()
 	}
 	if !enabled {
+		// Clear under aiVisionMu: publishAIVision* push under it too, so a
+		// detection pass still in flight when the box is unticked can't
+		// re-draw its (frozen) boxes after this clear.
 		aiVisionMu.Lock()
 		aiVisionResult = nil
-		aiVisionMu.Unlock()
 		if clear := aiVisionMetalClear; clear != nil {
 			clear()
 		}
+		aiVisionMu.Unlock()
 	}
 	if wasEnabled != enabled {
 		logrus.Infof("🔎 [AI Vision] %s", map[bool]string{true: "enabled", false: "disabled"}[enabled])
@@ -291,13 +294,16 @@ func maybeKickOCR(rgba []byte, w, h, stride int) {
 // valid. See publishAIVisionText for the OCR loop's side of this.
 func publishAIVisionIcons(icons []localui.Icon, w, h int) {
 	aiVisionMu.Lock()
+	defer aiVisionMu.Unlock()
+	if !aiVisionEnabled.Load() {
+		return // finished after AI Vision was turned off -- see SetAIVisionEnabled
+	}
 	var text []localui.TextRegion
 	if aiVisionResult != nil {
 		text = aiVisionResult.Text
 	}
 	merged := &localui.Result{Icons: icons, Text: text}
 	aiVisionResult = merged
-	aiVisionMu.Unlock()
 	if push := aiVisionMetalPush; push != nil {
 		push(merged, w, h)
 	}
@@ -308,13 +314,16 @@ func publishAIVisionIcons(icons []localui.Icon, w, h int) {
 // comment for why this pass's own icons are deliberately NOT used here).
 func publishAIVisionText(text []localui.TextRegion, w, h int) {
 	aiVisionMu.Lock()
+	defer aiVisionMu.Unlock()
+	if !aiVisionEnabled.Load() {
+		return // finished after AI Vision was turned off -- see SetAIVisionEnabled
+	}
 	var icons []localui.Icon
 	if aiVisionResult != nil {
 		icons = aiVisionResult.Icons
 	}
 	merged := &localui.Result{Icons: icons, Text: text}
 	aiVisionResult = merged
-	aiVisionMu.Unlock()
 	if push := aiVisionMetalPush; push != nil {
 		push(merged, w, h)
 	}

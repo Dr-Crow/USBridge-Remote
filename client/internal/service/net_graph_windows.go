@@ -134,6 +134,16 @@ func init() {
 	// the feature is off, since ConcealedFrames only ever increments while
 	// SetFrameSmoothingEnabled(true) is active.
 	netGraphConcealedFramesFn = func() int64 { return GetFrameSmoothingStats().ConcealedFrames }
+	// GPU name: only the Vulkan hardware-decode path tracks a physical
+	// device (g_pdev in vk_video_impl_windows.c) -- the GDI/GL fallback
+	// paths have no equivalent, so this reads "--" there, same "no data
+	// yet" convention as the other hooks.
+	netGraphGPUNameFn = func() (string, bool) {
+		if !VKVideoIsActive() {
+			return "", false
+		}
+		return VKVideoGetGPUName()
+	}
 	// Native Vulkan HUD compositor layer (vk_hud_record_draw in
 	// vk_video_impl_windows.c) -- see pushNetGraphOverlayToVulkan's doc
 	// comment for why this exists instead of the CPU-buffer

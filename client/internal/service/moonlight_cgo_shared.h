@@ -416,6 +416,12 @@ void do_send_multi_controller(
         leftTrigger, rightTrigger,
         leftStickX, leftStickY, rightStickX, rightStickY);
 }
+void do_send_controller_arrival(unsigned short controllerNumber, unsigned short activeGamepadMask,
+    unsigned char controllerType, unsigned int supportedButtonFlags, unsigned short capabilities)
+{
+    LiSendControllerArrivalEvent((uint8_t)controllerNumber, activeGamepadMask, controllerType,
+        supportedButtonFlags, capabilities);
+}
 void do_send_utf8_text(const char *text, unsigned int len) {
     LiSendUtf8TextEvent(text, len);
 }

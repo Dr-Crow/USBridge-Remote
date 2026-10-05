@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"fyne.io/fyne/v2"
@@ -114,4 +115,62 @@ func TestPermStatusChip_RequestLabel(t *testing.T) {
 // Nil chips (platforms that don't build them) must be safe to relabel.
 func TestRefreshPermRequestLabels_NilChips(t *testing.T) {
 	(&Window{}).refreshPermRequestLabels()
+}
+
+// With Punktfunk active the Screen capture chip used to show a red cross
+// and a "Grant" that did nothing. Once its capture works the chip now shows
+// the tick with a live "Info" button; a streamer change puts the plain
+// inactive "Granted" back, and a not-granted chip still offers Grant.
+func TestPermStatusChip_Info(t *testing.T) {
+	test.NewApp()
+	t.Cleanup(func() { i18n.Init("en") })
+	i18n.Init("en")
+
+	requests, infos := 0, 0
+	c := newPermStatusChip("Screen capture", func() { requests++ })
+	c.SetInfo(loc().PermInfo, func() { infos++ })
+
+	c.SetChecked(false)
+	if c.btn.Text != loc().PermGrant || c.btn.Disabled() {
+		t.Fatalf("not granted: button %q disabled=%v, want enabled Grant", c.btn.Text, c.btn.Disabled())
+	}
+	c.btn.Tapped(&fyne.PointEvent{})
+	if requests != 1 || infos != 0 {
+		t.Fatalf("not granted: tap ran requests=%d infos=%d, want the request", requests, infos)
+	}
+	c.requestDone()
+
+	c.SetChecked(true)
+	if c.btn.Text != "Info" || c.btn.Disabled() {
+		t.Fatalf("granted: button %q disabled=%v, want enabled Info", c.btn.Text, c.btn.Disabled())
+	}
+	c.btn.Tapped(&fyne.PointEvent{})
+	c.btn.Tapped(&fyne.PointEvent{})
+	if infos != 2 || requests != 1 {
+		t.Fatalf("granted: taps ran requests=%d infos=%d, want two infos and no request", requests, infos)
+	}
+
+	c.SetInfo("", nil)
+	if c.btn.Text != loc().PermGranted || !c.btn.Disabled() {
+		t.Fatalf("info cleared: button %q disabled=%v, want disabled Granted", c.btn.Text, c.btn.Disabled())
+	}
+}
+
+func TestPunktfunkCaptureInfo_EveryLanguage(t *testing.T) {
+	t.Cleanup(func() { i18n.Init("en") })
+	seen := map[string]string{}
+	for _, lang := range []string{"en", "es", "uk"} {
+		i18n.Init(lang)
+		if loc().PermInfo == "" {
+			t.Errorf("%s: PermInfo is empty", lang)
+		}
+		text := loc().PunktfunkCaptureInfo
+		if !strings.Contains(text, "KMS") || !strings.Contains(text, "X11") {
+			t.Errorf("%s: info text must say KMS is unsupported and X11 doesn't work: %q", lang, text)
+		}
+		if prev, dup := seen[text]; dup {
+			t.Errorf("%s reuses %s's text untranslated", lang, prev)
+		}
+		seen[text] = lang
+	}
 }

@@ -160,7 +160,9 @@ func (dw *DiskWidget) markDevicesRefresh() {
 }
 
 // startPeriodicRefresh polls only the API sources (mounted devices + local drives).
-// Gamepad, video, and local file scanning happen on explicit Refresh() calls only.
+// Video and local file scanning happen on explicit Refresh() calls only; gamepads
+// get their own ticker instead (startGamepadPolling), since those can change with
+// no agent round-trip to notice on its own.
 func (dw *DiskWidget) startPeriodicRefresh() {
 	go func() {
 		ticker := time.NewTicker(10 * time.Second)
@@ -171,6 +173,22 @@ func (dw *DiskWidget) startPeriodicRefresh() {
 				return
 			case <-ticker.C:
 				if dw.isClosing.Load() {
+					continue
+				}
+				// Same guard scheduleCombine already applies to the heavy
+				// rebuild it triggers (see that function's own doc comment:
+				// 150-220ms of main-thread work, confirmed live to stall the
+				// Metal CADisplayLink) -- but the three HTTP round-trips
+				// below and the updateUIAsync dispatch each one ends with
+				// still ran unconditionally every 10s even while actively
+				// streaming, each one a small (but, per-call, nonzero) hop
+				// onto the same main thread/run loop the CADisplayLink needs
+				// serviced. None of this data is shown while the video nav
+				// is the visible destination, so there is nothing to refresh
+				// for -- skip the round-trips themselves, not just their
+				// downstream rebuild. FlushPendingCombine (Devices tab
+				// select) and the next off-video tick catch it up.
+				if !view.NavVideoHidden() {
 					continue
 				}
 				dw.loadLocalDrives()

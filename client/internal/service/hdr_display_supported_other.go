@@ -1,8 +1,9 @@
-//go:build !(darwin && !ios && cgo)
+//go:build !(darwin && !ios && cgo) && !(windows && cgo)
 
 package service
 
-// HdrDisplaySupported: see hdr_display_supported_darwin.go's doc comment.
+// HdrDisplaySupported: see hdr_display_supported_darwin.go's and
+// hdr_display_supported_windows.go's doc comments.
 // No HDR render path on this platform yet.
 func HdrDisplaySupported() bool {
 	return false

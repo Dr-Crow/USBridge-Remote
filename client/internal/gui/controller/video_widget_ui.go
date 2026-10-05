@@ -403,6 +403,11 @@ func (vw *VideoWidget) startVideoWithParamsInternal(request *models.VideoStartRe
 	vw.debugLogSpinner("ConnectToMoonlight-succeeded")
 	logrus.Info("✅ Moonlight stream started")
 	service.SyncNetGraphNativeScale()
+	// Net Graph's streamer/codec/bitrate line otherwise stayed "--" outside
+	// a benchmark run (which shows the streamer name only in its own
+	// progress banner, see benchmark_dialog.go's SetNetGraphBanner calls) --
+	// every real stream start needs this pushed too, not just benchmarks.
+	vw.refreshNetGraphStreamerBackend()
 
 	// Re-check right after marking the session live: ConnectToMoonlight()
 	// returns once LiStartConnection is merely *submitted* (see its own
@@ -479,6 +484,8 @@ func (vw *VideoWidget) StopVideoSync() error {
 				vw.isStreaming = false
 				vw.isVideoConnected = false
 				vw.isMouseConnected = false
+				service.SetActiveStreamerBackend("")
+				service.SetHostGPUName("")
 				vw.clearVideo()
 				fyne.Do(func() {
 					if vw.statusLabel != nil {
@@ -499,6 +506,8 @@ func (vw *VideoWidget) StopVideoSync() error {
 		logrus.Warn("⚠️ StopVideoSync timed out, forcing local cleanup")
 		vw.isStreaming = false
 		vw.isVideoConnected = false
+		service.SetActiveStreamerBackend("")
+		service.SetHostGPUName("")
 		if vw.videoClient != nil {
 			_ = vw.videoClient.Disconnect()
 		}
@@ -523,6 +532,8 @@ func (vw *VideoWidget) stopVideoInternal() {
 	vw.isStreaming = false
 	vw.isVideoConnected = false
 	vw.isMouseConnected = false
+	service.SetActiveStreamerBackend("")
+	service.SetHostGPUName("")
 
 	// Tear down the local overlay/canvas first, before touching the network at
 	// all. clearVideo() destroys the native GPU overlay (Android's Vulkan
@@ -1387,17 +1398,18 @@ func (vw *VideoWidget) SetStreaming(streaming bool) {
 		vw.refreshNetGraphStreamerBackend()
 	} else {
 		service.SetActiveStreamerBackend("")
+		service.SetHostGPUName("")
 	}
 }
 
 // refreshNetGraphStreamerBackend asks the agent once which streamer
-// (sunshine/rustshine) is currently active, for the Net Graph HUD's
-// streamer/codec/bitrate line -- best-effort and async, same as
-// ensureInputFocusAsync above: a slow or failed /api/bench/status must
-// never delay or fail the stream start itself. Not polled continuously
-// (the backend essentially never changes mid-session; see
-// service.SetActiveStreamerBackend's own doc comment for why this is a
-// one-shot push rather than a live pull hook).
+// (sunshine/rustshine) is currently active and which GPU it's running on,
+// for the Net Graph HUD's streamer/codec/bitrate line and GPU line --
+// best-effort and async, same as ensureInputFocusAsync above: a slow or
+// failed /api/bench/status must never delay or fail the stream start
+// itself. Not polled continuously (neither the backend nor the host's GPU
+// changes mid-session; see service.SetActiveStreamerBackend's own doc
+// comment for why this is a one-shot push rather than a live pull hook).
 func (vw *VideoWidget) refreshNetGraphStreamerBackend() {
 	client := vw.usbClient
 	if client == nil {
@@ -1409,6 +1421,7 @@ func (vw *VideoWidget) refreshNetGraphStreamerBackend() {
 			return
 		}
 		service.SetActiveStreamerBackend(status.ActiveBackend)
+		service.SetHostGPUName(status.GPU)
 	}()
 }
 
@@ -1443,6 +1456,8 @@ func (vw *VideoWidget) HandleConnectionLost() {
 	vw.isStreaming = false
 	vw.isVideoConnected = false
 	vw.isMouseConnected = false
+	service.SetActiveStreamerBackend("")
+	service.SetHostGPUName("")
 	vw.hideConnectingSpinner()
 	vw.stopRenderTicker()
 	// Tear down the overlay/mouse pump first so the window starts accepting
@@ -1479,6 +1494,8 @@ func (vw *VideoWidget) handleDeviceRebuildLocally() {
 	vw.isStreaming = false
 	vw.isVideoConnected = false
 	vw.isMouseConnected = false
+	service.SetActiveStreamerBackend("")
+	service.SetHostGPUName("")
 	vw.clearVideo()
 
 	fyne.Do(func() {
@@ -1508,6 +1525,10 @@ func (vw *VideoWidget) stopRenderTicker() {
 func (vw *VideoWidget) clearVideo() {
 	vw.clearVideoMu.Lock()
 	defer vw.clearVideoMu.Unlock()
+
+	// Never leave the system cursor captured/hidden across a stop/disconnect,
+	// however it happened (user stop, lost connection, device rebuild).
+	vw.stopMouseCapture()
 
 	vw.stopRenderTicker()
 

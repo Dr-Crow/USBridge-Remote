@@ -75,6 +75,7 @@ func init() {
 	netGraphRenderFPS = func() float64 {
 		return VKVideoAndroidGetFPS()
 	}
+	netGraphGPUNameFn = VKVideoAndroidGetGPUName
 	netGraphNetworkStatsFn = func() netGraphRawNetworkStats {
 		rtp := GetRTPVideoStats()
 		rttMs, rttVarianceMs, rttOk := GetEstimatedRttInfo()

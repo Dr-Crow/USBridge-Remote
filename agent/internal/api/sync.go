@@ -43,6 +43,11 @@ type TailscaleStatusInfo struct {
 type MasterSyncResponse struct {
 	TailscaleStatus *TailscaleStatusInfo `json:"tailscale_status,omitempty"`
 	SunshineStatus  string               `json:"sunshine_status"`
+	// RawHIDSupported mirrors app.App.RawHIDSupported() -- see that
+	// method's doc comment. The client caches this per sync and gates
+	// DiskWidget.splitRawHID on it before switching a Wacom tablet into
+	// stream mode.
+	RawHIDSupported bool `json:"raw_hid_supported"`
 }
 
 // MoonlightPINRequest is sent to /api/moonlight/pin.
@@ -163,6 +168,7 @@ func (s *Server) Sync(w http.ResponseWriter, r *http.Request) {
 	resp := MasterSyncResponse{
 		TailscaleStatus: tsStatus,
 		SunshineStatus:  sunshineStatus,
+		RawHIDSupported: s.app.RawHIDSupported(),
 	}
 	s.ok(w, "sync_ok", resp)
 }

@@ -168,25 +168,29 @@ type DiskWidget struct {
 	padSlots          gamepadSlots
 	rumbleOnce        sync.Once
 	moonlightProvider moonlightProvider
+	// rawHIDSupportedByHost mirrors the paired agent's
+	// MasterSyncResponse.RawHIDSupported, refreshed on every master sync --
+	// see SetRawHIDSupported (disk_widget_rawhid.go).
+	rawHIDSupportedByHost bool
 
 	// Pen/tablet capture (macOS and the web build -- see platform.ListPenTablets)
 	activePenCaptures map[string]penCaptureHandle
 
-	onStorageInfoUpdate   func(usedPct float64, available, total int64)
-	userImages            []*models.DiskInfo
-	allDrives             []DriveItem
-	mountedDevices        []*models.DeviceInfo
-	selectedDrive         *DriveItem
-	selectedItems         map[int]bool
-	selectedItemsMu       sync.RWMutex
-	devicesTraceBudget    int
-	lastDrivesTraceSig    string
+	onStorageInfoUpdate func(usedPct float64, available, total int64)
+	userImages          []*models.DiskInfo
+	allDrives           []DriveItem
+	mountedDevices      []*models.DeviceInfo
+	selectedDrive       *DriveItem
+	selectedItems       map[int]bool
+	selectedItemsMu     sync.RWMutex
+	devicesTraceBudget  int
+	lastDrivesTraceSig  string
 	// lastGamepadLogSig is the last logged EnumerateGamepads() result (see
-	// loadGamepadDevices) -- logged only when it changes, since the wasm
-	// build polls this every second for the widget's whole lifetime
-	// (browserGamepadPollInterval) and an unconditional log there spams
+	// loadGamepadDevices) -- logged only when it changes, since every build
+	// polls this every second for the widget's whole lifetime
+	// (gamepadPollInterval) and an unconditional log there spams
 	// "gamepads found: 0 []" forever whenever nothing is plugged in.
-	lastGamepadLogSig string
+	lastGamepadLogSig     string
 	preferredMouseMode    string
 	observedMouseMode     string
 	preferredDisplayIndex int // 0-based display index for absolute mouse (0 = first)
@@ -312,6 +316,17 @@ const (
 	// the agent (Moonlight controller path). Software agents only; the
 	// hardware KVM has no such mode.
 	gamepadModeMapX360 = "mapx360"
+	// gamepadModeDualShock4 maps the local gamepad to a virtual DualShock 4
+	// pad on the agent instead of an Xbox 360 one -- same Moonlight
+	// controller-event path as gamepadModeMapX360 (see
+	// MoonlightInputSender.SendMoonlightControllerArrival's doc comment for
+	// how the agent learns which shape to create), just a different virtual
+	// pad. Software agents only: it replaces the DirectInput slot there,
+	// since a software agent has no raw-HID-passthrough path for a
+	// client-captured pad to begin with (unlike the hardware KVM, where
+	// DirectInput is a real raw gadget mode) -- the virtual-pad shape is the
+	// only choice that actually exists for it.
+	gamepadModeDualShock4 = "dualshock4"
 )
 
 func normalizeGamepadMode(mode string) string {
@@ -320,6 +335,8 @@ func normalizeGamepadMode(mode string) string {
 		return gamepadModeXInput
 	case gamepadModeMapX360:
 		return gamepadModeMapX360
+	case gamepadModeDualShock4:
+		return gamepadModeDualShock4
 	}
 	return gamepadModeDirectInput
 }
@@ -330,20 +347,28 @@ func gamepadModeLabel(mode string) string {
 		return i18n.Current.DeviceXInput
 	case gamepadModeMapX360:
 		return i18n.Current.DeviceMapX360
+	case gamepadModeDualShock4:
+		return i18n.Current.DeviceDualShock4
 	}
 	return i18n.Current.DeviceDirectInput
 }
 
 // effectiveGamepadMode resolves a row's stored mode against the connected
 // agent. An empty mode (the user has not picked one) defaults to Map Xbox 360
-// on a software agent and to XInput on the KVM hardware; Map Xbox 360 is not
-// available on the hardware, so it falls back to XInput there.
+// on a software agent and to XInput on the KVM hardware; Map Xbox 360 and
+// DualShock 4 are not available on the hardware, so both fall back to XInput
+// there.
 func (dw *DiskWidget) effectiveGamepadMode(mode string) string {
 	software := IsSoftwareAgentOS(dw.agentOS)
 	switch strings.ToLower(mode) {
 	case gamepadModeMapX360:
 		if software {
 			return gamepadModeMapX360
+		}
+		return gamepadModeXInput
+	case gamepadModeDualShock4:
+		if software {
+			return gamepadModeDualShock4
 		}
 		return gamepadModeXInput
 	case gamepadModeXInput, gamepadModeDirectInput:
@@ -356,9 +381,13 @@ func (dw *DiskWidget) effectiveGamepadMode(mode string) string {
 }
 
 // gamepadModeOptions lists the mode picker's labels for the connected agent.
+// A software agent has no raw-passthrough path for a client-captured pad, so
+// DirectInput/XInput (the hardware KVM's two real USB gadget modes) are
+// replaced there by the two virtual-pad shapes a software agent actually
+// offers.
 func (dw *DiskWidget) gamepadModeOptions() []string {
 	if IsSoftwareAgentOS(dw.agentOS) {
-		return []string{i18n.Current.DeviceMapX360, i18n.Current.DeviceDirectInput, i18n.Current.DeviceXInput}
+		return []string{i18n.Current.DeviceMapX360, i18n.Current.DeviceDualShock4}
 	}
 	return []string{i18n.Current.DeviceDirectInput, i18n.Current.DeviceXInput}
 }
@@ -370,6 +399,8 @@ func gamepadModeFromLabel(label string) string {
 		return gamepadModeXInput
 	case i18n.Current.DeviceMapX360:
 		return gamepadModeMapX360
+	case i18n.Current.DeviceDualShock4:
+		return gamepadModeDualShock4
 	}
 	return gamepadModeDirectInput
 }
@@ -474,7 +505,7 @@ func NewDiskWidget(usbClient *api.USBClient, updateStatus func(), app fyne.App, 
 	dw.createInterface()
 	dw.startPeriodicRefresh()
 	go dw.loadGamepadDevices()
-	dw.startBrowserGamepadPolling()
+	dw.startGamepadPolling()
 	go dw.loadPenTabletDevices()
 	dw.startPenTabletPolling()
 	go dw.loadUSBPassthroughDevices()
@@ -482,7 +513,7 @@ func NewDiskWidget(usbClient *api.USBClient, updateStatus func(), app fyne.App, 
 	return dw
 }
 
-// penTabletPollInterval matches browserGamepadPollInterval's own reasoning:
+// penTabletPollInterval matches gamepadPollInterval's own reasoning:
 // platform.ListPenTablets() (macOS's IOKit enumeration, or the web build's
 // WebHID grant list) can change at any time with no refresh trigger of its
 // own -- a tablet plugged in mid-session, or a WebHID grant completing after
@@ -491,12 +522,24 @@ func NewDiskWidget(usbClient *api.USBClient, updateStatus func(), app fyne.App, 
 // round-trip.
 const penTabletPollInterval = 1 * time.Second
 
+// gamepadPollInterval: platform.EnumerateGamepads() can change at any time
+// with no refresh trigger of its own -- a pad plugged in (or unplugged)
+// while the Devices tab just sits there open -- so this polls instead of
+// relying on the explicit Refresh() call site (Devices tab select,
+// mount/unmount round-trip) to ever run again. Previously this only polled
+// on the web build (where the Gamepad API additionally needs a button press
+// before a pad appears at all) and native platforms relied on that
+// explicit-Refresh path alone; confirmed live that a pad plugged in while
+// already sitting on the Devices screen then never appeared until the app
+// was relaunched, so native platforms need the same ticker.
+const gamepadPollInterval = 1 * time.Second
+
 // startPenTabletPolling runs loadPenTabletDevices on a short ticker for the
 // lifetime of the widget, same shutdown signal (dw.refreshStop) and busy
-// guard (dw.isClosing) startBrowserGamepadPolling's own ticker goroutine
-// uses. Unlike that one, this needs no per-platform stub: ListPenTablets
-// itself is already a no-op returning nil on platforms with no pen support
-// (pen_capture_stub.go), so polling it everywhere is harmless.
+// guard (dw.isClosing) startGamepadPolling's own ticker goroutine uses. This
+// needs no per-platform stub: ListPenTablets itself is already a no-op
+// returning nil on platforms with no pen support (pen_capture_stub.go), so
+// polling it everywhere is harmless.
 func (dw *DiskWidget) startPenTabletPolling() {
 	go func() {
 		ticker := time.NewTicker(penTabletPollInterval)
@@ -510,6 +553,44 @@ func (dw *DiskWidget) startPenTabletPolling() {
 					continue
 				}
 				dw.loadPenTabletDevices()
+			}
+		}
+	}()
+}
+
+// startGamepadPolling runs loadGamepadDevices on a short ticker for the
+// lifetime of the widget, same shutdown signal/busy guard as
+// startPenTabletPolling. This needs no per-platform stub either:
+// platform.EnumerateGamepads() is already a cheap no-op returning nil on
+// platforms with no gamepad support (gamepad_stub.go), so polling it
+// everywhere is harmless -- see gamepadPollInterval's doc comment for why
+// native platforms need this too, not just the web build.
+//
+// Skipped entirely while the Control tab (video overlay) is the visible nav
+// destination, same guard startPeriodicRefresh's own ticker already applies
+// to its three HTTP round-trips: loadGamepadDevices ends in updateUIAsync,
+// which hops onto the Fyne/AppKit main thread, and scheduleCombine's own doc
+// comment already found that kind of per-tick main-thread work (there,
+// combineDrives itself) stalling the Metal CADisplayLink tied to the same
+// run loop during a stream. The Devices tab isn't visible then anyway, so
+// there is nothing to refresh for -- FlushPendingCombine (Devices tab
+// select) and the next off-video tick catch it up.
+func (dw *DiskWidget) startGamepadPolling() {
+	go func() {
+		ticker := time.NewTicker(gamepadPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-dw.refreshStop:
+				return
+			case <-ticker.C:
+				if dw.isClosing.Load() {
+					continue
+				}
+				if !view.NavVideoHidden() {
+					continue
+				}
+				dw.loadGamepadDevices()
 			}
 		}
 	}()
@@ -1034,6 +1115,16 @@ func (dw *DiskWidget) applyMouseModeSelection(rowID int, newMode string) {
 	if dw.onMouseTypeChanged != nil {
 		dw.onMouseTypeChanged(newMode)
 	}
+
+	// Capture is a client-only overlay on touchpad's own relative wire path
+	// (same mouseTransportType) -- switching to/from it must be instant, like
+	// Moonlight's own Ctrl+Alt+Shift+Z, not gated behind the "rebuild gadget"
+	// confirmation that an actual transport change (touchpad<->absolute) needs.
+	if mouseTransportType(previousMode) == mouseTransportType(newMode) {
+		dw.requestDevicesRefresh()
+		return
+	}
+
 	if !dw.isMouseMountedActual() {
 		dw.requestDevicesRefresh()
 		return

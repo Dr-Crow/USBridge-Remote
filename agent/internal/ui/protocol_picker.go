@@ -9,6 +9,7 @@ import (
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/driver/desktop"
+	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 
@@ -22,6 +23,10 @@ const (
 	protocolFree       = "free"
 	protocolPro        = "pro"
 	protocolEnterprise = "enterprise"
+	// protocolPunktfunk is a picker key only: over the wire a Punktfunk
+	// agent reports the "opensource" protocol (entitlement.Status.Protocol),
+	// since the client treats it like Sunshine.
+	protocolPunktfunk = "punktfunk"
 )
 
 type protocolOption struct {
@@ -76,7 +81,14 @@ func protocolPickerKey(key string) string {
 var protocolLockIcon = fyne.NewStaticResource("protocol-lock.svg", []byte(
 	`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#9a9d8c" d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1s3.1 1.39 3.1 3.1v2z"/></svg>`))
 
+// protocolPunktfunkOption is the tile for Punktfunk, shown only on a machine
+// that has it (entitlement.Status.PunktfunkAvailable): no agent ships it.
+var protocolPunktfunkOption = protocolOption{protocolPunktfunk, "Punktfunk", "Open Source", design.ColorWhite, design.ColorWhite, nil}
+
 func protocolKeyFromStatus(st entitlement.Status) string {
+	if st.ActiveBackend == "punktfunk" {
+		return protocolPunktfunk
+	}
 	return st.Protocol()
 }
 
@@ -243,9 +255,13 @@ func (w *Window) newProtocolPanel(parent fyne.Window) fyne.CanvasObject {
 	w.protocolApplied = protocolKeyFromStatus(st)
 	w.protocolPick = w.protocolApplied
 
-	w.protocolRows = make([]*protocolPickRow, 0, len(protocolOptions))
-	tiles := make([]fyne.CanvasObject, 0, len(protocolOptions))
-	for _, opt := range protocolOptions {
+	options := protocolOptions
+	if st.PunktfunkAvailable || st.ActiveBackend == "punktfunk" {
+		options = append(append([]protocolOption{}, protocolOptions...), protocolPunktfunkOption)
+	}
+	w.protocolRows = make([]*protocolPickRow, 0, len(options))
+	tiles := make([]fyne.CanvasObject, 0, len(options))
+	for _, opt := range options {
 		opt := opt
 		row := newProtocolPickRow(opt, protocolPickerKey(opt.key) == protocolPickerKey(w.protocolPick), func() {
 			if opt.key == protocolPro || opt.key == protocolEnterprise {
@@ -270,8 +286,17 @@ func (w *Window) newProtocolPanel(parent fyne.Window) fyne.CanvasObject {
 
 	rule := canvas.NewRectangle(design.ColorDivider)
 	rule.SetMinSize(fyne.NewSize(0, 1))
+	// Three tiles share one row; a fourth (Punktfunk) wraps onto a second
+	// one instead of widening the whole window.
+	var grid fyne.CanvasObject = container.New(&equalHBoxLayout{gap: 8}, tiles...)
+	if len(tiles) > len(protocolOptions) {
+		grid = container.New(&tightVBoxLayout{gap: 8},
+			container.New(&equalHBoxLayout{gap: 8}, tiles[:len(protocolOptions)]...),
+			container.New(&equalHBoxLayout{gap: 8}, append(tiles[len(protocolOptions):], layout.NewSpacer(), layout.NewSpacer())...),
+		)
+	}
 	return container.New(&tightVBoxLayout{gap: 12},
-		container.New(&equalHBoxLayout{gap: 8}, tiles...),
+		grid,
 		rule,
 	)
 }
@@ -394,14 +419,14 @@ func (w *Window) applySelectedProtocol(parent fyne.Window) {
 		return
 	}
 	key := w.protocolPick
-	if key == protocolPro || key == protocolEnterprise || protocolNeedsPurchase(key, st, acc) {
+	if protocolNeedsPurchase(key, st, acc) {
 		w.protocolPick = w.protocolApplied
 		w.refreshProtocolPickerVisuals(false)
 		w.showTariffPickerDialog(parent, key)
 		return
 	}
 
-	if key != protocolOpensource && !st.RustShineStaged && parent != nil {
+	if key != protocolOpensource && key != protocolPunktfunk && !st.RustShineStaged && parent != nil {
 		w.startProtocolBusy()
 		w.showStreamerConsentDialog(parent, func(confirmed bool) {
 			if !confirmed {
@@ -427,6 +452,11 @@ func (w *Window) proceedProtocolSwitch(parent fyne.Window, key string, st entitl
 	case protocolOpensource:
 		go func() {
 			_ = w.token.SetStreamBackend("sunshine")
+			fyne.Do(done)
+		}()
+	case protocolPunktfunk:
+		go func() {
+			_ = w.token.SetStreamBackend("punktfunk")
 			fyne.Do(done)
 		}()
 	case protocolFree:

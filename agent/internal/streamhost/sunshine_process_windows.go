@@ -15,6 +15,7 @@ import (
 	"golang.org/x/sys/windows/svc"
 
 	"usbridge_agent/internal/sessionlaunch"
+	"usbridge_agent/internal/usbpass"
 )
 
 // init wires Start()'s session-broker hooks the same way
@@ -46,7 +47,7 @@ func init() {
 // upstream, no DPI manifest of its own) needs one -- Sunshine ships a
 // proper DPI-awareness manifest.
 func sunshineSessionBrokerLaunchImpl(exe string, args []string, workDir string, stdout, stderr *os.File) (sunshineProcess, error) {
-	h, err := sessionlaunch.LaunchInActiveSession(exe, args, workDir, stdout, stderr, nil)
+	h, err := sessionlaunch.LaunchInActiveSession(exe, args, workDir, stdout, stderr, map[string]string{usbBrokerEnv: usbpass.DefaultControlAddr})
 	if err != nil {
 		if err == sessionlaunch.ErrNoActiveSession {
 			return nil, fmt.Errorf("%w: %v", errSunshineNoActiveSessionMarker, err)

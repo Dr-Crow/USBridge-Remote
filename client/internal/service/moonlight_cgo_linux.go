@@ -7,6 +7,10 @@ package service
 #cgo CFLAGS: -I${SRCDIR}/../../moonlight-common-c/src -I${SRCDIR}/../../moonlight-common-c/enet/include
 #cgo LDFLAGS: -L${SRCDIR}/../../moonlight-common-c/build -L${SRCDIR}/../../moonlight-common-c/build/enet -lmoonlight-common-c -lenet
 #cgo LDFLAGS: -lpthread -lm -ldl
+// PyroWave decode (pyrowave_decode_linux.c): one static archive from scripts/build_pyrowave.sh
+// that exports only the pyrowave_* C API.
+#cgo CFLAGS: -I${SRCDIR}/../../third_party/pyrowave/vendor/pyrowave
+#cgo LDFLAGS: -L${SRCDIR}/../../third_party/pyrowave/build -lusbridge-pyrowave -lstdc++ -lm
 
 #include <libavcodec/avcodec.h>
 #include <libavutil/hwcontext.h>
@@ -18,6 +22,7 @@ package service
 #include <pulse/simple.h>
 #include <pulse/error.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -56,6 +61,12 @@ extern int vk_video_nv12_supported(void);
 extern int vk_video_try_submit_nv12(const uint8_t *y, int y_stride,
                                      const uint8_t *uv, int uv_stride,
                                      int width, int height);
+extern void vk_video_set_nv12_bt709(int bt709);
+// PyroWave decode (pyrowave_decode_linux.c).
+extern uint8_t *pyrowave_linux_slot_begin(size_t total);
+extern void pyrowave_linux_slot_commit(size_t total);
+extern void pyrowave_linux_teardown(void);
+extern uint64_t pyrowave_linux_frames(void);
 extern int vk_video_try_submit_dmabuf(int fd, uint64_t modifier, int surf_w, int surf_h,
                                        int vis_w, int vis_h, uint32_t plane_count,
                                        uint32_t offset0, uint32_t pitch0,
@@ -712,6 +723,7 @@ void platform_post_stop(void) {
     pthread_mutex_lock(&g_av_mu);
     linux_av_teardown();
     pthread_mutex_unlock(&g_av_mu);
+    pyrowave_linux_teardown();
 }
 
 // platform_set_video_format records the negotiated codec so linux_av_init()
@@ -720,6 +732,59 @@ void platform_post_stop(void) {
 // bitstream auto-detection, so this can't be skipped.
 void platform_set_video_format(int videoFormat) {
     g_video_format = videoFormat ? videoFormat : 0x0001;
+    // PyroWave hosts convert to BT.709; the H.26x/AV1 paths render as BT.601.
+    vk_video_set_nv12_bt709((g_video_format & VIDEO_FORMAT_MASK_PYROWAVE) != 0);
+}
+
+// pyrowave_submit hands one PyroWave access unit to the decode thread
+// (pyrowave_decode_linux.c); the frame reaches the renderer through
+// pyrowave_linux_deliver below.
+static int pyrowave_submit(PDECODE_UNIT du) {
+    size_t total = 0;
+    for (PLENTRY e = du->bufferList; e; e = e->next) total += (size_t)e->length;
+    if (total == 0) return DR_OK;
+    uint8_t *slot = pyrowave_linux_slot_begin(total);
+    if (!slot) return DR_NEED_IDR;
+    size_t off = 0;
+    for (PLENTRY e = du->bufferList; e; e = e->next) {
+        memcpy(slot + off, e->data, (size_t)e->length);
+        off += (size_t)e->length;
+    }
+    pyrowave_linux_slot_commit(total);
+    return DR_OK;
+}
+
+// pyrowave_linux_deliver renders a decoded PyroWave frame (called on the decode
+// thread, the only thread submitting NV12 frames in a PyroWave session). PyroWave has
+// no software or RGBA fallback here: without the renderer's NV12 path there is
+// nowhere to put the frame.
+void pyrowave_linux_deliver(const uint8_t *y, const uint8_t *uv, int w, int h, int full_range) {
+    static int warned_range = 0, warned_render = 0;
+    // USBRIDGE_PYROWAVE_DUMP=<file.pgm>: the luma of the 120th decoded frame (the first
+    // ones of a fresh virtual display are often still black), for checking a stream by
+    // eye without a window (cmd/pyrowavesmoke).
+    if (pyrowave_linux_frames() == 120) {
+        const char *dump = getenv("USBRIDGE_PYROWAVE_DUMP");
+        FILE *f = dump && *dump ? fopen(dump, "wb") : NULL;
+        if (f) {
+            fprintf(f, "P5\n%d %d\n255\n", w, h);
+            fwrite(y, 1, (size_t)w * (size_t)h, f);
+            fclose(f);
+        }
+    }
+    if (full_range && !warned_range) {
+        warned_range = 1;
+        goVTLog((char*)"pyrowave: stream signals full-range YCbCr -- rendered as limited range");
+    }
+    if (vk_video_is_active() && !vk_video_nv12_supported() && !warned_render) {
+        warned_render = 1;
+        goVTLog((char*)"pyrowave: this GPU's Vulkan renderer has no NV12 path -- frames are decoded but cannot be shown");
+    }
+    if (vk_video_is_active() && vk_video_nv12_supported())
+        vk_video_try_submit_nv12(y, w, uv, (w / 2) * 2, w, h);
+    // Reported whether or not it was shown: the video widget creates the Vulkan overlay
+    // on the first reported frame (there is no RGBA frame to bootstrap it from here).
+    goVTFrame(NULL, w, h, 0);
 }
 
 // Real network frame-arrival cadence, independent of decode speed --
@@ -767,6 +832,8 @@ int platform_dr_submit(PDECODE_UNIT du) {
     static int skip_decode = -1;
     if (skip_decode < 0) skip_decode = getenv("USBRIDGE_SKIP_DECODE") ? 1 : 0;
     if (skip_decode) return DR_OK;
+
+    if (g_video_format & VIDEO_FORMAT_MASK_PYROWAVE) return pyrowave_submit(du);
 
     pthread_mutex_lock(&g_av_mu);
     if (!g_avctx) linux_av_init();

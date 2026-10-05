@@ -12,6 +12,10 @@
 #              runtime lib (see fetch_onnxruntime.sh); its absence only
 #              disables that one optional feature, the rest of the build
 #              is unaffected.
+#   Optional:  molten-vk (brew) -- PyroWave decode (see
+#              scripts/build_pyrowave_macos.sh); its absence only disables
+#              that one optional codec, every other codec/decode path is
+#              unaffected.
 #   Moonlight streaming uses VideoToolbox + CoreAudio — no GStreamer needed.
 
 set -e
@@ -20,6 +24,9 @@ SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "=> Building Moonlight Core..."
 "$SCRIPTS_DIR/build_moonlight.sh" || { echo "❌ Failed to build Moonlight Core"; exit 1; }
+
+echo "=> Building PyroWave..."
+"$SCRIPTS_DIR/build_pyrowave_macos.sh" || { echo "❌ Failed to build PyroWave"; exit 1; }
 
 REPO_ROOT="$(cd "$SCRIPTS_DIR/.." && pwd)"
 cd "$REPO_ROOT"
@@ -386,6 +393,28 @@ else
     echo -e "   ${YELLOW}⚠${NC} Could not fetch libonnxruntime.dylib -- local ui.parse/AI Vision will stay unavailable in this build"
 fi
 
+# 5e. Bundle MoltenVK for PyroWave decode (internal/service/pyrowave_decode_darwin.m).
+# Not a link-time dependency of the binary (bundle_homebrew_dylibs above walks otool -L,
+# which never sees this: PyroWave's own Vulkan loader, volk, dlopens it at runtime instead,
+# see that file's moltenvk_preload) -- same reason the ONNX runtime above needs its own
+# explicit copy step rather than relying on the automatic dependency walk. Any failure here
+# only warns, matching the ONNX runtime step: PyroWave just won't be offered this build
+# (service.PyroWaveDecodeSupported() goes by whether the dylib decoder actually came up, not
+# by whether this file exists), every other codec is unaffected.
+echo -e "\n${YELLOW}🔎 Bundling MoltenVK for PyroWave decode...${NC}"
+MOLTENVK_LIB=""
+for _p in "$HOMEBREW_PREFIX/lib/libMoltenVK.dylib" "/opt/homebrew/lib/libMoltenVK.dylib" "/usr/local/lib/libMoltenVK.dylib"; do
+    if [ -f "$_p" ]; then MOLTENVK_LIB="$_p"; break; fi
+done
+if [ -n "$MOLTENVK_LIB" ]; then
+    cp -L "$MOLTENVK_LIB" "$APP_FRAMEWORKS_DIR/libMoltenVK.dylib"
+    chmod 755 "$APP_FRAMEWORKS_DIR/libMoltenVK.dylib"
+    install_name_tool -id "@rpath/libMoltenVK.dylib" "$APP_FRAMEWORKS_DIR/libMoltenVK.dylib" 2>/dev/null || true
+    echo -e "   ${GREEN}✓${NC} Frameworks/libMoltenVK.dylib"
+else
+    echo -e "   ${YELLOW}⚠${NC} libMoltenVK.dylib not found (brew install molten-vk) -- PyroWave decode will stay unavailable in this build"
+fi
+
 # 6. Info.plist (written after bundling so icons/plist don't interfere with lib walk)
 cat > "$APP_CONTENTS_DIR/Info.plist" << 'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -508,9 +537,6 @@ fi
 touch "$DIST_DIR/$APP_BUNDLE_NAME"
 
 echo -e "${GREEN}   ✅ App bundle: $DIST_DIR/$APP_BUNDLE_NAME${NC}"
-
-# 7. Dist extras
-[ -f config.yaml ] && cp config.yaml "$DIST_DIR/"
 
 # No README.txt in the DMG — a symlink to /Applications alongside the .app
 # gives the standard drag-to-install Finder window instead, which is more

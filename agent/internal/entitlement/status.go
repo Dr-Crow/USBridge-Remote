@@ -35,10 +35,14 @@ type Status struct {
 	Tier      string    `json:"tier,omitempty"`
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
 
-	// ActiveBackend is "sunshine" or "rustshine" -- which one is actually
-	// running right now, independent of Linked (a linked supporter can
-	// still choose Sunshine).
+	// ActiveBackend is "sunshine", "rustshine" or "punktfunk" -- which one
+	// is actually running right now, independent of Linked (a linked
+	// supporter can still choose Sunshine).
 	ActiveBackend string `json:"active_backend"`
+	// PunktfunkAvailable is true when a punktfunk-host binary was found on
+	// this machine (see streamhost.PunktfunkAvailable); the GUI offers the
+	// Punktfunk streamer only then.
+	PunktfunkAvailable bool `json:"punktfunk_available,omitempty"`
 	// RustShineStaged is true once the binary has actually been
 	// downloaded and verified onto disk -- switching to RustShine before
 	// this is true requires a download first.
@@ -86,7 +90,8 @@ type Status struct {
 }
 
 // Protocol is the active tariff the client shows on a connection plaque:
-// "opensource" (Sunshine), or RustShine "free" / "pro" / "enterprise".
+// "opensource" (Sunshine, and Punktfunk -- the client treats both alike),
+// or RustShine "free" / "pro" / "enterprise".
 func (s Status) Protocol() string {
 	if s.ActiveBackend != "rustshine" {
 		return "opensource"

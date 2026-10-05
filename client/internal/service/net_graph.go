@@ -121,6 +121,11 @@ type NetGraphSample struct {
 
 	RenderFPS float64
 	DecodeMs  float64
+	// DecodeMsValid is false only on macOS's AVSampleBufferDisplayLayer path
+	// (see netGraphDecodeMsValid's doc comment), which has no equivalent
+	// measurement -- true everywhere else (nil hook = "always valid", same
+	// convention the Snapshot builder below applies).
+	DecodeMsValid bool
 
 	// ConcealedFrames: how many motion-extrapolated frames frame smoothing
 	// (frame_smoothing.go) presented during this tick -- a per-tick delta
@@ -154,6 +159,14 @@ var (
 	netGraphNetworkStatsFn func() netGraphRawNetworkStats
 	netGraphRenderFPS      func() float64
 	netGraphDecodeMs       func() float64
+	// netGraphDecodeMsValid reports whether netGraphDecodeMs's result is a
+	// real measurement -- nil hook (every platform but macOS) means
+	// "always valid", since only macOS's AVSampleBufferDisplayLayer video
+	// path (see metal_video_impl_darwin.m's metal_video_decode_ms_available
+	// doc comment) has no decode-latency measurement at all. Without this,
+	// that path showed a frozen, misleading "DEC 0.0ms" for the entire
+	// session instead of admitting there's no data.
+	netGraphDecodeMsValid func() bool
 	// netGraphConcealedFramesFn returns frame smoothing's running total of
 	// synthesized frames (GetFrameSmoothingStats().ConcealedFrames on
 	// Windows, see frame_smoothing_windows.go) -- nil on platforms without
@@ -163,7 +176,15 @@ var (
 	// negotiated for the current session (see NegotiatedVideoCodecName on
 	// each platform's cgo wrapper) -- nil hook, same "no data yet" contract
 	// as the others, until a session has reported one.
-	netGraphCodecFn    func() (string, bool)
+	netGraphCodecFn func() (string, bool)
+	// netGraphGPUNameFn returns the client's active decode/render GPU name
+	// (e.g. "NVIDIA GeForce RTX 4080", "Apple M3 Pro") -- nil hook, same "no
+	// data yet" contract as the others, wired per-platform (Vulkan's
+	// VkPhysicalDeviceProperties.deviceName on Windows/Linux/Android, the
+	// system default Metal device's name on macOS/iOS). Not wired on wasm:
+	// WebGL's UNMASKED_RENDERER_WEBGL string would need its own plumbing
+	// through the browser's JS bridge.
+	netGraphGPUNameFn  func() (string, bool)
 	netGraphMetalPush  func(img *image.RGBA)
 	netGraphMetalClear func()
 	// netGraphScalePush applies the on-screen HUD scale (Vulkan quad /
@@ -210,6 +231,12 @@ var (
 	// doc comment for why this is a push, not a pull hook like the others).
 	netGraphStreamerBackend atomic.Pointer[string]
 
+	// netGraphHostGPU is the agent host's GPU name (BenchStatus.GPU), for
+	// the GPU line's "server side" half -- same push mechanism and reason
+	// as netGraphStreamerBackend above (only known via the same
+	// client.BenchStatus() round trip, see SetHostGPUName).
+	netGraphHostGPU atomic.Pointer[string]
+
 	// netGraphBanner is an extra status line drawn at the top of the HUD
 	// (see SetNetGraphBanner); nil or "" draws nothing.
 	netGraphBanner atomic.Pointer[string]
@@ -254,6 +281,23 @@ func netGraphStreamerLabel() (string, bool) {
 	return *p, true
 }
 
+// SetHostGPUName records the agent host's GPU name (BenchStatus.GPU),
+// shown on the HUD's GPU line alongside the client's own decode GPU -- see
+// netGraphHostGPU's own doc comment for why this is a push. "" clears it
+// (stream stopped, or this agent build predates the field).
+func SetHostGPUName(name string) {
+	netGraphHostGPU.Store(&name)
+}
+
+// netGraphHostGPULabel reads the most recently pushed host GPU name, "" if
+// never set or cleared.
+func netGraphHostGPULabel() string {
+	if p := netGraphHostGPU.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
 // netGraphHudMargin is the gap, in pixels, between the HUD box and the
 // bottom/right edges of the frame -- used by the CPU-buffer compositing
 // path (netGraphBlitOverlay below, Linux/Windows) and by
@@ -295,6 +339,7 @@ func SetNetGraphEnabled(enabled bool) {
 		netGraphMu.Unlock()
 		netGraphCachedImg.Store(nil)
 		SetActiveStreamerBackend("")
+		SetHostGPUName("")
 		if clear := netGraphMetalClear; clear != nil {
 			clear()
 		}
@@ -466,8 +511,12 @@ func collectNetGraphSample() NetGraphSample {
 	if fn := netGraphRenderFPS; fn != nil {
 		s.RenderFPS = fn()
 	}
+	s.DecodeMsValid = true
 	if fn := netGraphDecodeMs; fn != nil {
 		s.DecodeMs = fn()
+	}
+	if fn := netGraphDecodeMsValid; fn != nil {
+		s.DecodeMsValid = fn()
 	}
 	return s
 }
@@ -598,13 +647,19 @@ func buildNetGraphHUD(samples []NetGraphSample) *image.RGBA {
 	row += netGraphLineH
 	decColor := netGraphGood
 	switch {
+	case !latest.DecodeMsValid:
+		decColor = netGraphDim
 	case latest.DecodeMs >= 33:
 		decColor = netGraphBad
 	case latest.DecodeMs >= 16:
 		decColor = netGraphWarn
 	}
+	decText := "DEC -- "
+	if latest.DecodeMsValid {
+		decText = netGraphFmtMs("DEC", latest.DecodeMs)
+	}
 	netGraphDrawText(img, marginX, row, netGraphFmtFPS("FPS", latest.RenderFPS), netGraphText)
-	netGraphDrawText(img, col2, row, netGraphFmtMs("DEC", latest.DecodeMs), decColor)
+	netGraphDrawText(img, col2, row, decText, decColor)
 
 	// Row is always reserved (like RTT above) -- making it conditional made
 	// graphTop/graphH below jump every time the host's reported latency hit
@@ -642,6 +697,29 @@ func buildNetGraphHUD(samples []NetGraphSample) *image.RGBA {
 		line += "  " + netGraphFmtMbps(kbps)
 	}
 	netGraphDrawText(img, marginX, row, line, netGraphText)
+
+	// Encode/Decode: which GPU the agent host is capturing/encoding on, and
+	// which GPU this client is decoding/rendering on, "--" on whichever
+	// side has no data yet (host: before the first BenchStatus round trip
+	// this session, see SetHostGPUName's doc comment; client: on platforms
+	// without netGraphGPUNameFn wired). Two rows, not one "GPU host -
+	// client" line -- real GPU names ("NVIDIA GeForce RTX 4080") on both
+	// ends together regularly overflowed a single row.
+	row += netGraphLineH
+	hostGPULabel := "--"
+	if name := netGraphHostGPULabel(); name != "" {
+		hostGPULabel = name
+	}
+	netGraphDrawText(img, marginX, row, "ENCODE "+hostGPULabel, netGraphText)
+
+	row += netGraphLineH
+	clientGPULabel := "--"
+	if fn := netGraphGPUNameFn; fn != nil {
+		if name, ok := fn(); ok && name != "" {
+			clientGPULabel = name
+		}
+	}
+	netGraphDrawText(img, marginX, row, "DECODE "+clientGPULabel, netGraphText)
 
 	if banner := NetGraphBanner(); banner != "" {
 		row += netGraphLineH

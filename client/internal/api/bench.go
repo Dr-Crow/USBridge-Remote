@@ -24,6 +24,9 @@ type BenchStatus struct {
 	// the current pin, "" for none.
 	Monitors []BenchMonitor `json:"monitors"`
 	Monitor  string         `json:"monitor"`
+	// GPU names the host's GPU, for Net Graph's GPU line (see that struct
+	// field's doc comment on the agent side, agent/internal/api/bench.go).
+	GPU string `json:"gpu"`
 }
 
 // BenchMonitor is one host monitor (agent/internal/monitors.Monitor).
@@ -182,13 +185,22 @@ func (c *USBClient) BenchLoadStart() error {
 
 // BenchLoadStop ends the sampling and returns the samples as JSON (a
 // list of service.BenchLoad; service imports this package, so it decodes).
+// err is non-nil when the agent collected zero samples AND can name why
+// (hostload.Sampler.LastError on the agent side) -- previously that
+// reason only ever reached the agent's own log file, so an operator
+// looking at the client's benchmark results saw every host-load row as a
+// bare "n/a" with nothing explaining it.
 func (c *USBClient) BenchLoadStop() (json.RawMessage, error) {
 	body, err := c.PostRawWithTimeout("/api/bench/load/stop", []byte("{}"), 20*time.Second)
 	var out struct {
 		Samples json.RawMessage `json:"samples"`
+		Error   string          `json:"error,omitempty"`
 	}
 	if err := decodeAgentResponse(body, err, &out); err != nil {
 		return nil, err
+	}
+	if out.Error != "" {
+		return out.Samples, fmt.Errorf("host load sampling unavailable: %s", out.Error)
 	}
 	return out.Samples, nil
 }
