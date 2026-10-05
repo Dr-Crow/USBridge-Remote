@@ -157,6 +157,10 @@ type App struct {
 	// click racing the entitlement watchdog's own downgrade, say) --
 	// a.stream/a.streamKind must only ever be read/written while held.
 	streamMu   sync.Mutex
+	// Crash-loop backoff for restartStreamerAfterExit.
+	streamerExitMu     sync.Mutex
+	streamerLastExit   time.Time
+	streamerExitStreak int
 	streamKind string // "sunshine" | "rustshine" | "punktfunk" -- bookkeeping only, mirrors which concrete type a.stream currently is
 	// streamKindView mirrors streamKind for readers that must not wait on
 	// streamMu: SetStreamBackend holds it through the new backend's whole
@@ -815,7 +819,7 @@ func (a *App) Run(headless, startHidden bool) error {
 	// already restarted the process first (e.g. this same tick racing
 	// sunshineWatchdog).
 	if pw, ok := a.stream.(streamhost.ProcessWatcher); ok {
-		pw.SetOnExit(a.startSunshine)
+		pw.SetOnExit(a.restartStreamerAfterExit)
 	}
 	go a.sunshineWatchdog(ctx)
 	go a.x11SessionEnvWatchdog(ctx)
@@ -942,6 +946,48 @@ func keepDisplayAwake(ctx context.Context) {
 // calls, and RestartSunshine's self-contained stop+start for the success
 // path) precisely so its own deliberate restarts aren't the ones this
 // guard suppresses.
+// Crash-loop backoff for the streamer's exit callback.
+const (
+	// Exits closer together than this count as one crash loop.
+	streamerCrashLoopWindow = 60 * time.Second
+	streamerCrashLoopBase   = 500 * time.Millisecond
+	streamerCrashLoopMax    = 30 * time.Second
+)
+
+// restartStreamerAfterExit is the streamer's exit callback
+// (streamhost.ProcessWatcher.SetOnExit). One crash is restarted at once, so a
+// connected client sees as little dead air as possible. A streamer that keeps
+// dying right after it starts (an unwritable config dir, a broken binary) was
+// relaunched with no pause at all -- about 15 times a second, thousands of
+// starts, observed with punktfunk-host on Windows. Exits within
+// streamerCrashLoopWindow of the previous one wait 0.5s, 1s, 2s ... up to 30s;
+// sunshineWatchdog's own tick may restart it sooner, at its usual pace.
+func (a *App) restartStreamerAfterExit() {
+	a.streamerExitMu.Lock()
+	now := time.Now()
+	if !a.streamerLastExit.IsZero() && now.Sub(a.streamerLastExit) < streamerCrashLoopWindow {
+		a.streamerExitStreak++
+	} else {
+		a.streamerExitStreak = 0
+	}
+	a.streamerLastExit = now
+	streak := a.streamerExitStreak
+	a.streamerExitMu.Unlock()
+
+	if streak == 0 {
+		a.startSunshine()
+		return
+	}
+	delay := streamerCrashLoopBase << min(streak-1, 6)
+	if delay > streamerCrashLoopMax {
+		delay = streamerCrashLoopMax
+	}
+	if streak == 1 || streak%10 == 0 {
+		log.Printf("[app] streamer exited %d times in a row within %s of each other -- next restart in %s", streak+1, streamerCrashLoopWindow, delay)
+	}
+	time.AfterFunc(delay, a.startSunshine)
+}
+
 func (a *App) startSunshine() {
 	a.entMu.Lock()
 	updateInProgress := a.entStatus.RustShineUpdateInProgress
@@ -1595,7 +1641,7 @@ func (a *App) SetStreamBackend(kind string) error {
 		a.screen.SetDevices(next)
 	}
 	if pw, ok := next.(streamhost.ProcessWatcher); ok {
-		pw.SetOnExit(a.startSunshine)
+		pw.SetOnExit(a.restartStreamerAfterExit)
 	}
 	carryPin(next, pinnedConnector)
 	// Before the start, so the backend comes up on the benchmark's monitor.
