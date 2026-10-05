@@ -401,6 +401,27 @@ static VkFormat                 g_swap_fmt     = VK_FORMAT_UNDEFINED;
 // A2B10G10R10) -- only when the surface offers it, i.e. Windows HDR is on
 // for that display. g_hdr_display_avail is published for the decoder side
 // (d3d11_interop_windows.c), which tone-maps HDR to SDR itself otherwise.
+// g_vkq_cs: taken around this renderer's vkQueueSubmit and vkDeviceWaitIdle
+// calls, and by PyroWave's queue-lock callbacks (pyrowave_decode_windows.c),
+// which decodes on this same VkDevice. Not around vkQueuePresentKHR: that can
+// block for a vblank, and PyroWave never touches the present queue per frame.
+static INIT_ONCE        g_vkq_once = INIT_ONCE_STATIC_INIT;
+static CRITICAL_SECTION g_vkq_cs;
+static BOOL CALLBACK vkq_init(PINIT_ONCE o, PVOID p, PVOID *c) { (void)o; (void)p; (void)c; InitializeCriticalSection(&g_vkq_cs); return TRUE; }
+void vk_video_queue_lock(void)   { InitOnceExecuteOnce(&g_vkq_once, vkq_init, NULL, NULL); EnterCriticalSection(&g_vkq_cs); }
+void vk_video_queue_unlock(void) { LeaveCriticalSection(&g_vkq_cs); }
+static VkResult vkq_submit(VkQueue q, uint32_t n, const VkSubmitInfo *si, VkFence f) {
+    vk_video_queue_lock();
+    VkResult r = vkQueueSubmit(q, n, si, f);
+    vk_video_queue_unlock();
+    return r;
+}
+static VkResult vkq_device_wait_idle(VkDevice d) {
+    vk_video_queue_lock();
+    VkResult r = vkDeviceWaitIdle(d);
+    vk_video_queue_unlock();
+    return r;
+}
 static int                      g_want_hdr     = 0;
 static int                      g_swap_hdr     = 0;
 static atomic_int               g_hdr_display_avail = 0;
@@ -1173,7 +1194,7 @@ static int  vk_create_sync_semaphores(void);  // forward declaration
 // Also resizes the popup overlay to match the stored atomic rect.
 static int vk_recreate_swapchain(void) {
     if (!g_dev || !g_surf) return 0;
-    vkDeviceWaitIdle(g_dev);
+    vkq_device_wait_idle(g_dev);
     vk_destroy_swapchain();
 
     // Reposition popup overlay to current stored rect.
@@ -1264,7 +1285,7 @@ static int vk_ensure_tex(int w, int h) {
 
     // Destroy old
     if (g_tex != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(g_dev);
+        vkq_device_wait_idle(g_dev);
         vkFreeMemory(g_dev, g_tex_mem, NULL); g_tex_mem = VK_NULL_HANDLE;
         vkDestroyImage(g_dev, g_tex, NULL);   g_tex     = VK_NULL_HANDLE;
     }
@@ -1692,7 +1713,7 @@ static int vk_aivision_ensure_tex(int w, int h) {
     if (g_aivision_tex != VK_NULL_HANDLE && g_aivision_tex_w == w && g_aivision_tex_h == h) return 1;
 
     if (g_aivision_tex != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(g_dev);
+        vkq_device_wait_idle(g_dev);
         if (g_aivision_tex_view) { vkDestroyImageView(g_dev, g_aivision_tex_view, NULL); g_aivision_tex_view = VK_NULL_HANDLE; }
         vkFreeMemory(g_dev, g_aivision_tex_mem, NULL); g_aivision_tex_mem = VK_NULL_HANDLE;
         vkDestroyImage(g_dev, g_aivision_tex, NULL);   g_aivision_tex     = VK_NULL_HANDLE;
@@ -1847,6 +1868,7 @@ static void vk_aivision_record_draw(VkCommandBuffer cb, int fw, int fh) {
 // plain RGB by the same pipeline without a conversion.
 static int vk_format_is_ycbcr(VkFormat fmt) {
     return fmt == VK_FORMAT_G8_B8R8_2PLANE_420_UNORM ||
+           fmt == VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM ||
            fmt == VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16;
 }
 
@@ -1886,9 +1908,10 @@ static VkYcbcrPipeline *vk_ycbcr_pipeline_get(VkFormat fmt) {
     convCI.format = fmt;
     // 10-bit (P010) only ever carries HDR10 here, which is BT.2020; 8-bit
     // streams are BT.601 (moonlight-common-c's default colorspace).
-    convCI.ycbcrModel = fmt == VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16
-                        ? VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_2020
-                        : VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601;
+    // 3-plane 4:2:0 is only PyroWave here, whose hosts convert to BT.709.
+    convCI.ycbcrModel = fmt == VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16 ? VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_2020
+                      : fmt == VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM ? VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709
+                      : VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601;
     convCI.ycbcrRange = VK_SAMPLER_YCBCR_RANGE_ITU_NARROW;
     convCI.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
     convCI.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
@@ -2218,10 +2241,13 @@ static int vk_render_frame_vkimage(VkImage img, VkFormat fmt, VkImageLayout src_
     // tools/decode_bench/d3d11_interop_bench.c).
     {
         VkImageMemoryBarrier b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+        // external == 2: a PyroWave image on this same device, written in
+        // GENERAL by a compute queue (concurrent sharing, no ownership
+        // transfer) and handed back in GENERAL at the end of this buffer.
         b.oldLayout = external ? VK_IMAGE_LAYOUT_GENERAL : src_layout;
         b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        b.srcQueueFamilyIndex = external ? VK_QUEUE_FAMILY_EXTERNAL : VK_QUEUE_FAMILY_IGNORED;
-        b.dstQueueFamilyIndex = external ? g_qfam : VK_QUEUE_FAMILY_IGNORED;
+        b.srcQueueFamilyIndex = external == 1 ? VK_QUEUE_FAMILY_EXTERNAL : VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = external == 1 ? g_qfam : VK_QUEUE_FAMILY_IGNORED;
         b.image = img;
         b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         b.subresourceRange.levelCount = 1; b.subresourceRange.layerCount = 1;
@@ -2335,8 +2361,8 @@ static int vk_render_frame_vkimage(VkImage img, VkFormat fmt, VkImageLayout src_
         VkImageMemoryBarrier b = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
         b.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        b.srcQueueFamilyIndex = g_qfam;
-        b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+        b.srcQueueFamilyIndex = external == 1 ? g_qfam : VK_QUEUE_FAMILY_IGNORED;
+        b.dstQueueFamilyIndex = external == 1 ? VK_QUEUE_FAMILY_EXTERNAL : VK_QUEUE_FAMILY_IGNORED;
         b.image = img;
         b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         b.subresourceRange.levelCount = 1; b.subresourceRange.layerCount = 1;
@@ -2355,7 +2381,7 @@ static int vk_render_frame_vkimage(VkImage img, VkFormat fmt, VkImageLayout src_
     si.signalSemaphoreCount = 1; si.pSignalSemaphores = &g_rnd_sems[img_idx];
     vk_conceal_note_real_frame(conceal_slot);
     g_render_stage = 5; // queue-submit
-    vk_check_device_lost(vkQueueSubmit(g_queue, 1, &si, g_fence));
+    vk_check_device_lost(vkq_submit(g_queue, 1, &si, g_fence));
 
     VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
     pi.waitSemaphoreCount = 1; pi.pWaitSemaphores = &g_rnd_sems[img_idx];
@@ -2621,7 +2647,7 @@ static int vk_render_frame(uint8_t *pixels, int fw, int fh, int fs) {
     vk_conceal_note_real_frame(conceal_slot);
 
     g_render_stage = 5; // queue-submit
-    vk_check_device_lost(vkQueueSubmit(g_queue, 1, &si, g_fence));
+    vk_check_device_lost(vkq_submit(g_queue, 1, &si, g_fence));
 
     VkPresentInfoKHR pi = { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
     pi.waitSemaphoreCount = 1;
@@ -2690,7 +2716,7 @@ static int vk_conceal_ensure_tex2(int w, int h) {
     if (g_conceal_tex[0] != VK_NULL_HANDLE && g_conceal_tex_w == w && g_conceal_tex_h == h) return 1;
 
     if (g_conceal_tex[0] != VK_NULL_HANDLE) {
-        vkDeviceWaitIdle(g_dev);
+        vkq_device_wait_idle(g_dev);
         for (int i = 0; i < 2; i++) {
             if (g_conceal_tex_view[i]) { vkDestroyImageView(g_dev, g_conceal_tex_view[i], NULL); g_conceal_tex_view[i] = VK_NULL_HANDLE; }
             if (g_conceal_tex_mem[i])  { vkFreeMemory(g_dev, g_conceal_tex_mem[i], NULL); g_conceal_tex_mem[i] = VK_NULL_HANDLE; }
@@ -2752,7 +2778,7 @@ static int vk_conceal_ensure_flow_synth(int w, int h) {
                         g_synth_tex == VK_NULL_HANDLE || g_conceal_tex_w != w || g_conceal_tex_h != h);
     if (!need_resize) return 1;
 
-    vkDeviceWaitIdle(g_dev);
+    vkq_device_wait_idle(g_dev);
     if (g_flow_view)  { vkDestroyImageView(g_dev, g_flow_view, NULL); g_flow_view = VK_NULL_HANDLE; }
     if (g_flow_mem)   { vkFreeMemory(g_dev, g_flow_mem, NULL); g_flow_mem = VK_NULL_HANDLE; }
     if (g_flow_tex)   { vkDestroyImage(g_dev, g_flow_tex, NULL); g_flow_tex = VK_NULL_HANDLE; }
@@ -3522,7 +3548,7 @@ static int vk_render_frame_conceal(void) {
     si.waitSemaphoreCount = 1; si.pWaitSemaphores = &this_img_sem; si.pWaitDstStageMask = &wait_stage;
     si.commandBufferCount = 1; si.pCommandBuffers = &g_cmdbuf;
     si.signalSemaphoreCount = 1; si.pSignalSemaphores = &g_rnd_sems[img_idx];
-    vk_check_device_lost(vkQueueSubmit(g_queue, 1, &si, g_fence));
+    vk_check_device_lost(vkq_submit(g_queue, 1, &si, g_fence));
 
     g_conceal_consecutive++;
     g_stat_concealed_frames++;
@@ -4025,7 +4051,7 @@ static void vk_full_cleanup(void) {
     if (g_event)   { CloseHandle(g_event); g_event = NULL; }
 
     if (g_dev) {
-        vkDeviceWaitIdle(g_dev);
+        vkq_device_wait_idle(g_dev);
         if (g_stage_ptr && g_stage_mem) { vkUnmapMemory(g_dev, g_stage_mem); g_stage_ptr = NULL; }
         if (g_stage_buf)  { vkDestroyBuffer(g_dev, g_stage_buf, NULL); g_stage_buf = VK_NULL_HANDLE; }
         if (g_stage_mem)  { vkFreeMemory(g_dev, g_stage_mem, NULL);  g_stage_mem = VK_NULL_HANDLE; }

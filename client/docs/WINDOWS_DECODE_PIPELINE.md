@@ -325,3 +325,79 @@ Measured with Windows "GPU Engine" counters for the bench process only,
 
 On NVIDIA the video processor runs on the video engine, so games sharing
 the GPU are not affected.
+
+## PyroWave on Windows (GPU only, zero-copy)
+
+PyroWave is the intra-only wavelet codec that rust-shine hosts send.
+
+On Linux and macOS the client decodes it with
+`pyrowave_decoder_decode_cpu_buffer_synchronous`: PyroWave decodes on its own
+Vulkan device, reads the frame back to the CPU, and the renderer uploads it
+again. On Windows nothing leaves the GPU (`pyrowave_decode_windows.c`):
+
+- **Device.** PyroWave runs on the renderer's own `VkDevice`, through
+  `pyrowave_create_device` with create infos rebuilt from what ffmpeg enabled.
+  Both GPUs here already enable everything PyroWave's decoder needs (Vulkan
+  1.3 subgroup size control, 8/16-bit storage).
+- **Queue.** PyroWave gets an async-compute queue that nothing else submits
+  to. Its queue-lock callbacks share the lock the renderer takes around its
+  own submits and `vkDeviceWaitIdle`.
+- **Images.** PyroWave decodes straight into a ring of 4
+  `G8_B8_R8_3PLANE_420` images, using R8 storage views of each plane. The
+  ring uses concurrent sharing between the graphics and compute families, so
+  no ownership transfer is needed, and stays in `GENERAL` layout. The renderer
+  samples it through a BT.709 YCbCr sampler, as external mode 2.
+- **Sync.** A timeline semaphore orders decode before sampling. A decode
+  call only records and submits GPU work, so it runs inline on the pull
+  decode thread.
+
+### Rejected: separate PyroWave device
+
+PyroWave on its own device, sharing images through exported `OPAQUE_WIN32`
+memory, verified byte-exact on the Radeon 780M. On an RTX 3090 one image of
+the ring intermittently came out with an empty luma plane (4 of 5 runs).
+That held even with dedicated allocations and an explicit `GENERAL`
+initialization.
+
+### Verification and performance
+
+`tools/decode_bench/pyrowave_bench.c` encodes 4K frames with PyroWave's own
+encoder on this GPU and checks the decode against PyroWave's CPU decode.
+With `BENCH_SHARED=1 BENCH_VERIFY=16` it is byte-exact on both GPUs, every
+run.
+
+Paced at 120 fps. Latency is from frame arrival to the frame being ready for
+the renderer:
+
+| GPU | 4K@120, 400 Mbps p50 / p99 | 1440p@120, 250 Mbps p50 / p99 |
+|---|---|---|
+| RTX 3090 | 2.1 / 7-10 ms | 1.5 / 7-8 ms |
+| Radeon 780M | 3.0 / 4.8 ms | 2.6 / 3.5 ms |
+
+There were no decode failures. GPU engine load during 4K@120 decode:
+
+- **RTX 3090:** 3D/compute about 7%, copy engines about 3%.
+- **Radeon 780M:** compute about 12% and 3D about 14%. The 3D sample may
+  include the tail of the bench's encode phase. Copy is about 5%.
+
+PyroWave is a shader codec and has no fixed-function decoder.
+
+### Live test
+
+`cmd/pyrowavesmoke` against the Linux agent, with the laptop on Wi-Fi:
+
+- At 60 Mbps, 4K desktop: `negotiated=pyrowave frames=397 fps=49.6` over
+  8 s, including stream start.
+- At 150 Mbps and above, the Wi-Fi link drops packets ("Unrecoverable
+  frame"). PyroWave's bitrates need a wired link or strong Wi-Fi.
+
+### Building
+
+`scripts/build_pyrowave_windows.sh` builds the vendored tree with MSYS2
+UCRT64 (cmake + ninja) into one static archive. `build_windows.sh` calls it.
+
+- A MinGW-only `CMakeLists.txt` hook force-includes `<windows.h>` for
+  `pyrowave_c.cpp`, so the vendored tree stays untouched.
+- On COFF only volk's `vk*` symbols are localized, so they can't shadow
+  `vulkan-1.dll`. Localizing everything except `pyrowave_*`, as the ELF
+  build does, breaks Granite's COMDAT template instantiations.

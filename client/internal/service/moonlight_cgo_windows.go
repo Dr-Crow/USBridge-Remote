@@ -306,6 +306,11 @@ extern AVBufferRef *d3dx_device_ref(void);
 extern int d3dx_deliver(AVFrame *frame, void **out_img, int *out_vkfmt, void **out_sem, uint64_t *out_val, void **out_release_ctx);
 extern void d3dx_release_slot(void *ctx);
 extern AVFrame *d3dx_download(AVFrame *frame);
+// PyroWave GPU decode (pyrowave_decode_windows.c).
+extern int pyrowave_win_decode(const uint8_t *au, size_t len, void **out_img, int *out_vkfmt, void **out_sem,
+                               uint64_t *out_val, int *out_w, int *out_h, void **out_slot);
+extern void pyrowave_win_release_slot(void *ctx);
+extern void pyrowave_win_stream_reset(void);
 extern void vk_frame_release_avframe(void *ctx);
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -318,6 +323,7 @@ static AVBufferRef       *g_hw_dev_ctx  = NULL;
 static enum AVPixelFormat g_hw_pix_fmt  = AV_PIX_FMT_NONE;
 static int                g_using_vulkan_decode = 0; // set once the Vulkan zero-copy tier is committed for this session
 static int                g_using_d3dx_decode   = 0; // D3D11VA decode copied into Vulkan (d3d11_interop_windows.c)
+static int                g_using_pyrowave      = 0; // VIDEO_FORMAT_PYROWAVE: pyrowave_decode_windows.c, no libavcodec
 static enum AVPixelFormat g_av_dst_fmt  = AV_PIX_FMT_NONE;
 static int                g_av_w        = 0;
 static int                g_av_h        = 0;
@@ -921,13 +927,20 @@ static int  dr_setup(int fmt, int w, int h, int rate, void *ctx, int flags) {
     g_vk_session_frames = 0;
     g_vk_overlay_seen = 0;
     InterlockedIncrement(&g_stream_gen);
-    // Create the decoder now (moonlight-qt does the same in its setup)
-    // rather than on the first frame: Vulkan Video session setup takes about
-    // a second, and frames queued behind it overflowed the 15-frame queue.
-    if (!g_av_cs_init) { InitializeCriticalSection(&g_av_cs); g_av_cs_init = 1; }
-    EnterCriticalSection(&g_av_cs);
-    if (!g_avctx) win_av_init();
-    LeaveCriticalSection(&g_av_cs);
+    g_using_pyrowave = (g_video_format & 0x10000) != 0; // VIDEO_FORMAT_MASK_PYROWAVE
+    if (g_using_pyrowave) {
+        pyrowave_win_stream_reset();
+        goVTLog((char*)"pyrowave: stream negotiated -- decoding on the GPU (pyrowave_decode_windows.c)");
+    } else {
+        // Create the decoder now (moonlight-qt does the same in its setup)
+        // rather than on the first frame: Vulkan Video session setup takes
+        // about a second, and frames queued behind it overflowed the 15-frame
+        // queue.
+        if (!g_av_cs_init) { InitializeCriticalSection(&g_av_cs); g_av_cs_init = 1; }
+        EnterCriticalSection(&g_av_cs);
+        if (!g_avctx) win_av_init();
+        LeaveCriticalSection(&g_av_cs);
+    }
     goVideoFormatNegotiated(fmt);
     return 0;
 }
@@ -1048,6 +1061,55 @@ extern volatile uint64_t g_total_video_bytes;
 // output -- the receive half is win_decode_drain. dr_submit (direct/thread
 // modes) does both back to back; the pull-mode thread interleaves them the
 // way moonlight-qt's FFmpegVideoDecoder::decoderThreadProc does.
+// win_pyrowave_send: one PyroWave access unit -> GPU decode straight into a
+// ring image on the renderer's device (pyrowave_decode_windows.c) -> renderer,
+// sampled in place (external mode 2: same device, GENERAL layout). The decode
+// call only records and submits GPU work; the renderer waits on the timeline
+// semaphore value. No CPU copy of the picture anywhere -- AI Vision sampling
+// is not available for PyroWave streams.
+static uint8_t *g_pw_au = NULL;
+static size_t   g_pw_au_cap = 0;
+static int win_pyrowave_send(PDECODE_UNIT du) {
+    size_t total = 0;
+    for (PLENTRY e = du->bufferList; e; e = e->next) total += (size_t)e->length;
+    if (total == 0) return DR_OK;
+    if (g_pw_au_cap < total) {
+        uint8_t *grown = (uint8_t *)realloc(g_pw_au, total);
+        if (!grown) return DR_OK;
+        g_pw_au = grown;
+        g_pw_au_cap = total;
+    }
+    size_t off = 0;
+    for (PLENTRY e = du->bufferList; e; e = e->next) { memcpy(g_pw_au + off, e->data, (size_t)e->length); off += (size_t)e->length; }
+
+    dec_stage(DEC_STAGE_SEND);
+    void *img = NULL, *sem = NULL, *slot = NULL;
+    int vkfmt = 0, w = 0, h = 0;
+    uint64_t val = 0;
+    g_dec_in++;
+    if (!pyrowave_win_decode(g_pw_au, total, &img, &vkfmt, &sem, &val, &w, &h, &slot)) {
+        g_dec_out++;
+        return DR_OK; // every frame is a keyframe: nothing to recover
+    }
+    g_dec_out++;
+    dec_stage(DEC_STAGE_DELIVER);
+    int native_overlay_active = vk_video_is_active() || gl_video_is_active();
+    if (native_overlay_active) g_vk_overlay_seen = 1;
+    ++g_vk_session_frames;
+    goVTFrame(NULL, w, h, 0); // stats + overlay bootstrap on frame 1
+    // layout 1 = VK_IMAGE_LAYOUT_GENERAL
+    if (!vk_video_try_submit_vkframe(img, vkfmt, 1, w, h, 1, sem, val, 2,
+                                      slot, pyrowave_win_release_slot)) {
+        pyrowave_win_release_slot(slot);
+    }
+    if (++g_av_frame_cnt == 1) {
+        char msg[96];
+        snprintf(msg, sizeof(msg), "pyrowave: first frame handed to the renderer (%dx%d)", w, h);
+        goVTLog(msg);
+    }
+    return DR_OK;
+}
+
 static int win_decode_send(PDECODE_UNIT du) {
     g_last_host_latency_tenths_ms = du->frameHostProcessingLatency;
     g_total_video_bytes += (uint64_t)du->fullLength;
@@ -1078,6 +1140,8 @@ static int win_decode_send(PDECODE_UNIT du) {
     // DR_NEED_IDR): the problem is local/GPU-side, not a network loss the
     // host can fix by resending an IDR frame.
     if (vk_video_is_device_lost()) return DR_OK;
+
+    if (g_using_pyrowave) return win_pyrowave_send(du);
 
     if (!g_av_cs_init) { InitializeCriticalSection(&g_av_cs); g_av_cs_init = 1; }
     EnterCriticalSection(&g_av_cs);
@@ -1367,6 +1431,7 @@ static void do_li_stop(void) {
     // the codec changed to AV1, which has no Vulkan decode extension here).
     g_using_vulkan_decode = 0;
     g_using_d3dx_decode = 0;
+    g_using_pyrowave = 0;
 }
 
 static void do_li_interrupt(void) {
@@ -1449,6 +1514,8 @@ func windowsVideoFormatCodecName(format int32) (string, bool) {
 	switch {
 	case format < 0:
 		return "", false
+	case format&0x10000 != 0: // VIDEO_FORMAT_PYROWAVE
+		return models.VideoModePyroWave, true
 	case format&0x0F00 != 0:
 		return models.VideoModeH265, true
 	case format&0xF000 != 0:

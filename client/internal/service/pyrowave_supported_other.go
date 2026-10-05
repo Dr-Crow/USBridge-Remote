@@ -1,9 +1,10 @@
-//go:build !(linux && !android && cgo) && !(darwin && !ios && cgo)
+//go:build !(linux && !android && cgo) && !(darwin && !ios && cgo) && !(windows && cgo)
 
 package service
 
-// PyroWaveDecodeSupported: see pyrowave_supported_linux.go and
-// pyrowave_supported_darwin.go. No PyroWave decoder on this platform yet.
+// PyroWaveDecodeSupported: see pyrowave_supported_linux.go,
+// pyrowave_supported_darwin.go and pyrowave_supported_windows.go. No PyroWave
+// decoder on this platform yet.
 func PyroWaveDecodeSupported() bool {
 	return false
 }

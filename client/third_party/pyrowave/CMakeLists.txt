@@ -28,3 +28,12 @@ add_subdirectory(${PYROWAVE_VENDOR_DIR} ${CMAKE_CURRENT_BINARY_DIR}/pyrowave EXC
 # dllexport attributes (PYROWAVE_EXPORT_SYMBOLS stays undefined).
 add_library(pyrowave-capi STATIC ${PYROWAVE_VENDOR_DIR}/pyrowave_c.cpp)
 target_link_libraries(pyrowave-capi PRIVATE pyrowave granite-vulkan)
+
+# MinGW (the Windows client's MSYS2 UCRT64 toolchain): pyrowave_c.cpp calls
+# ::CloseHandle under _WIN32 without including <windows.h> itself (MSVC builds
+# get it transitively). Force-include it here rather than editing the vendored
+# tree (see vendor/pyrowave/PUNKTFUNK-VENDOR.txt).
+if(MINGW)
+    target_compile_definitions(pyrowave-capi PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_options(pyrowave-capi PRIVATE -include windows.h)
+endif()
