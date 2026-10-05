@@ -31,6 +31,26 @@ What's here depends heavily on what you're connected to:
 
 On a hardware KVM, this tab also mounts local `.iso`/`.img` files as virtual USB drives over NBD — the client runs a local NBD server for the file and the appliance connects to it as a client, so nothing has to be uploaded anywhere first.
 
+### Virtual displays (Agent)
+
+On an Agent whose streamer supports it, the Devices tab can add a
+**virtual display**: a monitor that exists only for streaming. It has a
+preset or custom resolution and refresh rate, and needs no screen or dummy
+plug on the remote machine.
+
+**Make it the main display** (checkbox in the add dialog, on by default):
+the virtual display becomes the remote machine's primary display. The
+taskbar, the start menu and new windows open on it, not on a physical
+screen you can't see.
+
+- On the virtual display's row, the **Main** switch shows the current state
+  and changes it live, without restarting the stream: lit means it is the
+  main display, tap to switch.
+- Turning it off, or removing the virtual display, puts the remote machine's
+  previous main screen and arrangement back.
+- Windows Agents only for now (RustShine 0.3.131+). On older Agents the
+  checkbox has no effect and the **Main** switch doesn't appear.
+
 ---
 
 ## 3. Snapshots Tab
