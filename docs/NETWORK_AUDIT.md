@@ -12,9 +12,9 @@ transmit identifying information; not every outbound request is analytics.
 |---|---|---|---|
 | Vendor `/v1/desktop-license/refresh` on `usbridge-entitlement.fatkulinamir80.workers.dev` | Stable derived `hw_id`; normal HTTP metadata/source IP | Startup, explicit component setup, normally 6h refresh; branch retries failures after 5m | Required to issue/renew current signed entitlement. Valid cached tokens verify locally; no extra offline grace is implemented. |
 | Vendor `/v1/desktop-billing/checkout` | `hw_id`, requested tier | Explicit purchase in retained compatibility/account paths | Not needed for free provisioning. Backend tiles no longer initiate purchase. External billing records are not changed by this fork. |
-| Vendor `/v1/download/rustshine` and `/v1/download/usb-broker`, then GitHub release-asset host returned by vendor | Genuine token in Authorization header to vendor; platform query. Temporary signed URL to asset host | Explicit consent/selection, interrupted setup retry, component update checks | Can use already staged binaries; missing files require connectivity. Archive SHA256 and available manifest verification must remain. |
+| Vendor `/v1/download/rustshine` and `/v1/download/usb-broker`, then GitHub release-asset host returned by vendor | Genuine token in Authorization header to vendor; platform query. Temporary signed URL to asset host | Explicit consent/selection, interrupted setup retry, component update checks | Can use already staged binaries; missing files require connectivity. Archive SHA256 and available manifest verification must remain. The CI bundle helper verifies signed manifests as well as archive hashes. |
 | `USBridge-Technologies/Streamers-Forks` GitHub release manifests/assets | Normal HTTPS request metadata, no entitlement header in this path | Sunshine/Punktfunk first provisioning and update jobs | Installed backend can run without a new download. Separate from license service. |
-| Agent's upstream GitHub release manifest/signature and update assets | Platform/version evaluated locally; HTTP User-Agent and network metadata | Agent startup check, user-approved GUI update; headless path can apply updates | Test fork must avoid being overwritten by upstream updates. An independent fork update channel needs its own reviewed release process; do not turn off signature verification. |
+| Agent's upstream GitHub release manifest/signature and update assets | Platform/version evaluated locally; HTTP User-Agent and network metadata | Upstream: startup check, user-approved GUI update; headless path can apply updates. This CI build sets the update channel to manual and skips those agent-update requests. | The test fork cannot be overwritten by the upstream updater. An independent fork update channel needs its own reviewed release process; do not turn off signature verification. |
 | Vendor `/v1/device/dns` | Stable `hw_id` **and private/local IP address** | Local IP polled every 3s; registration at change/start and about every 5m | Gated by HTTPS configuration. Disabling HTTPS to avoid this also changes local transport behavior, so not an adequate fine-grained privacy control. Offline falls back to locally generated certificate; browser trust may fail. |
 | Vendor `/v1/device/cert` | `hw_id`, base64 CSR for assigned hostname | Certificate setup/renewal; pending issuance retry about 1m | CSR private key stays on device in this implementation. Vendor/issuer can learn assigned hostname; certificate transparency implications need review. |
 | Vendor `/v1/webrtc/turn-credentials` | `hw_id`; no entitlement Bearer header in public function | Staged streamer, valid Pro/Enterprise status; immediate then 50m | Network errors retain existing timed credentials; explicit `not_pro` removes them. A local/direct stream and vendor TURN relay are different connectivity paths. |
@@ -48,15 +48,30 @@ hardware-bound vendor tier.
 
 ## Dependencies, local traffic and limits
 
-- Embedded Tailscale `tsnet` starts network machinery; control-plane login,
-  coordination, peer discovery, relay and diagnostic logging are dependency-level
-  concerns. The supplied runtime log showed contact with
-  `controlplane.tailscale.com`, node registration and a login flow. The wrapper's
-  local logging callbacks do **not** prove remote telemetry is disabled. A full
-  dependency configuration review and traffic capture are required to enumerate
-  dynamic DERP/STUN/logging destinations and payloads. See
-  [wrapper](../agent/internal/tailscale/service.go). A UI sign-out is not proof of
-  zero outbound traffic; add/test a genuine startup-disable policy later.
+- Embedded Tailscale `tsnet` has a **remote diagnostic-log upload path enabled
+  by default**, in addition to control-plane coordination and peer/relay traffic.
+  This is confirmed in the pinned `tailscale.com v1.102.3` dependency:
+  `tsnet/tsnet.go` `startLogger` builds a `logtail.Logger` with the log-policy
+  transport; `logtail/config.go` sets the default host to `log.tailscale.com`.
+  `tsLogf` writes both to that logger and the wrapper's local callback, so a
+  local log callback does not replace or disable uploads. Logs and diagnostic
+  metrics are the intended payload; their actual content and dynamic destinations
+  still require runtime capture.
+- The pinned dependency provides an explicit opt-out:
+  `TS_NO_LOGS_NO_SUPPORT=true` before starting the process. In
+  `logpolicy/logpolicy.go`, `TransportOptions.New` returns a no-network,
+  pretend-success transport when `envknob.NoLogsNoSupport()` is true. This disables
+  this logging transport, **not** Tailscale control-plane, DERP/STUN or peer
+  networking, and opts out of Tailscale technical support. This branch documents
+  the setting; it does not silently change the user's environment.
+- The supplied runtime log showed `controlplane.tailscale.com`, node registration
+  and a login flow. See [agent wrapper](../agent/internal/tailscale/service.go).
+  A UI sign-out is not proof of zero outbound traffic. An offline policy needs
+  a true startup-disable control, plus traffic tests covering both signed-out
+  and signed-in states. Dependency sources:
+  [tsnet](https://github.com/tailscale/tailscale/blob/v1.102.3/tsnet/tsnet.go),
+  [log transport](https://github.com/tailscale/tailscale/blob/v1.102.3/logpolicy/logpolicy.go),
+  [environment control](https://github.com/tailscale/tailscale/blob/v1.102.3/envknob/envknob.go).
 - The `8.8.8.8:80` UDP route probe in
   [localip.go](../agent/internal/netutil/localip.go) calls Dial to select a local
   source address; no application payload is written there. Do not mislabel it as

@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ -n "${USBRIDGE_CI_ROOT:-}" ]]; then
+  cd "$(cygpath -u "$USBRIDGE_CI_ROOT")"
+fi
 ROOT="$(pwd)"
 export PATH="/c/ci/go/bin:/ucrt64/bin:/usr/bin:$PATH"
 export CC=gcc CXX=g++ CGO_ENABLED=1 GOTOOLCHAIN=local

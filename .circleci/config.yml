@@ -1,7 +1,7 @@
 version: 2.1
 
 # Branch build only: produces a testable agent, never publishes a release,
-# embeds credentials, or redistributes the proprietary streamer/broker.
+# embeds credentials, or modifies vendor streamer/broker archives.
 jobs:
   windows-agent:
     resource_class: windows.medium
@@ -26,7 +26,7 @@ jobs:
             $env:CHERE_INVOKING = 'yes'
             $env:MSYSTEM = 'UCRT64'
             $env:USBRIDGE_CI_ROOT = (Get-Location).Path
-            & 'C:\ci\msys64\usr\bin\bash.exe' -lc 'cd "$(cygpath -u "$USBRIDGE_CI_ROOT")" && bash .circleci/build-windows.sh'
+            & 'C:\ci\msys64\usr\bin\bash.exe' --login .circleci/build-windows.sh
             if ($LASTEXITCODE -ne 0) { throw "Agent build failed: $LASTEXITCODE" }
           no_output_timeout: 20m
       - save_cache:
