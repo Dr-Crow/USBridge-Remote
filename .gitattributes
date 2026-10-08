@@ -1,0 +1,2 @@
+# Signed fixtures must preserve their exact bytes on Windows checkout.
+agent/internal/streamerlaunch/testdata/* -text

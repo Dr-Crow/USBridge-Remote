@@ -130,14 +130,6 @@ func (b *sunshineBackend) sunshineConfigArgs() []string {
 		"pkey=" + b.pkeyPath(),
 		"cert=" + b.certPath(),
 	}
-	if runtime.GOOS == "windows" {
-		// file_state holds the paired clients. Unset, Windows Sunshine kept
-		// it in config\ next to its exe, where shared pairing (shared_auth.go)
-		// never looked and a downloaded Sunshine's new folder lost it. It is
-		// the file credentials_file names, as in Sunshine's own defaults;
-		// importLegacySunshinePairings moves the old list over once.
-		args = append(args, "file_state="+b.credentialsFilePath())
-	}
 	return args
 }
 

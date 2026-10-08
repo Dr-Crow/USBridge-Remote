@@ -1,0 +1,40 @@
+# Windows test limitations
+
+The first complete native Windows test run (CircleCI build 4, commit
+417da48b2631e465f50562e1b4b08529bff44628) exposed pre-existing portability
+assumptions. The build uses an explicit named exclusion list rather than
+silently ignoring a failed test command. This is **not an unqualified full-suite
+pass**. All other tests, including fork policy/provisioning/update checks,
+must pass before packaging.
+
+## Excluded existing tests
+
+- Nine process-lifecycle tests in app/enginelock, streamhost/sunshine_backend
+  and streamhost/sunshine_hang require `/bin/sh`, `/bin/sleep`, executable shell
+  scripts or POSIX SIGTERM semantics. Those fixtures cannot run as native Windows
+  processes. Their exact names are recorded in the artifact `test-exclusions.txt`.
+  Windows-native helper-process coverage remains to be implemented.
+- `TestAcquireEngineLock_ExclusiveAcrossHandles`: exclusivity itself succeeded,
+  but reading the current holder's PID returned 0. Windows byte-range locking
+  prevents the second handle reading the locked PID byte. This is an existing
+  limitation of holder identification/eviction, not proof of two engine owners.
+  It is deferred rather than changing lock compatibility in this feature branch.
+- `TestBenchLoadStartStopWireFormat`: after a fixed one-second sample interval,
+  the Windows runner returned no samples and no explanatory error. This existing
+  benchmark sampling/timing issue is deferred. It does not test entitlement or
+  component provisioning.
+
+## Corrected portability defects
+
+- Signed release fixtures are checked out byte-for-byte using `.gitattributes`;
+  Windows CRLF conversion otherwise invalidates their genuine signatures. The
+  signature verifier is unchanged and its test is not excluded.
+- Sunshine config arguments previously added `file_state` twice on Windows.
+  The redundant identical final override was removed; the common override and
+  its test remain intact.
+
+## Remaining manual acceptance
+
+A successful CI compilation does not prove streaming quality, driver installation,
+USB sharing, Windows desktop rendering, hardware 4:4:4 support, or proprietary
+runtime feature entitlements. Follow `FORK_TEST_PLAN.md` on a Windows test machine.
