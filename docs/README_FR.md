@@ -19,7 +19,7 @@
 
 ---
 
-**USBridge Remote** est un client unifié haute performance pour gérer des machines distantes. Conçu pour combiner l'**accès BIOS au niveau matériel** (via les dispositifs KVM USBridge) et le **bureau à distance basé sur logiciel** dans une interface unique et rationalisée.
+**USBridge Remote** est un client unifié haute performance pour gérer des machines distantes. Conçu pour combiner l'**accès BIOS au niveau matériel** (via les dispositifs USBridge KVM) et le **bureau à distance basé sur logiciel** dans une interface unique et rationalisée.
 
 <div align="center">
   <img src="./assets/Functions.svg" width="1400" alt="USBridge Remote">
@@ -33,16 +33,16 @@ Le Client est l'interface de contrôle — installé sur votre station de travai
 
 | Architecture | Windows | macOS | Linux | Android | iOS | Navigateur Web |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **x86_64** | [Télécharger](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Windows-x86_64.zip) | — | [Télécharger](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Linux-x86_64.AppImage) | — | — | [Ouvrir l'App](https://web.usbridge.io) |
-| **ARM64** | — | [Télécharger](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-macOS-arm64.dmg) | — | [Google Play](https://play.google.com/store/apps/details?id=io.usbridge.client) | [App Store](https://apps.apple.com/us/app/usbridge-client/id6787665935) | [Ouvrir l'App](https://web.usbridge.io) |
+| **x86_64** | [Télécharger](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Windows-x86_64.zip) | — | [Télécharger](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Linux-x86_64.AppImage) | — | — | [Ouvrir l'application](https://web.usbridge.io) |
+| **ARM64** | — | [Télécharger](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-macOS-arm64.dmg) | — | [Google Play](https://play.google.com/store/apps/details?id=io.usbridge.client) | [App Store](https://apps.apple.com/us/app/usbridge-client/id6787665935) | [Ouvrir l'application](https://web.usbridge.io) |
 
-Vous préférez un APK direct sans compte Play Store ? Une version auto-mise à jour est également publiée sur la [dernière version](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
+Préférez-vous un APK direct sans compte Play Store ? Une version auto-mise à jour est également publiée sur la [dernière version](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
 
-🌐 **Client Web sans installation** : Aucune installation requise. Ouvrez simplement [web.usbridge.io](https://web.usbridge.io) pour vous connecter instantanément. *(Remarque : Le client web fonctionne avec certaines limitations de fonctionnalités et de performances en raison de la sécurité du navigateur et des contraintes WebRTC. Pour une expérience complète sans compromis, utilisez les applications natives).* Sur un Agent fraîchement démarré, il peut falloir jusqu'à une minute pour devenir accessible la première fois (ou après un changement de réseau) pendant qu'il provisionne un certificat HTTPS de confiance pour lui-même — consultez la ligne **Statut → Certificat** de l'Agent, ou la [documentation de l'Agent](agent/docs/README.md#platform-notes-from-the-top-level-readme) pour plus de détails.
+🌐 **Client Web sans installation** : Aucune installation requise. Ouvrez simplement [web.usbridge.io](https://web.usbridge.io) pour vous connecter instantanément. *(Remarque : Le client web fonctionne avec certaines limitations de fonctionnalités et de performances en raison de la sécurité du navigateur et des contraintes WebRTC. Pour une expérience complète et sans compromis, utilisez les applications natives).* Sur un Agent fraîchement démarré, il peut falloir jusqu'à une minute pour devenir accessible la première fois (ou après un changement de réseau) pendant qu'il provisionne un certificat HTTPS de confiance pour lui-même — consultez la ligne **Statut → Certificat** de l'Agent, ou la [documentation de l'Agent](agent/docs/README.md#platform-notes-from-the-top-level-readme) pour plus de détails.
 
 ## Agent
 
-L'Agent s'exécute sur la machine cible — le serveur ou le PC que vous souhaitez accéder à distance. Il gère la capture d'écran, l'injection d'entrée et le réseau Tailscale.
+L'Agent s'exécute sur la machine cible — le serveur ou le PC auquel vous souhaitez accéder à distance. Il gère la capture d'écran, l'injection d'entrée et le réseau Tailscale.
 
 <table>
   <tr>
@@ -71,7 +71,7 @@ L'Agent s'exécute sur la machine cible — le serveur ou le PC que vous souhait
     </td>
     <!-- Right Column: Image -->
     <td valign="middle" width="450">
-      <img src="./assets/agent-screenshot.svg" alt="USBridge Agent Interface" width="100%">
+      <img src="./assets/agent-screenshot.svg" alt="Interface de l'Agent USBridge" width="100%">
     </td>
   </tr>
 </table>
@@ -83,10 +83,10 @@ L'Agent s'exécute sur la machine cible — le serveur ou le PC que vous souhait
     <td width="33%" valign="top">
       <code>FONCTIONNALITÉ DE BASE</code><br><br>
       <b>SUNSHINE OPEN-SOURCE</b><br>
-      <i>Streaming de jeux standard</i><br><br>
+      <i>Diffusion de jeux standard</i><br><br>
       ✓ Streamer Sunshine open-source intégré<br>
       ✓ Accès bureau & jeux à faible latence<br>
-      ✓ Presse-papiers de fichiers & texte bidirectionnels<br>    
+      ✓ Presse-papiers de fichiers & texte bidirectionnel<br>    
       ✓ Commutation d'affichage multi-moniteurs<br>
       ✓ Réseau P2P Tailscale intégré<br>
       ✓ Support natif Wayland (capture sans invite)
@@ -94,9 +94,10 @@ L'Agent s'exécute sur la machine cible — le serveur ou le PC que vous souhait
     <td width="33%" valign="top">
       <code>+ FONCTIONNALITÉS DE BASE</code><br><br>
       <b>USBRIDGE GRATUIT</b><br>
-      <i>Moteur de streaming basé sur Rust</i><br><br>
+      <i>Moteur de diffusion basé sur Rust</i><br><br>
       ✓ Protocole distant personnalisé à connexion instantanée<br>
-      ✓ Streaming adaptatif optimisé pour la stabilité Wi-Fi<br>
+      ✓ Passage de périphériques USB bruts<br>
+      ✓ Diffusion adaptative optimisée pour la stabilité Wi-Fi<br>
       ✓ HDR10<br>
       ✓ Gestion d'affichage virtuel sans tête<br>
       ✓ Passage de contrôleur de jeu à faible latence<br>
@@ -108,15 +109,14 @@ L'Agent s'exécute sur la machine cible — le serveur ou le PC que vous souhait
       <b>USBRIDGE PRO</b><br>
       <i>Flux de travail professionnels</i><br><br>
       ✓ Précision des couleurs chroma 4:4:4 sans perte<br>
-      ✓ Passage de périphériques USB bruts<br>
-      ✓ Support des tablettes Wacom avec pression & inclinaison<br><br>
+      ✓ Support de la tablette Wacom avec pression & inclinaison<br><br>
     </td>
   </tr>
 </table>
 
 ## Démarrage rapide
 
-1. **Installez l'Agent** sur la machine que vous souhaitez accéder à distance. Lancez-le — il affichera un jeton de connexion et une adresse Tailscale. Connectez Tailscale si vous avez besoin d'accès via Internet.
+1. **Installez l'Agent** sur la machine que vous souhaitez accéder à distance. Lancez-le — il affichera un jeton de connexion et une adresse Tailscale. Connectez Tailscale si vous avez besoin d'un accès via Internet.
 
 2. **Installez le Client** sur votre station de travail, ordinateur portable ou téléphone.
 
@@ -132,17 +132,17 @@ L'Agent s'exécute sur la machine cible — le serveur ou le PC que vous souhait
   <tr>
    <td width="33%" valign="top">
       <b>Contrôle BIOS au niveau matériel</b><br>
-      USBridge Remote s'intègre nativement avec l'appareil USBridge-KVM 2.0 pour une gestion hors bande, bare-metal avant le démarrage de l'OS.<br><br>
-      <a href="https://www.usbridge.io/hardware-agent#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Acheter USBridge-KVM 2.0"></a>
+      USBridge Remote s'intègre nativement avec l'appareil USBridge-KVM 2.0 pour une gestion hors bande, bare-metal avant le démarrage du système d'exploitation.<br><br>
+      <a href="https://www.usbridge.io/hardware-agent?utm_campaign=readme-kvm&utm_medium=readme&utm_source=github#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Acheter USBridge-KVM 2.0"></a>
     </td>
     <td width="33%" valign="top">
       <b>Firmware IP-KVM DIY</b><br>
       Déployez le firmware officiel sur un SBC compatible (par exemple, Radxa Zero 3W/3E, Cubie A7) avec une interface de capture USB pour provisionner un nœud KVM personnalisé.<br><br>
-      <a href="https://www.usbridge.io/hardware-agent"><img src="https://img.shields.io/badge/DOWNLOAD-DIY_FIRMWARE-007ec6?style=for-the-badge" alt="Obtenir le firmware"></a>
+      <a href="https://www.usbridge.io/hardware-agent"><img src="https://img.shields.io/badge/DOWNLOAD-DIY_FIRMWARE-007ec6?style=for-the-badge" alt="Obtenir le Firmware"></a>
     </td>
     <td width="33%" valign="top">
       <b>Dongle matériel USB/IP (ESP32-S3)</b><br>
-      Le passage USB logiciel atteint une limite sur macOS : il n'y a pas de pilote VHCI auquel se rattacher, donc une tablette Wacom distante (ou tout autre périphérique USB) ne peut pas être présentée comme un véritable matériel. Ce dongle se branche sur le Mac et fait en matériel ce que <code>vhci-hcd</code> fait en logiciel ailleurs — le périphérique exporté s'énumère avec son propre VID/PID, lié par le propre pilote de macOS.<br><br>
+      Le passage USB logiciel rencontre un mur sur macOS : il n'y a pas de pilote VHCI auquel se rattacher, donc une tablette Wacom distante (ou un autre périphérique USB) ne peut pas être présentée comme un véritable matériel. Ce dongle se branche sur le Mac et fait en matériel ce que <code>vhci-hcd</code> fait en logiciel ailleurs — le périphérique exporté s'énumère avec son propre VID/PID, lié par le pilote de macOS lui-même.<br><br>
       <a href="esp32-acm/README.md"><img src="https://img.shields.io/badge/Open_Hardware-esp32--acm-f59e0b?style=for-the-badge" alt="firmware & docs esp32-acm"></a>
     </td>
   </tr>
