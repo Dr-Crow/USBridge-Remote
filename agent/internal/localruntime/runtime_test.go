@@ -97,6 +97,8 @@ func TestPrepareRefusesUnknownExecutable(t *testing.T) {
 }
 
 func TestConfiguredStartupAndExplicitOverride(t *testing.T) {
+	original := configuredMode.Load()
+	t.Cleanup(func() { configuredMode.Store(original) })
 	for _, tc := range []struct {
 		env              string
 		configured, want bool
@@ -128,5 +130,23 @@ func TestPreparedDoesNotFollowEnabledOrUnknownBinary(t *testing.T) {
 	}
 	if Prepared(dir, "rustshine") {
 		t.Fatal("failed preparation marked patched")
+	}
+}
+
+func TestSavedModeDoesNotLeakIntoRelaunchEnvironment(t *testing.T) {
+	t.Setenv(Environment, "")
+	original := configuredMode.Load()
+	t.Cleanup(func() { configuredMode.Store(original) })
+	if err := Configure(true); err != nil {
+		t.Fatal(err)
+	}
+	if !Enabled() || os.Getenv(Environment) != "" {
+		t.Fatal("saved mode leaked into child environment")
+	}
+	if err := Configure(false); err != nil {
+		t.Fatal(err)
+	}
+	if Enabled() {
+		t.Fatal("fresh engine retained stale saved mode")
 	}
 }

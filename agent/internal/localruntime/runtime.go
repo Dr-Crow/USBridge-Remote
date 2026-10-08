@@ -19,21 +19,24 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const Environment = "USBRIDGE_LOCAL_RUNTIME"
 const vendorKey = "BOr0FAQyGQhmg6CZdgcRDekKrP2A++60WKvhW52tV58="
 
-func Enabled() bool { return os.Getenv(Environment) == "1" }
+var configuredMode atomic.Bool
+
+func Enabled() bool { return configuredMode.Load() || os.Getenv(Environment) == "1" }
 
 // Configure is called once when constructing an engine, never by a settings
 // handler or a thin-client GUI. Explicit command-line/environment opt-in remains
 // supported; saving a preference cannot alter an already-running engine.
 func Configure(configured bool) error {
-	if configured {
-		return os.Setenv(Environment, "1")
-	}
+	// Keep a saved preference separate from inherited environment overrides:
+	// otherwise a relaunch could inherit a stale "1" after the preference is off.
+	configuredMode.Store(configured)
 	return nil
 }
 
