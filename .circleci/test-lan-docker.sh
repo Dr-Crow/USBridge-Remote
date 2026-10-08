@@ -33,6 +33,7 @@ docker create --name usbridge-lan-ci-fixtures -v "$VOL:/fixtures" "$BUILD" true 
 docker cp "$TMP/." usbridge-lan-ci-fixtures:/fixtures
 docker rm usbridge-lan-ci-fixtures >/dev/null
 docker network create --internal "$NET" >/dev/null
+test "$(docker network inspect "$NET" --format '{{.Internal}}')" = true
 docker run -d --name usbridge-lan-ci-host --network "$NET" --network-alias lan-host \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   -v "$VOL:/fixtures:ro" "$IMAGE" \
@@ -47,7 +48,9 @@ docker run --rm --network "$NET" -v "$VOL:/fixtures:ro" "$BUILD" bash -euo pipef
   curl --cacert /fixtures/server.crt -fsS https://lan-host:8443/components/fixture.bin | grep -q verified
   test "$(curl --cacert /fixtures/server.crt -sS -o /dev/null -w "%{http_code}" https://lan-host:8443/components/private.key)" = 404
   test "$(curl --cacert /fixtures/server.crt -sS -o /dev/null -w "%{http_code}" -X POST https://lan-host:8443/healthz)" = 405
-  if curl --connect-timeout 3 --max-time 4 -fsS https://1.1.1.1 >/dev/null 2>&1; then echo "internal test network allowed WAN" >&2; exit 1; fi
+  # Test TCP connectivity directly: TLS/HTTP errors must not masquerade as
+  # network isolation. GNU timeout bounds the literal-IP connect attempt.
+  if timeout 4 bash -c "exec 3<>/dev/tcp/1.1.1.1/443" >/dev/null 2>&1; then echo "internal test network allowed WAN TCP" >&2; exit 1; fi
   echo "TLS/assets/strict config/declared mirror/internal network checks passed"
 ' 2>&1 | tee "$OUT/tests.txt"
 if docker run --rm "$IMAGE" > "$OUT/missing-tls.txt" 2>&1; then
