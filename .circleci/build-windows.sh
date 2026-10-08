@@ -62,6 +62,25 @@ with zipfile.ZipFile(sys.argv[1]) as z:
 PYZIP
 USBRIDGE_LAB_TEST_BINARY="$(cygpath -w "$ROOT/lab-ci-input/usbridge-usb-broker.exe")" go test -tags ci ./internal/localruntime -run TestPinnedBrokerLocalRuntime -v 2>&1 | tee "$ROOT/artifacts/local-runtime-smoke.txt"
 
+# Stock streamer parser acceptance uses its one-shot credentials writer, not a
+# running capture server. Extract only the expected executable/runtime dependency.
+python - "$ROOT/artifacts/components/usbridge-streamer-windows-x86_64.zip" "$ROOT/lab-ci-input" <<'PYSTREAMER'
+import pathlib, sys, zipfile
+wanted = {"usbridge-streamer.exe", "libopus-0.dll"}
+seen = set()
+with zipfile.ZipFile(sys.argv[1]) as z:
+    for entry in z.infolist():
+        name = entry.filename.replace("\\", "/").split("/")[-1]
+        if name in wanted:
+            if name in seen:
+                raise SystemExit("duplicate streamer input")
+            seen.add(name)
+            pathlib.Path(sys.argv[2], name).write_bytes(z.read(entry))
+if seen != wanted:
+    raise SystemExit("missing expected streamer inputs")
+PYSTREAMER
+USBRIDGE_LAB_STREAMER_BINARY="$(cygpath -w "$ROOT/lab-ci-input/usbridge-streamer.exe")" go test -tags ci ./internal/localruntime -run '^TestPinnedStreamerEmptyICECLI$' -v 2>&1 | tee "$ROOT/artifacts/streamer-empty-ice-cli.txt"
+
 mkdir -p "$ROOT/offline-bundle/agent" "$ROOT/offline-bundle/components"
 cp -R dist/windows/. "$ROOT/offline-bundle/agent/"
 cp -R "$ROOT/artifacts/components/." "$ROOT/offline-bundle/components/"
