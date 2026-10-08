@@ -1,5 +1,7 @@
 package api
 
+import "usbridge-client/pkg/capabilities"
+
 import "time"
 
 type APIResponse struct {
@@ -68,13 +70,14 @@ type DeviceInfo struct {
 }
 
 type DeviceInfoResponse struct {
-	Devices         []DeviceInfo `json:"devices"`
-	Count           int          `json:"count"`
-	MountInProgress bool         `json:"mount_in_progress,omitempty"`
-	LastMountError  string       `json:"last_mount_error,omitempty"`
-	AgentOS         string       `json:"agent_os,omitempty"`
-	AgentDisplay    string       `json:"agent_display,omitempty"`
-	AgentProtocol   string       `json:"agent_protocol,omitempty"`
+	Devices         []DeviceInfo                `json:"devices"`
+	Count           int                         `json:"count"`
+	MountInProgress bool                        `json:"mount_in_progress,omitempty"`
+	LastMountError  string                      `json:"last_mount_error,omitempty"`
+	AgentOS         string                      `json:"agent_os,omitempty"`
+	AgentDisplay    string                      `json:"agent_display,omitempty"`
+	AgentProtocol   string                      `json:"agent_protocol,omitempty"`
+	AgentRuntime    *capabilities.RuntimeStatus `json:"agent_runtime,omitempty"`
 }
 
 type MountDriveStatus struct {
@@ -144,11 +147,12 @@ type ServiceStatus struct {
 }
 
 type SystemStatus struct {
-	Service       ServiceStatus `json:"service"`
-	Timestamp     time.Time     `json:"timestamp"`
-	OS            string        `json:"os,omitempty"`
-	Streamer      string        `json:"streamer,omitempty"`
-	AgentProtocol string        `json:"agent_protocol,omitempty"`
+	Service       ServiceStatus               `json:"service"`
+	Timestamp     time.Time                   `json:"timestamp"`
+	OS            string                      `json:"os,omitempty"`
+	Streamer      string                      `json:"streamer,omitempty"`
+	AgentProtocol string                      `json:"agent_protocol,omitempty"`
+	AgentRuntime  *capabilities.RuntimeStatus `json:"agent_runtime,omitempty"`
 }
 
 type ScreenSnapshot struct {

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"usbridge-client/pkg/capabilities"
 )
 
 // USBStatus USBridge 2 status
@@ -18,13 +19,14 @@ type USBStatus struct {
 
 // StatusData status data
 type StatusData struct {
-	Service       *ServiceStatus `json:"service"`
-	NBD           *NBDStatus     `json:"nbd"`
-	USB           *USBDeviceInfo `json:"usb"`
-	Kernel        *KernelInfo    `json:"kernel"`
-	Video         *VideoStatus   `json:"video"`
-	OS            string         `json:"os,omitempty"`
-	AgentProtocol string         `json:"agent_protocol,omitempty"`
+	Service       *ServiceStatus              `json:"service"`
+	NBD           *NBDStatus                  `json:"nbd"`
+	USB           *USBDeviceInfo              `json:"usb"`
+	Kernel        *KernelInfo                 `json:"kernel"`
+	Video         *VideoStatus                `json:"video"`
+	OS            string                      `json:"os,omitempty"`
+	AgentProtocol string                      `json:"agent_protocol,omitempty"`
+	AgentRuntime  *capabilities.RuntimeStatus `json:"agent_runtime,omitempty"`
 }
 
 // ServiceStatus service status
@@ -359,13 +361,14 @@ type DeviceInfo struct {
 
 // DeviceInfoResponse device information response
 type DeviceInfoResponse struct {
-	Devices         []DeviceInfo `json:"devices"`
-	Count           int          `json:"count"`
-	MountInProgress bool         `json:"mount_in_progress"` // true - mounting is in progress in background
-	LastMountError  string       `json:"last_mount_error"`  // last mount error
-	AgentOS         string       `json:"agent_os,omitempty"`
-	AgentDisplay    string       `json:"agent_display,omitempty"`
-	AgentProtocol   string       `json:"agent_protocol,omitempty"`
+	Devices         []DeviceInfo                `json:"devices"`
+	Count           int                         `json:"count"`
+	MountInProgress bool                        `json:"mount_in_progress"` // true - mounting is in progress in background
+	LastMountError  string                      `json:"last_mount_error"`  // last mount error
+	AgentOS         string                      `json:"agent_os,omitempty"`
+	AgentDisplay    string                      `json:"agent_display,omitempty"`
+	AgentProtocol   string                      `json:"agent_protocol,omitempty"`
+	AgentRuntime    *capabilities.RuntimeStatus `json:"agent_runtime,omitempty"`
 }
 
 // DeviceStatusResponse device status response (new API)

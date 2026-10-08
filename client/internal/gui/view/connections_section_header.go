@@ -87,6 +87,8 @@ func protocolPlaqueText(protocol string) string {
 	switch strings.ToLower(strings.TrimSpace(protocol)) {
 	case "opensource", "open source", "sunshine":
 		return "Opensource"
+	case "local":
+		return "Local runtime"
 	case "free":
 		return "Free"
 	case "pro":

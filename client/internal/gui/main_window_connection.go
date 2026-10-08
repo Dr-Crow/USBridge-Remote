@@ -1079,7 +1079,7 @@ func (mw *MainWindow) applyConnectedAgentIdentity(info *models.DeviceInfoRespons
 	liveOS, liveProtocol, liveDisplay := "", "", ""
 	if info != nil {
 		liveOS = strings.TrimSpace(info.AgentOS)
-		liveProtocol = strings.TrimSpace(info.AgentProtocol)
+		liveProtocol = strings.TrimSpace(info.EffectiveAgentProtocol())
 		liveDisplay = strings.TrimSpace(info.AgentDisplay)
 	}
 	savedOS, savedProtocol := "", ""
@@ -1172,7 +1172,7 @@ func (mw *MainWindow) refreshConnectionAgentIdentity(ctx context.Context, client
 		}
 		if err == nil && deviceInfo != nil {
 			osName = strings.TrimSpace(deviceInfo.AgentOS)
-			protocol = strings.TrimSpace(deviceInfo.AgentProtocol)
+			protocol = strings.TrimSpace(deviceInfo.EffectiveAgentProtocol())
 		}
 		if osName != "" && protocol != "" {
 			return osName, protocol
@@ -1183,7 +1183,7 @@ func (mw *MainWindow) refreshConnectionAgentIdentity(ctx context.Context, client
 				osName = strings.TrimSpace(status.Data.OS)
 			}
 			if protocol == "" {
-				protocol = strings.TrimSpace(status.Data.AgentProtocol)
+				protocol = strings.TrimSpace(status.Data.EffectiveAgentProtocol())
 			}
 		}
 		return osName, protocol
@@ -1418,7 +1418,7 @@ func (mw *MainWindow) handleDisconnect() {
 			if mw.connectionManager != nil && connHost != "" {
 				probeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				if info, err := client.GetDeviceInfoWithContext(probeCtx); err == nil && info != nil {
-					mw.connectionManager.UpdateConnectionOS(connHost, info.AgentOS, info.AgentProtocol)
+					mw.connectionManager.UpdateConnectionOS(connHost, info.AgentOS, info.EffectiveAgentProtocol())
 				}
 				cancel()
 			}

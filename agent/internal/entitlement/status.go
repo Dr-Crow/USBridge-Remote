@@ -3,6 +3,7 @@ package entitlement
 import (
 	"strings"
 	"time"
+	"usbridge-client/pkg/capabilities"
 )
 
 // Status is what the GUI (and, over adminapi, a thin-client GUI attached to
@@ -130,4 +131,13 @@ func (s Status) Protocol() string {
 	default:
 		return "free"
 	}
+}
+
+// RuntimeMetadata preserves the separately reported vendor tariff. Preparation
+// is not evidence of a successful stream, 4:4:4 codec or USB device operation.
+func (s Status) RuntimeMetadata() *capabilities.RuntimeStatus {
+	if !s.LocalRuntimeActive {
+		return nil
+	}
+	return &capabilities.RuntimeStatus{Mode: "local-research", Backend: s.ActiveBackend, StreamerPrepared: s.LocalRuntimeStreamerPrepared, USBPrepared: s.LocalRuntimeUSBPrepared}
 }

@@ -1536,7 +1536,7 @@ func (vw *VideoWidget) hostMapsMouseInStreamSpace() bool {
 	switch strings.ToLower(strings.TrimSpace(vw.agentProtocol)) {
 	case "opensource", "open source", "sunshine":
 		return true
-	case "pro", "free", "enterprise":
+	case "pro", "free", "enterprise", "local":
 		return false
 	default:
 		// Unknown tariff must not assume RustShine crop: that made Sunshine
@@ -1551,13 +1551,13 @@ func (vw *VideoWidget) refreshAgentProtocol() {
 		return
 	}
 	if info, err := vw.usbClient.GetDeviceInfo(); err == nil && info != nil {
-		if p := strings.TrimSpace(info.AgentProtocol); p != "" {
+		if p := strings.TrimSpace(info.EffectiveAgentProtocol()); p != "" {
 			vw.SetAgentProtocol(p)
 			return
 		}
 	}
 	if status, err := vw.usbClient.GetStatus(); err == nil && status != nil && status.Data != nil {
-		if p := strings.TrimSpace(status.Data.AgentProtocol); p != "" {
+		if p := strings.TrimSpace(status.Data.EffectiveAgentProtocol()); p != "" {
 			vw.SetAgentProtocol(p)
 		}
 	}

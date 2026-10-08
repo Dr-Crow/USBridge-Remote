@@ -111,7 +111,7 @@ func (dw *DiskWidget) endOperation() {
 				newMounted[i] = &deviceInfo.Devices[i]
 			}
 			newAgentOS = deviceInfo.AgentOS
-			newAgentProtocol = strings.TrimSpace(deviceInfo.AgentProtocol)
+			newAgentProtocol = strings.TrimSpace(deviceInfo.EffectiveAgentProtocol())
 		} else {
 			logrus.Errorf("endOperation: GetDeviceInfo: %v", err)
 		}

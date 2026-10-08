@@ -4297,6 +4297,7 @@ func (a *App) Status() api.SystemStatus {
 		OS:            runtime.GOOS,
 		Streamer:      a.StreamerName(),
 		AgentProtocol: a.EntitlementStatus().Protocol(),
+		AgentRuntime:  a.EntitlementStatus().RuntimeMetadata(),
 	}
 }
 
@@ -4314,6 +4315,7 @@ func (a *App) DeviceInfo() api.DeviceInfoResponse {
 	}
 	a.state.mu.Unlock()
 	resp.AgentProtocol = a.EntitlementStatus().Protocol()
+	resp.AgentRuntime = a.EntitlementStatus().RuntimeMetadata()
 	return resp
 }
 

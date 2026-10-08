@@ -22,3 +22,23 @@ func TestStatusProtocol(t *testing.T) {
 		}
 	}
 }
+
+func TestLocalMetadataDoesNotChangeVendorTier(t *testing.T) {
+	for _, tier := range []string{"", "free", "expired"} {
+		s := Status{ActiveBackend: "rustshine", Tier: tier, LocalRuntimeActive: true, LocalRuntimeStreamerPrepared: true}
+		if s.Protocol() != "free" {
+			t.Fatal("vendor tier changed")
+		}
+		if s.RuntimeMetadata().EffectiveProtocol(s.Protocol()) != "local" {
+			t.Fatal("prepared runtime hidden")
+		}
+		s.LocalRuntimeStreamerPrepared = false
+		if s.RuntimeMetadata().EffectiveProtocol(s.Protocol()) != "free" {
+			t.Fatal("unprepared runtime promoted")
+		}
+		s.LocalRuntimeActive = false
+		if s.RuntimeMetadata() != nil {
+			t.Fatal("inactive runtime exposed")
+		}
+	}
+}
