@@ -48,6 +48,7 @@ type TokenBackend interface {
 	StreamerAutoUpdateEnabled() bool
 	SetStreamerAutoUpdate(enabled bool) error
 	SetLocalRuntimeEnabled(enabled bool) error
+	SetLocalWebClientURL(raw string) error
 	SnoozeStreamerUpdate(version string) error
 	RemoteWindowLockEnabled() bool
 	SetRemoteWindowLock(enabled bool) error
@@ -255,6 +256,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /token/streamer-auto-update", s.handleStreamerAutoUpdate)
 	mux.HandleFunc("POST /token/streamer-auto-update", s.handleSetStreamerAutoUpdate)
 	mux.HandleFunc("POST /token/local-runtime", s.handleSetLocalRuntime)
+	mux.HandleFunc("POST /token/local-web-client", s.handleSetLocalWebClient)
 	mux.HandleFunc("POST /token/snooze-streamer-update", s.handleSnoozeStreamerUpdate)
 	mux.HandleFunc("GET /token/remote-window-lock", s.handleRemoteWindowLock)
 	mux.HandleFunc("POST /token/remote-window-lock", s.handleSetRemoteWindowLock)
@@ -958,4 +960,17 @@ func (s *Server) broadcastAuthURL(url string) {
 			logrus.Warn("[adminapi] auth-stream subscriber too slow, dropping event")
 		}
 	}
+}
+
+func (s *Server) handleSetLocalWebClient(w http.ResponseWriter, r *http.Request) {
+	var body stringBody
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.token.SetLocalWebClientURL(body.Value); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct{}{})
 }

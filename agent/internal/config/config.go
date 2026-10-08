@@ -13,6 +13,7 @@ import (
 )
 
 type Config struct {
+	LocalWebClientURL            string `yaml:"local_web_client_url,omitempty"`
 	LocalComponentDirectory      string `yaml:"local_component_directory,omitempty"`
 	LocalComponentBundle         string `yaml:"local_component_bundle,omitempty"`
 	LocalComponentMirror         string `yaml:"local_component_mirror,omitempty"`

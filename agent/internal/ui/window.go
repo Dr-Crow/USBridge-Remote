@@ -28,6 +28,7 @@ import (
 	"usbridge_agent/internal/config"
 	"usbridge_agent/internal/entitlement"
 	"usbridge_agent/internal/hwid"
+	"usbridge_agent/internal/netpolicy"
 	"usbridge_agent/internal/netutil"
 	"usbridge_agent/internal/streamhost"
 	"usbridge_agent/internal/tailscale"
@@ -65,6 +66,7 @@ type TokenProvider interface {
 	StreamerAutoUpdateEnabled() bool
 	SetStreamerAutoUpdate(enabled bool) error
 	SetLocalRuntimeEnabled(enabled bool) error
+	SetLocalWebClientURL(raw string) error
 	SnoozeStreamerUpdate(version string) error
 	RemoteWindowLockEnabled() bool
 	SetRemoteWindowLock(enabled bool) error
@@ -291,11 +293,12 @@ type Window struct {
 	// sunWebSunshineRow/sunWebRustshineRow are mutually exclusive: the
 	// Status panel's "web UI" row shows Sunshine's local admin UI address
 	// while Sunshine is active, or a link to the RustShine web client
-	// (rustshineWebURL) while RustShine is active and its WebRTC endpoint
+	// selected local/online destination while RustShine is active and its WebRTC endpoint
 	// is enabled -- and neither (an empty gap) when RustShine is active
 	// with WebRTC turned off, since there's nothing reachable to show.
 	sunWebSunshineRow  *fyne.Container
 	sunWebRustshineRow *fyne.Container
+	sunWebClientLink   *statusLink
 
 	// certRow is the Status panel's HTTPS-certificate line: certVal shows
 	// either the trusted <label>.device.usbridge.io hostname (Let's
@@ -576,12 +579,6 @@ func (w *Window) refreshClipboardToolUI() {
 		w.clipboardToolRow.Show()
 	}
 }
-
-// rustshineWebURL is USBridge's browser/WASM web client -- shown in the
-// Status panel's web-UI row in place of Sunshine's local admin address
-// whenever RustShine is active and its WebRTC endpoint is enabled (see
-// refreshRustShineUI).
-const rustshineWebURL = "https://web.usbridge.io"
 
 // formatStreamerVersion keeps the Status-card "v…" tag for both backends.
 // Sunshine uses the agent build; USBridge Streamer uses the staged release
@@ -1603,17 +1600,24 @@ func (w *Window) ShowAndRun(onClose func()) {
 		container.New(&tightHBoxLayout{gap: 4}, sunWebEyeBtn, sunWebEditBtn),
 	)
 
-	var webURL *url.URL
-	if parsed, err := url.Parse(rustshineWebURL); err == nil {
-		webURL = parsed
-	}
-	sunWebLinkVal := newStatusLink(rustshineWebURL, design.ColorAddress, 10, func() {
-		if webURL != nil && w.app != nil {
-			_ = w.app.OpenURL(webURL)
+	sunWebLinkVal := newStatusLink(w.webClientLinkLabel(), design.ColorAddress, 10, func() {
+		raw := w.cfg.WebClientURL(w.localWebPolicy())
+		if raw == "" {
+			w.showGeneralSettingsDialog(win)
+			return
+		}
+		if parsed, err := url.Parse(raw); err == nil && w.app != nil {
+			_ = w.app.OpenURL(parsed)
 		}
 	})
+	w.sunWebClientLink = sunWebLinkVal
 	sunWebLinkCopyBtn := newTinyGlyphButtonColored(theme.ContentCopyIcon(), design.ColorNameMutedOlive, func() {
-		win.Clipboard().SetContent(rustshineWebURL)
+		raw := w.cfg.WebClientURL(w.localWebPolicy())
+		if raw == "" {
+			w.showGeneralSettingsDialog(win)
+			return
+		}
+		win.Clipboard().SetContent(raw)
 	})
 	sunWebLinkInfoBtn := newTinyGlyphButtonColored(theme.InfoIcon(), design.ColorNameMutedOlive, func() {
 		w.showWebClientInfoDialog(win)
@@ -5304,4 +5308,14 @@ func gpuSettingsObjects(gpus []config.GPUInfo, nvidiaRows ...fyne.CanvasObject) 
 		out = append(out, heading(describe(g)), note(loc().GPUNoEncoderSettings))
 	}
 	return out
+}
+
+func (w *Window) localWebPolicy() bool {
+	return w.cfg.RuntimeLocal || w.cfg.StrictLAN || netpolicy.RuntimeLocal()
+}
+func (w *Window) webClientLinkLabel() string {
+	if raw := w.cfg.WebClientURL(w.localWebPolicy()); raw != "" {
+		return raw
+	}
+	return "Configure local web client"
 }

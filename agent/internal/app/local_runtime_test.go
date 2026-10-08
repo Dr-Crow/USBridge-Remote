@@ -96,3 +96,35 @@ func TestServiceRuntimeGuardHonorsSavedAndOverrideModes(t *testing.T) {
 		}
 	}
 }
+
+func TestLocalWebClientPreferencePersistsIndependently(t *testing.T) {
+	a := newTestApp(t, "unchanged-vendor-token")
+	before := a.cfg
+	if err := a.SetLocalWebClientURL("https://192.168.1.20/client/"); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := config.Load(a.cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved.LocalWebClientURL != "https://192.168.1.20/client/" || saved.EntitlementToken != before.EntitlementToken || saved.StreamerConsent != before.StreamerConsent || saved.LocalRuntimeEnabled != before.LocalRuntimeEnabled {
+		t.Fatal("setting did not persist independently")
+	}
+	if err := a.SetLocalWebClientURL("https://example.com/"); err == nil {
+		t.Fatal("public URL accepted")
+	}
+	if a.cfg.LocalWebClientURL != saved.LocalWebClientURL {
+		t.Fatal("invalid save changed preference")
+	}
+	block := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(block, []byte("blocked"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	a.cfgPath = filepath.Join(block, "config.yaml")
+	if err := a.SetLocalWebClientURL(""); err == nil {
+		t.Fatal("failed write reported success")
+	}
+	if a.cfg.LocalWebClientURL != saved.LocalWebClientURL {
+		t.Fatal("failed write changed live preference")
+	}
+}

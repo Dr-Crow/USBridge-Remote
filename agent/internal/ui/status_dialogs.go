@@ -102,13 +102,20 @@ func (w *Window) showWebClientInfoDialog(parent fyne.Window) {
 		}
 	}
 
+	if w.cfg.WebClientURL(w.localWebPolicy()) == "" {
+		w.showGeneralSettingsDialog(parent)
+		return
+	}
 	hint := widget.NewLabel(loc().WebClientHint)
+	if w.localWebPolicy() {
+		hint.SetText("Your self-hosted browser client. The web server and agent HTTPS endpoint must be trusted by your browser; saving this destination does not configure certificates or signaling.")
+	}
 	hint.Wrapping = fyne.TextWrapWord
 	hint.Alignment = fyne.TextAlignLeading
 
-	urlRow := newDialogCopyRow("URL", rustshineWebURL, dialogFormLabelWidth("URL"), func() string { return rustshineWebURL }, parent)
+	urlRow := newDialogCopyRow("URL", w.cfg.WebClientURL(w.localWebPolicy()), dialogFormLabelWidth("URL"), func() string { return w.cfg.WebClientURL(w.localWebPolicy()) }, parent)
 	openBtn := newDialogCTA(loc().OpenInBrowser, func() {
-		if parsed, err := url.Parse(rustshineWebURL); err == nil && w.app != nil {
+		if parsed, err := url.Parse(w.cfg.WebClientURL(w.localWebPolicy())); err == nil && w.app != nil {
 			_ = w.app.OpenURL(parsed)
 		}
 	})

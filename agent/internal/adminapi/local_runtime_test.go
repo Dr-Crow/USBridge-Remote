@@ -47,3 +47,19 @@ func TestLocalRuntimeAdminSetting(t *testing.T) {
 		}
 	}
 }
+
+type webClientBackend struct {
+	TokenBackend
+	value string
+}
+
+func (b *webClientBackend) SetLocalWebClientURL(v string) error { b.value = v; return nil }
+func TestLocalWebClientAdminSetting(t *testing.T) {
+	b := &webClientBackend{}
+	s := &Server{token: b}
+	w := httptest.NewRecorder()
+	s.handleSetLocalWebClient(w, httptest.NewRequest("POST", "/token/local-web-client", strings.NewReader(`{"value":"https://192.168.1.20/"}`)))
+	if w.Code != 200 || b.value != "https://192.168.1.20/" {
+		t.Fatal("local web setting did not reach backend")
+	}
+}

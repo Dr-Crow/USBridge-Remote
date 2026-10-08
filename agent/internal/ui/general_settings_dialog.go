@@ -8,6 +8,7 @@ import (
 	"fyne.io/fyne/v2/widget"
 	"github.com/sirupsen/logrus"
 
+	"usbridge_agent/internal/config"
 	"usbridge_agent/internal/entitlement"
 )
 
@@ -87,10 +88,35 @@ func (w *Window) showGeneralSettingsDialog(parent fyne.Window) {
 			diagnostics.SetText(localRuntimeDiagnostics(w.token.EntitlementStatus()))
 		}
 	})
+
+	webEntry := widget.NewEntry()
+	webEntry.SetPlaceHolder("https://192.168.1.10/")
+	webEntry.SetText(w.cfg.LocalWebClientURL)
+	webHelp := widget.NewLabel("Self-hosted web client: use a private IP with trusted HTTPS. Leave blank to disable the link in local mode. This does not configure the agent certificate or bypass browser trust checks.")
+	webHelp.Wrapping = fyne.TextWrapWord
+	webSave := widget.NewButton("Save local web client", func() {
+		value, err := config.ValidateLocalWebClientURL(webEntry.Text)
+		if err == nil && w.token != nil {
+			err = w.token.SetLocalWebClientURL(value)
+		}
+		if err != nil {
+			showErrorDialog(err, parent)
+			return
+		}
+		if w.token == nil {
+			return
+		}
+		w.cfg.LocalWebClientURL = value
+		webEntry.SetText(value)
+		if w.sunWebClientLink != nil {
+			w.sunWebClientLink.label.Text = w.webClientLinkLabel()
+			w.sunWebClientLink.label.Refresh()
+		}
+	})
 	body := container.New(&tightVBoxLayout{gap: 10},
 		newExactInset(newPermToggleRow(loc().AgentAutoUpdate, check), generalSettingsRowInset, generalSettingsRowInset, 0, 0),
 		newExactInset(newPermToggleRow("Local runtime (advanced override)", runtimeCheck), generalSettingsRowInset, generalSettingsRowInset, 0, 0),
-		instructions, diagnostics, refresh,
+		instructions, diagnostics, refresh, webHelp, webEntry, webSave,
 	)
 
 	var popup *widget.PopUp

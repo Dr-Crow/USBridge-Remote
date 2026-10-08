@@ -39,3 +39,14 @@ func (a *App) SetLocalRuntimeEnabled(enabled bool) error {
 	log.Printf("[setup] local runtime preference saved=%t active=%t; restart engine to apply", enabled, localruntime.Enabled())
 	return nil
 }
+
+// SetLocalWebClientURL changes just the operator-selected browser destination.
+func (a *App) SetLocalWebClientURL(raw string) error {
+	value, err := config.ValidateLocalWebClientURL(raw)
+	if err != nil {
+		return err
+	}
+	next := a.cfg
+	next.LocalWebClientURL = value
+	return a.SaveConfig(next)
+}

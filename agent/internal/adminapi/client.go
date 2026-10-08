@@ -627,3 +627,7 @@ func (c *Client) runAuthStream(stop chan struct{}) {
 		}
 	}
 }
+
+func (c *Client) SetLocalWebClientURL(raw string) error {
+	return c.do(http.MethodPost, "/token/local-web-client", stringBody{Value: raw}, nil)
+}
