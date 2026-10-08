@@ -43,7 +43,9 @@ runtime feature entitlements. Follow `FORK_TEST_PLAN.md` on a Windows test machi
 
 The pipeline now also copies the fully packaged Windows runtime into a temporary
 profile, launches its actual GUI-subsystem EXE with `--headless`, and requires a
-successful loopback `/api/healthz` response within 60 seconds. It force-stops only
+successful loopback HTTPS `/api/healthz` response within 60 seconds, using an
+operator certificate signed by a temporary test CA. Python verifies the chain
+and IP SAN normally; no trust store is changed. It force-stops only
 that test process tree afterward and records the EXE hash and result in
 `native-agent-smoke.json`. Disposable configuration/state/logs are not packaged.
 
