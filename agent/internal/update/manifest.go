@@ -43,6 +43,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"usbridge_agent/internal/netpolicy"
 )
 
 // manifestMaxBytes bounds how much of the manifest/signature responses we'll
@@ -108,6 +109,9 @@ func fetchManifest(ctx context.Context, client *http.Client) (*Manifest, error) 
 }
 
 func fetchBytes(ctx context.Context, client *http.Client, url string) ([]byte, error) {
+	if err := netpolicy.RequireOnline("public update metadata"); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

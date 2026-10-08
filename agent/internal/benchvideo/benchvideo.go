@@ -36,6 +36,7 @@ import (
 	"runtime"
 	"sync"
 	"time"
+	"usbridge_agent/internal/netpolicy"
 
 	"usbridge_agent/internal/monitors"
 )
@@ -134,6 +135,9 @@ func (p *Player) Prepare(ctx context.Context) (string, error) {
 	}
 	dst := filepath.Join(p.dir, contentName)
 	tmp := dst + ".part"
+	if err := netpolicy.RequireOnline("public benchmark media"); err != nil {
+		return "", err
+	}
 	log.Printf("[bench] downloading benchmark content %s", ContentURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ContentURL, nil)
 	if err != nil {

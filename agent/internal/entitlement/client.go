@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"usbridge_agent/internal/netpolicy"
 )
 
 // httpTimeout bounds every call to the backend -- none of these are on the
@@ -227,6 +228,9 @@ func FetchTurnCredentials(ctx context.Context, hwID string) (*TurnCredentials, e
 }
 
 func newRequest(ctx context.Context, method, path string, body []byte) (*http.Request, error) {
+	if err := netpolicy.RequireOnline("vendor entitlement/TURN"); err != nil {
+		return nil, err
+	}
 	var reader io.Reader
 	if body != nil {
 		reader = strings.NewReader(string(body))

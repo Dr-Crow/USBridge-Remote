@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"sync"
 	"time"
+	"usbridge_agent/internal/netpolicy"
 
 	"usbridge_agent/internal/entitlement"
 	"usbridge_agent/internal/hwid"
@@ -57,6 +58,9 @@ var rustshineWebRTCOfferURL = "http://127.0.0.1:8444/webrtc/offer"
 // dialAndServeSignalRelay for as long as it stays that way) or down (and
 // needs a bounded-backoff reconnect attempt, not a wait for the next tick).
 func (a *App) webrtcSignalRelayWatchdog(ctx context.Context) {
+	if netpolicy.Strict() {
+		return
+	}
 	for {
 		if !a.rustshineStaged() || !a.cfg.WebRTCSignalRelayEnabledOK() {
 			if !sleepOrDone(ctx, webrtcSignalRelayTierRecheckInterval) {

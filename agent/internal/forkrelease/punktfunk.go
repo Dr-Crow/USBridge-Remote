@@ -30,6 +30,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"usbridge_agent/internal/netpolicy"
 
 	"usbridge_agent/internal/update"
 )
@@ -268,6 +269,9 @@ func renameRetry(from, to string) error {
 }
 
 func fetch(ctx context.Context, url string) ([]byte, error) {
+	if err := netpolicy.RequireOnline("public component metadata"); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -285,6 +289,9 @@ func fetch(ctx context.Context, url string) ([]byte, error) {
 }
 
 func download(ctx context.Context, url, wantSHA256 string, onProgress ProgressFunc) (string, error) {
+	if err := netpolicy.RequireOnline("public component download"); err != nil {
+		return "", err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err

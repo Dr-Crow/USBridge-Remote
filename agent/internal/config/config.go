@@ -13,6 +13,8 @@ import (
 )
 
 type Config struct {
+	// StrictLAN disables cloud services before startup and every request boundary.
+	StrictLAN  bool   `yaml:"strict_lan,omitempty"`
 	AppName    string `yaml:"app_name"`
 	ListenHost string `yaml:"listen_host"`
 	HTTPPort   int    `yaml:"http_port"`

@@ -37,6 +37,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"usbridge_agent/internal/netpolicy"
 )
 
 // backendBaseURL mirrors internal/entitlement/pubkey.go's own var of the
@@ -195,6 +196,9 @@ func Rebind(ctx context.Context, accountToken, oldIdentifier, newHwID string) er
 }
 
 func doJSON(ctx context.Context, method, path string, body []byte, bearer string, out any) error {
+	if err := netpolicy.RequireOnline("vendor account"); err != nil {
+		return err
+	}
 	var reader io.Reader
 	if body != nil {
 		reader = strings.NewReader(string(body))

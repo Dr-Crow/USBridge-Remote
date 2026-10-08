@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"runtime"
 	"time"
+	"usbridge_agent/internal/netpolicy"
 
 	"github.com/sirupsen/logrus"
 )
@@ -59,6 +60,9 @@ func platformKey() string {
 // "nothing to do" and continue startup normally; this never blocks longer
 // than checkTimeout.
 func Check(ctx context.Context, currentVersion string) *Manifest {
+	if netpolicy.Strict() {
+		return nil
+	}
 	if Channel == "manual" {
 		return nil
 	}
@@ -108,6 +112,9 @@ func Check(ctx context.Context, currentVersion string) *Manifest {
 // A successful apply never returns — it hands off to a helper/relaunch and
 // calls os.Exit itself.
 func DownloadAndApply(ctx context.Context, manifest *Manifest, onProgress ProgressFunc) error {
+	if err := netpolicy.RequireOnline("agent update"); err != nil {
+		return err
+	}
 	if Channel == "manual" {
 		return fmt.Errorf("this test build uses manual agent updates")
 	}

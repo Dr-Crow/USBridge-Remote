@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"usbridge_agent/internal/netpolicy"
 )
 
 // backendBaseURL is the usbridge-entitlement Worker's deployed URL. A var,
@@ -118,6 +119,9 @@ func RequestCert(ctx context.Context, hwID string, csrDER []byte) (*Cert, error)
 }
 
 func newRequest(ctx context.Context, method, path string, body []byte) (*http.Request, error) {
+	if err := netpolicy.RequireOnline("vendor DNS/certificate enrollment"); err != nil {
+		return nil, err
+	}
 	var reader io.Reader
 	if body != nil {
 		reader = strings.NewReader(string(body))

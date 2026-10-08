@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"usbridge_agent/internal/netpolicy"
 
 	"github.com/sirupsen/logrus"
 	"tailscale.com/client/local"
@@ -73,7 +74,9 @@ func New(stateDir string) *Service {
 		ctx:      ctx,
 		cancel:   cancel,
 	}
-	go s.monitorLoop()
+	if !netpolicy.Strict() {
+		go s.monitorLoop()
+	}
 	return s
 }
 
@@ -175,6 +178,9 @@ func (s *Service) monitorLoop() {
 }
 
 func (s *Service) Status(ctx context.Context) (*Status, error) {
+	if netpolicy.Strict() {
+		return &Status{Backend: "Disabled by strict-LAN policy"}, nil
+	}
 	lc, err := s.localClient()
 	if err != nil {
 		return &Status{Running: false, Backend: "Initializing"}, nil
@@ -351,6 +357,9 @@ func (s *Service) Close() error {
 const startRetryCooldown = 15 * time.Second
 
 func (s *Service) Server() (*tsnet.Server, error) {
+	if err := netpolicy.RequireOnline("Tailscale startup"); err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.server != nil {

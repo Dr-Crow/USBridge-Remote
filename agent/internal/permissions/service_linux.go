@@ -10,6 +10,7 @@ import (
 	"os/user"
 	"strings"
 	"time"
+	"usbridge_agent/internal/netpolicy"
 
 	"github.com/sirupsen/logrus"
 	"usbridge_agent/internal/capture"
@@ -491,6 +492,9 @@ func (s *Service) ClipboardInstallPreview() string {
 // both here is what actually makes the "Install" button fix clipboard sync
 // end to end on Wayland, not just get xclip onto the disk.
 func (s *Service) RequestClipboardTool() bool {
+	if netpolicy.Strict() {
+		return false
+	}
 	s.lastAccessErr = ""
 	if clipboardToolFound() {
 		return true

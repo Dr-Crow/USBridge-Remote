@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"usbridge_agent/internal/netpolicy"
 )
 
 // linuxDriverStatus reports whether this machine can accept a virtual USB
@@ -62,6 +63,9 @@ const vhciModulesLoadPath = "/etc/modules-load.d/usbridge-vhci-hcd.conf"
 // and pkexec is what actually pops a graphical prompt on a Linux desktop
 // session (unlike bare sudo, which needs a terminal).
 func (s *Service) InstallDrivers() error {
+	if err := netpolicy.RequireOnline("online USB driver installation"); err != nil {
+		return err
+	}
 	script := fmt.Sprintf(
 		"apt-get install -y usbip && modprobe vhci-hcd && echo vhci-hcd > %s",
 		vhciModulesLoadPath,

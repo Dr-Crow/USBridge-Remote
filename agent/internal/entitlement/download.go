@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"usbridge_agent/internal/netpolicy"
 
 	"usbridge_agent/internal/streamerlaunch"
 )
@@ -287,6 +288,9 @@ func StageUSBBroker(ctx context.Context, stateDir, entitlementToken string, onPr
 }
 
 func downloadArchive(ctx context.Context, url, wantSHA256Hex string, onProgress ProgressFunc) (path string, err error) {
+	if err := netpolicy.RequireOnline("vendor component download"); err != nil {
+		return "", err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err

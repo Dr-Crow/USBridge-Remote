@@ -41,6 +41,7 @@ import (
 	"usbridge_agent/internal/hwid"
 	"usbridge_agent/internal/input"
 	"usbridge_agent/internal/localruntime"
+	"usbridge_agent/internal/netpolicy"
 	"usbridge_agent/internal/netutil"
 	"usbridge_agent/internal/permissions"
 	"usbridge_agent/internal/sasinput"
@@ -283,6 +284,8 @@ func Start(opts StartOptions, version string) error {
 		return err
 	}
 
+	netpolicy.Configure(cfg.StrictLAN)
+
 	if !config.DirIsUsable(cfg.StateDir) {
 		fallback := config.Default().StateDir
 		log.Printf("[app] state dir %s is not writable by this process; using %s", cfg.StateDir, fallback)
@@ -399,6 +402,8 @@ func runThinClientGUI(client *adminapi.Client, startHidden bool) error {
 		client.Close()
 		return fmt.Errorf("fetch config from running instance: %w", err)
 	}
+
+	netpolicy.Configure(cfg.StrictLAN)
 
 	restoreXWayland := forceXWaylandForGUI()
 	fyneApp := fyneapp.NewWithID("io.usbridge.agent")
@@ -549,6 +554,8 @@ func New() (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	netpolicy.Configure(cfg.StrictLAN)
+
 	if err := localruntime.Configure(cfg.LocalRuntimeEnabled); err != nil {
 		return nil, fmt.Errorf("configure local runtime: %w", err)
 	}
@@ -650,11 +657,15 @@ func New() (*App, error) {
 	// regardless of what Tailscale's enablement looks like right now. Until
 	// RememberPeer is ever called (which only happens once StreamProxy
 	// actually relays a Tailscale connection), this bridge just sits idle.
-	instance.usbBridge = tailscale.NewUsbTunnelBridge(instance.ts)
-	usbBridgeAddr, err := instance.usbBridge.Start(tailscale.DefaultUsbBridgeAddr)
-	if err != nil {
-		log.Printf("[app] usb tunnel bridge: %v (USB passthrough over Tailscale will not work; Direct/LAN unaffected)", err)
-		usbBridgeAddr = ""
+	usbBridgeAddr := ""
+	if !netpolicy.Strict() {
+		instance.usbBridge = tailscale.NewUsbTunnelBridge(instance.ts)
+		var err error
+		usbBridgeAddr, err = instance.usbBridge.Start(tailscale.DefaultUsbBridgeAddr)
+		if err != nil {
+			log.Printf("[app] usb tunnel bridge: %v (USB passthrough over Tailscale will not work; Direct/LAN unaffected)", err)
+			usbBridgeAddr = ""
+		}
 	}
 	instance.usbBroker = usbpass.New(instance.exeDir, cfg.StateDir, cfg.MasterKey, cfg.UsbPassthroughPort, usbBridgeAddr)
 	apiServer.SetUSBPassthrough(instance.usbBroker)
@@ -685,7 +696,7 @@ func New() (*App, error) {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	instance.refreshLocalEntitlementStatus()
-	if cfg.AccountToken != "" {
+	if cfg.AccountToken != "" && !netpolicy.Strict() {
 		instance.accStatus.LoggedIn = true
 		instance.accStatus.Email = cfg.AccountEmail
 		go instance.refreshAccountLicenses(context.Background())
@@ -842,10 +853,12 @@ func (a *App) Run(headless, startHidden bool) error {
 	// One retry-owning loop performs both startup and periodic entitlement setup.
 	// An offline first launch retries rather than waiting a full healthy interval.
 	go localruntime.Renew(ctx)
-	go a.entitlementWatchdog(ctx)
-	go a.streamerUpdateWatchdog(ctx)
-	go a.turnCredentialsWatchdog(ctx)
-	go a.webrtcSignalRelayWatchdog(ctx)
+	if !netpolicy.Strict() {
+		go a.entitlementWatchdog(ctx)
+		go a.streamerUpdateWatchdog(ctx)
+		go a.turnCredentialsWatchdog(ctx)
+		go a.webrtcSignalRelayWatchdog(ctx)
+	}
 	go a.usbBrokerWatchdog(ctx)
 	go func() { _ = a.server.ListenAndServe() }()
 	// Gated by the "Enable HTTPS" checkbox (see ui's HTTP Listen Address
@@ -1203,6 +1216,9 @@ func (a *App) restartStreamProxy() {
 }
 
 func (a *App) initTailscale(ctx context.Context) {
+	if netpolicy.Strict() {
+		return
+	}
 	if a.ts == nil {
 		return
 	}
@@ -2697,6 +2713,9 @@ const entitlementRetryInterval = 5 * time.Minute
 // entitlementWatchdog owns the immediate startup check and all retries.
 // Healthy refreshes wait six hours; failed bootstrap/provisioning waits five minutes.
 func (a *App) entitlementWatchdog(ctx context.Context) {
+	if netpolicy.Strict() {
+		return
+	}
 	for {
 		interval := entitlementRecheckInterval
 		if !a.recheckEntitlement(ctx) {
@@ -2719,6 +2738,9 @@ func (a *App) entitlementWatchdog(ctx context.Context) {
 // just-started agent doesn't wait a full interval to notice an already-
 // published release.
 func (a *App) streamerUpdateWatchdog(ctx context.Context) {
+	if netpolicy.Strict() {
+		return
+	}
 	if localruntime.Enabled() {
 		return
 	} // research copies are pinned to audited component hashes
@@ -2775,6 +2797,9 @@ const turnCredentialsRefreshInterval = 50 * time.Minute
 // first WebRTC session doesn't wait out a full interval for TURN to become
 // available.
 func (a *App) turnCredentialsWatchdog(ctx context.Context) {
+	if netpolicy.Strict() {
+		return
+	}
 	a.tickTurnCredentials(ctx)
 	ticker := time.NewTicker(turnCredentialsRefreshInterval)
 	defer ticker.Stop()
@@ -2894,6 +2919,9 @@ func deviceCertTickOutcome(err error, ip string, now time.Time) (registeredIP st
 // LAN IP is immediately registered with the domain backend so the browser web
 // client can connect without waiting for the 5-minute fallback heartbeat.
 func (a *App) deviceCertWatchdog(ctx context.Context) {
+	if netpolicy.Strict() {
+		return
+	}
 	var lastRegisteredIP string
 	var lastRegisterTime time.Time
 
@@ -2942,6 +2970,9 @@ func (a *App) deviceCertWatchdog(ctx context.Context) {
 // self-signed fallback (or whatever device cert is already installed) in
 // place until the next tick, never blocks or crashes the agent.
 func (a *App) tickDeviceCert(ctx context.Context) error {
+	if err := netpolicy.RequireOnline("vendor certificate retry"); err != nil {
+		return err
+	}
 	hwID, err := hwid.Get()
 	if err != nil {
 		log.Printf("[app] device-cert: hwid unavailable: %v", err)
@@ -3048,6 +3079,9 @@ func (a *App) RetryDeviceCert() {
 // coming back is picked up within entitlementRetryInterval, not up to a
 // full entitlementRecheckInterval later.
 func (a *App) recheckEntitlement(ctx context.Context) bool {
+	if netpolicy.Strict() {
+		return true
+	}
 	if localruntime.Enabled() && a.rustshineStaged() {
 		// Local tokens never go to vendor APIs. Explicit missing-component setup
 		// still uses the genuine free-token download path.
@@ -4141,6 +4175,9 @@ func applyStreamUSBPassBridgeAddr(stream streamhost.Backend, addr string) {
 // by QRLink and the GUI's token dialog (ui.TokenProvider) so both hand out
 // the same link.
 func (a *App) DeviceHostname() string {
+	if netpolicy.Strict() {
+		return ""
+	}
 	if a.tlsMgr == nil || !a.cfg.TLSEnabledOK() {
 		return ""
 	}
@@ -4666,6 +4703,9 @@ func (a *App) restartTLS() {
 // reached the point that sets it; the initial Run() call site is the
 // common path and always has it set by the time it calls this).
 func (a *App) startDeviceCertWatchdogOnce() {
+	if netpolicy.Strict() {
+		return
+	}
 	if a.runCtx == nil {
 		return
 	}

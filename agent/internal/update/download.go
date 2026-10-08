@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"time"
+	"usbridge_agent/internal/netpolicy"
 )
 
 // ProgressFunc is called periodically while an update artifact downloads,
@@ -38,6 +39,9 @@ const progressInterval = 100 * time.Millisecond
 // returned; callers must not apply an update whose download didn't
 // succeed cleanly.
 func downloadArtifact(ctx context.Context, client *http.Client, url, wantSHA256Hex string, onProgress ProgressFunc) (path string, err error) {
+	if err := netpolicy.RequireOnline("public update artifact"); err != nil {
+		return "", err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"usbridge_agent/internal/netpolicy"
 
 	"github.com/gorilla/websocket"
 )
@@ -30,6 +31,9 @@ func (e *SignalRelayRefused) Error() string {
 // (app.webrtcSignalRelayWatchdog) owns the connection's whole lifetime:
 // read incoming offers, reply with answers, redial on drop.
 func DialSignalRelay(ctx context.Context, hwID string) (*websocket.Conn, error) {
+	if err := netpolicy.RequireOnline("hosted signal relay"); err != nil {
+		return nil, err
+	}
 	wsURL, err := signalRelayURL(hwID)
 	if err != nil {
 		return nil, err

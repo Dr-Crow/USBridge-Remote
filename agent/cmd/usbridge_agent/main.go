@@ -8,6 +8,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"usbridge_agent/internal/app"
 	"usbridge_agent/internal/localruntime"
+	"usbridge_agent/internal/netpolicy"
 	"usbridge_agent/internal/ui"
 )
 
@@ -23,6 +24,7 @@ func main() {
 	// needs it -- see that file's doc comment for why the process-wide
 	// version broke clipboard sync, capture, and autostart on Linux.
 
+	strictLAN := flag.Bool("strict-lan", false, "disable cloud services; components must come from configured local sources")
 	localRuntime := flag.Bool("local-runtime", false, "EXPERIMENTAL: run locally rekeyed copies of pinned v0.3.131 components; not unmodified vendor binaries")
 	headless := flag.Bool("headless", false, "run without a GUI (HTTP server, Sunshine, Tailscale only); a later normal launch attaches a GUI to this instance instead of starting a second one")
 	installService := flag.Bool("install-service", false, "install Windows service (requires elevation)")
@@ -30,6 +32,9 @@ func main() {
 	tray := flag.Bool("tray", false, "start minimized to the system tray instead of showing the window -- used by the login-time tray helper that keeps a status icon visible while the engine runs headless")
 	attach := flag.String("attach", "", "dial this admin-socket path directly instead of the normal config-based discovery, and attach a thin-client GUI to it (Windows session-launch use: the LocalSystem service already knows its own socket path, which lives under a different profile than the interactive user's)")
 	flag.Parse()
+	if *strictLAN {
+		_ = os.Setenv(netpolicy.Environment, "1")
+	}
 	if *localRuntime {
 		_ = os.Setenv(localruntime.Environment, "1")
 	}
