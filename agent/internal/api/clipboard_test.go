@@ -67,6 +67,8 @@ type fakeFileEnumeratorBackend struct {
 }
 
 func (f *fakeFileEnumeratorBackend) EnumerateFiles() ([]clipboard.FileSummary, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if len(f.files) == 0 {
 		return nil, false
 	}
@@ -291,14 +293,17 @@ func TestClipboardWS_AgentToClient_FilePendingBeforeReal(t *testing.T) {
 	client := dialTestClipboardClient(t, ts.URL, secret)
 	defer client.close()
 
+	backend.mu.Lock()
 	backend.files = []clipboard.FileSummary{
 		{Name: "a.jpg", Size: 1_000_000},
 		{Name: "b.jpg", Size: 2_000_000},
 	}
-	backend.simulateLocalChange(clipboard.Content{
+	backend.content = clipboard.Content{
 		Kind:  clipboard.KindFile,
 		Files: []clipboard.FileItem{{Name: "a.jpg", Data: []byte("aaa")}, {Name: "b.jpg", Data: []byte("bbb")}},
-	})
+	}
+	backend.stamp++
+	backend.mu.Unlock()
 
 	pending := client.recv(3 * time.Second)
 	if !pending.Pending || pending.Kind != string(clipboard.KindFile) {

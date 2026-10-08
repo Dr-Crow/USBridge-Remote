@@ -81,6 +81,14 @@ func (m *Manager) SetOnLocalChangePending(fn func(PendingInfo)) {
 	m.mu.Unlock()
 }
 
+// SetLocalCallbacks registers a transport's completed and pending callbacks
+// together, so a poll cannot observe only half of a newly connected peer.
+func (m *Manager) SetLocalCallbacks(done func(Content), pending func(PendingInfo)) {
+	m.mu.Lock()
+	m.onLocalChange, m.onLocalChangePending = done, pending
+	m.mu.Unlock()
+}
+
 // Run polls until ctx is cancelled. Call it in its own goroutine.
 func (m *Manager) Run(ctx context.Context) {
 	ticker := time.NewTicker(pollInterval)
@@ -101,7 +109,10 @@ func (m *Manager) Run(ctx context.Context) {
 				continue
 			}
 
-			m.firePendingLocked()
+			m.mu.Lock()
+			cb, pending := m.onLocalChange, m.onLocalChangePending
+			m.mu.Unlock()
+			m.firePendingLocked(pending)
 
 			content, ok, err := m.backend.Read()
 			m.backendMu.Unlock()
@@ -125,7 +136,6 @@ func (m *Manager) Run(ctx context.Context) {
 			hash := content.Hash()
 			m.mu.Lock()
 			isEcho := hash == m.lastAppliedHash
-			cb := m.onLocalChange
 			m.mu.Unlock()
 			if isEcho {
 				continue
@@ -141,7 +151,7 @@ func (m *Manager) Run(ctx context.Context) {
 // supports one) and, if there's anything there, fires onLocalChangePending
 // with a summary. Called with backendMu already held, right after detecting
 // a changed stamp but before the (possibly slow) full Read().
-func (m *Manager) firePendingLocked() {
+func (m *Manager) firePendingLocked(cb func(PendingInfo)) {
 	fe, ok := m.backend.(FileEnumerator)
 	if !ok {
 		return
@@ -154,9 +164,6 @@ func (m *Manager) firePendingLocked() {
 	for _, f := range files {
 		total += f.Size
 	}
-	m.mu.Lock()
-	cb := m.onLocalChangePending
-	m.mu.Unlock()
 	if cb != nil {
 		cb(PendingInfo{Kind: KindFile, Count: len(files), ApproxSize: total})
 	}
@@ -178,6 +185,20 @@ func (m *Manager) Snapshot() (Content, bool) {
 		return Content{}, false
 	}
 	return content, true
+}
+
+// StartLocalSync atomically registers a peer and performs its initial resync.
+// Holding backendMu through the initial writes prevents a changed stamp from
+// interleaving a second pending announcement before the initial real event.
+func (m *Manager) StartLocalSync(done func(Content), pending func(PendingInfo)) {
+	m.backendMu.Lock()
+	defer m.backendMu.Unlock()
+	m.SetLocalCallbacks(done, pending)
+	m.firePendingLocked(pending)
+	content, ok, err := m.backend.Read()
+	if err == nil && ok && !content.Empty() && content.Size() <= m.maxBytes && done != nil {
+		done(content)
+	}
 }
 
 // Apply writes remote content to the local clipboard, remembering its hash

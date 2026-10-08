@@ -308,7 +308,6 @@ func (s *Server) runClipboardDuplex(mgr *clipboard.Manager, conn clipboardJSONCo
 	// Push local clipboard changes to this connection for as long as it's
 	// open; clear the callback on disconnect so a later local change with no
 	// connected peer doesn't try to write to a closed socket.
-	mgr.SetOnLocalChange(pushLocal)
 
 	pushPending := func(info clipboard.PendingInfo) {
 		event := ClipboardEvent{Kind: string(info.Kind), Pending: true, FileCount: info.Count, Size: info.ApproxSize}
@@ -316,21 +315,11 @@ func (s *Server) runClipboardDuplex(mgr *clipboard.Manager, conn clipboardJSONCo
 			log.Printf("[api] clipboard_ws pending push failed: %v", err)
 		}
 	}
-	mgr.SetOnLocalChangePending(pushPending)
+	mgr.StartLocalSync(pushLocal, pushPending)
 
 	defer func() {
-		mgr.SetOnLocalChange(nil)
-		mgr.SetOnLocalChangePending(nil)
+		mgr.SetLocalCallbacks(nil, nil)
 	}()
-
-	// mgr's poll loop only fires on the *edge* of a detected clipboard
-	// change, so a local change that happened (or that failed to send) while
-	// no client was connected would otherwise never be retried. Resync once
-	// up front on every fresh connection so the peer always converges to
-	// whatever is currently on the clipboard, not just future changes.
-	if content, ok := mgr.Snapshot(); ok {
-		pushLocal(content)
-	}
 
 	for {
 		var event ClipboardEvent
