@@ -48,7 +48,7 @@ sha256sum USBridgeAgent.exe USBridgeAgent-Windows-x86_64-*.zip > SHA256SUMS.txt
 # The combined archive uses a genuine short-lived entitlement for this CI
 # machine. Never copy a user's token/config or embed the CI token in artifacts.
 cd "$ROOT/agent"
-go run ./cmd/component_bundle -out "$ROOT/artifacts/components"
+bash "$ROOT/.circleci/prepare-components.sh" "$ROOT" windows/amd64
 USBRIDGE_BUNDLE_FIXTURES="$(cygpath -w "$ROOT/artifacts/components")" go test -tags ci ./internal/app -run '^TestAutomaticBundledPairOfflineFixture$' -v 2>&1 | tee "$ROOT/artifacts/offline-bundle-smoke.txt"
 # Runtime-only lab acceptance is distinct from a claim of USB device/streaming
 # functionality. The original archive and executable are never changed.

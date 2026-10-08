@@ -53,8 +53,20 @@ private-copy preparation in a race-enabled test, without a vendor token or USB
 sharing consent. Windows archives were assembled offline using their signed
 metadata and exact file hashes. The new Windows CI step is configured to run the discovery/staging fixture
 against its generated directory before packaging the combined ZIP; its first
-result is still pending. Linux/macOS automatic discovery paths are implemented,
-but their prebundled application archives are not yet added to the Unix build job.
+result is still pending. Unix CI now also packages Linux x86_64 native-binary
+and macOS ARM64 app bundles and runs the same staging fixture plus the stock
+streamer parser probe. These new jobs must pass before their artifacts are offered.
+macOS Intel remains agent-only because there is no audited matching Rust pair.
+The macOS outer app is ad-hoc signed without deep-signing vendor originals, and
+their hashes are checked again afterward. This is not Apple notarization.
 
 This is not physical capture/streaming/USB or full blocked-WAN GUI acceptance.
 The browser tests, local TLS trust setup and real device tests remain separate.
+
+## Build reuse
+
+CI caches only original signed archives and their component directory, keyed by
+platform and the pinned profile source. Cache hits are reverified and rebuilt
+offline; they do not acquire a fresh vendor token on every build. A corrupt cache
+fails verification instead of being treated as trusted executable input. This
+cache is build acceleration, not permanent release hosting.

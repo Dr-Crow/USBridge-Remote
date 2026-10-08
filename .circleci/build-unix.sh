@@ -50,6 +50,47 @@ else
   cp dist/*.AppImage "$ROOT/artifacts/"
   tar -czf "$ROOT/artifacts/USBridgeAgent-Linux-amd64-$VERSION.tar.gz" -C dist/linux usbridge-agent usbridge-streamer-launch
 fi
+
+# Complete offline editions for platforms with an audited component pair.
+# Native Intel macOS remains agent-only; no matching proprietary pair exists.
+if [[ "$OS" == Darwin ]]; then
+  export GOOS=darwin GOARCH=arm64 CGO_ENABLED=1
+  unset CGO_CFLAGS CGO_LDFLAGS
+  TARGET=darwin/arm64
+else
+  TARGET=linux/amd64
+fi
+bash "$ROOT/.circleci/prepare-components.sh" "$ROOT" "$TARGET"
+USBRIDGE_BUNDLE_FIXTURES="$ROOT/artifacts/components" go test -tags ci ./internal/app -run '^TestAutomaticBundledPairOfflineFixture$' -v 2>&1 | tee "$ROOT/artifacts/offline-bundle-smoke.txt"
+USBRIDGE_LAB_STREAMER_BINARY="$ROOT/artifacts/components/rustshine/usbridge-streamer" go test ./internal/localruntime -run '^TestPinnedStreamerEmptyICECLI$' -v 2>&1 | tee "$ROOT/artifacts/streamer-empty-ice-cli.txt"
+if [[ "$OS" == Darwin ]]; then
+  mkdir -p "$ROOT/offline-macos"
+  ditto -x -k "$ROOT/artifacts/USBridgeAgent-macOS-arm64-$VERSION.zip" "$ROOT/offline-macos"
+  APP="$ROOT/offline-macos/USBridgeAgent.app"
+  mkdir -p "$APP/Contents/Resources/components"
+  cp -R "$ROOT/artifacts/components/." "$APP/Contents/Resources/components/"
+  # Sign the outer app only. Never deep-resign the vendor originals: their exact
+  # hashes are the local-runtime trust anchor.
+  codesign --force --sign - "$APP"
+  codesign --verify --strict "$APP"
+  python3 - "$APP/Contents/Resources/components" <<'PYVERIFY'
+import hashlib, json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+manifest = json.loads((root / 'manifest.json').read_text())
+for component in manifest['components']:
+    for item in component['files']:
+        raw = (root / item['path']).read_bytes()
+        assert len(raw) == item['size'] and hashlib.sha256(raw).hexdigest() == item['sha256'], 'codesign changed a vendor component'
+PYVERIFY
+  cp ../docs/AUTOMATIC_BUNDLES.md "$ROOT/offline-macos/README.md"
+  ditto -c -k --sequesterRsrc "$ROOT/offline-macos" "$ROOT/artifacts/USBridgeAgent-macOS-arm64-with-components.zip"
+else
+  mkdir -p "$ROOT/offline-linux/agent/components"
+  cp dist/linux/usbridge-agent dist/linux/usbridge-streamer-launch "$ROOT/offline-linux/agent/"
+  cp -R "$ROOT/artifacts/components/." "$ROOT/offline-linux/agent/components/"
+  cp ../docs/AUTOMATIC_BUNDLES.md "$ROOT/offline-linux/README.md"
+  tar -czf "$ROOT/artifacts/USBridgeAgent-Linux-amd64-with-components.tar.gz" -C "$ROOT/offline-linux" .
+fi
 cp ../docs/PLATFORM_BUILDS.md "$ROOT/artifacts/README.md"
 cp ../docs/LOCAL_RUNTIME_RESEARCH.md "$ROOT/artifacts/LOCAL-RUNTIME.md"
 cp LICENSE "$ROOT/artifacts/LICENSE"

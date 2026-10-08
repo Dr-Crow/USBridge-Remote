@@ -80,6 +80,9 @@ jobs:
       - checkout
       - restore_cache:
           keys:
+            - audited-components-v03131-windows-v1-{{ checksum "agent/internal/localruntime/pinned.go" }}
+      - restore_cache:
+          keys:
             - windows-agent-go1266-v1-{{ checksum "agent/go.sum" }}
       - run:
           name: Install verified Go and MSYS2 toolchains
@@ -99,6 +102,10 @@ jobs:
           key: windows-agent-go1266-v1-{{ checksum "agent/go.sum" }}
           paths:
             - C:\ci\gopath\pkg\mod
+      - save_cache:
+          key: audited-components-v03131-windows-v1-{{ checksum "agent/internal/localruntime/pinned.go" }}
+          paths:
+            - artifacts/components
       - store_artifacts:
           path: artifacts
           destination: windows-agent
@@ -109,10 +116,17 @@ jobs:
     resource_class: medium
     steps:
       - checkout
+      - restore_cache:
+          keys:
+            - audited-components-v03131-linux-v1-{{ checksum "agent/internal/localruntime/pinned.go" }}
       - run:
           name: Test and package Linux x86_64
           command: bash .circleci/build-unix.sh
           no_output_timeout: 20m
+      - save_cache:
+          key: audited-components-v03131-linux-v1-{{ checksum "agent/internal/localruntime/pinned.go" }}
+          paths:
+            - artifacts/components
       - store_artifacts:
           path: artifacts
           destination: linux-agent
@@ -122,10 +136,17 @@ jobs:
     resource_class: m4pro.medium
     steps:
       - checkout
+      - restore_cache:
+          keys:
+            - audited-components-v03131-macos-v1-{{ checksum "agent/internal/localruntime/pinned.go" }}
       - run:
           name: Test native macOS and package Apple Silicon and Intel
           command: bash .circleci/build-unix.sh
           no_output_timeout: 20m
+      - save_cache:
+          key: audited-components-v03131-macos-v1-{{ checksum "agent/internal/localruntime/pinned.go" }}
+          paths:
+            - artifacts/components
       - store_artifacts:
           path: artifacts
           destination: macos-agent
