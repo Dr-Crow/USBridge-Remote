@@ -52,7 +52,7 @@ func (w *Window) showGeneralSettingsDialog(parent fyne.Window) {
 	}
 	diagnostics := widget.NewLabel(localRuntimeDiagnostics(st))
 	diagnostics.Wrapping = fyne.TextWrapWord
-	instructions := widget.NewLabel("Save the preference, quit the engine, then double-click the agent again. Closing its window or attaching another GUI does not restart the engine. Stop an existing headless engine separately. Then select USBridge streamer; approve USB setup separately if needed. Pair devices and grant permissions as usual.")
+	instructions := widget.NewLabel("On supported platforms, normal launches automatically enable the fork runtime. Select your streamer as usual; supported component copies are prepared before launch. USB setup and OS permissions remain separate. Changing this advanced override requires an engine restart. Unsupported component versions are refused rather than silently patched.")
 	instructions.Wrapping = fyne.TextWrapWord
 	var runtimeCheck *styledCheck
 	saveRuntime := func(on bool) {
@@ -89,7 +89,7 @@ func (w *Window) showGeneralSettingsDialog(parent fyne.Window) {
 	})
 	body := container.New(&tightVBoxLayout{gap: 10},
 		newExactInset(newPermToggleRow(loc().AgentAutoUpdate, check), generalSettingsRowInset, generalSettingsRowInset, 0, 0),
-		newExactInset(newPermToggleRow("Experimental local runtime", runtimeCheck), generalSettingsRowInset, generalSettingsRowInset, 0, 0),
+		newExactInset(newPermToggleRow("Local runtime (advanced override)", runtimeCheck), generalSettingsRowInset, generalSettingsRowInset, 0, 0),
 		instructions, diagnostics, refresh,
 	)
 

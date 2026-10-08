@@ -219,3 +219,50 @@ func TestRemoteWindowLockEnabled_DefaultOff(t *testing.T) {
 		t.Fatal("explicit true must enable the lock")
 	}
 }
+
+func TestDefaultLocalRuntimePlatformMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		os, arch string
+		want     bool
+	}{
+		{"windows", "amd64", true}, {"linux", "amd64", true}, {"darwin", "arm64", true},
+		{"darwin", "amd64", false}, {"linux", "arm64", false}, {"windows", "arm64", false},
+	} {
+		if got := defaultLocalRuntime(tc.os, tc.arch); got != tc.want {
+			t.Errorf("%s/%s: got %t want %t", tc.os, tc.arch, got, tc.want)
+		}
+	}
+}
+
+func TestLocalRuntimeExplicitFalseSurvivesSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := Default()
+	cfg.LocalRuntimeEnabled = false
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LocalRuntimeEnabled {
+		t.Fatal("saved false was replaced by platform default")
+	}
+	if got.StreamerConsent || got.USBBrokerConsentGiven() {
+		t.Fatal("runtime default must not grant component or device consent")
+	}
+}
+
+func TestMissingLocalRuntimeUsesPlatformDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("app_name: Existing install\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.LocalRuntimeEnabled != Default().LocalRuntimeEnabled {
+		t.Fatal("missing runtime setting did not inherit platform default")
+	}
+}
