@@ -19,10 +19,11 @@ type Config struct {
 	LocalComponentManifestSHA256 string `yaml:"local_component_manifest_sha256,omitempty"`
 	LocalComponentCAFile         string `yaml:"local_component_ca_file,omitempty"`
 	// StrictLAN disables cloud services before startup and every request boundary.
-	StrictLAN  bool   `yaml:"strict_lan,omitempty"`
-	AppName    string `yaml:"app_name"`
-	ListenHost string `yaml:"listen_host"`
-	HTTPPort   int    `yaml:"http_port"`
+	RuntimeLocal bool   `yaml:"runtime_local"`
+	StrictLAN    bool   `yaml:"strict_lan,omitempty"`
+	AppName      string `yaml:"app_name"`
+	ListenHost   string `yaml:"listen_host"`
+	HTTPPort     int    `yaml:"http_port"`
 	// TLSPort is the second HTTPS listener (see internal/tlshost,
 	// internal/devicecert) serving the SAME handler as HTTPPort's plain-HTTP
 	// one -- exists so the browser-based web client (client/web, loaded from
@@ -194,6 +195,7 @@ type Config struct {
 func Default() Config {
 	remoteLockOff := false
 	return Config{
+		RuntimeLocal:        true,
 		LocalRuntimeEnabled: defaultLocalRuntime(runtime.GOOS, runtime.GOARCH),
 		AppName:             "USBridge Agent",
 		ListenHost:          "0.0.0.0",

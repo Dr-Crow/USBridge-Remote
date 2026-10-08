@@ -135,7 +135,7 @@ func (p *Player) Prepare(ctx context.Context) (string, error) {
 	}
 	dst := filepath.Join(p.dir, contentName)
 	tmp := dst + ".part"
-	if err := netpolicy.RequireOnline("public benchmark media"); err != nil {
+	if err := netpolicy.RequireRuntimeOnline("public benchmark media"); err != nil {
 		return "", err
 	}
 	log.Printf("[bench] downloading benchmark content %s", ContentURL)

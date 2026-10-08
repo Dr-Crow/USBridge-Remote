@@ -74,7 +74,7 @@ func New(stateDir string) *Service {
 		ctx:      ctx,
 		cancel:   cancel,
 	}
-	if !netpolicy.Strict() {
+	if !netpolicy.RuntimeLocal() {
 		go s.monitorLoop()
 	}
 	return s
@@ -178,7 +178,7 @@ func (s *Service) monitorLoop() {
 }
 
 func (s *Service) Status(ctx context.Context) (*Status, error) {
-	if netpolicy.Strict() {
+	if netpolicy.RuntimeLocal() {
 		return &Status{Backend: "Disabled by strict-LAN policy"}, nil
 	}
 	lc, err := s.localClient()
@@ -357,7 +357,7 @@ func (s *Service) Close() error {
 const startRetryCooldown = 15 * time.Second
 
 func (s *Service) Server() (*tsnet.Server, error) {
-	if err := netpolicy.RequireOnline("Tailscale startup"); err != nil {
+	if err := netpolicy.RequireRuntimeOnline("Tailscale startup"); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()

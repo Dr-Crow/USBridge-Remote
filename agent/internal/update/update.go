@@ -112,7 +112,7 @@ func Check(ctx context.Context, currentVersion string) *Manifest {
 // A successful apply never returns — it hands off to a helper/relaunch and
 // calls os.Exit itself.
 func DownloadAndApply(ctx context.Context, manifest *Manifest, onProgress ProgressFunc) error {
-	if err := netpolicy.RequireOnline("agent update"); err != nil {
+	if err := netpolicy.RequireRuntimeOnline("agent update"); err != nil {
 		return err
 	}
 	if Channel == "manual" {

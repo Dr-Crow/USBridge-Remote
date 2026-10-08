@@ -196,7 +196,7 @@ func Rebind(ctx context.Context, accountToken, oldIdentifier, newHwID string) er
 }
 
 func doJSON(ctx context.Context, method, path string, body []byte, bearer string, out any) error {
-	if err := netpolicy.RequireOnline("vendor account"); err != nil {
+	if err := netpolicy.RequireRuntimeOnline("vendor account"); err != nil {
 		return err
 	}
 	var reader io.Reader

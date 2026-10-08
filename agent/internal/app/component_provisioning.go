@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
+	"usbridge_agent/internal/config"
 	"usbridge_agent/internal/entitlement"
 	"usbridge_agent/internal/hwid"
 	"usbridge_agent/internal/netpolicy"
@@ -13,7 +15,8 @@ import (
 // componentEntitlement keeps the real vendor token intact. A free-tier token
 // can provision components, but the closed programs still decide their features.
 func (a *App) componentEntitlement(ctx context.Context) (string, error) {
-	if err := netpolicy.RequireOnline("vendor component entitlement"); err != nil {
+	ctx = netpolicy.WithPublicProvisioning(ctx)
+	if err := netpolicy.RequireProvisioning(ctx, "vendor component entitlement"); err != nil {
 		return "", err
 	}
 	id, err := hwid.Get()
@@ -66,4 +69,50 @@ func (a *App) provisionRequestedComponents(ctx context.Context, token string) bo
 		}
 	}
 	return ready
+}
+
+// requestedProvisioningWatchdog retries only components already selected by the
+// user and missing from disk. Once staged it performs no vendor polling, refresh
+// or update checks. Strict offline mode never starts this loop.
+func (a *App) requestedProvisioningWatchdog(ctx context.Context) {
+	if !netpolicy.RuntimeLocal() || netpolicy.Strict() {
+		return
+	}
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		saved, readErr := config.Load(a.cfgPath)
+		needsStreamer := readErr == nil && saved.StreamerConsent && saved.PreferredBackend == "rustshine" && !a.rustshineStaged()
+		needsBroker := readErr == nil && saved.USBBrokerConsentGiven() && a.usbBroker != nil && !a.usbBroker.Staged()
+		if needsStreamer || needsBroker {
+			setupCtx := netpolicy.WithPublicProvisioning(ctx)
+			token, err := a.componentEntitlement(setupCtx)
+			if err != nil {
+				a.setEntError(err.Error())
+			} else {
+				a.componentMu.Lock()
+				if needsStreamer {
+					if err := a.stageRustShine(setupCtx, token, nil); err != nil {
+						a.setEntError(err.Error())
+					} else if err := a.SetStreamBackend("rustshine"); err != nil {
+						a.setEntError(err.Error())
+					}
+				}
+				if needsBroker {
+					if err := a.stageAndStartUSBBroker(setupCtx, token, nil); err != nil {
+						a.setEntError(err.Error())
+					}
+				}
+				a.componentMu.Unlock()
+			}
+		}
+		timer := time.NewTimer(entitlementRetryInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
 }

@@ -266,3 +266,22 @@ func TestMissingLocalRuntimeUsesPlatformDefault(t *testing.T) {
 		t.Fatal("missing runtime setting did not inherit platform default")
 	}
 }
+
+func TestRuntimeLocalDefaultsAndExplicitOverride(t *testing.T) {
+	if !Default().RuntimeLocal {
+		t.Fatal("new installs permit runtime cloud callbacks")
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := Default()
+	cfg.RuntimeLocal = false
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RuntimeLocal {
+		t.Fatal("explicit legacy runtime override lost")
+	}
+}

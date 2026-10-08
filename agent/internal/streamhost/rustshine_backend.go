@@ -640,7 +640,7 @@ func (b *rustshineBackend) Start(adminPort int) error {
 	// Normal mode uses the watchdog-maintained TURN file. Strict mode must
 	// neither load a cached vendor file nor retain the public STUN default.
 	// Empty CLI parsing still requires acceptance against the pinned binary.
-	args = append(args, rustshineICEArgs(netpolicy.Strict(), b.stateDir)...)
+	args = append(args, rustshineICEArgs(netpolicy.RuntimeLocal(), b.stateDir)...)
 	// This machine's hardware id, exactly as the entitlement token's own
 	// `sub` claim was bound to (see entitlement.VerifyForHardware) -- a
 	// desktop-entitlement build refuses to start without a matching
@@ -784,7 +784,7 @@ func (b *rustshineBackend) Start(adminPort int) error {
 			cmd = exec.Command(launchPath, args...)
 		}
 		configureRustshineProcess(cmd)
-		if netpolicy.Strict() {
+		if netpolicy.RuntimeLocal() {
 			cmd.Env = strictStreamerEnv(os.Environ())
 		}
 		if launchDir != "" && launchDir != "." {

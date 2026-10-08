@@ -286,6 +286,7 @@ func Start(opts StartOptions, version string) error {
 	}
 
 	netpolicy.Configure(cfg.StrictLAN)
+	netpolicy.ConfigureRuntimeLocal(cfg.RuntimeLocal)
 
 	if !config.DirIsUsable(cfg.StateDir) {
 		fallback := config.Default().StateDir
@@ -405,6 +406,7 @@ func runThinClientGUI(client *adminapi.Client, startHidden bool) error {
 	}
 
 	netpolicy.Configure(cfg.StrictLAN)
+	netpolicy.ConfigureRuntimeLocal(cfg.RuntimeLocal)
 
 	restoreXWayland := forceXWaylandForGUI()
 	fyneApp := fyneapp.NewWithID("io.usbridge.agent")
@@ -556,6 +558,8 @@ func New() (*App, error) {
 		return nil, err
 	}
 	netpolicy.Configure(cfg.StrictLAN)
+	netpolicy.ConfigureRuntimeLocal(cfg.RuntimeLocal)
+	log.Printf("[setup] runtime local=%t strict offline provisioning=%t", netpolicy.RuntimeLocal(), netpolicy.Strict())
 
 	if err := localruntime.Configure(cfg.LocalRuntimeEnabled); err != nil {
 		return nil, fmt.Errorf("configure local runtime: %w", err)
@@ -666,7 +670,7 @@ func New() (*App, error) {
 	// RememberPeer is ever called (which only happens once StreamProxy
 	// actually relays a Tailscale connection), this bridge just sits idle.
 	usbBridgeAddr := ""
-	if !netpolicy.Strict() {
+	if !netpolicy.RuntimeLocal() {
 		instance.usbBridge = tailscale.NewUsbTunnelBridge(instance.ts)
 		var err error
 		usbBridgeAddr, err = instance.usbBridge.Start(tailscale.DefaultUsbBridgeAddr)
@@ -704,7 +708,7 @@ func New() (*App, error) {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	instance.refreshLocalEntitlementStatus()
-	if cfg.AccountToken != "" && !netpolicy.Strict() {
+	if cfg.AccountToken != "" && !netpolicy.RuntimeLocal() {
 		instance.accStatus.LoggedIn = true
 		instance.accStatus.Email = cfg.AccountEmail
 		go instance.refreshAccountLicenses(context.Background())
@@ -861,7 +865,10 @@ func (a *App) Run(headless, startHidden bool) error {
 	// One retry-owning loop performs both startup and periodic entitlement setup.
 	// An offline first launch retries rather than waiting a full healthy interval.
 	go localruntime.Renew(ctx)
-	if !netpolicy.Strict() {
+	if netpolicy.RuntimeLocal() && !netpolicy.Strict() {
+		go a.requestedProvisioningWatchdog(ctx)
+	}
+	if !netpolicy.RuntimeLocal() {
 		go a.entitlementWatchdog(ctx)
 		go a.streamerUpdateWatchdog(ctx)
 		go a.turnCredentialsWatchdog(ctx)
@@ -1208,7 +1215,7 @@ func (a *App) restartStreamProxy() {
 		a.tsProxy.Stop()
 		a.tsProxy = nil
 	}
-	if a.ts == nil || !a.cfg.TailscaleEnabled {
+	if netpolicy.RuntimeLocal() || a.ts == nil || !a.cfg.TailscaleEnabled {
 		return
 	}
 	basePort := a.cfg.SunshinePort - 1 // SunshinePort is the admin port; NvHTTP base = admin - 1
@@ -1224,7 +1231,7 @@ func (a *App) restartStreamProxy() {
 }
 
 func (a *App) initTailscale(ctx context.Context) {
-	if netpolicy.Strict() {
+	if netpolicy.RuntimeLocal() {
 		return
 	}
 	if a.ts == nil {
@@ -1915,7 +1922,7 @@ func (a *App) EntitlementStatus() entitlement.Status {
 	st.LocalRuntimeUSBPrepared = localruntime.Prepared(a.cfg.StateDir, "usb-broker")
 	st.ActiveBackend = a.currentStreamKind()
 	st.RustShineStaged = a.rustshineStaged()
-	if netpolicy.Strict() {
+	if netpolicy.RuntimeLocal() {
 		p := localcomponents.PreparedResult(a.cfg.StateDir, "punktfunk")
 		st.PunktfunkAvailable = p.Binary != "" || a.cfg.LocalComponentDirectory != "" || a.cfg.LocalComponentBundle != "" || a.cfg.LocalComponentMirror != ""
 		st.PunktfunkStaged = p.Binary != ""
@@ -2457,6 +2464,9 @@ const punktfunkUpdateInterval = 6 * time.Hour
 // swap and started again; on Windows its .exe can't be replaced while it
 // runs.
 func (a *App) checkPunktfunkUpdate(ctx context.Context) {
+	if netpolicy.RuntimeLocal() {
+		return
+	}
 	if !forkrelease.PunktfunkStaged(a.cfg.StateDir) {
 		return
 	}
@@ -2606,7 +2616,7 @@ func (a *App) DownloadRustShine(onProgress entitlement.ProgressFunc) error {
 		}
 	}
 
-	if err := a.stageRustShine(context.Background(), token, combined); err != nil {
+	if err := a.stageRustShine(netpolicy.WithPublicProvisioning(context.Background()), token, combined); err != nil {
 		a.setEntError(fmt.Sprintf("download failed: %v", err))
 		return err
 	}
@@ -2745,7 +2755,7 @@ const entitlementRetryInterval = 5 * time.Minute
 // entitlementWatchdog owns the immediate startup check and all retries.
 // Healthy refreshes wait six hours; failed bootstrap/provisioning waits five minutes.
 func (a *App) entitlementWatchdog(ctx context.Context) {
-	if netpolicy.Strict() {
+	if netpolicy.RuntimeLocal() {
 		return
 	}
 	for {
@@ -2770,7 +2780,7 @@ func (a *App) entitlementWatchdog(ctx context.Context) {
 // just-started agent doesn't wait a full interval to notice an already-
 // published release.
 func (a *App) streamerUpdateWatchdog(ctx context.Context) {
-	if netpolicy.Strict() {
+	if netpolicy.RuntimeLocal() {
 		return
 	}
 	if localruntime.Enabled() {
@@ -2829,7 +2839,7 @@ const turnCredentialsRefreshInterval = 50 * time.Minute
 // first WebRTC session doesn't wait out a full interval for TURN to become
 // available.
 func (a *App) turnCredentialsWatchdog(ctx context.Context) {
-	if netpolicy.Strict() {
+	if netpolicy.RuntimeLocal() {
 		return
 	}
 	a.tickTurnCredentials(ctx)
@@ -3002,7 +3012,7 @@ func (a *App) deviceCertWatchdog(ctx context.Context) {
 // self-signed fallback (or whatever device cert is already installed) in
 // place until the next tick, never blocks or crashes the agent.
 func (a *App) tickDeviceCert(ctx context.Context) error {
-	if err := netpolicy.RequireOnline("vendor certificate retry"); err != nil {
+	if err := netpolicy.RequireRuntimeOnline("vendor certificate retry"); err != nil {
 		return err
 	}
 	hwID, err := hwid.Get()
@@ -3111,7 +3121,7 @@ func (a *App) RetryDeviceCert() {
 // coming back is picked up within entitlementRetryInterval, not up to a
 // full entitlementRecheckInterval later.
 func (a *App) recheckEntitlement(ctx context.Context) bool {
-	if netpolicy.Strict() {
+	if netpolicy.RuntimeLocal() {
 		return true
 	}
 	if localruntime.Enabled() && a.rustshineStaged() {
@@ -3278,7 +3288,7 @@ func (a *App) EnableUSBBroker(onProgress entitlement.ProgressFunc) error {
 	if err != nil {
 		return err
 	}
-	return a.stageAndStartUSBBroker(context.Background(), token, onProgress)
+	return a.stageAndStartUSBBroker(netpolicy.WithPublicProvisioning(context.Background()), token, onProgress)
 }
 
 // stageAndStartUSBBroker is the "download the release, then launch it" pair
@@ -4232,7 +4242,7 @@ func applyStreamUSBPassBridgeAddr(stream streamhost.Backend, addr string) {
 // by QRLink and the GUI's token dialog (ui.TokenProvider) so both hand out
 // the same link.
 func (a *App) DeviceHostname() string {
-	if netpolicy.Strict() {
+	if netpolicy.RuntimeLocal() {
 		return ""
 	}
 	if a.tlsMgr == nil || !a.cfg.TLSEnabledOK() {
@@ -4762,7 +4772,7 @@ func (a *App) restartTLS() {
 // reached the point that sets it; the initial Run() call site is the
 // common path and always has it set by the time it calls this).
 func (a *App) startDeviceCertWatchdogOnce() {
-	if netpolicy.Strict() {
+	if netpolicy.RuntimeLocal() {
 		return
 	}
 	if a.runCtx == nil {

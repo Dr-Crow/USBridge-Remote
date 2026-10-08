@@ -3,6 +3,7 @@
 package netpolicy
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -14,6 +15,41 @@ import (
 const Environment = "USBRIDGE_STRICT_LAN"
 
 var configured atomic.Bool
+var runtimeLocal atomic.Bool
+
+type provisioningKey struct{}
+
+// ConfigureRuntimeLocal separates runtime cloud access from explicit setup downloads.
+func ConfigureRuntimeLocal(local bool) { runtimeLocal.Store(local) }
+func RuntimeLocal() bool               { return Strict() || runtimeLocal.Load() }
+
+var ErrRuntimeLocal = errors.New("public runtime service disabled by local-runtime network policy")
+
+func RequireRuntimeOnline(operation string) error {
+	if err := RequireOnline(operation); err != nil {
+		return err
+	}
+	if RuntimeLocal() {
+		return fmt.Errorf("%s: %w", operation, ErrRuntimeLocal)
+	}
+	return nil
+}
+
+// WithPublicProvisioning grants only request-scoped component setup access.
+// It never disables runtime guards or strict offline mode.
+func WithPublicProvisioning(ctx context.Context) context.Context {
+	return context.WithValue(ctx, provisioningKey{}, true)
+}
+func RequireProvisioning(ctx context.Context, operation string) error {
+	if err := RequireOnline(operation); err != nil {
+		return err
+	}
+	if RuntimeLocal() && ctx.Value(provisioningKey{}) != true {
+		return fmt.Errorf("%s: explicit provisioning context required: %w", operation, ErrRuntimeLocal)
+	}
+	return nil
+}
+
 var ErrStrictLAN = errors.New("operation disabled by strict-LAN policy")
 
 // Configure applies only at engine/GUI startup, never from a live settings save.

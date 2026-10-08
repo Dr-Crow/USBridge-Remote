@@ -119,7 +119,7 @@ func RequestCert(ctx context.Context, hwID string, csrDER []byte) (*Cert, error)
 }
 
 func newRequest(ctx context.Context, method, path string, body []byte) (*http.Request, error) {
-	if err := netpolicy.RequireOnline("vendor DNS/certificate enrollment"); err != nil {
+	if err := netpolicy.RequireRuntimeOnline("vendor DNS/certificate enrollment"); err != nil {
 		return nil, err
 	}
 	var reader io.Reader

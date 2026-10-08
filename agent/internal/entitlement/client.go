@@ -228,8 +228,16 @@ func FetchTurnCredentials(ctx context.Context, hwID string) (*TurnCredentials, e
 }
 
 func newRequest(ctx context.Context, method, path string, body []byte) (*http.Request, error) {
-	if err := netpolicy.RequireOnline("vendor entitlement/TURN"); err != nil {
-		return nil, err
+	route := strings.SplitN(path, "?", 2)[0]
+	var policyErr error
+	switch route {
+	case "/v1/desktop-license/refresh", "/v1/download/rustshine", "/v1/download/usb-broker":
+		policyErr = netpolicy.RequireProvisioning(ctx, "component provisioning")
+	default:
+		policyErr = netpolicy.RequireRuntimeOnline("vendor entitlement/TURN")
+	}
+	if policyErr != nil {
+		return nil, policyErr
 	}
 	var reader io.Reader
 	if body != nil {

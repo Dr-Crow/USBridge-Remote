@@ -170,7 +170,7 @@ func (a *App) endSunshineUpdate() {
 // one from an older install moves over through the card's button. Never cuts
 // a stream: with a client connected it waits for sunshineBusyRetry.
 func (a *App) checkSunshineUpdate(ctx context.Context) {
-	if netpolicy.Strict() {
+	if netpolicy.RuntimeLocal() {
 		return
 	}
 	if !sunshineDownloadable() || !forkrelease.SunshineStaged(a.cfg.StateDir) {

@@ -65,7 +65,7 @@ func sessionBrokerLaunchImpl(exe string, args []string, workDir string, stdout, 
 	for k, v := range gamestreamServerCompatEnv {
 		extra[k] = v
 	}
-	if netpolicy.Strict() {
+	if netpolicy.RuntimeLocal() {
 		extra["USBRIDGE_STREAMER_WEBRTC_ICE_SERVERS"] = ""
 		extra["USBRIDGE_STREAMER_TURN_CREDENTIALS_FILE"] = ""
 	}
