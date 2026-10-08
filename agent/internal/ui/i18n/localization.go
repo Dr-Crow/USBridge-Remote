@@ -410,9 +410,9 @@ func EN() *LocalizedStrings {
 
 		EnableUSBBroker:        "Enable",
 		USBBrokerConsentTitle:  "Enable USB passthrough?",
-		USBBrokerConsentBody:   "USB passthrough is powered by a separate, closed-source component (not open-source like the rest of this agent). It stays off until you enable it here. Once enabled, keyboard, mouse, and gamepad passthrough is free; other USB devices (drives, audio, tablets, etc.) require a Pro or Enterprise subscription.",
+		USBBrokerConsentBody:   "USB passthrough is powered by a separate, closed-source component (not open-source like the rest of this agent). It stays off until you enable it here. The agent does not hide devices by subscription tier. The separate broker decides which devices it accepts; enabling it does not start sharing devices.",
 		USBBrokerRunningOnPort: "Running, listening on port %d.",
-		USBBrokerFreeTierNote:  "Keyboard, mouse and gamepad passthrough works without a subscription; other USB devices require Pro or Enterprise.",
+		USBBrokerFreeTierNote:  "Device availability depends on the driver and the separate broker. This agent does not override broker restrictions; any refusal is reported by the runtime.",
 		USBBrokerNotRunning:    "The USB broker is not running. The agent retries automatically every 15 seconds.",
 		USBBrokerLastError:     "Last error from the broker:",
 		USBPort:                "USB",

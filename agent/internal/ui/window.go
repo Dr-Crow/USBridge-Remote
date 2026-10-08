@@ -1848,7 +1848,6 @@ func (w *Window) refreshSupportButton(st entitlement.Status) {
 }
 
 func (w *Window) refreshTierBadge(st entitlement.Status) {
-	w.dropProChromePinIfNeeded(st)
 	setChromeKind(protocolKeyFromStatus(st))
 	if w.headerLine == nil {
 		return
@@ -1892,26 +1891,16 @@ func chromePinToPref(pin string) string {
 	}
 }
 
-func (w *Window) chromeProAllowed() bool {
-	st, acc := w.protocolStatus()
-	return protocolPaidTier(st, acc) != ""
-}
-
+// Theme preferences are cosmetic and independent of account or device entitlement.
 func (w *Window) loadChromePin() {
 	pin := ""
 	if w.app != nil {
 		pin = chromePinFromPref(w.app.Preferences().StringWithFallback(chromeThemePrefKey, "default"))
 	}
-	if pin == protocolPro && !w.chromeProAllowed() {
-		pin = ""
-	}
 	setChromePin(pin)
 }
 
 func (w *Window) saveChromePin(pin string) {
-	if pin == protocolPro && !w.chromeProAllowed() {
-		return
-	}
 	setChromePin(pin)
 	if w.app != nil {
 		w.app.Preferences().SetString(chromeThemePrefKey, chromePinToPref(pin))
@@ -1923,34 +1912,16 @@ func (w *Window) saveChromePin(pin string) {
 	w.refreshTierBadge(st)
 }
 
-func (w *Window) dropProChromePinIfNeeded(st entitlement.Status) {
-	if chromePinned() != protocolPro {
-		return
-	}
-	acc := account.Status{}
-	if w.token != nil {
-		acc = w.token.AccountStatus()
-	}
-	if protocolPaidTier(st, acc) != "" {
-		return
-	}
-	setChromePin("")
-	if w.app != nil {
-		w.app.Preferences().SetString(chromeThemePrefKey, "default")
-	}
-}
-
 func (w *Window) showThemeMenu(anchor fyne.CanvasObject) {
 	if anchor == nil {
 		return
 	}
 	pin := chromePinned()
-	proOK := w.chromeProAllowed()
 	showStyledTealMenuAbove(anchor, []styledMenuItem{
 		{Label: loc().ThemeDefault, Selected: pin == "", OnTap: func() { w.saveChromePin("") }},
 		{Label: "White", Selected: pin == protocolOpensource, OnTap: func() { w.saveChromePin(protocolOpensource) }},
 		{Label: "Blue", Selected: pin == protocolFree, OnTap: func() { w.saveChromePin(protocolFree) }},
-		{Label: "Pro", Selected: pin == protocolPro, Disabled: !proOK, OnTap: func() { w.saveChromePin(protocolPro) }},
+		{Label: "Pro", Selected: pin == protocolPro, OnTap: func() { w.saveChromePin(protocolPro) }},
 	})
 }
 

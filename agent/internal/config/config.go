@@ -102,6 +102,9 @@ type Config struct {
 	// "rustshine". Only meaningful together with a currently-valid
 	// EntitlementToken; see App.applyPreferredBackend.
 	PreferredBackend string `yaml:"preferred_backend,omitempty"`
+	// StreamerConsent records opt-in to background provisioning of the closed
+	// streamer. USB has a separate consent and is never enabled by this flag.
+	StreamerConsent bool `yaml:"streamer_consent,omitempty"`
 	// RustShineWebRTCDisabled turns off gamestream-server's native WebRTC
 	// signaling endpoint (--webrtc-disable) -- the surface USBridge's
 	// browser/WASM web client connects through. Defaults to false (enabled,

@@ -62,8 +62,11 @@ type deviceState struct {
 }
 
 type App struct {
-	cfgPath string
-	cfg     config.Config
+	componentMu     sync.Mutex // serializes explicit component provisioning
+	stageStreamerMu sync.Mutex
+	stageBrokerMu   sync.Mutex
+	cfgPath         string
+	cfg             config.Config
 
 	benchOnce   sync.Once
 	benchPlayer *benchvideo.Player
@@ -156,12 +159,12 @@ type App struct {
 	// streamMu serializes SetStreamBackend calls against each other (a GUI
 	// click racing the entitlement watchdog's own downgrade, say) --
 	// a.stream/a.streamKind must only ever be read/written while held.
-	streamMu   sync.Mutex
+	streamMu sync.Mutex
 	// Crash-loop backoff for restartStreamerAfterExit.
 	streamerExitMu     sync.Mutex
 	streamerLastExit   time.Time
 	streamerExitStreak int
-	streamKind string // "sunshine" | "rustshine" | "punktfunk" -- bookkeeping only, mirrors which concrete type a.stream currently is
+	streamKind         string // "sunshine" | "rustshine" | "punktfunk" -- bookkeeping only, mirrors which concrete type a.stream currently is
 	// streamKindView mirrors streamKind for readers that must not wait on
 	// streamMu: SetStreamBackend holds it through the new backend's whole
 	// startup (~25-40 s for Sunshine), and currentStreamKind used to take
@@ -831,18 +834,13 @@ func (a *App) Run(headless, startHidden bool) error {
 	go a.sunshineWatchdog(ctx)
 	go a.x11SessionEnvWatchdog(ctx)
 	go a.awdlWatchdog(ctx)
-	// Always started, even before ever linking -- recheckEntitlement no-ops
-	// immediately (no network call) whenever cfg.EntitlementToken is
-	// empty, so this is cheap, and it means a purchase/trial made
-	// mid-session (via StartPurchase/StartFreeTrial, no restart) is
-	// covered by the same ticker without needing separate "start the
-	// watchdog now" bookkeeping.
+	// One retry-owning loop performs both startup and periodic entitlement setup.
+	// An offline first launch retries rather than waiting a full healthy interval.
 	go a.entitlementWatchdog(ctx)
 	go a.streamerUpdateWatchdog(ctx)
 	go a.turnCredentialsWatchdog(ctx)
 	go a.webrtcSignalRelayWatchdog(ctx)
 	go a.usbBrokerWatchdog(ctx)
-	go a.recheckEntitlement(ctx) // one immediate check, don't wait a full entitlementRecheckInterval after a restart
 	go func() { _ = a.server.ListenAndServe() }()
 	// Gated by the "Enable HTTPS" checkbox (see ui's HTTP Listen Address
 	// dialog, UpdateTLSAddr) -- on by default (TLSEnabledOK's nil-means-true
@@ -866,7 +864,7 @@ func (a *App) Run(headless, startHidden bool) error {
 		go func() { _ = a.tlsServer.ListenAndServeTLS("", "") }()
 		a.startDeviceCertWatchdogOnce()
 	}
-	if a.usbBroker != nil {
+	if a.usbBroker != nil && a.cfg.USBBrokerConsentGiven() {
 		if err := a.usbBroker.Start(); err != nil {
 			log.Printf("[usbpass] broker not started: %v", err)
 		}
@@ -1594,6 +1592,13 @@ func (a *App) SetStreamBackend(kind string) error {
 
 	a.lastSwitch = api.BackendSwitchTiming{}
 	if kind == a.streamKind {
+		if a.cfg.PreferredBackend != kind {
+			next := a.cfg
+			next.PreferredBackend = kind
+			if err := a.SaveConfig(next); err != nil {
+				return err
+			}
+		}
 		if a.benchRestartPending && a.stream != nil {
 			// A deferred benchmark monitor change is due now.
 			a.benchRestartPending = false
@@ -2090,21 +2095,10 @@ func (a *App) applyIssuedToken(token, hwID string) {
 	go a.ensureRustShineFresh(context.Background(), token)
 }
 
-// bootstrapFreeTier silently links a fresh install (or a just-downgraded
-// one, see recheckEntitlement's call sites) to today's unconditional free
-// tier -- deliberately NOT applyIssuedToken: this runs with no user action
-// at all (just the app starting up, or a refund just having been detected),
-// so it must not also kick off an immediate multi-MB RustShine download on
-// every single install regardless of whether that install ever wants
-// RustShine. A later explicit tier pick in the license dialog
-// (StartFreeTrial/StartPurchase's own applyIssuedToken) is what actually
-// triggers that download.
-//
-// Returns true once a fresh, locally-verifying free token is cached; false
-// on any transient failure (network down, backend unreachable, or a
-// well-formed but non-verifying response), so entitlementWatchdog knows to
-// retry at entitlementRetryInterval rather than leaving this install
-// without a token until the next full entitlementRecheckInterval tick.
+// bootstrapFreeTier fetches this machine's genuine current entitlement.
+// After verification it resumes only components the user already requested.
+// A fresh install without component consent does not download proprietary code.
+// Failure returns false so the startup/periodic watchdog retries in five minutes.
 func (a *App) bootstrapFreeTier(ctx context.Context, hwID string) bool {
 	res, err := entitlement.RefreshLicense(ctx, hwID)
 	if err != nil {
@@ -2122,7 +2116,7 @@ func (a *App) bootstrapFreeTier(ctx context.Context, hwID string) bool {
 		log.Printf("[app] warning: failed to persist entitlement token: %v", err)
 	}
 	a.refreshLocalEntitlementStatus()
-	return true
+	return a.provisionRequestedComponents(ctx, res.Token)
 }
 
 // AccountStatus returns a snapshot of the account-login state (see
@@ -2500,18 +2494,29 @@ func (a *App) updatePunktfunk(ctx context.Context) error {
 // Does not switch to it; call SetStreamBackend("rustshine") once this
 // returns successfully.
 func (a *App) DownloadRustShine(onProgress entitlement.ProgressFunc) error {
-	token := a.cfg.EntitlementToken
-	hwID, err := hwid.Get()
-	if err != nil {
-		return fmt.Errorf("could not determine this machine's hardware id: %w", err)
+	a.componentMu.Lock()
+	defer a.componentMu.Unlock()
+	a.entMu.Lock()
+	a.entStatus.LastError = ""
+	a.entMu.Unlock()
+	next := a.cfg
+	next.StreamerConsent = true
+	next.PreferredBackend = "rustshine"
+	if err := a.SaveConfig(next); err != nil {
+		return err
 	}
-	if _, err := entitlement.VerifyForHardware(token, hwID); err != nil {
-		return fmt.Errorf("not currently entitled: %w", err)
+	token, err := a.componentEntitlement(context.Background())
+	if err != nil {
+		a.setEntError(err.Error())
+		return err
+	}
+	if a.rustshineStaged() {
+		return nil
 	}
 
 	a.entMu.Lock()
 	a.entStatus.DownloadInProgress = true
-	a.entStatus.DownloadName = "Punktfunk"
+	a.entStatus.DownloadName = "USBridge streamer"
 	a.entStatus.Progress = -1
 	a.entStatus.LastError = ""
 	a.entMu.Unlock()
@@ -2630,6 +2635,7 @@ func (a *App) ClearLicense() error {
 // either way, since it just won't get launched again from the Go side
 // until a fresh license/trial succeeds anyway.
 func (a *App) downgradeToSunshine() {
+	requested := a.cfg.PreferredBackend
 	next := a.cfg
 	next.EntitlementToken = ""
 	next.PreferredBackend = ""
@@ -2637,6 +2643,12 @@ func (a *App) downgradeToSunshine() {
 	a.refreshLocalEntitlementStatus()
 	if a.currentStreamKind() == "rustshine" {
 		_ = a.SetStreamBackend("sunshine")
+	}
+	// Preserve an explicit streamer choice for retry after connectivity returns.
+	if requested == "rustshine" && a.cfg.StreamerConsent {
+		next = a.cfg
+		next.PreferredBackend = requested
+		_ = a.SaveConfig(next)
 	}
 }
 
@@ -2669,35 +2681,20 @@ const streamerUpdateCheckInterval = 1 * time.Hour
 // long enough not to hammer the backend while genuinely offline.
 const entitlementRetryInterval = 5 * time.Minute
 
-// entitlementWatchdog periodically re-verifies entitlement, downgrades to
-// Sunshine the moment a license no longer holds up (a refund), and
-// proactively renews whatever's cached (free or paid) so it never sits
-// un-refreshed for the full 6h steady-state interval after a transient
-// failure -- mirrors sunshineWatchdog's shape. Run also fires one immediate
-// recheckEntitlement shortly after startup (not gated on this ticker), so a
-// refund or a lapsed free token is caught quickly after a restart instead
-// of waiting up to a full interval.
+// entitlementWatchdog owns the immediate startup check and all retries.
+// Healthy refreshes wait six hours; failed bootstrap/provisioning waits five minutes.
 func (a *App) entitlementWatchdog(ctx context.Context) {
-	ticker := time.NewTicker(entitlementRecheckInterval)
-	defer ticker.Stop()
 	for {
+		interval := entitlementRecheckInterval
+		if !a.recheckEntitlement(ctx) {
+			interval = entitlementRetryInterval
+		}
+		timer := time.NewTimer(interval)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-ticker.C:
-		}
-		// Keep retrying at entitlementRetryInterval (rather than only at
-		// the next full 6h tick) until a recheck actually succeeds -- see
-		// entitlementRetryInterval's own doc comment for why this matters
-		// most for a free-tier token that's sitting downgraded because the
-		// backend was briefly unreachable right when it needed renewing.
-		for !a.recheckEntitlement(ctx) {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(entitlementRetryInterval):
-			case <-ticker.C:
-			}
+		case <-timer.C:
 		}
 	}
 }
@@ -3055,7 +3052,7 @@ func (a *App) recheckEntitlement(ctx context.Context) bool {
 		return a.bootstrapFreeTier(ctx, hwID)
 	}
 
-	claims, verifyErr := entitlement.VerifyForHardware(a.cfg.EntitlementToken, hwID)
+	_, verifyErr := entitlement.VerifyForHardware(a.cfg.EntitlementToken, hwID)
 	if verifyErr != nil {
 		log.Printf("[app] cached entitlement token is no longer valid locally — switching back to Sunshine: %v", verifyErr)
 		a.downgradeToSunshine()
@@ -3072,16 +3069,9 @@ func (a *App) recheckEntitlement(ctx context.Context) bool {
 		return false // cached token already verified locally above -- keep trusting it until it actually expires or a retry succeeds
 	}
 
-	if claims.Provider != entitlement.ProviderDesktopTrial && res.Status == "free" {
-		// A previously PAID record is no longer paid (refund/cancellation)
-		// -- this is the one transition that actually means "revoke."
-		// Deliberately gated on the CACHED token's own provider, not just
-		// res.Status alone: a free/trial token refreshing into "free"
-		// again is the expected, normal renewal every single tick, never a
-		// downgrade -- there's nothing below free to fall back to.
-		log.Printf("[app] license no longer on record for this hardware (refunded/canceled?) — switching back to Sunshine")
-		a.downgradeToSunshine()
-		return true
+	if _, err := entitlement.VerifyForHardware(res.Token, hwID); err != nil {
+		log.Printf("[app] refreshed entitlement rejected: %v", err)
+		return false
 	}
 
 	next := a.cfg
@@ -3090,9 +3080,7 @@ func (a *App) recheckEntitlement(ctx context.Context) bool {
 		log.Printf("[app] warning: failed to persist refreshed entitlement: %v", err)
 	}
 	a.refreshLocalEntitlementStatus()
-	a.ensureRustShineFresh(ctx, res.Token)
-	a.ensureUSBBroker(ctx, res.Token)
-	return true
+	return a.provisionRequestedComponents(ctx, res.Token)
 }
 
 // usbBrokerWatchdogInterval is how often usbBrokerWatchdog checks whether
@@ -3181,14 +3169,9 @@ func (a *App) EnableUSBBroker(onProgress entitlement.ProgressFunc) error {
 		return err
 	}
 
-	token := strings.TrimSpace(a.cfg.EntitlementToken)
-	if token == "" {
-		// Consent alone doesn't require entitlement -- ensureUSBBroker's own
-		// next watchdog tick (or a subsequent EnableUSBBroker retry) picks
-		// this up the moment a token exists. Not an error: recording "yes,
-		// I want the proprietary broker enabled" is a valid, standalone
-		// action even before/without ever linking a license.
-		return nil
+	token, err := a.componentEntitlement(context.Background())
+	if err != nil {
+		return err
 	}
 	return a.stageAndStartUSBBroker(context.Background(), token, onProgress)
 }
@@ -3201,6 +3184,8 @@ func (a *App) EnableUSBBroker(onProgress entitlement.ProgressFunc) error {
 // propagate to the user (EnableUSBBroker's return value, surfaced by the
 // consent button).
 func (a *App) stageAndStartUSBBroker(ctx context.Context, token string, onProgress entitlement.ProgressFunc) error {
+	a.stageBrokerMu.Lock()
+	defer a.stageBrokerMu.Unlock()
 	if a.usbBroker == nil {
 		return fmt.Errorf("usb passthrough not available on this platform")
 	}
@@ -3435,6 +3420,8 @@ func processRunning(imageName string) bool {
 // staring at a portal prompt they can't click). Without the launcher it's
 // plain entitlement.StageRustShine.
 func (a *App) stageRustShine(ctx context.Context, token string, onProgress entitlement.ProgressFunc) error {
+	a.stageStreamerMu.Lock()
+	defer a.stageStreamerMu.Unlock()
 	var verify entitlement.BundleVerifier
 	if runtime.GOOS == "linux" && a.perms != nil && a.perms.KMSCaptureGranted(streamerlaunch.InstallPath) {
 		verify = func(bundleDir string) error {
@@ -4466,16 +4453,14 @@ func (a *App) Color444Status() (active bool, available bool) {
 		return false, false
 	}
 	active, available = a.stream.Color444Status()
-	// Sunshine has no license gate of its own: a Pro/Enterprise entitlement
-	// unlocks the 4:4:4 option there too, offered whenever the host's encoder
-	// can actually produce a 4:4:4 format (the client negotiates it via the
-	// codec-support flags, see client moonlightVideoFormat).
+	// Sunshine's 4:4:4 support is an encoder capability, not a subscription
+	// feature of this agent. Preserve backend-reported availability and use
+	// the optional encoder probe when the backend does not report it yet.
+	// The client still negotiates supported codec formats independently;
+	// this does not override entitlement checks inside proprietary backends.
 	if !available {
 		if sb, ok := a.stream.(interface{ Color444Supported(int) bool }); ok {
-			a.entMu.Lock()
-			tier := a.entStatus.Tier
-			a.entMu.Unlock()
-			if (tier == "pro" || tier == "enterprise") && sb.Color444Supported(a.SunshineAdminPort()) {
+			if sb.Color444Supported(a.SunshineAdminPort()) {
 				available = true
 			}
 		}

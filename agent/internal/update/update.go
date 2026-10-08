@@ -41,6 +41,10 @@ const downloadTimeout = 5 * time.Minute
 // update, for CheckAndApply) -- this indirection is what avoids the cycle.
 var BeforeRelaunch func()
 
+// Channel is set to manual for fork CI test builds so vendor self-updates
+// cannot overwrite the code under test. Signature verification is unchanged.
+var Channel = "upstream"
+
 // platformKey identifies this build in the manifest's "platforms" map.
 func platformKey() string {
 	return runtime.GOOS + "-" + runtime.GOARCH
@@ -55,6 +59,9 @@ func platformKey() string {
 // "nothing to do" and continue startup normally; this never blocks longer
 // than checkTimeout.
 func Check(ctx context.Context, currentVersion string) *Manifest {
+	if Channel == "manual" {
+		return nil
+	}
 	log := logrus.WithField("component", "update")
 
 	checkCtx, cancel := context.WithTimeout(ctx, checkTimeout)
@@ -101,6 +108,9 @@ func Check(ctx context.Context, currentVersion string) *Manifest {
 // A successful apply never returns — it hands off to a helper/relaunch and
 // calls os.Exit itself.
 func DownloadAndApply(ctx context.Context, manifest *Manifest, onProgress ProgressFunc) error {
+	if Channel == "manual" {
+		return fmt.Errorf("this test build uses manual agent updates")
+	}
 	log := logrus.WithField("component", "update")
 
 	asset, ok := manifest.Platforms[platformKey()]

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"strings"
+	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
@@ -67,13 +68,12 @@ func protocolBadgeColors(key string) (fg color.Color, line color.Color) {
 
 var protocolOptions = []protocolOption{
 	{protocolOpensource, "Sunshine", "Open Source", design.ColorWhite, design.ColorWhite, nil},
-	{protocolFree, "USBridge Streamer", "Free", design.ColorTeal, design.ColorTeal, nil},
-	{protocolPro, "USBridge Streamer", "Pro", design.ColorProSoft, design.ColorProSoft, nil},
+	{protocolFree, "USBridge streamer", "", design.ColorTeal, design.ColorTeal, nil},
 }
 
 func protocolPickerKey(key string) string {
-	if key == protocolEnterprise {
-		return protocolPro
+	if key == protocolEnterprise || key == protocolPro {
+		return protocolFree
 	}
 	return key
 }
@@ -235,7 +235,7 @@ func protocolHoverHighlights(hover, paid, key string) bool {
 
 func (w *Window) restoreProtocolSelection() {
 	st, _ := w.protocolStatus()
-	w.protocolApplied = protocolKeyFromStatus(st)
+	w.protocolApplied = protocolPickerKey(protocolKeyFromStatus(st))
 	w.protocolPick = w.protocolApplied
 	w.protocolHover = ""
 	for _, row := range w.protocolRows {
@@ -252,7 +252,7 @@ func (w *Window) newProtocolPanel(parent fyne.Window) fyne.CanvasObject {
 	if w.token != nil {
 		st = w.token.EntitlementStatus()
 	}
-	w.protocolApplied = protocolKeyFromStatus(st)
+	w.protocolApplied = protocolPickerKey(protocolKeyFromStatus(st))
 	w.protocolPick = w.protocolApplied
 
 	options := protocolOptions
@@ -264,15 +264,10 @@ func (w *Window) newProtocolPanel(parent fyne.Window) fyne.CanvasObject {
 	for _, opt := range options {
 		opt := opt
 		row := newProtocolPickRow(opt, protocolPickerKey(opt.key) == protocolPickerKey(w.protocolPick), func() {
-			if opt.key == protocolPro || opt.key == protocolEnterprise {
-				w.restoreProtocolSelection()
-				w.showTariffPickerDialog(parent, opt.key)
-				return
-			}
 			w.selectProtocolPick(opt.key)
 			w.applySelectedProtocol(parent)
 		}, func() {
-			w.showTariffPickerDialog(parent, opt.key)
+			w.showBackendInfoDialog(parent, opt.key)
 		}, func(on bool) {
 			w.setProtocolHover(opt.key, on)
 		})
@@ -329,8 +324,7 @@ func (w *Window) selectProtocolPick(key string) {
 	if w.protocolSwitching {
 		return
 	}
-	st, acc := w.protocolStatus()
-	w.protocolPick = protocolNormalizePick(key, w.protocolApplied, protocolPaidTier(st, acc))
+	w.protocolPick = protocolPickerKey(key)
 	w.refreshProtocolPickerVisuals(false)
 }
 
@@ -366,13 +360,13 @@ func (w *Window) refreshProtocolPickerVisuals(busy bool) {
 		}
 		display := protocolPickerKey(w.protocolPick)
 		row.SetChecked(protocolPickerKey(row.key) == display)
-		row.SetLocked(protocolNeedsPurchase(row.key, st, acc) && protocolPickerKey(row.key) != display)
-		row.SetIncluded(protocolRowIncluded(w.protocolApplied, w.protocolPick, row.key))
+		row.SetLocked(false)
+		row.SetIncluded(false)
 		row.SetPreview(protocolHoverHighlights(w.protocolHover, paid, row.key))
 		row.SetDisabled(busy)
 		w.syncProtocolRowUpdate(row, st, acc)
 	}
-	needsBuy := protocolNeedsPurchase(w.protocolPick, st, acc)
+	needsBuy := false
 	if w.protocolChange != nil {
 		pending := !busy && w.protocolPick != "" && w.protocolPick != w.protocolApplied && !needsBuy
 		w.protocolChange.SetAccent(pending)
@@ -395,7 +389,7 @@ func (w *Window) refreshProtocolPickerVisuals(busy bool) {
 func (w *Window) syncProtocolRowUpdate(row *protocolPickRow, st entitlement.Status, acc account.Status) {
 	switch row.key {
 	case protocolFree, protocolPro, protocolEnterprise:
-		show := st.RustShineStaged && !protocolNeedsPurchase(row.key, st, acc)
+		show := st.RustShineStaged
 		row.SetUpdate(show, st.RustShineUpdateInProgress || w.streamerUpdateChecking, w.beginStreamerUpdateCheck)
 	case protocolPunktfunk:
 		row.SetUpdate(st.PunktfunkStaged, st.PunktfunkUpdateInProgress || w.punktfunkUpdateChecking, w.beginPunktfunkUpdateCheck)
@@ -417,7 +411,7 @@ func (w *Window) refreshProtocolUpdateGlyphs() {
 }
 
 func (w *Window) syncProtocolPicker(st entitlement.Status) {
-	w.protocolApplied = protocolKeyFromStatus(st)
+	w.protocolApplied = protocolPickerKey(protocolKeyFromStatus(st))
 	if w.protocolPick == "" {
 		w.protocolPick = w.protocolApplied
 	}
@@ -445,18 +439,12 @@ func (w *Window) applySelectedProtocol(parent fyne.Window) {
 	}
 	st := w.token.EntitlementStatus()
 	acc := w.token.AccountStatus()
-	w.protocolPick = protocolNormalizePick(w.protocolPick, w.protocolApplied, protocolPaidTier(st, acc))
+	w.protocolPick = protocolPickerKey(w.protocolPick)
 	if w.protocolPick == w.protocolApplied {
 		w.refreshProtocolPickerVisuals(false)
 		return
 	}
 	key := w.protocolPick
-	if protocolNeedsPurchase(key, st, acc) {
-		w.protocolPick = w.protocolApplied
-		w.refreshProtocolPickerVisuals(false)
-		w.showTariffPickerDialog(parent, key)
-		return
-	}
 
 	if key != protocolOpensource && key != protocolPunktfunk && !st.RustShineStaged && parent != nil {
 		w.startProtocolBusy()
@@ -491,29 +479,45 @@ func (w *Window) proceedProtocolSwitch(parent fyne.Window, key string, st entitl
 			_ = w.token.SetStreamBackend("punktfunk")
 			fyne.Do(done)
 		}()
-	case protocolFree:
-		if paid := protocolPaidTier(st, acc); paid == protocolPro || paid == protocolEnterprise {
-			w.requestPaidTier(parent, st, paid, done)
-			return
-		}
+	case protocolFree, protocolPro, protocolEnterprise:
 		w.startRustShineSwitch(st, done)
-	case protocolPro:
-		w.requestPaidTier(parent, st, "pro", done)
-	case protocolEnterprise:
-		w.requestPaidTier(parent, st, "enterprise", done)
 	}
 }
 
 func (w *Window) startRustShineSwitch(st entitlement.Status, done func()) {
 	w.startProtocolBusy()
 	go func() {
-		if !st.RustShineStaged {
-			if err := w.token.DownloadRustShine(nil); err != nil {
-				fyne.Do(done)
+		// One backend choice handles entitlement setup and provisioning;
+		// there is no separate free/pro selection or checkout step.
+		if err := w.token.DownloadRustShine(nil); err != nil {
+			fyne.Do(func() { showErrorDialog(fmt.Errorf("USBridge streamer setup: %w", err), w.guiWin); done() })
+			return
+		}
+		// A GUI attached to a headless engine receives a queued response;
+		// wait for that engine's provisioning status before switching.
+		deadline := time.Now().Add(5 * time.Minute)
+		for {
+			status := w.token.EntitlementStatus()
+			if status.RustShineStaged && !status.DownloadInProgress {
+				break
+			}
+			if time.Now().After(deadline) {
+				fyne.Do(func() {
+					showErrorDialog(fmt.Errorf("streamer setup is still pending; it will retry in the background"), w.guiWin)
+					done()
+				})
 				return
 			}
+			if status.LastError != "" && !status.DownloadInProgress && !status.LinkInProgress {
+				fyne.Do(func() { showErrorDialog(fmt.Errorf("streamer setup: %s", status.LastError), w.guiWin); done() })
+				return
+			}
+			time.Sleep(250 * time.Millisecond)
 		}
-		_ = w.token.SetStreamBackend("rustshine")
+		if err := w.token.SetStreamBackend("rustshine"); err != nil {
+			fyne.Do(func() { showErrorDialog(fmt.Errorf("USBridge streamer: %w", err), w.guiWin); done() })
+			return
+		}
 		fyne.Do(done)
 	}()
 }

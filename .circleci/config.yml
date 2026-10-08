@@ -1,0 +1,49 @@
+version: 2.1
+
+# Branch build only: produces a testable agent, never publishes a release,
+# embeds credentials, or redistributes the proprietary streamer/broker.
+jobs:
+  windows-agent:
+    resource_class: windows.medium
+    machine:
+      image: windows-server-2022-gui:2026.05.1
+      shell: powershell.exe -NoProfile -ExecutionPolicy Bypass
+    environment:
+      GOTOOLCHAIN: local
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - windows-agent-go1266-v1-{{ checksum "agent/go.sum" }}
+      - run:
+          name: Install verified Go and MSYS2 toolchains
+          command: .\.circleci\setup-windows.ps1
+          no_output_timeout: 15m
+      - run:
+          name: Test, vet and package Windows agent
+          command: |
+            $ErrorActionPreference = 'Stop'
+            $env:CHERE_INVOKING = 'yes'
+            $env:MSYSTEM = 'UCRT64'
+            $env:USBRIDGE_CI_ROOT = (Get-Location).Path
+            & 'C:\ci\msys64\usr\bin\bash.exe' -lc 'cd "$(cygpath -u "$USBRIDGE_CI_ROOT")" && bash .circleci/build-windows.sh'
+            if ($LASTEXITCODE -ne 0) { throw "Agent build failed: $LASTEXITCODE" }
+          no_output_timeout: 20m
+      - save_cache:
+          key: windows-agent-go1266-v1-{{ checksum "agent/go.sum" }}
+          paths:
+            - C:\ci\gopath\pkg\mod
+      - store_artifacts:
+          path: artifacts
+          destination: windows-agent
+
+workflows:
+  agent-capability-build:
+    jobs:
+      - windows-agent:
+          filters:
+            branches:
+              only:
+                - agent-capability-policy
+                - circleci-project-setup
+                - main
