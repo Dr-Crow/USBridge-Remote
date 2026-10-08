@@ -39,6 +39,34 @@ jobs:
       - store_artifacts:
           path: artifacts/web-client
           destination: web-client
+      - persist_to_workspace:
+          root: .
+          paths:
+            - artifacts/web-client
+
+  browser-lan:
+    machine:
+      image: ubuntu-2204:current
+    resource_class: medium
+    steps:
+      - checkout
+      - attach_workspace:
+          at: .
+      - run:
+          name: Install pinned browser test tooling
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y python3-venv
+            python3 -m venv .browser-venv
+            .browser-venv/bin/pip install playwright==1.62.0
+            .browser-venv/bin/python -m playwright install --with-deps chromium
+          no_output_timeout: 20m
+      - run:
+          name: Load source WASM and verify strict browser request boundaries
+          command: .browser-venv/bin/python .circleci/browser-lan-smoke.py
+      - store_artifacts:
+          path: artifacts/browser-lan
+          destination: browser-lan
 
   windows-agent:
     resource_class: windows.medium
@@ -109,6 +137,11 @@ workflows:
             branches:
               only: [agent-capability-policy, circleci-project-setup, main]
       - web-client:
+          filters:
+            branches:
+              only: [agent-capability-policy, circleci-project-setup, main]
+      - browser-lan:
+          requires: [web-client]
           filters:
             branches:
               only: [agent-capability-policy, circleci-project-setup, main]
