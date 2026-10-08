@@ -49,6 +49,7 @@ sha256sum USBridgeAgent.exe USBridgeAgent-Windows-x86_64-*.zip > SHA256SUMS.txt
 # machine. Never copy a user's token/config or embed the CI token in artifacts.
 cd "$ROOT/agent"
 go run ./cmd/component_bundle -out "$ROOT/artifacts/components"
+USBRIDGE_BUNDLE_FIXTURES="$(cygpath -w "$ROOT/artifacts/components")" go test -tags ci ./internal/app -run '^TestAutomaticBundledPairOfflineFixture$' -v 2>&1 | tee "$ROOT/artifacts/offline-bundle-smoke.txt"
 # Runtime-only lab acceptance is distinct from a claim of USB device/streaming
 # functionality. The original archive and executable are never changed.
 mkdir -p "$ROOT/lab-ci-input"
@@ -81,10 +82,12 @@ if seen != wanted:
 PYSTREAMER
 USBRIDGE_LAB_STREAMER_BINARY="$(cygpath -w "$ROOT/lab-ci-input/usbridge-streamer.exe")" go test -tags ci ./internal/localruntime -run '^TestPinnedStreamerEmptyICECLI$' -v 2>&1 | tee "$ROOT/artifacts/streamer-empty-ice-cli.txt"
 
-mkdir -p "$ROOT/offline-bundle/agent" "$ROOT/offline-bundle/components"
+mkdir -p "$ROOT/offline-bundle/agent/components"
 cp -R dist/windows/. "$ROOT/offline-bundle/agent/"
-cp -R "$ROOT/artifacts/components/." "$ROOT/offline-bundle/components/"
+cp -R "$ROOT/artifacts/components/." "$ROOT/offline-bundle/agent/components/"
 cp ../docs/FORK_TEST_PLAN.md "$ROOT/offline-bundle/README.md"
+cp ../docs/AUTOMATIC_BUNDLES.md "$ROOT/offline-bundle/AUTOMATIC_BUNDLES.md"
+cp ../docs/RUNTIME_NETWORK_POLICY.md "$ROOT/offline-bundle/RUNTIME_NETWORK_POLICY.md"
 (cd "$ROOT/offline-bundle" && zip -r "$ROOT/artifacts/USBridgeAgent-Windows-with-components.zip" .)
 cd "$ROOT/artifacts"
 sha256sum USBridgeAgent-Windows-with-components.zip >> SHA256SUMS.txt

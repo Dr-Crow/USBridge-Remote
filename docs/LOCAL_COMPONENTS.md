@@ -51,7 +51,7 @@ installation; legacy copies, PATH and environment overrides do not bypass strict
 resolution.
 
 RustShine and the USB broker still require their separate component consent and
-explicit `local_runtime_enabled` research consent. Their existing pinned binary
+enabled local runtime (the default on supported interactive platforms). See [automatic bundles](AUTOMATIC_BUNDLES.md) for the prebundled edition. Their existing pinned binary
 and codec checks are unchanged. The resolver itself never launches or modifies a
 binary, issues entitlement, logs a pairing key or installs a driver. Mac Intel
 has no existing pinned RustShine/broker pair; a matching manifest cannot create

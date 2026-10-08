@@ -9,3 +9,29 @@ var pinned = map[string]string{
 	"darwin/arm64/usb-broker":  "ca37f6157198a079940a96cfe20251183539488ce0a4e5d3e04730f33107c88d",
 	"windows/amd64/usb-broker": "525c054ea9b7422a56423548fb25707901e8822994ad938772f484f0acf2e3d1",
 }
+
+const pinnedWindowsCodecSHA256 = "c12f9a671a106c649a5517d28061670aa57c805d242b80764853a7551099498d"
+
+// PinnedBundleFileHash identifies only the audited executable and its known
+// dependency. Automatic bundles may not introduce arbitrary adjacent programs.
+func PinnedBundleFileHash(platform, component, filename string) (string, bool) {
+	hash, ok := pinned[platform+"/"+component]
+	if !ok {
+		return "", false
+	}
+	suffix := ""
+	if len(platform) >= 8 && platform[:8] == "windows/" {
+		suffix = ".exe"
+	}
+	base := "usbridge-streamer"
+	if component == "usb-broker" {
+		base = "usbridge-usb-broker"
+	}
+	if filename == base+suffix {
+		return hash, true
+	}
+	if component == "rustshine" && suffix == ".exe" && filename == "libopus-0.dll" {
+		return pinnedWindowsCodecSHA256, true
+	}
+	return "", false
+}

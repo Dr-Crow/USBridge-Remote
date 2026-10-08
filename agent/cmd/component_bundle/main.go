@@ -25,8 +25,16 @@ import (
 
 func main() {
 	out := flag.String("out", "components", "output directory for unchanged component archives")
+	target := flag.String("platform", "", "target windows/amd64, linux/amd64 or darwin/arm64; default is current platform")
+	fromArchives := flag.Bool("from-archives", false, "assemble existing signed archives without network access")
 	flag.Parse()
-	if err := run(*out); err != nil {
+	var err error
+	if *fromArchives {
+		err = bundleFromArchives(*out, *target)
+	} else {
+		err = runForPlatform(*out, *target)
+	}
+	if err != nil {
 		// Do not echo HTTP errors containing signed URLs or token material.
 		fmt.Fprintln(os.Stderr, "component bundle:", err)
 		os.Exit(1)
@@ -69,10 +77,12 @@ func verifiedAsset(info *entitlement.DownloadInfo, component, platform string) (
 	return a, raw, nil
 }
 
-func run(out string) error {
-	platform := entitlement.Platform()
-	if platform == "" {
-		return fmt.Errorf("unsupported build platform")
+func run(out string) error { return runForPlatform(out, "") }
+
+func runForPlatform(out, target string) error {
+	goos, goarch, platform, err := bundlePlatform(target)
+	if err != nil {
+		return err
 	}
 	id, err := hwid.Get()
 	if err != nil {
@@ -91,6 +101,7 @@ func run(out string) error {
 		return err
 	}
 	var sums string
+	var localInputs []bundleInput
 	for _, component := range []string{"rustshine", "usb-broker"} {
 		var info *entitlement.DownloadInfo
 		if component == "rustshine" {
@@ -145,7 +156,11 @@ func run(out string) error {
 			return err
 		}
 		sums += a.SHA256 + "  " + a.Asset + "\n"
+		localInputs = append(localInputs, bundleInput{Name: component, Version: info.Version, Asset: a.Asset, SHA256: a.SHA256})
 		fmt.Printf("Verified %s %s (%d bytes)\n", component, info.Version, n)
+	}
+	if err := writeLocalBundle(out, localInputs, goos, goarch); err != nil {
+		return err
 	}
 	return os.WriteFile(filepath.Join(out, "SHA256SUMS.txt"), []byte(sums), 0644)
 }

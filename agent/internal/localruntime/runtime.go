@@ -154,7 +154,7 @@ func Prepare(source, stateDir, component, hw string) (Spec, error) {
 				return Spec{}, err
 			}
 			dllHash := sha256.Sum256(dll)
-			if hex.EncodeToString(dllHash[:]) != "c12f9a671a106c649a5517d28061670aa57c805d242b80764853a7551099498d" {
+			if hex.EncodeToString(dllHash[:]) != pinnedWindowsCodecSHA256 {
 				os.Remove(dest)
 				return Spec{}, fmt.Errorf("unrecognized codec DLL")
 			}

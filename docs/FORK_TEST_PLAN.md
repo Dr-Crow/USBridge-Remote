@@ -1,3 +1,12 @@
+## Current normal-launch test builds
+
+Supported interactive builds now enable the local runtime by default. Quit any old
+engine, extract the complete runtime ZIP to a new directory and run the agent
+normally. No initial local-runtime flag or toggle is needed. Explicitly disabled
+advanced overrides still apply. The marked combined bundle additionally discovers
+its adjacent components automatically; see [AUTOMATIC_BUNDLES.md](AUTOMATIC_BUNDLES.md).
+Earlier flag-based instructions below describe the original research build.
+
 # First Windows capability-policy test build
 
 ## Scope

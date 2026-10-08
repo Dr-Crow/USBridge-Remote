@@ -44,7 +44,10 @@ func PreparedPath(state, name string) string {
 	return ""
 }
 func PreparedResult(state, name string) Result {
-	if v,ok:=prepared.Load(cacheKey(state,name));ok{return v.(installation).result};return Result{}
+	if v, ok := prepared.Load(cacheKey(state, name)); ok {
+		return v.(installation).result
+	}
+	return Result{}
 }
 func IsPreparedPath(p string) bool {
 	ok := false
@@ -460,4 +463,12 @@ func Resolve(ctx context.Context, o Options, name string) (Result, error) {
 		return Result{}, err
 	}
 	return remember(Result{Binary: filepath.Join(dest, filepath.FromSlash(c.Entry)), Version: c.Version, Profile: c.Profile, PreviousDirectory: previous}, o, name, raw), nil
+}
+
+// InspectManifest validates metadata without staging, executing or contacting a source.
+func InspectManifest(raw []byte, name, platform, expected string) (Component, error) {
+	if len(raw) > maxManifest {
+		return Component{}, errors.New("component manifest exceeds size limit")
+	}
+	return component(raw, name, platform, expected)
 }

@@ -280,7 +280,7 @@ func Start(opts StartOptions, version string) error {
 	}
 
 	cfgPath := resolveConfigPath()
-	cfg, err := config.Load(cfgPath)
+	cfg, err := loadStartupConfig(cfgPath, resolveExeDir())
 	if err != nil {
 		return err
 	}
@@ -553,7 +553,7 @@ func dialAdminSocket(path string, wait time.Duration) (*adminapi.Client, error) 
 
 func New() (*App, error) {
 	cfgPath := resolveConfigPath()
-	cfg, err := config.Load(cfgPath)
+	cfg, err := loadStartupConfig(cfgPath, resolveExeDir())
 	if err != nil {
 		return nil, err
 	}
