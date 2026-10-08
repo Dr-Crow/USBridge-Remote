@@ -3,6 +3,20 @@ version: 2.1
 # Branch builds produce testable agents and a source-built Go web client.
 # No release publishing, credential embedding or vendor archive modification.
 jobs:
+  lan-host:
+    docker:
+      - image: cimg/base:2026.10@sha256:5c3b1d7f9597fe92f818ce7e075476a18ced9fbd1730b14382d4d01bfb76389e
+    resource_class: medium
+    steps:
+      - checkout
+      - setup_remote_docker
+      - run:
+          name: Build and test source LAN Docker host on an internal network
+          command: bash .circleci/test-lan-docker.sh
+          no_output_timeout: 30m
+      - store_artifacts:
+          path: artifacts/lan-host
+          destination: lan-host
   web-client:
     docker:
       # CircleCI 2026.10 amd64 manifest, verified via Docker Registry.
@@ -90,6 +104,10 @@ jobs:
 workflows:
   agent-capability-build:
     jobs:
+      - lan-host:
+          filters:
+            branches:
+              only: [agent-capability-policy, circleci-project-setup, main]
       - web-client:
           filters:
             branches:

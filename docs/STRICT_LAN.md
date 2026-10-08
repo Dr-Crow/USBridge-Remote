@@ -40,3 +40,10 @@ of empty ICE syntax on supported platforms. Request guards cannot prove what a
 child binary does internally. Clean-token startup, captured/blocked egress,
 restart/expiry, empty-cache browser reload and physical streaming/USB acceptance
 remain required before declaring complete offline support.
+
+## Source browser and LAN hosting
+
+See [LAN_HOSTING.md](LAN_HOSTING.md) for the source HTTPS container, browser
+request/ICE policy, explicit streamer empty-ICE arguments, component mirror and
+remaining runtime/physical acceptance gates. Source-browser hosting forces
+strict configuration and never includes proprietary components in its image.
