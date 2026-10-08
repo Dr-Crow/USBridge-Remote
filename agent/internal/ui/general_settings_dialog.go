@@ -32,6 +32,17 @@ func (w *Window) showGeneralSettingsDialog(parent fyne.Window) {
 		return
 	}
 
+	var popup *widget.PopUp
+	closeDialog := func() {
+		if popup != nil {
+			popup.Hide()
+		}
+	}
+	panel := w.generalSettingsPanel(parent, closeDialog)
+	popup = showOverlayPopup(parent, overlayPopupSpec{Panel: panel})
+}
+
+func (w *Window) generalSettingsPanel(parent fyne.Window, closeDialog func()) fyne.CanvasObject {
 	enabled := true
 	if w.token != nil {
 		enabled = w.token.StreamerAutoUpdateEnabled()
@@ -53,8 +64,7 @@ func (w *Window) showGeneralSettingsDialog(parent fyne.Window) {
 	}
 	diagnostics := widget.NewLabel(localRuntimeDiagnostics(st))
 	diagnostics.Wrapping = fyne.TextWrapWord
-	instructions := widget.NewLabel("On supported platforms, normal launches automatically enable the fork runtime. Select your streamer as usual; supported component copies are prepared before launch. USB setup and OS permissions remain separate. Changing this advanced override requires an engine restart. Unsupported component versions are refused rather than silently patched.")
-	instructions.Wrapping = fyne.TextWrapWord
+	instructions := newGeneralSettingsParagraph("Launch normally; selected components are prepared automatically. USB and OS permissions remain separate. Changing this override needs an engine restart. Unknown component versions are refused.")
 	var runtimeCheck *styledCheck
 	saveRuntime := func(on bool) {
 		if err := w.token.SetLocalRuntimeEnabled(on); err != nil {
@@ -92,41 +102,23 @@ func (w *Window) showGeneralSettingsDialog(parent fyne.Window) {
 	webEntry := widget.NewEntry()
 	webEntry.SetPlaceHolder("https://192.168.1.10/")
 	webEntry.SetText(w.cfg.LocalWebClientURL)
-	webHelp := widget.NewLabel("Self-hosted web client: use a private IP with trusted HTTPS. Leave blank to disable the link in local mode. This does not configure the agent certificate or bypass browser trust checks.")
-	webHelp.Wrapping = fyne.TextWrapWord
+	webHelp := newGeneralSettingsParagraph("Local web client: use a private-IP HTTPS URL trusted by your browser. Blank disables the link in local mode. This does not configure the agent certificate.")
 	webSave := widget.NewButton("Save local web client", func() {
-		value, err := config.ValidateLocalWebClientURL(webEntry.Text)
-		if err == nil && w.token != nil {
-			err = w.token.SetLocalWebClientURL(value)
-		}
-		if err != nil {
+		if err := w.saveLocalWebClient(webEntry.Text); err != nil {
 			showErrorDialog(err, parent)
 			return
 		}
-		if w.token == nil {
-			return
-		}
-		w.cfg.LocalWebClientURL = value
-		webEntry.SetText(value)
-		if w.sunWebClientLink != nil {
-			w.sunWebClientLink.label.Text = w.webClientLinkLabel()
-			w.sunWebClientLink.label.Refresh()
-		}
+		webEntry.SetText(w.cfg.LocalWebClientURL)
 	})
 	body := container.New(&tightVBoxLayout{gap: 10},
 		newExactInset(newPermToggleRow(loc().AgentAutoUpdate, check), generalSettingsRowInset, generalSettingsRowInset, 0, 0),
 		newExactInset(newPermToggleRow("Local runtime (advanced override)", runtimeCheck), generalSettingsRowInset, generalSettingsRowInset, 0, 0),
-		instructions, diagnostics, refresh, webHelp, webEntry, webSave,
+		instructions, diagnostics, refresh, webHelp, webEntry,
 	)
 
-	var popup *widget.PopUp
-	closeDialog := func() {
-		if popup != nil {
-			popup.Hide()
-		}
-	}
-	panel := newBrandedDialogPanelChrome(loc().GeneralSettings, loc().GeneralSettingsSubtitle, generalSettingsDialogWidth, 20, 8, body, nil, closeDialog)
-	popup = showOverlayPopup(parent, overlayPopupSpec{Panel: panel})
+	scroll := container.NewVScroll(body)
+	scroll.SetMinSize(fyne.NewSize(0, 480))
+	return newBrandedDialogPanelChrome(loc().GeneralSettings, loc().GeneralSettingsSubtitle, generalSettingsDialogWidth, 20, 8, scroll, webSave, closeDialog)
 }
 
 // Safe setup facts only: no credentials, identifiers, paths or login URLs.
@@ -150,4 +142,33 @@ func localRuntimeDiagnostics(st entitlement.Status) string {
 		usb = "patched copy prepared this session"
 	}
 	return fmt.Sprintf("%s\nStreamer: %s.\nUSB broker: %s.\nPrepared does not confirm an active stream or working tablet.", mode, streamer, usb)
+}
+
+// Wrapped paragraph height depends on allocated width. Seed a conservative
+// width before the VBox measures it; the scroll viewport handles smaller canvases.
+func newGeneralSettingsParagraph(text string) *widget.Label {
+	label := widget.NewLabel(text)
+	label.Wrapping = fyne.TextWrapWord
+	label.Resize(fyne.NewSize(generalSettingsDialogWidth-80, 1))
+	label.Refresh()
+	return label
+}
+
+func (w *Window) saveLocalWebClient(raw string) error {
+	value, err := config.ValidateLocalWebClientURL(raw)
+	if err != nil {
+		return err
+	}
+	if w.token == nil {
+		return fmt.Errorf("agent engine is unavailable")
+	}
+	if err := w.token.SetLocalWebClientURL(value); err != nil {
+		return err
+	}
+	w.cfg.LocalWebClientURL = value
+	if w.sunWebClientLink != nil {
+		w.sunWebClientLink.label.Text = w.webClientLinkLabel()
+		w.sunWebClientLink.label.Refresh()
+	}
+	return nil
 }

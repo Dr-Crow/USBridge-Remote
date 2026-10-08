@@ -20,3 +20,18 @@ The source-built web bundle and self-host server are separate deployment steps.
 
 The YAML key is `local_web_client_url`. In explicitly online legacy mode with
 no configured override, the existing vendor web link remains available.
+
+## Dialog layout and save validation
+
+The settings body scrolls on smaller canvases, while Save remains in a fixed
+footer. Wrapped paragraphs receive an initial width before height-dependent
+layout. Software rendering exposed clipped lower controls in the earlier form;
+the updated layout was reviewed at 1000x720 and 640x480. Automated geometry checks
+keep Save within bounds down to a 480x360 canvas. These are Fyne software-driver
+checks, not native Windows desktop rendering acceptance.
+
+Tests cover a valid Save button action, trimmed URLs, invalid public URLs that
+never reach persistence, failed persistence leaving the current URL unchanged,
+clearing the URL without a public fallback, and reopening with saved rather than
+unsaved edits. An unavailable engine now produces an error instead of silently
+accepting a Save action.
