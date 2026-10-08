@@ -70,7 +70,7 @@ export GOOS=linux
 export GOARCH=amd64
 
 echo -e "${YELLOW}Compiling agent...${NC}"
-go build -trimpath -tags "$GO_TAGS" -ldflags "-s -w -X main.version=$VERSION" -o "$OUTPUT_PATH" "$BUILD_PKG"
+go build -trimpath -tags "$GO_TAGS" -ldflags "-s -w -X main.version=$VERSION ${USBRIDGE_LINUX_LDFLAGS:-}" -o "$OUTPUT_PATH" "$BUILD_PKG"
 chmod +x "$OUTPUT_PATH"
 
 # usbridge-streamer-launch: tiny, fully static (CGO_ENABLED=0) launcher

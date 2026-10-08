@@ -106,7 +106,7 @@ mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 export CGO_ENABLED=1
 
 echo -e "${YELLOW}Compiling app bundle...${NC}"
-go build -ldflags "-X main.version=$VERSION" -o "$BIN_PATH" ./cmd/usbridge_agent
+go build -ldflags "-X main.version=$VERSION ${USBRIDGE_MACOS_LDFLAGS:-}" -o "$BIN_PATH" ./cmd/usbridge_agent
 chmod +x "$BIN_PATH"
 
 # Icon generation
@@ -181,8 +181,9 @@ fi
 # Tailscale (Tailscale.app or `brew install tailscale` + tailscaled service),
 # same as internal/tailscale/service_darwin.go already assumes.
 echo -e "${YELLOW}Bundling Tailscale CLI...${NC}"
-TS_SRC=""
+TS_SRC="${USBRIDGE_TAILSCALE_CLI:-}"
 for _d in /opt/homebrew/bin /usr/local/bin; do
+    [ -n "$TS_SRC" ] && break
     [ -f "$_d/tailscale" ] && TS_SRC="$_d/tailscale" && break
 done
 if [ -n "$TS_SRC" ]; then

@@ -37,6 +37,33 @@ jobs:
           path: artifacts
           destination: windows-agent
 
+  linux-agent:
+    machine:
+      image: ubuntu-2204:current
+    resource_class: medium
+    steps:
+      - checkout
+      - run:
+          name: Test and package Linux x86_64
+          command: bash .circleci/build-unix.sh
+          no_output_timeout: 20m
+      - store_artifacts:
+          path: artifacts
+          destination: linux-agent
+  macos-agent:
+    macos:
+      xcode: "16.4.0"
+    resource_class: m4pro.medium
+    steps:
+      - checkout
+      - run:
+          name: Test native macOS and package Apple Silicon and Intel
+          command: bash .circleci/build-unix.sh
+          no_output_timeout: 20m
+      - store_artifacts:
+          path: artifacts
+          destination: macos-agent
+
 workflows:
   agent-capability-build:
     jobs:
@@ -47,3 +74,11 @@ workflows:
                 - agent-capability-policy
                 - circleci-project-setup
                 - main
+      - linux-agent:
+          filters:
+            branches:
+              only: [agent-capability-policy, circleci-project-setup, main]
+      - macos-agent:
+          filters:
+            branches:
+              only: [agent-capability-policy, circleci-project-setup, main]
