@@ -1,6 +1,7 @@
 package streamhost
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -11,7 +12,7 @@ func TestStrictICEExcludesCachedTURN(t *testing.T) {
 		t.Fatal(args)
 	}
 	normal := strings.Join(rustshineICEArgs(false, "/state"), " ")
-	if !strings.Contains(normal, "/state/rustshine/turn-credentials.json") {
+	if normal != "--turn-credentials-file "+filepath.Join("/state", "rustshine", "turn-credentials.json") {
 		t.Fatal(normal)
 	}
 	env := strings.Join(strictStreamerEnv([]string{"PATH=/bin", "USBRIDGE_STREAMER_WEBRTC_ICE_SERVERS=stun:public", "USBRIDGE_STREAMER_TURN_CREDENTIALS_FILE=/cached"}), "\n")
