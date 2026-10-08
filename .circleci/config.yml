@@ -56,10 +56,11 @@ jobs:
           name: Install pinned browser test tooling
           command: |
             sudo apt-get update
-            sudo apt-get install -y python3-venv
+            sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y python3-venv
             python3 -m venv .browser-venv
             .browser-venv/bin/pip install playwright==1.62.0
-            .browser-venv/bin/python -m playwright install --with-deps chromium
+            sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l .browser-venv/bin/python -m playwright install-deps chromium
+            .browser-venv/bin/python -m playwright install chromium
           no_output_timeout: 20m
       - run:
           name: Load source WASM and verify strict browser request boundaries

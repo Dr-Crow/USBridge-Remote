@@ -41,3 +41,10 @@ pending. The fixture uses loopback HTTP, not a bypassed certificate warning.
 Physical streaming/USB/tablet, TLS trust onboarding, prolonged expiry/restarts,
 all-platform subprocess traffic, and full offline end-to-end behavior remain
 open. The Windows service and Linux privileged KMS local-runtime guards remain.
+
+The first browser job (#87) stalled during Ubuntu's service-restart prompt while
+installing dependencies. Its log identified `needrestart`, rather than a browser
+or WASM failure. The setup now uses noninteractive/list-only dependency installation
+and separates root package installation from the ordinary user's browser download.
+The browser fixture also extracts the production host's actual CSP instead of
+omitting it. This repair still requires a successful fresh CI run.

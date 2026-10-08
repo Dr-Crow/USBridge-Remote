@@ -5,6 +5,7 @@ import http.server
 import json
 import os
 import pathlib
+import re
 import tempfile
 import threading
 import urllib.parse
@@ -36,12 +37,17 @@ with tempfile.TemporaryDirectory(prefix='usbridge-browser-') as tmp:
     # Production LAN hosting also replaces this config. The downloaded bundle
     # itself remains unchanged; this is an isolated browser fixture copy.
     (root / 'runtime-config.js').write_text('globalThis.USBridgeRuntimeConfig=Object.freeze({strictLAN:true});\n')
+    host_source = pathlib.Path('deploy/lan/server/main.go').read_text()
+    policy = re.search(r'Set\("Content-Security-Policy",\s*("[^"\n]*")\s*\+\s*h\.connectSources\(\)\s*\+\s*("[^"\n]*")\)', host_source)
+    assert policy, 'production CSP extraction must be updated'
+    csp = json.loads(policy.group(1)) + json.loads(policy.group(2))
     class Handler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=str(root), **kwargs)
         def log_message(self, *_):
             pass
         def end_headers(self):
+            self.send_header('Content-Security-Policy', csp)
             self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
             self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
             super().end_headers()
