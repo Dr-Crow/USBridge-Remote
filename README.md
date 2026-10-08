@@ -96,6 +96,7 @@ The Agent runs on the target machine — the server or PC you want to access rem
       <b>USBRIDGE FREE</b><br>
       <i>Rust based Stream Engine</i><br><br>
       ✓ Instant-connect custom remote protocol<br>
+      ✓ Raw USB peripheral device passthrough<br>
       ✓ Adaptive streaming optimized for Wi-Fi stability<br>
       ✓ HDR10<br>
       ✓ Headless virtual display management<br>
@@ -108,7 +109,6 @@ The Agent runs on the target machine — the server or PC you want to access rem
       <b>USBRIDGE PRO</b><br>
       <i>Professional Workflows</i><br><br>
       ✓ Lossless 4:4:4 chroma color accuracy<br>
-      ✓ Raw USB peripheral device passthrough<br>
       ✓ Wacom tablet support with pressure & tilt<br><br>
     </td>
   </tr>
