@@ -58,3 +58,13 @@ if docker run --rm "$IMAGE" > "$OUT/missing-tls.txt" 2>&1; then
 fi
 docker logs usbridge-lan-ci-host > "$OUT/server.txt" 2>&1
 printf 'Commit: %s\n' "${CIRCLE_SHA1:-$(git rev-parse HEAD)}" > "$OUT/provenance.txt"
+
+# Export only the immutable runtime image. Disposable TLS fixtures live in a
+# separate volume and have never been copied into an image layer.
+TAG="usbridge-lan:${CIRCLE_SHA1:-$(git rev-parse HEAD)}"
+docker tag "$IMAGE" "$TAG"
+docker save "$TAG" | gzip -n > "$OUT/usbridge-lan-linux-amd64.tar.gz"
+printf '%s\n' "$TAG" > "$OUT/image-tag.txt"
+cp "$ROOT/deploy/lan/compose.offline.yaml" "$OUT/compose.yaml"
+cp "$ROOT/docs/LAN_IMAGE_ARTIFACT.md" "$OUT/README.md"
+(cd "$OUT" && sha256sum usbridge-lan-linux-amd64.tar.gz image-tag.txt compose.yaml README.md image.txt provenance.txt > SHA256SUMS.txt)

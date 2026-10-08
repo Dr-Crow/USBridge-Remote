@@ -1,0 +1,32 @@
+services:
+  lan-host:
+    platform: linux/amd64
+    image: "${USBRIDGE_LAN_IMAGE:?Set exact image tag from image-tag.txt}"
+    pull_policy: never
+    ports:
+      - "${USBRIDGE_LAN_BIND:-127.0.0.1}:8443:8443"
+    command:
+      - "--cert=/tls/server.crt"
+      - "--key=/tls/server.key"
+      - "--components=/components"
+      - "--agent-origins=${USBRIDGE_AGENT_ORIGINS:?Set explicit private-IP HTTPS agent origins}"
+    volumes:
+      - type: bind
+        source: "${USBRIDGE_TLS_DIR:?Set TLS directory}"
+        target: /tls
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${USBRIDGE_COMPONENT_DIR:?Set manifest directory}"
+        target: /components
+        read_only: true
+        bind:
+          create_host_path: false
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [lan]
+networks:
+  lan:
+    internal: true
