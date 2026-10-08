@@ -33,6 +33,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"usbridge_agent/internal/localcomponents"
+	"usbridge_agent/internal/netpolicy"
 )
 
 // punktfunkAdminTokenEnv is the environment variable punktfunk-host reads to
@@ -211,7 +213,12 @@ func punktfunkBinaryPath(exeDir string) string {
 // for an agent whose own executable lives in exeDir.
 func PunktfunkAvailable(exeDir string) bool { return punktfunkBinaryPath(exeDir) != "" }
 
-func (b *punktfunkBackend) binaryPath() string { return punktfunkBinaryPath(b.exeDir) }
+func (b *punktfunkBackend) binaryPath() string {
+	if netpolicy.Strict() {
+		return localcomponents.PreparedPath(b.stateDir, "punktfunk")
+	}
+	return punktfunkBinaryPath(b.exeDir)
+}
 
 // BinaryPath returns the resolved path punktfunk-host is launched from, or
 // "" if not bundled on this OS.
@@ -304,6 +311,11 @@ func (b *punktfunkBackend) Start(adminPort int) error {
 	}
 
 	bin := b.binaryPath()
+	if netpolicy.Strict() {
+		if err := localcomponents.VerifyPrepared(bin); err != nil {
+			return err
+		}
+	}
 	if bin == "" {
 		return nil
 	}

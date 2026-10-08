@@ -7,11 +7,15 @@ import (
 
 	"usbridge_agent/internal/entitlement"
 	"usbridge_agent/internal/hwid"
+	"usbridge_agent/internal/netpolicy"
 )
 
 // componentEntitlement keeps the real vendor token intact. A free-tier token
 // can provision components, but the closed programs still decide their features.
 func (a *App) componentEntitlement(ctx context.Context) (string, error) {
+	if err := netpolicy.RequireOnline("vendor component entitlement"); err != nil {
+		return "", err
+	}
 	id, err := hwid.Get()
 	if err != nil {
 		return "", fmt.Errorf("hardware identity unavailable: %w", err)

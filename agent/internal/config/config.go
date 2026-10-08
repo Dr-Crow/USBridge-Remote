@@ -13,6 +13,11 @@ import (
 )
 
 type Config struct {
+	LocalComponentDirectory      string `yaml:"local_component_directory,omitempty"`
+	LocalComponentBundle         string `yaml:"local_component_bundle,omitempty"`
+	LocalComponentMirror         string `yaml:"local_component_mirror,omitempty"`
+	LocalComponentManifestSHA256 string `yaml:"local_component_manifest_sha256,omitempty"`
+	LocalComponentCAFile         string `yaml:"local_component_ca_file,omitempty"`
 	// StrictLAN disables cloud services before startup and every request boundary.
 	StrictLAN  bool   `yaml:"strict_lan,omitempty"`
 	AppName    string `yaml:"app_name"`

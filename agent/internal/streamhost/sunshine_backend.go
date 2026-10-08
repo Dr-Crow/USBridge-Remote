@@ -25,6 +25,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"usbridge_agent/internal/localcomponents"
+	"usbridge_agent/internal/netpolicy"
 )
 
 // AdminUser is the fixed Sunshine web-UI username.
@@ -331,6 +333,9 @@ func SetSunshineStageBinary(path string) { sunshineStageBinary.Store(path) }
 // binaryPath returns the path to the sunshine binary, or "" if it can't be
 // found (not installed/bundled, or unsupported OS).
 func (b *sunshineBackend) binaryPath() string {
+	if netpolicy.Strict() {
+		return localcomponents.PreparedPath(b.stateDir, "sunshine")
+	}
 	if p, _ := sunshineStageBinary.Load().(string); p != "" {
 		if info, err := os.Stat(p); err == nil && !info.IsDir() {
 			return p
@@ -603,6 +608,11 @@ func (b *sunshineBackend) Start(adminPort int) error {
 					b.windowsDir = filepath.Dir(p)
 				}
 			}
+		}
+	}
+	if netpolicy.Strict() {
+		if err := localcomponents.VerifyPrepared(b.launchPath); err != nil {
+			return err
 		}
 	}
 	if b.launchPath == "" {

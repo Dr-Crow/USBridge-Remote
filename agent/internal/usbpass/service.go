@@ -20,7 +20,9 @@ import (
 	"time"
 
 	"usbridge_agent/internal/hwid"
+	"usbridge_agent/internal/localcomponents"
 	"usbridge_agent/internal/localruntime"
+	"usbridge_agent/internal/netpolicy"
 )
 
 const (
@@ -215,6 +217,9 @@ func brokerName() string {
 }
 
 func (s *Service) resolveBroker() string {
+	if netpolicy.Strict() {
+		return localcomponents.PreparedPath(s.stateDir, "broker")
+	}
 	candidates := []string{
 		filepath.Join(s.stateDir, "usb-broker", brokerName()),
 		filepath.Join(s.exeDir, "usb-broker", brokerName()),
@@ -241,6 +246,14 @@ func (s *Service) Start() error {
 		return nil
 	}
 	exe := s.resolveBroker()
+	if netpolicy.Strict() {
+		if !localruntime.Enabled() {
+			return fmt.Errorf("strict local broker requires pinned-runtime consent")
+		}
+		if err := localcomponents.VerifyPrepared(exe); err != nil {
+			return err
+		}
+	}
 	if exe == "" {
 		return fmt.Errorf("usbridge-usb-broker not staged (closed rust-shine binary)")
 	}
@@ -360,6 +373,9 @@ func (s *Service) Start() error {
 			// archaeology next time.
 			if time.Since(startedAt) < 5*time.Second {
 				for _, line := range tailFile(logPath, 6) {
+					if s.secret != "" {
+						line = strings.ReplaceAll(line, s.secret, "[redacted]")
+					}
 					log.Printf("[usbpass] broker.log: %s", line)
 				}
 				if who := whatHoldsPort(port); who != "" {

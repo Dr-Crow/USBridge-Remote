@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"usbridge_agent/internal/forkrelease"
+	"usbridge_agent/internal/localcomponents"
+	"usbridge_agent/internal/netpolicy"
 	"usbridge_agent/internal/streamhost"
 )
 
@@ -36,6 +38,9 @@ func sunshineDownloadable() bool { return forkrelease.SunshineAssetName() != "" 
 // sunshineMissing: Sunshine is downloaded here and there is none yet (no
 // download, and no bundled one from an older agent install).
 func (a *App) sunshineMissing() bool {
+	if netpolicy.Strict() {
+		return localcomponents.PreparedPath(a.cfg.StateDir, "sunshine") == ""
+	}
 	if !sunshineDownloadable() || forkrelease.SunshineStaged(a.cfg.StateDir) {
 		return false
 	}
@@ -51,6 +56,9 @@ func (a *App) sunshineMissing() bool {
 
 // sunshineOnDisk: there is a Sunshine to start, downloaded or bundled.
 func (a *App) sunshineOnDisk() bool {
+	if netpolicy.Strict() {
+		return localcomponents.PreparedPath(a.cfg.StateDir, "sunshine") != ""
+	}
 	if forkrelease.SunshineStaged(a.cfg.StateDir) {
 		return true
 	}
@@ -93,6 +101,9 @@ func (a *App) fetchSunshineInBackground() {
 // puts it in place; SetStreamBackend("sunshine") calls it when there is
 // none. Progress goes through entStatus like DownloadPunktfunk's.
 func (a *App) DownloadSunshine(onProgress forkrelease.ProgressFunc) error {
+	if netpolicy.Strict() {
+		return a.prepareLocalComponent(context.Background(), "sunshine")
+	}
 	a.entMu.Lock()
 	if a.entStatus.SunshineUpdateInProgress {
 		a.entMu.Unlock()
@@ -105,6 +116,9 @@ func (a *App) DownloadSunshine(onProgress forkrelease.ProgressFunc) error {
 }
 
 func (a *App) downloadSunshine(onProgress forkrelease.ProgressFunc) error {
+	if netpolicy.Strict() {
+		return a.prepareLocalComponent(context.Background(), "sunshine")
+	}
 	a.entMu.Lock()
 	a.entStatus.DownloadInProgress = true
 	a.entStatus.DownloadName = "Sunshine"
@@ -156,6 +170,9 @@ func (a *App) endSunshineUpdate() {
 // one from an older install moves over through the card's button. Never cuts
 // a stream: with a client connected it waits for sunshineBusyRetry.
 func (a *App) checkSunshineUpdate(ctx context.Context) {
+	if netpolicy.Strict() {
+		return
+	}
 	if !sunshineDownloadable() || !forkrelease.SunshineStaged(a.cfg.StateDir) {
 		return
 	}
@@ -185,6 +202,9 @@ func (a *App) checkSunshineUpdate(ctx context.Context) {
 // latest Streamers-Forks release, right now, applied even mid-stream (the
 // user asked). It also replaces a Sunshine bundled with an older agent.
 func (a *App) CheckSunshineUpdateNow() error {
+	if err := netpolicy.RequireOnline("public Sunshine update"); err != nil {
+		return err
+	}
 	if !sunshineDownloadable() {
 		return fmt.Errorf("sunshine is updated together with the agent on this platform")
 	}

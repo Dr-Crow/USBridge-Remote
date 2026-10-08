@@ -40,6 +40,7 @@ import (
 	"usbridge_agent/internal/forkrelease"
 	"usbridge_agent/internal/hwid"
 	"usbridge_agent/internal/input"
+	"usbridge_agent/internal/localcomponents"
 	"usbridge_agent/internal/localruntime"
 	"usbridge_agent/internal/netpolicy"
 	"usbridge_agent/internal/netutil"
@@ -569,6 +570,8 @@ func New() (*App, error) {
 		cfg.StateDir = fallback
 	}
 
+	localStartupErr := prepareLocalStartup(context.Background(), cfg)
+
 	// Generate master key on first run.
 	if strings.TrimSpace(cfg.MasterKey) == "" {
 		key, err := api.GenerateMasterKey()
@@ -602,6 +605,9 @@ func New() (*App, error) {
 	// --headless engine never touches Fyne at all, so it never needs a
 	// display connection (see Run).
 	instance.exeDir = resolveExeDir()
+	if localStartupErr != nil {
+		instance.setEntError(fmt.Sprintf("local component setup: %v", localStartupErr))
+	}
 	instance.logPath = filepath.Join(cfg.StateDir, "logs", "sunshine-stdout.log")
 	instance.setStreamKind("sunshine")
 
@@ -616,7 +622,7 @@ func New() (*App, error) {
 	if cfg.PreferredBackend == "rustshine" {
 		if hwID, err := hwid.Get(); err == nil {
 			if _, err := entitlement.VerifyForHardware(cfg.EntitlementToken, hwID); err == nil || localruntime.Enabled() {
-				if _, err := os.Stat(entitlement.StagePath(cfg.StateDir)); err == nil {
+				if instance.rustshineStaged() {
 					instance.setStreamKind("rustshine")
 				}
 			}
@@ -624,13 +630,15 @@ func New() (*App, error) {
 	}
 	// Punktfunk needs no entitlement, only its binary; without one (it was
 	// uninstalled since) the agent comes back on Sunshine.
-	streamhost.SetPunktfunkStageDir(forkrelease.PunktfunkDir(cfg.StateDir))
+	if !netpolicy.Strict() {
+		streamhost.SetPunktfunkStageDir(forkrelease.PunktfunkDir(cfg.StateDir))
+	}
 	// Where the release has a build for this platform Sunshine is downloaded,
 	// not shipped (see sunshine_update.go).
-	if forkrelease.SunshineAssetName() != "" {
+	if !netpolicy.Strict() && forkrelease.SunshineAssetName() != "" {
 		streamhost.SetSunshineStageBinary(forkrelease.SunshineBinary(cfg.StateDir))
 	}
-	if cfg.PreferredBackend == "punktfunk" && streamhost.PunktfunkAvailable(instance.exeDir) {
+	if cfg.PreferredBackend == "punktfunk" && instance.punktfunkAvailable() {
 		instance.setStreamKind("punktfunk")
 	}
 	if instance.streamKind == "rustshine" {
@@ -1595,9 +1603,14 @@ func (a *App) SetStreamBackend(kind string) error {
 	if kind != "sunshine" && kind != "rustshine" && kind != "punktfunk" {
 		return fmt.Errorf("unknown stream backend %q", kind)
 	}
+	if netpolicy.Strict() {
+		if err := a.prepareLocalComponent(context.Background(), kind); err != nil {
+			return err
+		}
+	}
 	// Punktfunk is downloaded when picked (DownloadPunktfunk), not shipped
 	// with the agent.
-	if kind == "punktfunk" && !streamhost.PunktfunkAvailable(a.exeDir) {
+	if kind == "punktfunk" && !a.punktfunkAvailable() {
 		if err := a.DownloadPunktfunk(nil); err != nil {
 			return err
 		}
@@ -1636,11 +1649,11 @@ func (a *App) SetStreamBackend(kind string) error {
 		return nil
 	}
 	if kind == "rustshine" {
-		if _, err := os.Stat(entitlement.StagePath(a.cfg.StateDir)); err != nil {
-			return fmt.Errorf("rustshine is not downloaded yet")
+		if !a.rustshineStaged() {
+			return fmt.Errorf("rustshine is not staged/verified yet")
 		}
 	}
-	if kind == "punktfunk" && !streamhost.PunktfunkAvailable(a.exeDir) {
+	if kind == "punktfunk" && !a.punktfunkAvailable() {
 		return fmt.Errorf("punktfunk-host is not installed")
 	}
 
@@ -1832,6 +1845,9 @@ func (a *App) setStreamKind(kind string) {
 }
 
 func (a *App) rustshineStaged() bool {
+	if netpolicy.Strict() {
+		return localcomponents.PreparedPath(a.cfg.StateDir, "rustshine") != ""
+	}
 	_, err := os.Stat(entitlement.StagePath(a.cfg.StateDir))
 	return err == nil
 }
@@ -1899,14 +1915,24 @@ func (a *App) EntitlementStatus() entitlement.Status {
 	st.LocalRuntimeUSBPrepared = localruntime.Prepared(a.cfg.StateDir, "usb-broker")
 	st.ActiveBackend = a.currentStreamKind()
 	st.RustShineStaged = a.rustshineStaged()
-	// Offered wherever it's installed or Streamers-Forks publishes a build
-	// for this platform (picking it downloads it, see SetStreamBackend).
-	st.PunktfunkAvailable = streamhost.PunktfunkAvailable(a.exeDir) || forkrelease.PunktfunkAssetName() != ""
-	st.PunktfunkStaged = forkrelease.PunktfunkStaged(a.cfg.StateDir)
-	st.PunktfunkVersion = forkrelease.PunktfunkStagedVersion(a.cfg.StateDir)
-	st.SunshineUpdatable = sunshineDownloadable()
-	st.SunshineVersion = forkrelease.SunshineStagedVersion(a.cfg.StateDir)
-	st.RustShineVersion = entitlement.StagedVersion(a.cfg.StateDir)
+	if netpolicy.Strict() {
+		p := localcomponents.PreparedResult(a.cfg.StateDir, "punktfunk")
+		st.PunktfunkAvailable = p.Binary != "" || a.cfg.LocalComponentDirectory != "" || a.cfg.LocalComponentBundle != "" || a.cfg.LocalComponentMirror != ""
+		st.PunktfunkStaged = p.Binary != ""
+		st.PunktfunkVersion = p.Version
+		st.SunshineUpdatable = false
+		st.SunshineVersion = localcomponents.PreparedResult(a.cfg.StateDir, "sunshine").Version
+		st.RustShineVersion = localcomponents.PreparedResult(a.cfg.StateDir, "rustshine").Version
+	} else {
+		// Offered wherever it's installed or Streamers-Forks publishes a build
+		// for this platform (picking it downloads it, see SetStreamBackend).
+		st.PunktfunkAvailable = a.punktfunkAvailable() || forkrelease.PunktfunkAssetName() != ""
+		st.PunktfunkStaged = forkrelease.PunktfunkStaged(a.cfg.StateDir)
+		st.PunktfunkVersion = forkrelease.PunktfunkStagedVersion(a.cfg.StateDir)
+		st.SunshineUpdatable = sunshineDownloadable()
+		st.SunshineVersion = forkrelease.SunshineStagedVersion(a.cfg.StateDir)
+		st.RustShineVersion = entitlement.StagedVersion(a.cfg.StateDir)
+	}
 	st.WebRTCEnabled = !a.cfg.RustShineWebRTCDisabled
 	st.RustShineAvailableVersion = pending
 	st.RustShineUpdateOffer = pending != "" && pending != a.cfg.StreamerUpdateSnoozed
@@ -2380,6 +2406,9 @@ func (a *App) LogoutAccount() error {
 // switch to it -- SetStreamBackend("punktfunk") calls this itself when the
 // binary is missing.
 func (a *App) DownloadPunktfunk(onProgress forkrelease.ProgressFunc) error {
+	if netpolicy.Strict() {
+		return a.prepareLocalComponent(context.Background(), "punktfunk")
+	}
 	a.entMu.Lock()
 	a.entStatus.DownloadInProgress = true
 	a.entStatus.DownloadName = "USBridge Streamer"
@@ -2530,6 +2559,9 @@ func (a *App) DownloadRustShine(onProgress entitlement.ProgressFunc) error {
 	next.PreferredBackend = "rustshine"
 	if err := a.SaveConfig(next); err != nil {
 		return err
+	}
+	if netpolicy.Strict() {
+		return a.prepareLocalComponent(context.Background(), "rustshine")
 	}
 	if localruntime.Enabled() && a.rustshineStaged() {
 		return nil
@@ -3230,6 +3262,15 @@ func (a *App) EnableUSBBroker(onProgress entitlement.ProgressFunc) error {
 		return err
 	}
 
+	if netpolicy.Strict() {
+		if err := a.prepareLocalComponent(context.Background(), "broker"); err != nil {
+			return err
+		}
+		if a.usbBroker == nil {
+			return fmt.Errorf("USB unavailable")
+		}
+		return a.usbBroker.Start()
+	}
 	if localruntime.Enabled() && a.usbBroker != nil && a.usbBroker.Staged() {
 		return a.usbBroker.Start()
 	}
@@ -3248,6 +3289,15 @@ func (a *App) EnableUSBBroker(onProgress entitlement.ProgressFunc) error {
 // propagate to the user (EnableUSBBroker's return value, surfaced by the
 // consent button).
 func (a *App) stageAndStartUSBBroker(ctx context.Context, token string, onProgress entitlement.ProgressFunc) error {
+	if netpolicy.Strict() {
+		if err := a.prepareLocalComponent(ctx, "broker"); err != nil {
+			return err
+		}
+		if a.usbBroker == nil {
+			return fmt.Errorf("USB unavailable")
+		}
+		return a.usbBroker.Start()
+	}
 	a.stageBrokerMu.Lock()
 	defer a.stageBrokerMu.Unlock()
 	if a.usbBroker == nil {
@@ -3794,6 +3844,13 @@ func (a *App) KMSCaptureTargetPath() string { return a.kmsCaptureTarget() }
 // rustshineStagedDir is the directory holding the staged usbridge-streamer
 // (and its signed release bundle, streamerlaunch.BundleDirName).
 func (a *App) rustshineStagedDir() string {
+	if netpolicy.Strict() {
+		p := localcomponents.PreparedPath(a.cfg.StateDir, "rustshine")
+		if p == "" {
+			return ""
+		}
+		return filepath.Dir(p)
+	}
 	return filepath.Dir(entitlement.StagePath(a.cfg.StateDir))
 }
 

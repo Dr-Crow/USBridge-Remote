@@ -32,8 +32,9 @@ configuration must pin the mirror manifest's SHA256 before component use.
 
 ## Remaining acceptance gates
 
-Component resolution, the source browser policy, local TLS/web configuration and
-Docker support are being added next. Existing proprietary streamer defaults and
+Verified local component resolution is implemented (see LOCAL_COMPONENTS.md).
+The source browser policy, local TLS/web configuration and Docker support are
+being added next. Existing proprietary streamer defaults and
 cached TURN files must be addressed explicitly, including executed verification
 of empty ICE syntax on supported platforms. Request guards cannot prove what a
 child binary does internally. Clean-token startup, captured/blocked egress,

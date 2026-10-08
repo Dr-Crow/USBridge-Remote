@@ -37,7 +37,9 @@ import (
 	"time"
 
 	"usbridge_agent/internal/hwid"
+	"usbridge_agent/internal/localcomponents"
 	"usbridge_agent/internal/localruntime"
+	"usbridge_agent/internal/netpolicy"
 	"usbridge_agent/internal/streamerlaunch"
 )
 
@@ -291,6 +293,9 @@ func legacyBinaryName() string {
 // falling back to legacy paths and PATH for local dev where it's
 // just been cargo-built and symlinked.
 func (b *rustshineBackend) BinaryPath() string {
+	if netpolicy.Strict() {
+		return localcomponents.PreparedPath(b.stateDir, "rustshine")
+	}
 	// `-tags devstreamer` builds only; always "" in release builds.
 	if p := devStreamerOverride(); p != "" {
 		return p
@@ -464,6 +469,14 @@ func (b *rustshineBackend) Start(adminPort int) error {
 		return nil
 	}
 	launchPath := b.BinaryPath()
+	if netpolicy.Strict() {
+		if !localruntime.Enabled() {
+			return fmt.Errorf("strict local streamer requires pinned-runtime consent")
+		}
+		if err := localcomponents.VerifyPrepared(launchPath); err != nil {
+			return err
+		}
+	}
 	localToken := ""
 	if localruntime.Enabled() && launchPath != "" {
 		if b.capExecPath != "" {
