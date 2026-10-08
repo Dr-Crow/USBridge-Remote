@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -47,5 +48,51 @@ func TestBundleRejectsUnpinnedAndUnsafeArchiveMembers(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(out, "bundle.json")); !os.IsNotExist(err) {
 			t.Fatal("failed bundle was advertised")
 		}
+	}
+}
+
+func TestBundleWritesReplaceCachedFilesWithoutFollowingLinks(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if err := os.WriteFile(filepath.Join(dir, "cached"), []byte("old"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeBundleFile(root, "cached", []byte("new"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := root.ReadFile("cached")
+	if err != nil || string(got) != "new" {
+		t.Fatal("replacement failed", err)
+	}
+	st, err := root.Stat("cached")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0755 {
+		t.Fatalf("cached mode not corrected: %v", st.Mode())
+	}
+	outside := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(outside, []byte("untouched"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.Symlink(outside, "link"); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := writeBundleFile(root, "link", []byte("replacement"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(outside)
+	if err != nil || string(raw) != "untouched" {
+		t.Fatal("external symlink target changed")
+	}
+	if err := root.Symlink(filepath.Dir(outside), "external-dir"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeBundleFile(root, "external-dir/escape", []byte("no"), 0644); err == nil {
+		t.Fatal("directory symlink escaped output root")
 	}
 }

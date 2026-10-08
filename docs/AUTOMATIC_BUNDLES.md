@@ -82,3 +82,11 @@ versions are recorded with the artifacts. This does not establish desktop
 capture, GPU encoding or a working stream. Do not replace system libc to make
 the combined bundle run on an older distribution. Use a supported newer host
 or another compatible streamer instead.
+
+Expanded vendor executables use mode 0755 and public support files mode 0644
+so a separate read-only mirror service can read them. Private runtime copies
+and credentials retain their separate restrictive permissions. Bundle assembly
+replaces files through temporary descriptors inside an output-root handle,
+including existing cached files; it does not follow output links outside that
+root or alter the mode of a linked external file. Archives are parsed from the
+same bytes whose hashes were checked, rather than reopened after verification.

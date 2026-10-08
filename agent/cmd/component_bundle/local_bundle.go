@@ -3,7 +3,9 @@ package main
 import (
 	"archive/tar"
 	"archive/zip"
+	"bytes"
 	"compress/gzip"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -25,17 +27,28 @@ type bundleInput struct{ Name, Version, Asset, SHA256 string }
 // writeLocalBundle expands only the expected files from checksum-verified vendor
 // archives. Originals and vendor signatures remain beside the local manifest.
 func writeLocalBundle(out string, inputs []bundleInput, goos, goarch string) error {
+	info, err := os.Lstat(out)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("bundle output must be a real directory")
+	}
+	root, err := os.OpenRoot(out)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
 	manifest := localcomponents.Manifest{Schema: 1}
 	for _, input := range inputs {
 		if input.Version != "usbridge-streamer-v0.3.131" {
 			return fmt.Errorf("no audited bundle profile for release %s", input.Version)
 		}
-		archive := filepath.Join(out, input.Asset)
-		bytes, err := os.ReadFile(archive)
+		rawArchive, err := root.ReadFile(input.Asset)
 		if err != nil {
 			return err
 		}
-		sum := sha256.Sum256(bytes)
+		sum := sha256.Sum256(rawArchive)
 		if hex.EncodeToString(sum[:]) != input.SHA256 {
 			return fmt.Errorf("bundle archive changed after verification")
 		}
@@ -86,22 +99,18 @@ func writeLocalBundle(out string, inputs []bundleInput, goos, goarch string) err
 			}
 			seen[filename] = true
 			rel := name + "/" + filename
-			dest := filepath.Join(out, filepath.FromSlash(rel))
-			if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-				return err
-			}
 			mode := os.FileMode(0644)
 			if filename == base {
-				mode = 0700
+				mode = 0755
 			}
-			if err := os.WriteFile(dest, data, mode); err != nil {
+			if err := writeBundleFile(root, rel, data, mode); err != nil {
 				return err
 			}
 			component.Files = append(component.Files, localcomponents.File{Path: rel, Size: size, SHA256: fileHash, Executable: filename == base})
 			return nil
 		}
 		if strings.HasSuffix(input.Asset, ".zip") {
-			z, err := zip.OpenReader(archive)
+			z, err := zip.NewReader(bytes.NewReader(rawArchive), int64(len(rawArchive)))
 			if err != nil {
 				return err
 			}
@@ -110,30 +119,21 @@ func writeLocalBundle(out string, inputs []bundleInput, goos, goarch string) err
 					continue
 				}
 				if !f.Mode().IsRegular() {
-					z.Close()
 					return fmt.Errorf("nonregular ZIP member")
 				}
 				reader, err := f.Open()
 				if err != nil {
-					z.Close()
 					return err
 				}
 				err = accept(f.Name, int64(f.UncompressedSize64), reader)
 				reader.Close()
 				if err != nil {
-					z.Close()
 					return err
 				}
 			}
-			z.Close()
 		} else {
-			f, err := os.Open(archive)
+			gz, err := gzip.NewReader(bytes.NewReader(rawArchive))
 			if err != nil {
-				return err
-			}
-			gz, err := gzip.NewReader(f)
-			if err != nil {
-				f.Close()
 				return err
 			}
 			tr := tar.NewReader(gz)
@@ -144,7 +144,6 @@ func writeLocalBundle(out string, inputs []bundleInput, goos, goarch string) err
 				}
 				if err != nil {
 					gz.Close()
-					f.Close()
 					return err
 				}
 				if h.Typeflag == tar.TypeDir {
@@ -152,17 +151,14 @@ func writeLocalBundle(out string, inputs []bundleInput, goos, goarch string) err
 				}
 				if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeRegA {
 					gz.Close()
-					f.Close()
 					return fmt.Errorf("nonregular TAR member")
 				}
 				if err := accept(h.Name, h.Size, tr); err != nil {
 					gz.Close()
-					f.Close()
 					return err
 				}
 			}
 			gz.Close()
-			f.Close()
 		}
 		if len(seen) != len(wanted) {
 			return fmt.Errorf("missing required bundle files for %s", name)
@@ -178,7 +174,7 @@ func writeLocalBundle(out string, inputs []bundleInput, goos, goarch string) err
 		return err
 	}
 	raw = append(raw, '\n')
-	if err := os.WriteFile(filepath.Join(out, "manifest.json"), raw, 0644); err != nil {
+	if err := writeBundleFile(root, "manifest.json", raw, 0644); err != nil {
 		return err
 	}
 	sum := sha256.Sum256(raw)
@@ -191,7 +187,7 @@ func writeLocalBundle(out string, inputs []bundleInput, goos, goarch string) err
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(out, "bundle.json"), append(markerBytes, '\n'), 0644)
+	return writeBundleFile(root, "bundle.json", append(markerBytes, '\n'), 0644)
 }
 func bundlePlatform(target string) (string, string, string, error) {
 	if target == "" {
@@ -242,4 +238,34 @@ func bundleFromArchives(out, target string) error {
 		inputs = append(inputs, bundleInput{Name: name, Version: m.Version, Asset: a.Asset, SHA256: a.SHA256})
 	}
 	return writeLocalBundle(out, inputs, goos, goarch)
+}
+
+// Replace through a new file descriptor: cached restrictive modes are normalized,
+// while a preexisting symlink/hardlink is never followed or chmodded in place.
+// These public vendor originals are mirror-readable; runtime secrets are not here.
+func writeBundleFile(root *os.Root, name string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(name)
+	if err := root.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	tmp := filepath.Join(dir, ".bundle-"+rand.Text())
+	f, err := root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	defer root.Remove(tmp)
+	if _, err = f.Write(data); err == nil {
+		err = f.Chmod(mode)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return root.Rename(tmp, name)
 }
