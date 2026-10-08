@@ -298,6 +298,7 @@ func (mw *MainWindow) Show() {
 
 	mw.app.Lifecycle().SetOnStarted(func() {
 		taskbar.ProbeCOM(mw.window)
+		mw.pinLinuxDPIScale()
 		if debugPreviewUpdateDialog {
 			mw.previewUpdateAvailableDialog()
 		}
