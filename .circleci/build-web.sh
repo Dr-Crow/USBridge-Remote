@@ -5,6 +5,13 @@ ROOT="$(git rev-parse --show-toplevel)"
 OUT="$ROOT/artifacts/web-client"
 mkdir -p "$OUT"
 
+# Probe the actual executor before downloading/building. gzip archives avoid an
+# incidental xz dependency; no privileged package installation is needed.
+for tool in bash curl tar gzip git python3 sha256sum; do
+  command -v "$tool" >/dev/null || { echo "Required web build tool missing: $tool" >&2; exit 1; }
+done
+python3 -c 'import sys; assert sys.version_info >= (3, 10), "Python 3.10+ required"'
+
 # Explicit local override lets developers use an already verified Go toolchain.
 # CI downloads the pinned archive into a disposable directory.
 TOOLS="$(mktemp -d)"
@@ -27,11 +34,11 @@ export GOTOOLCHAIN=local GOFLAGS=-mod=readonly
 # Node runs browser API mocks, not real browser/agent streaming acceptance.
 # Record the image's compatible Node, or use a fixed verified fallback.
 if ! command -v node >/dev/null || ! node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)'; then
-  ARCHIVE=node-v22.15.0-linux-x64.tar.xz
-  HASH=dafe2e8f82cb97de1bd10db9e2ec4c07bbf53389b0799b1e095a918951e78fd4
+  ARCHIVE=node-v22.15.0-linux-x64.tar.gz
+  HASH=29d1c60c5b64ccdb0bc4e5495135e68e08a872e0ae91f45d9ec34fc135a17981
   curl --retry 3 -fsSL "https://nodejs.org/download/release/v22.15.0/$ARCHIVE" -o "$TOOLS/$ARCHIVE"
   (cd "$TOOLS" && printf '%s  %s\n' "$HASH" "$ARCHIVE" | sha256sum -c -)
-  tar -xJf "$TOOLS/$ARCHIVE" -C "$TOOLS"
+  tar -xzf "$TOOLS/$ARCHIVE" -C "$TOOLS"
   export PATH="$TOOLS/node-v22.15.0-linux-x64/bin:$PATH"
   printf '%s  %s\n' "$HASH" "$ARCHIVE" > "$OUT/node-toolchain-sha256.txt"
 fi

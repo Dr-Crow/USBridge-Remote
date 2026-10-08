@@ -4,8 +4,9 @@ version: 2.1
 # No release publishing, credential embedding or vendor archive modification.
 jobs:
   web-client:
-    machine:
-      image: ubuntu-2204:current
+    docker:
+      # CircleCI 2026.10 amd64 manifest, verified via Docker Registry.
+      - image: cimg/base:2026.10@sha256:5c3b1d7f9597fe92f818ce7e075476a18ced9fbd1730b14382d4d01bfb76389e
     resource_class: medium
     steps:
       - checkout

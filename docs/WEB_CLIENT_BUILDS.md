@@ -60,3 +60,15 @@ with USBRIDGE_WEB_GO pointing to an existing verified Go executable:
 Reports and ZIPs are written beneath artifacts/web-client. CI artifacts are test
 deliverables, not a permanent release/update channel. This job publishes no
 release and uses no vendor account credentials.
+
+## Web CI executor
+
+Only `web-client` uses CircleCI's Docker executor with the immutable amd64
+manifest of `cimg/base:2026.10`, digest
+`sha256:5c3b1d7f9597fe92f818ce7e075476a18ced9fbd1730b14382d4d01bfb76389e`.
+The native agent executors remain unchanged. The build checks curl, tar, gzip,
+git, Python 3.10+ and sha256sum before downloading tools. The official image's
+Dockerfile installs these tools; actual availability is checked in each job.
+Node's pinned gzip archive avoids depending on xz being installed. This job
+runs all the same tests and packaging validation without a privileged VM or
+privileged package installation.
