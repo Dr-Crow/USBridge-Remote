@@ -43,6 +43,13 @@ func generate(dir string) error {
 	if err != nil {
 		return err
 	}
+	// Parse the issued CA so its generated SubjectKeyId is available when
+	// CreateCertificate derives the leaf AuthorityKeyId. Python/OpenSSL strict
+	// verification correctly rejects a non-root leaf missing this identifier.
+	ca, err = x509.ParseCertificate(caDER)
+	if err != nil {
+		return err
+	}
 	leaf := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "Disposable CI agent"}, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(time.Hour), IPAddresses: []net.IP{net.ParseIP("127.0.0.1")}, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
 	leafDER, err := x509.CreateCertificate(rand.Reader, leaf, ca, &leafKey.PublicKey, caKey)
 	if err != nil {

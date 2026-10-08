@@ -55,3 +55,12 @@ Sunshine selection with no prepared Sunshine binary. No streamer is launched or
 downloaded for this probe. The adjacent component discovery/preparation check
 remains a separate test. This is not GUI rendering, normal desktop first-launch,
 streaming, physical-device, or OS-level WAN-blocking acceptance.
+
+The first HTTPS probe (job 148) timed out after the HTTP-only native probe had
+passed. Its generated test leaf omitted Authority Key Identifier because the
+fixture signed using the CA template rather than the parsed issued CA. Strict
+OpenSSL verification independently reproduced that error. The fixture now uses
+the issued CA's generated Subject Key Identifier, with a regression test, and
+passes strict OpenSSL and Python HTTPS verification locally. Client certificate
+checks are not relaxed. Hosted Windows execution must still verify the corrected
+fixture; the probe now preserves the last health/TLS error in its result JSON.

@@ -78,9 +78,10 @@ def run(bundle, report_path):
                             if response.status == 200 and body.get("data", {}).get("status") == "ok":
                                 report["headless_startup"] = True
                                 report["operator_tls_handshake"] = True
+                                report.pop("last_health_error", None)
                                 break
-                    except (OSError, ValueError):
-                        pass
+                    except (OSError, ValueError) as error:
+                        report["last_health_error"] = f"{type(error).__name__}: {error}"
                     time.sleep(0.5)
                 if not report["headless_startup"]:
                     raise RuntimeError("native agent did not answer loopback health within 60 seconds")
