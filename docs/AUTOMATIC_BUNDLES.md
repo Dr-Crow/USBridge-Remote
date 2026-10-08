@@ -70,3 +70,15 @@ platform and the pinned profile source. Cache hits are reverified and rebuilt
 offline; they do not acquire a fresh vendor token on every build. A corrupt cache
 fails verification instead of being treated as trusted executable input. This
 cache is build acceleration, not permanent release hosting.
+
+## Linux stock-component runtime requirement
+
+The standalone agent is still built and tested on Ubuntu 22.04. The pinned
+stock streamer in the combined Linux bundle cannot run on that distribution:
+CI observed missing GLIBC_2.38, GLIBC_2.39 and CXXABI_1.3.15 versions.
+The separate stock CLI acceptance probe uses Ubuntu 24.04 with libstdc++6 and
+libvulkan1, with networking disabled during the probe. Its image ID and package
+versions are recorded with the artifacts. This does not establish desktop
+capture, GPU encoding or a working stream. Do not replace system libc to make
+the combined bundle run on an older distribution. Use a supported newer host
+or another compatible streamer instead.

@@ -62,7 +62,11 @@ else
 fi
 bash "$ROOT/.circleci/prepare-components.sh" "$ROOT" "$TARGET"
 USBRIDGE_BUNDLE_FIXTURES="$ROOT/artifacts/components" go test -tags ci ./internal/app -run '^TestAutomaticBundledPairOfflineFixture$' -v 2>&1 | tee "$ROOT/artifacts/offline-bundle-smoke.txt"
-USBRIDGE_LAB_STREAMER_BINARY="$ROOT/artifacts/components/rustshine/usbridge-streamer" go test ./internal/localruntime -run '^TestPinnedStreamerEmptyICECLI$' -v 2>&1 | tee "$ROOT/artifacts/streamer-empty-ice-cli.txt"
+if [[ "$OS" == Darwin ]]; then
+  USBRIDGE_LAB_STREAMER_BINARY="$ROOT/artifacts/components/rustshine/usbridge-streamer" go test ./internal/localruntime -run '^TestPinnedStreamerEmptyICECLI$' -v 2>&1 | tee "$ROOT/artifacts/streamer-empty-ice-cli.txt"
+else
+  bash "$ROOT/.circleci/test-linux-streamer.sh" "$ROOT"
+fi
 if [[ "$OS" == Darwin ]]; then
   mkdir -p "$ROOT/offline-macos"
   ditto -x -k "$ROOT/artifacts/USBridgeAgent-macOS-arm64-$VERSION.zip" "$ROOT/offline-macos"
