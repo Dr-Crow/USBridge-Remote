@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"usbridge_agent/internal/hwid"
+	"usbridge_agent/internal/localruntime"
 )
 
 const (
@@ -32,17 +33,17 @@ const (
 )
 
 type Status struct {
-	Available   bool     `json:"available"`
-	Platform    string   `json:"platform"`
-	BrokerAlive bool     `json:"broker_alive"`
-	StubDriver  bool     `json:"stub_driver"`
-	VhciDriver  bool     `json:"vhci_driver"`
-	ListenPort  int      `json:"listen_port"`
+	Available   bool   `json:"available"`
+	Platform    string `json:"platform"`
+	BrokerAlive bool   `json:"broker_alive"`
+	StubDriver  bool   `json:"stub_driver"`
+	VhciDriver  bool   `json:"vhci_driver"`
+	ListenPort  int    `json:"listen_port"`
 	// ConfiguredPort is usb_passthrough_port; differs from ListenPort when
 	// pickURBPort had to fall back because something else held it.
-	ConfiguredPort int `json:"configured_port,omitempty"`
-	Sessions    []string `json:"sessions"`
-	BrokerError string   `json:"broker_error,omitempty"`
+	ConfiguredPort int      `json:"configured_port,omitempty"`
+	Sessions       []string `json:"sessions"`
+	BrokerError    string   `json:"broker_error,omitempty"`
 	// BrokerLastExit is the broker's own last error line (from broker.log)
 	// when it has crashed -- BrokerError alone is just "control dial
 	// refused", which says nothing about why.
@@ -244,6 +245,18 @@ func (s *Service) Start() error {
 		return fmt.Errorf("usbridge-usb-broker not staged (closed rust-shine binary)")
 	}
 	s.killOrphanBrokers()
+	localToken := ""
+	if localruntime.Enabled() {
+		id, err := hwid.Get()
+		if err != nil {
+			return err
+		}
+		spec, err := localruntime.Prepare(exe, s.stateDir, "usb-broker", id)
+		if err != nil {
+			return err
+		}
+		exe, localToken = spec.Binary, spec.Token
+	}
 	port := s.pickURBPort()
 	s.urbPort = port
 	args := []string{
@@ -255,12 +268,15 @@ func (s *Service) Start() error {
 	if s.tsnetBridge != "" {
 		args = append(args, "--tsnet-bridge", s.tsnetBridge)
 	}
-	if os.Getenv("USBRIDGE_USB_ALLOW_UNLICENSED") == "1" {
+	if os.Getenv("USBRIDGE_USB_ALLOW_UNLICENSED") == "1" && !localruntime.Enabled() {
 		args = append(args, "--allow-unlicensed")
 	} else {
 		// Forward the same token file RustShine already uses. The broker
 		// (rust-shine) is what checks pro/enterprise — Go never inspects the token.
 		token := filepath.Join(s.stateDir, "rustshine", "entitlement.token")
+		if localToken != "" {
+			token = localToken
+		}
 		if st, err := os.Stat(token); err == nil && !st.IsDir() {
 			args = append(args, "--entitlement-file", token)
 			if hw, err := hwid.Get(); err == nil && hw != "" {
@@ -454,8 +470,8 @@ func (s *Service) control(cmd string, extra map[string]any) (map[string]any, err
 
 func (s *Service) Status() Status {
 	st := Status{
-		Available:  runtime.GOOS == "windows" || runtime.GOOS == "linux",
-		Platform:   runtime.GOOS,
+		Available:      runtime.GOOS == "windows" || runtime.GOOS == "linux",
+		Platform:       runtime.GOOS,
 		ListenPort:     s.ListenPort(),
 		ConfiguredPort: s.basePort,
 	}

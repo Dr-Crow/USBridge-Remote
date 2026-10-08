@@ -40,6 +40,7 @@ import (
 	"usbridge_agent/internal/forkrelease"
 	"usbridge_agent/internal/hwid"
 	"usbridge_agent/internal/input"
+	"usbridge_agent/internal/localruntime"
 	"usbridge_agent/internal/netutil"
 	"usbridge_agent/internal/permissions"
 	"usbridge_agent/internal/sasinput"
@@ -603,7 +604,7 @@ func New() (*App, error) {
 	// no longer holds up.
 	if cfg.PreferredBackend == "rustshine" {
 		if hwID, err := hwid.Get(); err == nil {
-			if _, err := entitlement.VerifyForHardware(cfg.EntitlementToken, hwID); err == nil {
+			if _, err := entitlement.VerifyForHardware(cfg.EntitlementToken, hwID); err == nil || localruntime.Enabled() {
 				if _, err := os.Stat(entitlement.StagePath(cfg.StateDir)); err == nil {
 					instance.setStreamKind("rustshine")
 				}
@@ -836,6 +837,7 @@ func (a *App) Run(headless, startHidden bool) error {
 	go a.awdlWatchdog(ctx)
 	// One retry-owning loop performs both startup and periodic entitlement setup.
 	// An offline first launch retries rather than waiting a full healthy interval.
+	go localruntime.Renew(ctx)
 	go a.entitlementWatchdog(ctx)
 	go a.streamerUpdateWatchdog(ctx)
 	go a.turnCredentialsWatchdog(ctx)
@@ -2505,6 +2507,9 @@ func (a *App) DownloadRustShine(onProgress entitlement.ProgressFunc) error {
 	if err := a.SaveConfig(next); err != nil {
 		return err
 	}
+	if localruntime.Enabled() && a.rustshineStaged() {
+		return nil
+	}
 	token, err := a.componentEntitlement(context.Background())
 	if err != nil {
 		a.setEntError(err.Error())
@@ -2706,6 +2711,9 @@ func (a *App) entitlementWatchdog(ctx context.Context) {
 // just-started agent doesn't wait a full interval to notice an already-
 // published release.
 func (a *App) streamerUpdateWatchdog(ctx context.Context) {
+	if localruntime.Enabled() {
+		return
+	} // research copies are pinned to audited component hashes
 	a.tickStreamerUpdate(ctx)
 	ticker := time.NewTicker(streamerUpdateCheckInterval)
 	defer ticker.Stop()
@@ -3032,6 +3040,17 @@ func (a *App) RetryDeviceCert() {
 // coming back is picked up within entitlementRetryInterval, not up to a
 // full entitlementRecheckInterval later.
 func (a *App) recheckEntitlement(ctx context.Context) bool {
+	if localruntime.Enabled() && a.rustshineStaged() {
+		// Local tokens never go to vendor APIs. Explicit missing-component setup
+		// still uses the genuine free-token download path.
+		if a.cfg.PreferredBackend == "rustshine" && a.currentStreamKind() != "rustshine" {
+			if err := a.SetStreamBackend("rustshine"); err != nil {
+				a.setEntError(err.Error())
+				return false
+			}
+		}
+		return true
+	}
 	hwID, err := hwid.Get()
 	if err != nil {
 		log.Printf("[app] entitlement recheck: could not determine hardware id: %v", err)
@@ -3169,6 +3188,9 @@ func (a *App) EnableUSBBroker(onProgress entitlement.ProgressFunc) error {
 		return err
 	}
 
+	if localruntime.Enabled() && a.usbBroker != nil && a.usbBroker.Staged() {
+		return a.usbBroker.Start()
+	}
 	token, err := a.componentEntitlement(context.Background())
 	if err != nil {
 		return err

@@ -330,6 +330,10 @@ Logs:
   If USBRIDGE_LOG_DIR is set, logs are written there instead.
 README
 
+if [[ -f "$REPO_ROOT/../docs/LOCAL_RUNTIME_RESEARCH.md" ]]; then
+    cp "$REPO_ROOT/../docs/LOCAL_RUNTIME_RESEARCH.md" "$DIST_DIR/LOCAL-RUNTIME.md"
+fi
+
 ARCHIVE="$REPO_ROOT/dist/USBridgeAgent-Windows-x86_64-${VERSION}.zip"
 ARCHIVE_TMP="${ARCHIVE}.tmp.$$"
 rm -f "$ARCHIVE_TMP"

@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"usbridge_agent/internal/hwid"
+	"usbridge_agent/internal/localruntime"
 	"usbridge_agent/internal/streamerlaunch"
 )
 
@@ -294,7 +295,7 @@ func (b *rustshineBackend) BinaryPath() string {
 	if p := devStreamerOverride(); p != "" {
 		return p
 	}
-	if b.launchPath != "" {
+	if b.launchPath != "" && !localruntime.Enabled() {
 		return b.launchPath
 	}
 	// New standard paths. Prefer a Windows sidecar (binaryName+".new")
@@ -463,6 +464,21 @@ func (b *rustshineBackend) Start(adminPort int) error {
 		return nil
 	}
 	launchPath := b.BinaryPath()
+	localToken := ""
+	if localruntime.Enabled() && launchPath != "" {
+		if b.capExecPath != "" {
+			return fmt.Errorf("local runtime cannot use the privileged signed-release launcher")
+		}
+		id, err := hwid.Get()
+		if err != nil {
+			return err
+		}
+		spec, err := localruntime.Prepare(launchPath, b.stateDir, "rustshine", id)
+		if err != nil {
+			return err
+		}
+		launchPath, localToken = spec.Binary, spec.Token
+	}
 	if launchPath == "" {
 		return nil
 	}
@@ -603,7 +619,11 @@ func (b *rustshineBackend) Start(adminPort int) error {
 	// entitlement.TokenFilePath -- see that function's doc comment for why:
 	// this package stays entitlement-agnostic, entitlement stays
 	// streamhost-agnostic. Always passed; harmless if unused.
-	args = append(args, "--entitlement-file", filepath.Join(b.stateDir, "rustshine", "entitlement.token"))
+	tokenPath := filepath.Join(b.stateDir, "rustshine", "entitlement.token")
+	if localToken != "" {
+		tokenPath = localToken
+	}
+	args = append(args, "--entitlement-file", tokenPath)
 	// Path convention duplicated (not imported) from
 	// entitlement.TurnCredentialsFilePath -- same reasoning as
 	// --entitlement-file above. Always passed; harmless if unused (rust-shine

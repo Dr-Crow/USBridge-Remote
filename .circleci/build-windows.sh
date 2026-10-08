@@ -41,6 +41,7 @@ USBRIDGE_WINDOWS_LDFLAGS="-H=windowsgui -X usbridge_agent/internal/update.Channe
 cp dist/windows/USBridgeAgent.exe "$ROOT/artifacts/USBridgeAgent.exe"
 cp dist/USBridgeAgent-Windows-x86_64-*.zip "$ROOT/artifacts/"
 cp ../docs/FORK_TEST_PLAN.md "$ROOT/artifacts/TEST-INSTRUCTIONS.md"
+cp ../docs/LOCAL_RUNTIME_RESEARCH.md "$ROOT/artifacts/LOCAL-RUNTIME.md"
 cp LICENSE "$ROOT/artifacts/LICENSE"
 cd "$ROOT/artifacts"
 sha256sum USBridgeAgent.exe USBridgeAgent-Windows-x86_64-*.zip > SHA256SUMS.txt
@@ -48,6 +49,19 @@ sha256sum USBridgeAgent.exe USBridgeAgent-Windows-x86_64-*.zip > SHA256SUMS.txt
 # machine. Never copy a user's token/config or embed the CI token in artifacts.
 cd "$ROOT/agent"
 go run ./cmd/component_bundle -out "$ROOT/artifacts/components"
+# Runtime-only lab acceptance is distinct from a claim of USB device/streaming
+# functionality. The original archive and executable are never changed.
+mkdir -p "$ROOT/lab-ci-input"
+python - "$ROOT/artifacts/components/usbridge-usb-broker-windows-x86_64.zip" "$ROOT/lab-ci-input" <<'PYZIP'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as z:
+    for name in z.namelist():
+        if name.endswith('usbridge-usb-broker.exe'):
+            with open(sys.argv[2] + '/usbridge-usb-broker.exe', 'wb') as f:
+                f.write(z.read(name))
+PYZIP
+USBRIDGE_LAB_TEST_BINARY="$(cygpath -w "$ROOT/lab-ci-input/usbridge-usb-broker.exe")" go test -tags ci ./internal/localruntime -run TestPinnedBrokerLocalRuntime -v 2>&1 | tee "$ROOT/artifacts/local-runtime-smoke.txt"
+
 mkdir -p "$ROOT/offline-bundle/agent" "$ROOT/offline-bundle/components"
 cp -R dist/windows/. "$ROOT/offline-bundle/agent/"
 cp -R "$ROOT/artifacts/components/." "$ROOT/offline-bundle/components/"

@@ -1,6 +1,9 @@
 package ui
 
-import "fyne.io/fyne/v2"
+import (
+	"fyne.io/fyne/v2"
+	"usbridge_agent/internal/localruntime"
+)
 
 func (w *Window) showBackendInfoDialog(parent fyne.Window, key string) {
 	if parent == nil {
@@ -15,6 +18,9 @@ func (w *Window) showBackendInfoDialog(parent fyne.Window, key string) {
 	case protocolPunktfunk:
 		title = "Punktfunk"
 		message = "Alternative open-source streaming backend. Available features depend on the installed backend and connected client."
+	}
+	if localruntime.Enabled() && key == protocolFree {
+		message = "EXPERIMENTAL local runtime mode is active. The agent runs rekeyed copies of the pinned v0.3.131 binaries with locally signed test claims. Downloaded vendor originals stay unchanged. This is not an unmodified-stock unlock, vendor subscription, or fully offline networking mode. Streaming/USB hardware acceptance is still required."
 	}
 	showInfoDialog(title, message, parent)
 }

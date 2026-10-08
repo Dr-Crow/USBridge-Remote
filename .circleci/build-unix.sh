@@ -51,6 +51,7 @@ else
   tar -czf "$ROOT/artifacts/USBridgeAgent-Linux-amd64-$VERSION.tar.gz" -C dist/linux usbridge-agent usbridge-streamer-launch
 fi
 cp ../docs/PLATFORM_BUILDS.md "$ROOT/artifacts/README.md"
+cp ../docs/LOCAL_RUNTIME_RESEARCH.md "$ROOT/artifacts/LOCAL-RUNTIME.md"
 cp LICENSE "$ROOT/artifacts/LICENSE"
 cd "$ROOT/artifacts"
 find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -exec shasum -a 256 '{}' \; > SHA256SUMS.txt
