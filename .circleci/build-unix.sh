@@ -10,7 +10,7 @@ else
   ARCHIVE=go1.26.6.linux-amd64.tar.gz
   HASH=708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89
   sudo apt-get update
-  sudo apt-get install -y libgl1-mesa-dev xorg-dev libxkbcommon-dev libfuse2 patchelf pkg-config
+  sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y libgl1-mesa-dev xorg-dev libxkbcommon-dev libfuse2 patchelf pkg-config
 fi
 curl --retry 3 -fsSL "https://go.dev/dl/$ARCHIVE" -o "$HOME/ci-toolchain/$ARCHIVE"
 (cd "$HOME/ci-toolchain" && printf '%s  %s\n' "$HASH" "$ARCHIVE" | shasum -a 256 -c -)
