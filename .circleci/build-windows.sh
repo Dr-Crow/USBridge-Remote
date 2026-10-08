@@ -15,7 +15,18 @@ mkdir -p "$ROOT/artifacts"
   pacman -Q
 } > "$ROOT/artifacts/build-info.txt"
 cd agent
-go mod verify 2>&1 | tee "$ROOT/artifacts/module-verification.txt"
+# Go 1.26 verify treats the local usbridge-client replacement as a cache
+# archive and fails looking for its ziphash. Verify all remote modules using
+# an otherwise identical temporary module; the local client is Git source.
+go mod download
+VERIFY_DIR="$(mktemp -d)"
+cp go.mod go.sum "$VERIFY_DIR/"
+(
+  cd "$VERIFY_DIR"
+  go mod edit -droprequire=usbridge-client -dropreplace=usbridge-client
+  go mod verify
+) 2>&1 | tee "$ROOT/artifacts/module-verification.txt"
+rm -rf "$VERIFY_DIR"
 # ci uses Fyne's software driver for unit tests, not the shipped application.
 go test -tags ci -timeout 10m ./... 2>&1 | tee "$ROOT/artifacts/tests.txt"
 go vet -tags ci -unsafeptr=false ./... 2>&1 | tee "$ROOT/artifacts/vet.txt"
