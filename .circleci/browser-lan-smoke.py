@@ -18,6 +18,16 @@ archives = list(pathlib.Path('artifacts/web-client').glob('USBridge-Web-*.zip'))
 assert len(archives) == 1, 'exactly one source-built web bundle required'
 report = {'fixture': 'fresh browser; strict runtime config; loopback HTTP; no agent paired',
           'requests': [], 'page_errors': [], 'console_errors': []}
+
+def wait_for_app(page):
+    # The page has a deliberately hidden AI overlay before Go creates its app
+    # canvas. Waiting on the first generic canvas selects that overlay forever.
+    try:
+        page.wait_for_selector('canvas:not(#aiVisionCanvas)', state='visible', timeout=90000)
+    except Exception:
+        report['canvas_state'] = page.locator('canvas').evaluate_all('(nodes) => nodes.map(n => ({id:n.id,width:n.width,height:n.height,display:getComputedStyle(n).display}))')
+        page.screenshot(path=str(out / 'startup-failure.png'), full_page=True)
+        raise
 with tempfile.TemporaryDirectory(prefix='usbridge-browser-') as tmp:
     root = pathlib.Path(tmp)
     with zipfile.ZipFile(archives[0]) as archive:
@@ -62,7 +72,7 @@ with tempfile.TemporaryDirectory(prefix='usbridge-browser-') as tmp:
             page.on('pageerror', lambda e: report['page_errors'].append(str(e)))
             page.on('console', lambda m: report['console_errors'].append(m.text) if m.type == 'error' else None)
             page.goto('http://127.0.0.1:%d/' % server.server_port, wait_until='networkidle', timeout=90000)
-            page.wait_for_selector('canvas', timeout=90000)
+            wait_for_app(page)
             page.wait_for_timeout(3000)
             report['policy'] = page.evaluate('''async () => {
               let fetchBlocked=false,wsBlocked=false,iceBlocked=false;
@@ -74,7 +84,7 @@ with tempfile.TemporaryDirectory(prefix='usbridge-browser-') as tmp:
             assert all(report['policy'].values()), report['policy']
             page.screenshot(path=str(out / 'desktop.png'), full_page=True)
             page.reload(wait_until='networkidle', timeout=90000)
-            page.wait_for_selector('canvas', timeout=90000)
+            wait_for_app(page)
             page.set_viewport_size({'width': 390, 'height': 844})
             page.wait_for_timeout(1500)
             page.screenshot(path=str(out / 'mobile.png'), full_page=True)
