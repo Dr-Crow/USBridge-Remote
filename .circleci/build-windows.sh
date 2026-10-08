@@ -85,6 +85,7 @@ USBRIDGE_LAB_STREAMER_BINARY="$(cygpath -w "$ROOT/lab-ci-input/usbridge-streamer
 mkdir -p "$ROOT/offline-bundle/agent/components"
 cp -R dist/windows/. "$ROOT/offline-bundle/agent/"
 cp -R "$ROOT/artifacts/components/." "$ROOT/offline-bundle/agent/components/"
+python3 "$ROOT/.circleci/native-agent-smoke.py" "$ROOT/offline-bundle/agent" "$ROOT/artifacts/native-agent-smoke.json"
 cp ../docs/FORK_TEST_PLAN.md "$ROOT/offline-bundle/README.md"
 cp ../docs/AUTOMATIC_BUNDLES.md "$ROOT/offline-bundle/AUTOMATIC_BUNDLES.md"
 cp ../docs/RUNTIME_NETWORK_POLICY.md "$ROOT/offline-bundle/RUNTIME_NETWORK_POLICY.md"
