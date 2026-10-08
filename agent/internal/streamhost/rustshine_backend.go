@@ -637,14 +637,10 @@ func (b *rustshineBackend) Start(adminPort int) error {
 		tokenPath = localToken
 	}
 	args = append(args, "--entitlement-file", tokenPath)
-	// Path convention duplicated (not imported) from
-	// entitlement.TurnCredentialsFilePath -- same reasoning as
-	// --entitlement-file above. Always passed; harmless if unused (rust-shine
-	// treats a missing/stale file exactly like this flag being absent, see
-	// its own --turn-credentials-file doc comment) -- app.go's
-	// turnCredentialsWatchdog is what actually keeps this file fresh,
-	// independent of this process's own lifecycle.
-	args = append(args, "--turn-credentials-file", filepath.Join(b.stateDir, "rustshine", "turn-credentials.json"))
+	// Normal mode uses the watchdog-maintained TURN file. Strict mode must
+	// neither load a cached vendor file nor retain the public STUN default.
+	// Empty CLI parsing still requires acceptance against the pinned binary.
+	args = append(args, rustshineICEArgs(netpolicy.Strict(), b.stateDir)...)
 	// This machine's hardware id, exactly as the entitlement token's own
 	// `sub` claim was bound to (see entitlement.VerifyForHardware) -- a
 	// desktop-entitlement build refuses to start without a matching
@@ -788,6 +784,9 @@ func (b *rustshineBackend) Start(adminPort int) error {
 			cmd = exec.Command(launchPath, args...)
 		}
 		configureRustshineProcess(cmd)
+		if netpolicy.Strict() {
+			cmd.Env = strictStreamerEnv(os.Environ())
+		}
 		if launchDir != "" && launchDir != "." {
 			cmd.Dir = launchDir
 		}

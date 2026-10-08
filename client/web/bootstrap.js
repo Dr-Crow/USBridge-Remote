@@ -1,0 +1,257 @@
+// Keeps the Fyne canvas (and therefore the whole app's layout -- video,
+  // the on-screen keyboard panel, everything) sized to the *visual*
+  // viewport instead of the full page, so that when the browser's real IME
+  // keyboard opens, the canvas shrinks to sit entirely above it instead of
+  // extending behind it. See internal/gui/controller/video_widget_web.go
+  // for how the keyboard panel itself is docked at the bottom of this same
+  // canvas -- once the canvas stops extending behind the IME, that panel is
+  // automatically above it, and Fyne's own Border layout automatically
+  // gives the video widget whatever extra height that frees up, with zero
+  // Go-side layout code needed for either -- this page-level resize is the
+  // entire fix.
+  //
+  // Why this works: fyne-io/glfw-js's own resize handling
+  // (browser_wasm.go's `resize` listener) derives the canvas's Fyne-visible
+  // size from `canvas.clientWidth/clientHeight` (a CSS layout query), not
+  // from window.innerWidth/innerHeight directly. Shrinking the canvas
+  // element's own CSS height to the current visualViewport height, then
+  // firing a synthetic `resize` event, makes Fyne re-run its entire layout
+  // against that smaller size through its completely normal resize path --
+  // no private/undocumented API needed, just triggering the same mechanism
+  // an actual window resize would.
+  function installViewportFollow() {
+    var vv = window.visualViewport;
+    if (!vv) return; // older engines: no IME-aware resize, falls back to 100dvh's own behavior
+    var canvas = document.querySelector('canvas');
+    if (!canvas) {
+      setTimeout(installViewportFollow, 150);
+      return;
+    }
+    var imeOpen = false;
+    // Matches the CSS @supports(height: 100dvh) gate: on an engine without
+    // dvh support, setting canvas.style.height to an invalid value is
+    // simply ignored by the CSS engine, so fall back to 100vh there (the
+    // same fallback the stylesheet itself already uses).
+    var restHeight = (window.CSS && CSS.supports && CSS.supports('height', '100dvh')) ? '100dvh' : '100vh';
+    function apply() {
+      // A small nonzero gap between window.innerHeight and vv.height is
+      // normal (scrollbars, minor engine rounding) -- only treat this as
+      // "the IME is open" past a real threshold, same idea as Android's
+      // own onIMEHeightChanged (minRealIMEDp = 100).
+      var covered = window.innerHeight - vv.height;
+      var shouldBeOpen = covered > 100;
+      if (shouldBeOpen === imeOpen && !shouldBeOpen) return; // already at rest, dvh handles it
+      imeOpen = shouldBeOpen;
+      if (shouldBeOpen) {
+        canvas.style.height = vv.height + 'px';
+        document.body.style.height = vv.height + 'px';
+      } else {
+        // Explicitly re-apply 100dvh rather than removeProperty('height'):
+        // inline styles don't have a "previous value" to fall back to once
+        // overwritten -- glfw-js's own 100dvh rule (set once at canvas
+        // creation) was already replaced the moment the `if` branch above
+        // first set an explicit px height, so removeProperty just deleted
+        // the height rule entirely, leaving the canvas with *no* height
+        // rule at all. Confirmed live via CDP: canvas.getAttribute('style')
+        // read back as "width: 100dvw;" with no height property whatsoever
+        // after an IME open/close cycle, and the canvas's own
+        // getBoundingClientRect() had collapsed to some small browser
+        // fallback height completely disconnected from the viewport --
+        // this was the actual root cause of every "panel/video stuck small
+        // after the IME closes" report, not a Fyne/Go-side layout bug at
+        // all. Re-setting the same 100dvh string every time sidesteps the
+        // whole "was there a previous value" question.
+        canvas.style.height = restHeight;
+        document.body.style.height = restHeight;
+      }
+      window.dispatchEvent(new Event('resize'));
+    }
+    vv.addEventListener('resize', apply);
+    vv.addEventListener('scroll', apply);
+    // Fallback poll: some mobile Chrome builds (confirmed on at least one
+    // real Samsung device) don't reliably fire visualViewport
+    // resize/scroll when the IME closes via certain dismiss paths (tapping
+    // outside the field rather than the keyboard's own dismiss control) --
+    // the panel/video were observed staying stuck in their "IME open"
+    // layout even after the keyboard was long gone. A cheap periodic
+    // recheck closes that gap: apply() is a no-op (bails via the
+    // shouldBeOpen===imeOpen guard) on every tick where nothing actually
+    // changed, so this doesn't fight the event-driven path, just backstops
+    // it.
+    setInterval(apply, 400);
+    apply();
+  }
+
+  // Requests real browser Fullscreen (hiding the address bar -- the one
+  // piece of screen space no amount of page-level CSS/JS sizing can ever
+  // reclaim) on the first genuine tap anywhere on the page.
+  //
+  // This is deliberately plain JS attached directly here, NOT routed
+  // through Go/wasm (internal/gui/controller/video_gestures_wasm.go used
+  // to call requestFullscreen() from its own touchend handler) -- confirmed
+  // live via CDP that requestFullscreen() invoked from inside a Go
+  // js.FuncOf callback is reliably rejected with "TypeError: Permissions
+  // check failed", even for the *exact same* DOM touchend event that a
+  // plain JS listener with zero Go involvement succeeds with every time.
+  // Something about routing through Go's wasm callback dispatch breaks the
+  // browser's "still within the original user-gesture call stack" check
+  // the Fullscreen API depends on -- calling it here, as the very first
+  // thing a real 'touchend' handler does, sidesteps that entirely.
+  //
+  // Fires once (removes itself after the first attempt, success or not)
+  // and deliberately never auto-exits fullscreen: the address bar is dead
+  // space in every state this app has, not just while the IME is open, so
+  // staying immersive for the rest of the session is what's wanted -- the
+  // user can still leave fullscreen via the OS's own affordance at any
+  // time.
+  // Mobile-only gate: desktop browsers (mouse/keyboard, Windows/macOS/Linux)
+  // must NEVER be auto-fullscreened -- there's no address-bar-eats-the-video
+  // problem to solve there (desktop windows aren't viewport-constrained the
+  // way a phone's browser chrome is), and silently yanking a desktop user's
+  // whole browser into fullscreen on their first click would be a jarring,
+  // unwanted surprise, not a fix. iPadOS reports navigator.platform as
+  // "MacIntel" (Apple's own long-standing UA-spoofing quirk for iPad Safari)
+  // so it's told apart from real Macs via maxTouchPoints > 1, the same
+  // heuristic Apple's own docs recommend for this exact ambiguity.
+  function isMobilePlatform() {
+    var ua = navigator.userAgent || '';
+    if (/Android/i.test(ua)) return true;
+    if (/iPhone|iPod|iPad/i.test(ua)) return true;
+    if (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) return true; // iPadOS
+    return false;
+  }
+
+  function installFullscreenOnFirstTap() {
+    if (!isMobilePlatform()) return;
+    function tryFullscreen() {
+      document.removeEventListener('touchend', tryFullscreen, true);
+      document.removeEventListener('click', tryFullscreen, true);
+      if (document.fullscreenElement) return;
+      var root = document.documentElement;
+      var req = root.requestFullscreen || root.webkitRequestFullscreen;
+      if (!req) return;
+      var p = req.call(root);
+      if (p && p.catch) {
+        p.catch(function (err) {
+          console.log('[fullscreen] request rejected: ' + err);
+        });
+      }
+    }
+    document.addEventListener('touchend', tryFullscreen, true);
+    document.addEventListener('click', tryFullscreen, true);
+  }
+
+  // Paste (Ctrl+V / Cmd+V, or a real OS-level "Paste" context-menu/Edit-menu
+  // action) bridge -- same "plain JS, zero Go involvement for the part that
+  // needs a live user-gesture context" pattern as installFullscreenOnFirstTap
+  // above, for the same underlying reason: confirmed live that a Go
+  // js.FuncOf callback is unreliable here too, not just for
+  // requestFullscreen. Three approaches were tried, in order:
+  //
+  //   1. Fyne's own paste path (glfw-js's GetClipboardString) calls
+  //      navigator.clipboard.readText() and *blocks the wasm main
+  //      goroutine* on that Promise -- async work started from inside a
+  //      synchronous Go call, which is a bad sign on its own even before
+  //      Safari's permission model gets involved.
+  //   2. Routing paste through a Go-registered `paste` DOM event listener
+  //      (see internal/gui/ime_bridge_wasm.go's git history) -- confirmed
+  //      live this fixed Chrome/Linux but NOT Safari/macOS: routing the
+  //      event listener itself through Go's wasm callback dispatch
+  //      apparently breaks whatever in-gesture guarantee the browser's
+  //      clipboard permission model needs, the same way it breaks
+  //      requestFullscreen.
+  //   3. A plain-JS `keydown` listener calling
+  //      navigator.clipboard.readText() directly (this function's
+  //      previous version) fixed Safari/macOS by staying in a real JS
+  //      gesture, but silently did nothing at all on Firefox --
+  //      navigator.clipboard.readText() isn't implemented there for
+  //      arbitrary pages, so `!navigator.clipboard.readText` short-circuited
+  //      out before ever attempting a read.
+  //
+  // This version listens for the native `paste` DOM event instead (still
+  // plain JS, not routed through Go -- approach 2's actual failure mode)
+  // and reads `event.clipboardData` directly, which every engine
+  // (Chromium, Firefox, WebKit/Safari) populates synchronously on a
+  // trusted paste event -- no navigator.clipboard permission prompt, no
+  // Promise, no async gesture-context requirement to preserve at all,
+  // since the data arrives as part of the event itself rather than via a
+  // separate page-initiated read. Covers every paste trigger a browser
+  // recognizes (Ctrl+V/Cmd+V, right-click "Paste", the OS Edit menu),
+  // across Windows/macOS/Linux and Chrome/Firefox/Safari alike. The
+  // extracted text is handed to Go via window.usbridgePasteText, a plain
+  // callback internal/gui/ime_bridge_wasm.go registers once wasm has
+  // loaded -- that hand-off has no gesture requirement of its own.
+  function installClipboardPasteBridge() {
+    document.addEventListener('paste', function (e) {
+      if (!e.clipboardData) return;
+      var text = e.clipboardData.getData('text/plain') || e.clipboardData.getData('text');
+      if (text && window.usbridgePasteText) {
+        e.preventDefault();
+        window.usbridgePasteText(text);
+      }
+    }, true);
+  }
+
+  // See #hidConnectBtn's own doc comment above for why this whole
+  // request/open sequence has to run outside Go. Handing the *result* to Go
+  // afterward (usbridgeRegisterHIDDevice) is a plain call with no gesture
+  // requirement of its own, same as usbridgePasteText above.
+  //
+  // usbridgeSetHIDButtonRect/usbridgeSetHIDButtonVisible are called
+  // repeatedly by disk_widget_hid_connect_wasm.go's syncHIDConnectOverlay to
+  // keep this transparent button positioned exactly over the Fyne-drawn
+  // "Connect USB" pill on the HID & Input Hub card's header, wherever that
+  // currently renders (scroll position, window size, other tabs hiding it
+  // entirely). Defined as plain properties here (not through Go) since
+  // nothing about moving/showing/hiding a DOM element needs a user gesture.
+  function installHIDConnectButton() {
+    var btn = document.getElementById('hidConnectBtn');
+    if (!navigator.hid) return; // Firefox/Safari: no WebHID, Gamepad API stays the only path
+
+    window.usbridgeSetHIDButtonRect = function (x, y, w, h) {
+      btn.style.left = x + 'px';
+      btn.style.top = y + 'px';
+      btn.style.width = w + 'px';
+      btn.style.height = h + 'px';
+      btn.style.display = 'block';
+    };
+    window.usbridgeSetHIDButtonVisible = function (visible) {
+      btn.style.display = visible ? 'block' : 'none';
+    };
+
+    btn.addEventListener('click', function () {
+      // No filters at all: list every HID device/interface the OS exposes,
+      // not just what we guessed a gamepad or Wacom tablet declares.
+      // Narrowing by usagePage/usage here previously hid the actual target
+      // device from the picker entirely (confirmed live: a Wacom tablet
+      // never appeared even filtered to the whole Digitizer page, while
+      // unrelated built-in keyboard/trackpad interfaces did match and
+      // showed up instead) -- so this leaves the *picker* unfiltered and
+      // relies entirely on the Go side (hidHasTopLevelUsage/
+      // hidHasAnyTopLevelPage) to sort a chosen device into the right row
+      // once it's granted, exactly as if the user had filtered it
+      // themselves.
+      navigator.hid.requestDevice({ filters: [] }).then(function (devices) {
+        devices.forEach(function (device) {
+          var adopt = function () {
+            if (window.usbridgeRegisterHIDDevice) window.usbridgeRegisterHIDDevice(device);
+          };
+          if (device.opened) { adopt(); return; }
+          device.open().then(adopt).catch(function (err) {
+            console.log('[hid] open failed: ' + err);
+          });
+        });
+      }).catch(function (err) {
+        console.log('[hid] requestDevice: ' + err);
+      });
+    });
+  }
+
+  const go = new Go();
+  WebAssembly.instantiateStreaming(fetch("app.wasm"), go.importObject).then((result) => {
+    go.run(result.instance);
+    installViewportFollow();
+    installFullscreenOnFirstTap();
+    installClipboardPasteBridge();
+    installHIDConnectButton();
+  });

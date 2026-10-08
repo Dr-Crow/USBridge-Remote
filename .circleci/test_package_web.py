@@ -13,7 +13,7 @@ class BundleValidationTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.web = self.root / "client/web"
         self.goroot = self.root / "go"
-        names = ["index.html", "gui.html", "ai_vision.js", "wasm_exec.js", "app.wasm"]
+        names = ["index.html", "gui.html", "ai_vision.js", "runtime-config.js", "runtime-policy.js", "bootstrap.js", "wasm_exec.js", "app.wasm"]
         names += ["vendor/ort/" + name for name in ORT]
         names += ["vendor/ort/README.md"]
         for name in names:
@@ -42,6 +42,11 @@ class BundleValidationTests(unittest.TestCase):
 
     def test_missing_runtime_fails(self):
         (self.web / "vendor/ort/ort-wasm-simd-threaded.wasm").unlink()
+        with self.assertRaisesRegex(ValueError, "Missing"):
+            validate(self.root, self.goroot)
+
+    def test_missing_bootstrap_fails(self):
+        (self.web / "bootstrap.js").unlink()
         with self.assertRaisesRegex(ValueError, "Missing"):
             validate(self.root, self.goroot)
 

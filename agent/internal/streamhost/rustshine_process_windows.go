@@ -12,6 +12,7 @@ import (
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 
+	"usbridge_agent/internal/netpolicy"
 	"usbridge_agent/internal/sessionlaunch"
 )
 
@@ -60,7 +61,15 @@ var gamestreamServerCompatEnv = map[string]string{"__COMPAT_LAYER": "HIGHDPIAWAR
 // explicitly here instead of relying on that fragile, undocumented,
 // per-user, possibly-not-even-present-on-a-fresh-profile registry state.
 func sessionBrokerLaunchImpl(exe string, args []string, workDir string, stdout, stderr *os.File) (rustshineProcess, error) {
-	h, err := sessionlaunch.LaunchInActiveSession(exe, args, workDir, stdout, stderr, gamestreamServerCompatEnv)
+	extra := make(map[string]string, len(gamestreamServerCompatEnv)+2)
+	for k, v := range gamestreamServerCompatEnv {
+		extra[k] = v
+	}
+	if netpolicy.Strict() {
+		extra["USBRIDGE_STREAMER_WEBRTC_ICE_SERVERS"] = ""
+		extra["USBRIDGE_STREAMER_TURN_CREDENTIALS_FILE"] = ""
+	}
+	h, err := sessionlaunch.LaunchInActiveSession(exe, args, workDir, stdout, stderr, extra)
 	if err != nil {
 		if err == sessionlaunch.ErrNoActiveSession {
 			return nil, fmt.Errorf("%w: %v", errNoActiveSessionMarker, err)

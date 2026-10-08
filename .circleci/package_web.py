@@ -34,7 +34,7 @@ def digest(path):
 
 def validate(root, goroot):
     web = root / "client/web"
-    names = ["index.html", "gui.html", "app.wasm", "wasm_exec.js", "ai_vision.js"]
+    names = ["index.html", "gui.html", "app.wasm", "wasm_exec.js", "ai_vision.js", "runtime-config.js", "runtime-policy.js", "bootstrap.js"]
     names += ["vendor/ort/" + name for name in ORT]
     names += ["models/" + name + ".onnx" for name in MODELS]
     names += ["vendor/ort/README.md"]

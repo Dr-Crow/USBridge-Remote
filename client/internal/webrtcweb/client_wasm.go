@@ -189,6 +189,10 @@ func (c *WebRTCClient) Connect(sessionID string) error {
 	if rtcCtor.IsUndefined() {
 		return fmt.Errorf("webrtc: RTCPeerConnection unavailable in this browser")
 	}
+	iceServers := []interface{}{map[string]interface{}{"urls": "stun:stun.l.google.com:19302"}}
+	if strictBrowserLAN() {
+		iceServers = []interface{}{}
+	}
 	pc := rtcCtor.New(map[string]interface{}{
 		// Must mirror rustshine's own --webrtc-ice-servers default (see
 		// rust-shine's signaling.rs doc comment on ice_server_urls_to_ice_servers
@@ -203,9 +207,7 @@ func (c *WebRTCClient) Connect(sessionID string) error {
 		// configured server-side, its URL/credentials need to be fetched and
 		// added here too (TURN, unlike STUN, requires per-session
 		// credentials -- see docs/WEBRTC.md).
-		"iceServers": []interface{}{
-			map[string]interface{}{"urls": "stun:stun.l.google.com:19302"},
-		},
+		"iceServers": iceServers,
 	})
 	c.pc = &pc
 
@@ -479,7 +481,7 @@ func (c *WebRTCClient) postOffer(sessionID, offerSDP string) (string, error) {
 
 	respBody, err := doOfferFetch(c.baseURL+path, reqBody, authHeaders)
 	if err != nil {
-		if !shouldFallbackToRelay(err, hwID) {
+		if strictBrowserLAN() || !shouldFallbackToRelay(err, hwID) {
 			return "", fmt.Errorf("webrtc: fetch /webrtc/offer: %w", err)
 		}
 		relayBody, relayErr := buildRelayOfferBody(hwID, offerSDP, bitrateKbps, videoCodec)
@@ -1096,4 +1098,10 @@ func jsArrayBufferToBytes(arrayBuffer js.Value) []byte {
 	buf := make([]byte, uint8Array.Get("length").Int())
 	js.CopyBytesToGo(buf, uint8Array)
 	return buf
+}
+
+// Missing runtime configuration fails closed in the source browser build.
+func strictBrowserLAN() bool {
+	c := js.Global().Get("USBridgeRuntimeConfig")
+	return c.IsUndefined() || c.IsNull() || c.Get("strictLAN").Type() != js.TypeBoolean || c.Get("strictLAN").Bool()
 }

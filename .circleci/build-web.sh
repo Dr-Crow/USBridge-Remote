@@ -47,13 +47,17 @@ cd "$ROOT/client"
 go mod download
 go mod verify | tee "$OUT/module-verification.txt"
 go list -m all > "$OUT/modules.txt"
-go test ./internal/webrtcweb | tee "$OUT/tests-native.txt"
+go test ./internal/webrtcweb ./pkg/capabilities ./internal/models | tee "$OUT/tests-native.txt"
 CGO_ENABLED=0 GOOS=js GOARCH=wasm go test \
-  -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./internal/webrtcweb \
+  -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./internal/webrtcweb ./pkg/capabilities ./internal/models \
   | tee "$OUT/tests-wasm.txt"
 CGO_ENABLED=0 GOOS=js GOARCH=wasm go vet ./cmd/wasm ./internal/webrtcweb \
   2>&1 | tee "$OUT/vet-wasm.txt"
 bash scripts/build_web.sh 2>&1 | tee "$OUT/build.txt"
+node --test web/runtime-policy.test.cjs
+node --check web/runtime-policy.js
+node --check web/runtime-config.js
+node --check web/bootstrap.js
 node --input-type=module --check < web/ai_vision.js
 for module in web/vendor/ort/*.mjs; do node --check "$module"; done
 node -e 'const fs = require("fs"); WebAssembly.compile(fs.readFileSync("web/app.wasm")).then(() => console.log("app.wasm compiles in Node"), err => { console.error(err); process.exitCode = 1; });' \
