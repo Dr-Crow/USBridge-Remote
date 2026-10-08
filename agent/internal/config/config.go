@@ -13,6 +13,8 @@ import (
 )
 
 type Config struct {
+	LocalTLSCertFile             string `yaml:"local_tls_cert_file,omitempty"`
+	LocalTLSKeyFile              string `yaml:"local_tls_key_file,omitempty"`
 	LocalWebClientURL            string `yaml:"local_web_client_url,omitempty"`
 	LocalComponentDirectory      string `yaml:"local_component_directory,omitempty"`
 	LocalComponentBundle         string `yaml:"local_component_bundle,omitempty"`

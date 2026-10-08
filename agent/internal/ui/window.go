@@ -878,7 +878,12 @@ func (w *Window) refreshCertStatusUI(st tlshost.CertStatus) {
 		w.certRow.Hide()
 		return
 	}
-	if st.LetsEncrypt {
+	if st.OperatorProvided {
+		w.certWarn.Show()
+		w.certVal.Text = "Operator certificate (verify client trust)"
+		w.certVal.Color = design.ColorAddress
+		w.certVal.Refresh()
+	} else if st.LetsEncrypt {
 		w.certWarn.Hide()
 		if w.certVal.Text != st.Hostname || w.certVal.Color != design.ColorAddress {
 			w.certVal.Text = st.Hostname

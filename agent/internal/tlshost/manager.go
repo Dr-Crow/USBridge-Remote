@@ -1,4 +1,4 @@
-// Package tlshost owns the two cert/key pairs the agent's HTTPS listener
+// Package tlshost owns the default cert/key pairs the agent's HTTPS listener
 // (see internal/app's new tlsServer, cfg.TLSPort) can present:
 //   - a self-signed cert (default, works with zero external dependencies --
 //     LAN IP or plain hostname access) that a browser must manually accept
@@ -62,10 +62,12 @@ const (
 // InstallDeviceCert run from a single background watchdog goroutine but
 // must never race a handshake reading the fields they update.
 type Manager struct {
-	mu       sync.Mutex
-	dir      string // persistence directory, e.g. <StateDir>/web-tls
-	self     *tls.Certificate
-	selfLeaf *x509.Certificate
+	operator     *tls.Certificate
+	operatorLeaf *x509.Certificate
+	mu           sync.Mutex
+	dir          string // persistence directory, e.g. <StateDir>/web-tls
+	self         *tls.Certificate
+	selfLeaf     *x509.Certificate
 
 	device         *tls.Certificate
 	deviceLeaf     *x509.Certificate
@@ -159,6 +161,9 @@ func (m *Manager) discardLegacyDeviceCertLocked(leaf *x509.Certificate) {
 func (m *Manager) EnsureSelfSigned(ips []net.IP, dnsNames []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.operator != nil {
+		return nil
+	}
 
 	if m.selfLeaf != nil && certCoversIPs(m.selfLeaf, ips) && certCoversDNSNames(m.selfLeaf, dnsNames) && !certExpiringSoon(m.selfLeaf, time.Now(), 30*24*time.Hour) {
 		return nil
@@ -322,6 +327,7 @@ func (m *Manager) DeviceCertStatus() (hostname string, needsRefresh bool) {
 // is still on the self-signed fallback (see this file's own top doc comment
 // for what each one is for and why the difference matters for client/web).
 type CertStatus struct {
+	OperatorProvided bool `json:"operatorProvided,omitempty"`
 	// Hostname is this device's "<label>.device.usbridge.io" name once
 	// InstallDeviceCert has run for it, "" if none has ever been installed.
 	Hostname string `json:"hostname"`
@@ -347,6 +353,13 @@ type CertStatus struct {
 func (m *Manager) CertStatus() CertStatus {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.operator != nil && m.operatorLeaf != nil {
+		st := CertStatus{OperatorProvided: true, ExpiresAt: m.operatorLeaf.NotAfter}
+		if err := operatorCertUsable(m.operatorLeaf, time.Now()); err != nil {
+			st.LastError = err.Error()
+		}
+		return st
+	}
 	errMsg := ""
 	if m.lastCertErr != nil {
 		errMsg = m.lastCertErr.Error()
@@ -368,6 +381,9 @@ func (m *Manager) CertStatus() CertStatus {
 func (m *Manager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.operator != nil {
+		return m.operatorCertificate(hello)
+	}
 	if hello.ServerName != "" && m.device != nil && hostnamesEqual(hello.ServerName, m.deviceHostname) {
 		return m.device, nil
 	}

@@ -574,6 +574,12 @@ func New() (*App, error) {
 		cfg.StateDir = fallback
 	}
 
+	tlsManager := tlshost.NewManager(filepath.Join(cfg.StateDir, "web-tls"))
+	if err := tlsManager.LoadOperatorCertificate(cfg.LocalTLSCertFile, cfg.LocalTLSKeyFile); err != nil {
+		return nil, err
+	}
+	tlsManager.LoadPersisted()
+
 	localStartupErr := prepareLocalStartup(context.Background(), cfg)
 
 	// Generate master key on first run.
@@ -699,8 +705,7 @@ func New() (*App, error) {
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	instance.tlsMgr = tlshost.NewManager(filepath.Join(cfg.StateDir, "web-tls"))
-	instance.tlsMgr.LoadPersisted()
+	instance.tlsMgr = tlsManager
 	instance.tlsServer = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", cfg.EffectiveListenHost(), cfg.TLSPort),
 		Handler:           handler,
@@ -3012,6 +3017,9 @@ func (a *App) deviceCertWatchdog(ctx context.Context) {
 // self-signed fallback (or whatever device cert is already installed) in
 // place until the next tick, never blocks or crashes the agent.
 func (a *App) tickDeviceCert(ctx context.Context) error {
+	if a.tlsMgr != nil && a.tlsMgr.CertStatus().OperatorProvided {
+		return fmt.Errorf("TLS certificate is operator-managed; vendor renewal is disabled")
+	}
 	if err := netpolicy.RequireRuntimeOnline("vendor certificate retry"); err != nil {
 		return err
 	}
@@ -4772,7 +4780,7 @@ func (a *App) restartTLS() {
 // reached the point that sets it; the initial Run() call site is the
 // common path and always has it set by the time it calls this).
 func (a *App) startDeviceCertWatchdogOnce() {
-	if netpolicy.RuntimeLocal() {
+	if netpolicy.RuntimeLocal() || (a.tlsMgr != nil && a.tlsMgr.CertStatus().OperatorProvided) {
 		return
 	}
 	if a.runCtx == nil {

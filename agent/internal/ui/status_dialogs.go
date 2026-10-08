@@ -152,12 +152,20 @@ func (w *Window) showCertStatusDialog(parent fyne.Window) {
 	}
 
 	hint := widget.NewLabel(loc().CertificateHint)
+	if w.localWebPolicy() || st.OperatorProvided {
+		hint.SetText("Local HTTPS requires a certificate matching the agent address and trusted by the browser. Configure local_tls_cert_file and local_tls_key_file with your own certificate pair, then restart the agent. No vendor certificate service is needed. Client trust is not changed automatically.")
+	}
 	hint.Wrapping = fyne.TextWrapWord
 	hint.Alignment = fyne.TextAlignLeading
 	rows := []fyne.CanvasObject{wrapDialogLabel(hint, 11, design.ColorMutedOlive)}
 
 	var certFooter fyne.CanvasObject = container.NewCenter()
 	switch {
+	case st.OperatorProvided:
+		rows = append(rows, widget.NewLabel("Operator-managed certificate; renew externally and restart to reload."), widget.NewLabel("Expires: "+st.ExpiresAt.Local().Format("2006-01-02")))
+		if st.LastError != "" {
+			rows = append(rows, widget.NewLabel(st.LastError))
+		}
 	case st.LetsEncrypt:
 		labelW := dialogFormLabelWidth(loc().CertHostnameLabel, loc().CertExpiresLabel)
 		deviceURL := "https://" + st.Hostname
@@ -187,6 +195,9 @@ func (w *Window) showCertStatusDialog(parent fyne.Window) {
 		}))
 	case !st.ExpiresAt.IsZero():
 		pending := widget.NewLabel(loc().CertPending)
+		if w.localWebPolicy() {
+			pending.SetText("Self-signed fallback is active. Configure an operator-managed certificate for trusted local browser access; vendor enrollment is disabled in local mode.")
+		}
 		pending.Wrapping = fyne.TextWrapWord
 		rows = append(rows, wrapDialogLabel(pending, 11, design.ColorAlert))
 	}
