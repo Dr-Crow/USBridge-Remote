@@ -42,3 +42,28 @@ func TestLocalMetadataDoesNotChangeVendorTier(t *testing.T) {
 		}
 	}
 }
+
+func TestPreparedRuntimeProjectsLegacyClientProtocolWithoutChangingTier(t *testing.T) {
+	for _, tier := range []string{"", "free", "expired", "pro", "enterprise"} {
+		s := Status{ActiveBackend: "rustshine", Tier: tier, LocalRuntimeActive: true, LocalRuntimeStreamerPrepared: true}
+		if s.ClientProtocol() != "pro" || s.Tier != tier {
+			t.Fatal("incorrect compatibility projection")
+		}
+		if s.RuntimeMetadata().EffectiveProtocol(s.ClientProtocol()) != "local" {
+			t.Fatal("source client lost local identity")
+		}
+		s.LocalRuntimeStreamerPrepared = false
+		if s.ClientProtocol() != s.Protocol() {
+			t.Fatal("unprepared runtime promoted")
+		}
+	}
+	s := Status{ActiveBackend: "sunshine", Tier: "free", LocalRuntimeActive: true, LocalRuntimeStreamerPrepared: true, LocalRuntimeUSBPrepared: true}
+	if s.ClientProtocol() != "opensource" {
+		t.Fatal("Sunshine was misidentified as RustShine")
+	}
+	s.ActiveBackend = "rustshine"
+	s.LocalRuntimeActive = false
+	if s.ClientProtocol() != "free" {
+		t.Fatal("inactive runtime promoted")
+	}
+}

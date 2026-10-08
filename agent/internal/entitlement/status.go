@@ -141,3 +141,14 @@ func (s Status) RuntimeMetadata() *capabilities.RuntimeStatus {
 	}
 	return &capabilities.RuntimeStatus{Mode: "local-research", Backend: s.ActiveBackend, StreamerPrepared: s.LocalRuntimeStreamerPrepared, USBPrepared: s.LocalRuntimeUSBPrepared}
 }
+
+// ClientProtocol projects the prepared local Pro-compatible runtime onto the
+// legacy wire field understood by unmodified native clients. It does not change
+// Tier or any signed vendor credential. New source clients use RuntimeMetadata
+// to display the distinct local mode; live codec/device results still govern use.
+func (s Status) ClientProtocol() string {
+	if s.ActiveBackend == "rustshine" && s.LocalRuntimeActive && s.LocalRuntimeStreamerPrepared {
+		return "pro"
+	}
+	return s.Protocol()
+}
