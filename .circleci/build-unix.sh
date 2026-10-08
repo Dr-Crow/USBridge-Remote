@@ -41,7 +41,7 @@ if [[ "$OS" == Darwin ]]; then
     TS_MODULE="$(go list -m -f '{{.Dir}}' tailscale.com)"
     (cd "$TS_MODULE" && CGO_ENABLED=0 go build -mod=readonly -trimpath -o "$USBRIDGE_TAILSCALE_CLI" ./cmd/tailscale)
     USBRIDGE_MACOS_LDFLAGS='-X usbridge_agent/internal/update.Channel=manual' bash scripts/build_macos.sh 2>&1 | tee "$ROOT/artifacts/build-$TARGET.txt"
-    lipo -verify_arch "$TARGET_CPU" dist/macos/USBridgeAgent.app/Contents/MacOS/USBridgeAgent
+    lipo dist/macos/USBridgeAgent.app/Contents/MacOS/USBridgeAgent -verify_arch "$TARGET_CPU"
     ditto -c -k --sequesterRsrc --keepParent dist/macos/USBridgeAgent.app "$ROOT/artifacts/USBridgeAgent-macOS-$TARGET-$VERSION.zip"
     cp dist/USBridgeAgent-macOS-*.dmg "$ROOT/artifacts/USBridgeAgent-macOS-$TARGET-$VERSION.dmg"
   done
