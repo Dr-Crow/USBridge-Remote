@@ -5,6 +5,7 @@ package streamhost
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -36,8 +37,8 @@ func TestStreamerHasUSBBridge(t *testing.T) {
 	b := &punktfunkBackend{}
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv(punktfunkBinEnv, bin)
-	if !b.RawHIDSupported() {
-		t.Error("RawHIDSupported should follow the probe")
+	if got, want := b.RawHIDSupported(), runtime.GOOS == "linux"; got != want {
+		t.Errorf("RawHIDSupported = %v, want %v (Punktfunk is Linux-only)", got, want)
 	}
 
 	// Sunshine is asked with its own switch.
