@@ -49,6 +49,15 @@ func Prepare(source, stateDir, component, hw string) (Spec, error) {
 	if hw == "" || stateDir == "" {
 		return Spec{}, fmt.Errorf("local runtime requires hardware ID and state directory")
 	}
+	var err error
+	stateDir, err = filepath.Abs(stateDir)
+	if err != nil {
+		return Spec{}, err
+	}
+	source, err = filepath.Abs(source)
+	if err != nil {
+		return Spec{}, err
+	}
 	key := runtime.GOOS + "/" + runtime.GOARCH + "/" + component
 	expected, ok := pinned[key]
 	if !ok {

@@ -20,6 +20,10 @@ Rust source and is not a proof that every execution path has been enumerated.
 An offline experiment used a fresh, in-memory local signing key. Both unmodified
 Linux components rejected its synthetic token. Copies in which only the embedded
 verification key was replaced accepted it and progressed to their listeners.
+A subsequent local control-handshake test reported `wacom: false` with local
+Free claims and `wacom: true` with local Pro claims. No USB descriptor or input
+was sent and no tablet was attached. This verifies the entitlement capability
+decision, not actual pen input.
 The temporary copies/token were removed. No synthetic token was submitted to a
 vendor server and no vendor private key was recovered or forged.
 
@@ -90,7 +94,7 @@ Example on Windows, from the extracted runtime ZIP directory:
 Unit tests cover default-off behavior, rejecting unknown inputs/ambiguous key
 constants, preserving source bytes, signature separation, hardware-bound local
 claims, expiry and renewal. An explicit integration test starts only the hash-pinned
-broker with loopback-only ephemeral listeners, checks readiness, preserves the
+broker with loopback-only ephemeral listeners, checks its `raw_hid` and `wacom` Pro capability response, preserves the
 original hash, and detects subsequent copy tampering. It never attaches a device.
 The Linux integration test passed during implementation. Windows CI runs the same
 probe after downloading verified components. Actual device/video acceptance and
