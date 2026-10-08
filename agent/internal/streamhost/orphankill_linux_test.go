@@ -3,6 +3,9 @@
 package streamhost
 
 import (
+	"bytes"
+	"fmt"
+	"os"
 	"os/exec"
 	"syscall"
 	"testing"
@@ -19,8 +22,10 @@ func TestKillOrphansByArgv0_FindsProcessByArgv0(t *testing.T) {
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	done := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(done) }()
+	t.Cleanup(func() { _ = cmd.Process.Kill(); <-done })
+	waitForProcFixture(t, cmd.Process.Pid, name)
 
 	killOrphansByArgv0([]string{name})
 	select {
@@ -38,9 +43,31 @@ func TestKillOrphansByArgv0_LeavesOthersAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	waitForProcFixture(t, cmd.Process.Pid, "usbridge-orphan-test-bystander")
 	killOrphansByArgv0([]string{"usbridge-orphan-test-dummy"})
 	time.Sleep(100 * time.Millisecond)
 	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Fatal("non-matching process was killed")
 	}
+}
+
+// Start's exec handshake does not guarantee /proc's argv/ownership snapshot is
+// already observable to the scanner. Wait for the fixture, not for the outcome
+// under test. Production orphan detection and its kill deadline are unchanged.
+func waitForProcFixture(t *testing.T, pid int, name string) {
+	t.Helper()
+	base := fmt.Sprintf("/proc/%d", pid)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		raw, readErr := os.ReadFile(base + "/cmdline")
+		info, statErr := os.Stat(base)
+		argv0, _, _ := bytes.Cut(raw, []byte{0})
+		if readErr == nil && statErr == nil && string(argv0) == name {
+			if st, ok := info.Sys().(*syscall.Stat_t); ok && st.Uid == uint32(os.Getuid()) {
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("child argv/ownership did not become visible in /proc")
 }
