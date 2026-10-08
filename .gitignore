@@ -1,4 +1,6 @@
 logs/
+/artifacts/
+__pycache__/
 *.log
 .claude/*
 !.claude/HB.md

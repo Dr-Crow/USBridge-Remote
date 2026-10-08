@@ -1,8 +1,30 @@
 version: 2.1
 
-# Branch build only: produces a testable agent, never publishes a release,
-# embeds credentials, or modifies vendor streamer/broker archives.
+# Branch builds produce testable agents and a source-built Go web client.
+# No release publishing, credential embedding or vendor archive modification.
 jobs:
+  web-client:
+    machine:
+      image: ubuntu-2204:current
+    resource_class: medium
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - web-client-go1266-v1-{{ checksum "client/go.sum" }}
+      - run:
+          name: Test, build and verify complete Go WASM web bundle
+          command: bash .circleci/build-web.sh
+          no_output_timeout: 20m
+      - save_cache:
+          key: web-client-go1266-v1-{{ checksum "client/go.sum" }}
+          paths:
+            - ~/go/pkg/mod
+            - ~/.cache/go-build
+      - store_artifacts:
+          path: artifacts/web-client
+          destination: web-client
+
   windows-agent:
     resource_class: windows.medium
     machine:
@@ -67,6 +89,10 @@ jobs:
 workflows:
   agent-capability-build:
     jobs:
+      - web-client:
+          filters:
+            branches:
+              only: [agent-capability-policy, circleci-project-setup, main]
       - windows-agent:
           filters:
             branches:
