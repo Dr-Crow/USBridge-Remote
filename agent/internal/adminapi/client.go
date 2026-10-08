@@ -248,6 +248,10 @@ func (c *Client) SetNvidiaPowerMode(mode string) error {
 	return c.do(http.MethodPost, "/token/nvidia-power-mode", stringBody{Value: mode}, nil)
 }
 
+func (c *Client) SetLocalRuntimeEnabled(enabled bool) error {
+	return c.do(http.MethodPost, "/token/local-runtime", boolBody{Value: enabled}, nil)
+}
+
 func (c *Client) StreamerAutoUpdateEnabled() bool {
 	var body boolBody
 	_ = c.do(http.MethodGet, "/token/streamer-auto-update", nil, &body)

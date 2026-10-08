@@ -105,6 +105,9 @@ type Config struct {
 	// StreamerConsent records opt-in to background provisioning of the closed
 	// streamer. USB has a separate consent and is never enabled by this flag.
 	StreamerConsent bool `yaml:"streamer_consent,omitempty"`
+	// LocalRuntimeEnabled is explicit research-mode consent, applied only at
+	// engine startup. It does not consent to component downloads or USB sharing.
+	LocalRuntimeEnabled bool `yaml:"local_runtime_enabled,omitempty"`
 	// RustShineWebRTCDisabled turns off gamestream-server's native WebRTC
 	// signaling endpoint (--webrtc-disable) -- the surface USBridge's
 	// browser/WASM web client connects through. Defaults to false (enabled,

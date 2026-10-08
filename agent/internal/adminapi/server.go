@@ -47,6 +47,7 @@ type TokenBackend interface {
 	GPUs() []config.GPUInfo
 	StreamerAutoUpdateEnabled() bool
 	SetStreamerAutoUpdate(enabled bool) error
+	SetLocalRuntimeEnabled(enabled bool) error
 	SnoozeStreamerUpdate(version string) error
 	RemoteWindowLockEnabled() bool
 	SetRemoteWindowLock(enabled bool) error
@@ -253,6 +254,7 @@ func (s *Server) routes() http.Handler {
 	})
 	mux.HandleFunc("GET /token/streamer-auto-update", s.handleStreamerAutoUpdate)
 	mux.HandleFunc("POST /token/streamer-auto-update", s.handleSetStreamerAutoUpdate)
+	mux.HandleFunc("POST /token/local-runtime", s.handleSetLocalRuntime)
 	mux.HandleFunc("POST /token/snooze-streamer-update", s.handleSnoozeStreamerUpdate)
 	mux.HandleFunc("GET /token/remote-window-lock", s.handleRemoteWindowLock)
 	mux.HandleFunc("POST /token/remote-window-lock", s.handleSetRemoteWindowLock)
@@ -432,6 +434,19 @@ func (s *Server) boolSetter(set func(bool) error) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, struct{}{})
 	}
+}
+
+func (s *Server) handleSetLocalRuntime(w http.ResponseWriter, r *http.Request) {
+	var body boolBody
+	if err := readJSON(r, &body); err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := s.token.SetLocalRuntimeEnabled(body.Value); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, struct{}{})
 }
 
 func (s *Server) handleStreamerAutoUpdate(w http.ResponseWriter, r *http.Request) {

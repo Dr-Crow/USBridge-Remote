@@ -25,6 +25,9 @@ func runMain(headless, tray bool, attach string) {
 		isSvc = false
 	}
 	if isSvc {
+		if err := app.ValidateServiceRuntime(); err != nil {
+			log.Fatal(err)
+		}
 		// Best-effort: SendSAS (app.SendSAS -> sasinput) needs this policy
 		// bit to do anything at all -- see EnsureServicesCanGenerateSAS's
 		// doc comment. A failure here (e.g. registry access somehow

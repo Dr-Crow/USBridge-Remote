@@ -359,6 +359,9 @@ func (w *Window) refreshProtocolPickerVisuals(busy bool) {
 			continue
 		}
 		display := protocolPickerKey(w.protocolPick)
+		if row.key == protocolFree {
+			row.SetBadge(localRuntimeBadge(st))
+		}
 		row.SetChecked(protocolPickerKey(row.key) == display)
 		row.SetLocked(false)
 		row.SetIncluded(false)
@@ -654,6 +657,27 @@ func newProtocolPickRow(opt protocolOption, checked bool, onTap, onInfo func(), 
 	return r
 }
 
+func localRuntimeBadge(st entitlement.Status) string {
+	if st.LocalRuntimeActive && st.LocalRuntimeStreamerPrepared {
+		return "Patched"
+	}
+	if st.LocalRuntimeActive {
+		return "Enabled"
+	}
+	if st.LocalRuntimeConfigured {
+		return "Pending"
+	}
+	return ""
+}
+
+func (r *protocolPickRow) SetBadge(badge string) {
+	if r.badge == badge {
+		return
+	}
+	r.badge = badge
+	r.Refresh()
+}
+
 func (r *protocolPickRow) SetChecked(on bool) {
 	if r.checked == on {
 		return
@@ -902,7 +926,10 @@ func (r *protocolPickRowRenderer) Layout(size fyne.Size) {
 	}
 	titleH := float32(16)
 	subH := float32(16)
-	blockH := titleH + 4 + subH
+	blockH := titleH
+	if strings.TrimSpace(r.row.badge) != "" {
+		blockH += 4 + subH
+	}
 	textY := (size.Height - blockH) / 2
 	r.title.Move(fyne.NewPos(textX, textY))
 	r.title.Resize(fyne.NewSize(textW, titleH))
@@ -923,6 +950,14 @@ func (r *protocolPickRowRenderer) Layout(size fyne.Size) {
 func (r *protocolPickRowRenderer) MinSize() fyne.Size { return r.row.MinSize() }
 
 func (r *protocolPickRowRenderer) Refresh() {
+	r.sub.Text = r.row.badge
+	if strings.TrimSpace(r.row.badge) == "" {
+		r.sub.Hide()
+		r.badgeBg.Hide()
+	} else {
+		r.sub.Show()
+		r.badgeBg.Show()
+	}
 	accent := r.row.badgeClr
 	var titleClr color.Color = design.ColorMutedOlive
 	subClr := accent

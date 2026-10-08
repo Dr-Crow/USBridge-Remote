@@ -549,6 +549,10 @@ func New() (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := localruntime.Configure(cfg.LocalRuntimeEnabled); err != nil {
+		return nil, fmt.Errorf("configure local runtime: %w", err)
+	}
+	log.Printf("[setup] local runtime active=%t configured=%t; component consent: streamer=%t USB=%t", localruntime.Enabled(), cfg.LocalRuntimeEnabled, cfg.StreamerConsent, cfg.USBBrokerConsentGiven())
 	if err := cfg.EnsureState(); err != nil {
 		fallback := config.Default().StateDir
 		if fallback == cfg.StateDir || !config.DirIsUsable(fallback) {
@@ -1873,6 +1877,10 @@ func (a *App) EntitlementStatus() entitlement.Status {
 	st := a.entStatus
 	pending := a.pendingStreamerUpdate
 	a.entMu.Unlock()
+	st.LocalRuntimeConfigured = a.cfg.LocalRuntimeEnabled
+	st.LocalRuntimeActive = localruntime.Enabled()
+	st.LocalRuntimeStreamerPrepared = localruntime.Prepared(a.cfg.StateDir, "rustshine")
+	st.LocalRuntimeUSBPrepared = localruntime.Prepared(a.cfg.StateDir, "usb-broker")
 	st.ActiveBackend = a.currentStreamKind()
 	st.RustShineStaged = a.rustshineStaged()
 	// Offered wherever it's installed or Streamers-Forks publishes a build

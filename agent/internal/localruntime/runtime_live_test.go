@@ -34,6 +34,9 @@ func TestPinnedBrokerLocalRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !Prepared(dir, "usb-broker") || Prepared(dir, "rustshine") {
+		t.Fatal("incorrect preparation status")
+	}
 	copied, err := os.ReadFile(spec.Binary)
 	if err != nil {
 		t.Fatal(err)
@@ -43,6 +46,9 @@ func TestPinnedBrokerLocalRuntime(t *testing.T) {
 	}
 	if _, err := Prepare(source, dir, "usb-broker", "local-ci-test"); err == nil {
 		t.Fatal("tampered copy accepted")
+	}
+	if Prepared(dir, "usb-broker") {
+		t.Fatal("tampered copy still marked prepared")
 	}
 	if err := os.WriteFile(spec.Binary, copied, 0700); err != nil {
 		t.Fatal(err)

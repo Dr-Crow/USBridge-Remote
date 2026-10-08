@@ -34,8 +34,10 @@ func main() {
 		_ = os.Setenv(localruntime.Environment, "1")
 	}
 	defer localruntime.Close()
-	if localruntime.Enabled() && *installService {
-		log.Fatal("local runtime research mode cannot install a system service")
+	if *installService {
+		if err := app.ValidateServiceRuntime(); err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	setupLogging()

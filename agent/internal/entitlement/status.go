@@ -10,6 +10,12 @@ import (
 // license switcher (see internal/ui's showLicenseDialog) and, once
 // entitled, the Sunshine/RustShine switch.
 type Status struct {
+	// Engine-reported setup facts. Prepared means successful local-copy
+	// preparation this session, not proof of a stream or attached device.
+	LocalRuntimeConfigured       bool `json:"local_runtime_configured"`
+	LocalRuntimeActive           bool `json:"local_runtime_active"`
+	LocalRuntimeStreamerPrepared bool `json:"local_runtime_streamer_prepared"`
+	LocalRuntimeUSBPrepared      bool `json:"local_runtime_usb_prepared"`
 	// Linked is true once a verified, unexpired, hardware-bound desktop
 	// token (any tier -- free/pro/enterprise) is cached locally. Only
 	// false in the brief window before app.go's bootstrapFreeTier first

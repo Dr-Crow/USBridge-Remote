@@ -27,12 +27,36 @@ const vendorKey = "BOr0FAQyGQhmg6CZdgcRDekKrP2A++60WKvhW52tV58="
 
 func Enabled() bool { return os.Getenv(Environment) == "1" }
 
+// Configure is called once when constructing an engine, never by a settings
+// handler or a thin-client GUI. Explicit command-line/environment opt-in remains
+// supported; saving a preference cannot alter an already-running engine.
+func Configure(configured bool) error {
+	if configured {
+		return os.Setenv(Environment, "1")
+	}
+	return nil
+}
+
+// Prepared reports successful hash-checked preparation in this process. Merely
+// selecting the mode or staging a vendor binary must not show a Patched badge.
+func Prepared(stateDir, component string) bool {
+	dir, err := filepath.Abs(stateDir)
+	if err != nil {
+		return false
+	}
+	state.Lock()
+	defer state.Unlock()
+	s := state.sessions[dir]
+	return s != nil && s.prepared[component]
+}
+
 type Spec struct{ Binary, Token string }
 type session struct {
-	files   map[string][32]byte
-	dir, hw string
-	private ed25519.PrivateKey
-	public  ed25519.PublicKey
+	files    map[string][32]byte
+	prepared map[string]bool
+	dir, hw  string
+	private  ed25519.PrivateKey
+	public   ed25519.PublicKey
 }
 
 var state = struct {
@@ -88,9 +112,10 @@ func Prepare(source, stateDir, component, hw string) (Spec, error) {
 			os.RemoveAll(dir)
 			return Spec{}, err
 		}
-		s = &session{dir: dir, hw: hw, private: priv, public: pub, files: make(map[string][32]byte)}
+		s = &session{dir: dir, hw: hw, private: priv, public: pub, files: make(map[string][32]byte), prepared: make(map[string]bool)}
 		state.sessions[stateDir] = s
 	}
+	delete(s.prepared, component)
 	if s.hw != hw {
 		return Spec{}, fmt.Errorf("local runtime hardware identity changed during this process")
 	}
@@ -172,6 +197,7 @@ func Prepare(source, stateDir, component, hw string) (Spec, error) {
 			return Spec{}, fmt.Errorf("local codec DLL changed unexpectedly")
 		}
 	}
+	s.prepared[component] = true
 	return Spec{Binary: dest, Token: filepath.Join(s.dir, "entitlement.token")}, nil
 }
 

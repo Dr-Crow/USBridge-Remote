@@ -64,6 +64,7 @@ type TokenProvider interface {
 	GPUs() []config.GPUInfo
 	StreamerAutoUpdateEnabled() bool
 	SetStreamerAutoUpdate(enabled bool) error
+	SetLocalRuntimeEnabled(enabled bool) error
 	SnoozeStreamerUpdate(version string) error
 	RemoteWindowLockEnabled() bool
 	SetRemoteWindowLock(enabled bool) error

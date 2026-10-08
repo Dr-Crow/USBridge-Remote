@@ -35,16 +35,28 @@ USB attachment or tablet input.
 
 ## Opt-in implementation
 
-The fork now accepts `--local-runtime`, equivalently
-`USBRIDGE_LOCAL_RUNTIME=1`. Without it, the default vendor-runtime behavior is
-unchanged. Quit the existing agent before changing modes; attaching a second GUI
-to an existing engine does not change that engine's mode.
+Ordinary double-click launches can use **Gear → General Settings → Experimental
+local runtime**. Enabling it requires explicit confirmation and saves
+`local_runtime_enabled` in the engine's configuration. It does not consent to
+component downloads or USB sharing. The default remains off.
 
-Example on Windows, from the extracted runtime ZIP directory:
+After saving, quit the engine and double-click the agent again. Closing a window
+only hides it; a thin GUI attached to a headless engine does not stop that engine.
+Stop an existing headless engine separately before relaunching. Changing the
+checkbox never changes the running engine's mode or interrupts a stream.
 
-```
-.\USBridgeAgent.exe --local-runtime
-```
+`--local-runtime` and `USBRIDGE_LOCAL_RUNTIME=1` remain one-launch overrides.
+Remove these overrides as well as turning off the saved preference to return to
+vendor mode. Service installation is rejected for either saved or overridden
+local mode.
+
+The streamer badge reads **Pending** for a saved preference on a
+vendor engine, **Enabled** before local preparation, and **Patched**
+only after successful hash-checked preparation in this engine session. An empty
+badge has no background. Disabling a saved preference leaves the active engine
+and its prepared badge unchanged until restart. General Settings offers a manual
+refresh of safe setup diagnostics without tokens, account links or raw logs.
+Prepared status does not imply active video streaming or tablet input.
 
 1. Select USBridge streamer and explicitly approve its component setup. Missing
    binaries still download through the genuine free-entitlement flow. USB retains
@@ -90,6 +102,10 @@ Example on Windows, from the extracted runtime ZIP directory:
   ARM64 Rust runtime copies.
 
 ## Validation
+
+Settings tests cover saved opt-in, unchanged live mode and component consent,
+failed persistence, thin-client API handling, service-mode rejection, pending and
+prepared badges, and hiding empty badge backgrounds.
 
 Unit tests cover default-off behavior, rejecting unknown inputs/ambiguous key
 constants, preserving source bytes, signature separation, hardware-bound local

@@ -95,3 +95,38 @@ func TestPrepareRefusesUnknownExecutable(t *testing.T) {
 		t.Fatal("created session before verifying executable")
 	}
 }
+
+func TestConfiguredStartupAndExplicitOverride(t *testing.T) {
+	for _, tc := range []struct {
+		env              string
+		configured, want bool
+	}{
+		{"", false, false}, {"", true, true}, {"1", false, true}, {"1", true, true},
+	} {
+		t.Setenv(Environment, tc.env)
+		if err := Configure(tc.configured); err != nil {
+			t.Fatal(err)
+		}
+		if Enabled() != tc.want {
+			t.Fatalf("env=%q configured=%t: enabled=%t", tc.env, tc.configured, Enabled())
+		}
+	}
+}
+
+func TestPreparedDoesNotFollowEnabledOrUnknownBinary(t *testing.T) {
+	t.Setenv(Environment, "1")
+	dir := t.TempDir()
+	if Prepared(dir, "rustshine") || Prepared(dir, "usb-broker") {
+		t.Fatal("mode enabled fabricated preparation")
+	}
+	p := filepath.Join(dir, "unknown")
+	if err := os.WriteFile(p, []byte("not a pinned binary"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Prepare(p, dir, "rustshine", "test"); err == nil {
+		t.Fatal("unknown binary accepted")
+	}
+	if Prepared(dir, "rustshine") {
+		t.Fatal("failed preparation marked patched")
+	}
+}
