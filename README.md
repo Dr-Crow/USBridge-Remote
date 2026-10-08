@@ -133,7 +133,7 @@ The Agent runs on the target machine — the server or PC you want to access rem
    <td width="33%" valign="top">
       <b>Hardware-Level BIOS Control</b><br>
       USBridge Remote integrates natively with the USBridge-KVM 2.0 appliance for out-of-band, bare-metal management before OS boot.<br><br>
-      <a href="https://www.usbridge.io/hardware-agent#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Buy USBridge-KVM 2.0"></a>
+      <a href="https://www.usbridge.io/hardware-agent?utm_campaign=readme-kvm&utm_medium=readme&utm_source=github#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Buy USBridge-KVM 2.0"></a>
     </td>
     <td width="33%" valign="top">
       <b>DIY IP-KVM Firmware</b><br>
