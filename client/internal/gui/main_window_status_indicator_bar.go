@@ -907,17 +907,15 @@ func (mw *MainWindow) openVideoResolutionMenu(anchor fyne.CanvasObject, modes []
 // VideoWidget.AvailableCaptureModes' own doc comment).
 const maxSelectableFPS = 120
 
-// captureModeFPS returns the fps list for whichever mode in modes matches
-// width/height (capped at maxSelectableFPS), falling back to the first
-// mode's own list if none match (e.g. the current resolution isn't itself
-// one of the reported modes).
+// captureModeFPS returns the fps list for the mode ApplyVideoResolution
+// would pick at width/height (models.PreferredCaptureMode, capped at
+// maxSelectableFPS), falling back to the first mode's own list if none
+// match (e.g. the current resolution isn't itself one of the reported
+// modes).
 func captureModeFPS(modes []models.VideoCaptureMode, width, height int) []int {
 	var all []int
-	for _, m := range modes {
-		if m.Width == width && m.Height == height {
-			all = m.FPS
-			break
-		}
+	if m, ok := models.PreferredCaptureMode(modes, width, height); ok {
+		all = m.FPS
 	}
 	if all == nil && len(modes) > 0 {
 		all = modes[0].FPS

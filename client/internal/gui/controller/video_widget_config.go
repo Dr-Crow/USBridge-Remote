@@ -908,6 +908,14 @@ func (vw *VideoWidget) ApplyVideoResolution(width, height int) error {
 	}
 	cfg.VideoWidth = width
 	cfg.VideoHeight = height
+	// The header menu shows each size once, but the card may offer it in
+	// both MJPEG and YUYV -- pick the format for the new size here (YUYV
+	// when offered) instead of keeping whatever the previous size used.
+	if modes, _, err := vw.AvailableCaptureModes(); err == nil {
+		if mode, ok := models.PreferredCaptureMode(modes, width, height); ok && mode.PixelFormat != "" {
+			cfg.CapturePixelFormat = mode.PixelFormat
+		}
+	}
 	return vw.applyVideoDeviceConfig(cfg, true)
 }
 
