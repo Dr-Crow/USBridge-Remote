@@ -86,12 +86,14 @@ for component in manifest['components']:
         raw = (root / item['path']).read_bytes()
         assert len(raw) == item['size'] and hashlib.sha256(raw).hexdigest() == item['sha256'], 'codesign changed a vendor component'
 PYVERIFY
+  python3 "$ROOT/.circleci/native-agent-smoke.py" "$APP" "$ROOT/artifacts/native-agent-smoke.json"
   cp ../docs/AUTOMATIC_BUNDLES.md "$ROOT/offline-macos/README.md"
   ditto -c -k --sequesterRsrc "$ROOT/offline-macos" "$ROOT/artifacts/USBridgeAgent-macOS-arm64-with-components.zip"
 else
   mkdir -p "$ROOT/offline-linux/agent/components"
   cp dist/linux/usbridge-agent dist/linux/usbridge-streamer-launch "$ROOT/offline-linux/agent/"
   cp -R "$ROOT/artifacts/components/." "$ROOT/offline-linux/agent/components/"
+  python3 "$ROOT/.circleci/native-agent-smoke.py" "$ROOT/offline-linux/agent" "$ROOT/artifacts/native-agent-smoke.json"
   cp ../docs/AUTOMATIC_BUNDLES.md "$ROOT/offline-linux/README.md"
   tar -czf "$ROOT/artifacts/USBridgeAgent-Linux-amd64-with-components.tar.gz" -C "$ROOT/offline-linux" .
 fi

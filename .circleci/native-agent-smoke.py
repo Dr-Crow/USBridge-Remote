@@ -1,9 +1,10 @@
-"""Windows shipped-EXE startup probe. Not a GUI, media, or WAN-isolation test."""
+"""Native packaged-agent startup probe. Not a GUI, media, or WAN-isolation test."""
 import hashlib
 import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import ssl
 import subprocess
@@ -14,11 +15,14 @@ import urllib.request
 
 
 def run(bundle, report_path):
-    if os.name != "nt":
-        raise RuntimeError("native Windows executor required")
-    original = bundle / "USBridgeAgent.exe"
+    if sys.platform not in ("win32", "linux", "darwin"):
+        raise RuntimeError("unsupported native executor")
+    relative_exe = (Path("USBridgeAgent.exe") if os.name == "nt" else
+                    Path("Contents/MacOS/USBridgeAgent") if sys.platform == "darwin" else
+                    Path("usbridge-agent"))
+    original = bundle / relative_exe
     digest = hashlib.sha256(original.read_bytes()).hexdigest()
-    report = {"exe_sha256": digest, "headless_startup": False, "operator_tls_handshake": False,
+    report = {"platform": sys.platform, "exe_sha256": digest, "headless_startup": False, "operator_tls_handshake": False,
               "gui_tested": False, "media_tested": False,
               "usb_tested": False, "wan_isolation_tested": False,
               "local_runtime_preparation": "covered by separate bundle fixture"}
@@ -30,7 +34,10 @@ def run(bundle, report_path):
             shutil.copytree(bundle, runtime)
             profile = root / "profile"
             appdata = profile / "AppData" / "Roaming"
-            config_dir = appdata / "usbridge-agent"
+            config_base = (appdata if os.name == "nt" else
+                           profile / "Library" / "Application Support" if sys.platform == "darwin" else
+                           profile / ".config")
+            config_dir = config_base / "usbridge-agent"
             config_dir.mkdir(parents=True)
             state = root / "state"
             state.mkdir()
@@ -60,11 +67,12 @@ def run(bundle, report_path):
             (config_dir / "config.yaml").write_text(json.dumps(cfg), encoding="utf-8")
             env = dict(os.environ, APPDATA=str(appdata),
                        LOCALAPPDATA=str(profile / "AppData" / "Local"),
-                       USERPROFILE=str(profile), USBRIDGE_STRICT_LAN="1")
+                       USERPROFILE=str(profile), HOME=str(profile),
+                       XDG_CONFIG_HOME=str(profile / ".config"), USBRIDGE_STRICT_LAN="1")
             env.pop("USBRIDGE_LOCAL_RUNTIME", None)
-            proc = subprocess.Popen([str(runtime / "USBridgeAgent.exe"), "--headless"],
+            proc = subprocess.Popen([str(runtime / relative_exe), "--headless"],
                                     cwd=runtime, env=env, stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL)
+                                    stderr=subprocess.DEVNULL, start_new_session=(os.name != "nt"))
             # Avoid inherited proxy settings for the loopback health request.
             client = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=trust))
             try:
@@ -87,9 +95,25 @@ def run(bundle, report_path):
                     raise RuntimeError("native agent did not answer loopback health within 60 seconds")
             finally:
                 if proc.poll() is None:
-                    subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                                   check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                proc.wait(timeout=15)
+                    if os.name == "nt":
+                        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                                       check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    else:
+                        try:
+                            os.killpg(proc.pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+                try:
+                    proc.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    if os.name == "nt":
+                        proc.kill()
+                    else:
+                        try:
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    proc.wait(timeout=5)
             assert hashlib.sha256(original.read_bytes()).hexdigest() == digest
     except Exception as error:
         report["error"] = str(error)

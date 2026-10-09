@@ -28,3 +28,20 @@ and back up configuration before testing. See FORK_TEST_PLAN.md for behavioral t
 
 Build inputs: Go 1.26.6 archives are SHA256 verified. Linux uses CircleCI Ubuntu 22.04
 current; macOS uses Xcode 16.4.0 on M4 Pro. Platform toolchains are recorded in artifacts.
+
+## Native packaged-agent startup probe
+
+The Windows, Linux x86_64 and native macOS ARM64 CI jobs run the packaged agent
+headlessly in a disposable profile. Each probe loads a disposable operator TLS
+pair and verifies the HTTPS health endpoint using normal chain and IP-SAN
+validation. No OS trust-store changes are made. The report records the exact
+executable SHA256. The macOS Intel cross-build is not a native execution test.
+
+The profile uses strict local mode, an explicitly selected unprepared Sunshine
+backend, and no streamer/USB consent, so this test does not initiate capture,
+install a driver, or request vendor provisioning. Component preparation has a
+separate fixture test. No GUI, real media, USB device, or complete egress-isolation
+acceptance is claimed by the startup probe.
+
+On 2026-10-09 UTC the Linux agent from commit 392bf2d was also exercised by this
+probe on the root Linux executor: startup and the verified HTTPS handshake passed.
