@@ -76,6 +76,16 @@ int gousb_compact_iso_data(struct libusb_transfer *xfer, unsigned char *status) 
 	return sum;
 }
 
+void gousb_set_iso_packet_length(struct libusb_transfer *xfer, int i, unsigned int length) {
+	xfer->iso_packet_desc[i].length = length;
+}
+
+void gousb_iso_packet(struct libusb_transfer *xfer, int i, unsigned int *length, unsigned int *actual, int *status) {
+	*length = xfer->iso_packet_desc[i].length;
+	*actual = xfer->iso_packet_desc[i].actual_length;
+	*status = xfer->iso_packet_desc[i].status;
+}
+
 // allocates a libusb transfer and a buffer for packet data.
 struct libusb_transfer *gousb_alloc_transfer_and_buffer(int bufLen, int isoPackets) {
         struct libusb_transfer *xfer = libusb_alloc_transfer(isoPackets);

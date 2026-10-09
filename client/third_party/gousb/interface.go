@@ -95,6 +95,24 @@ func (i *Interface) Close() {
 	i.config = nil
 }
 
+// SetAlternate switches the claimed interface to its alternate setting alt
+// without releasing it (a release hands it back to the kernel driver when
+// auto-detach is on). Endpoints opened before belong to the old setting.
+func (i *Interface) SetAlternate(alt int) error {
+	if i.config == nil {
+		return fmt.Errorf("SetAlternate(%d) called on %s after Close", alt, i)
+	}
+	altInfo, err := i.config.Desc.intfDesc(i.Setting.Number, alt)
+	if err != nil {
+		return fmt.Errorf("descriptor of interface (%d, %d) in %s: %v", i.Setting.Number, alt, i.config, err)
+	}
+	if err := i.config.dev.ctx.libusb.setAlt(i.config.dev.handle, uint8(i.Setting.Number), uint8(alt)); err != nil {
+		return fmt.Errorf("failed to set alternate setting %d on interface %d of %s: %v", alt, i.Setting.Number, i.config, err)
+	}
+	i.Setting = *altInfo
+	return nil
+}
+
 func (i *Interface) openEndpoint(epAddr EndpointAddress) (*endpoint, error) {
 	var ep EndpointDesc
 	ep, ok := i.Setting.Endpoints[epAddr]
