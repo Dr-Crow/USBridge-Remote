@@ -497,13 +497,13 @@ func (b *rustshineBackend) Start(adminPort int) error {
 	// Best-effort: never blocks Start over it.
 	ReconcileSharedAuth(b.stateDir)
 
-	// A client's MIDI input and microphone (sent over ENet with its other
-	// input) become a USB MIDI port and a USB microphone of this machine:
-	// gamestream-server exports them over loopback USB/IP and attaches them
-	// through the USB broker (usbpass, usbip-win2 / vhci_hcd), like the
-	// client's virtual pads and raw HID devices. A value set by hand is
-	// kept.
-	for _, key := range []string{"midi_sink", "mic_sink"} {
+	// A client's MIDI input, microphone and camera (sent over ENet with its
+	// other input; the camera as H.264) become a USB MIDI port, a USB
+	// microphone and a USB webcam of this machine: gamestream-server exports
+	// them over loopback USB/IP and attaches them through the USB broker
+	// (usbpass, usbip-win2 / vhci_hcd), like the client's virtual pads and
+	// raw HID devices. A value set by hand is kept.
+	for _, key := range []string{"midi_sink", "mic_sink", "camera_sink"} {
 		if b.ConfigKey(key) == "" {
 			if err := b.SetConfigKey(key, "usb"); err != nil {
 				log.Printf("[rustshine] failed to set %s: %v", key, err)

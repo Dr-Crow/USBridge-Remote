@@ -445,6 +445,12 @@ int do_send_midi(const unsigned char *data, unsigned short length) {
 int do_send_mic(unsigned short sequence, const unsigned char *data, unsigned short length) {
     return LiSendMicAudio(sequence, data, length);
 }
+int do_host_camera(void) {
+    return (LiGetHostFeatureFlags() & LI_FF_USBRIDGE_CAMERA) != 0;
+}
+int do_send_camera(unsigned short frame, unsigned char flags, const unsigned char *data, unsigned int length) {
+    return LiSendCameraFrame(frame, flags, data, length);
+}
 // Raw HID devices rebuilt by a USBridge host (see moonlight_rawhid.go).
 int do_host_supports_raw_hid(void) {
     return (LiGetHostFeatureFlags() & LI_FF_USBRIDGE_RAW_HID) != 0;

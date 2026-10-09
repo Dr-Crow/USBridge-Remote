@@ -1479,6 +1479,12 @@ static int do_send_midi(const unsigned char *data, unsigned short length) {
 static int do_send_mic(unsigned short sequence, const unsigned char *data, unsigned short length) {
     return LiSendMicAudio(sequence, data, length);
 }
+static int do_host_camera(void) {
+    return (LiGetHostFeatureFlags() & LI_FF_USBRIDGE_CAMERA) != 0;
+}
+static int do_send_camera(unsigned short frame, unsigned char flags, const unsigned char *data, unsigned int length) {
+    return LiSendCameraFrame(frame, flags, data, length);
+}
 // Raw HID devices rebuilt by a USBridge host (see moonlight_rawhid.go).
 static int do_host_supports_raw_hid(void)
 {
@@ -1828,6 +1834,21 @@ func (w *MoonlightCgoWrapper) SendMoonlightMic(sequence uint16, opus []byte) boo
 		return false
 	}
 	return C.do_send_mic(C.ushort(sequence), (*C.uchar)(unsafe.Pointer(&opus[0])), C.ushort(len(opus))) == 0
+}
+
+func (w *MoonlightCgoWrapper) CameraUplinkSupported() bool {
+	return liStartConnectionActive.Load() && C.do_host_camera() != 0
+}
+
+func (w *MoonlightCgoWrapper) SendMoonlightCamera(frame uint16, keyframe bool, au []byte) bool {
+	if !liStartConnectionActive.Load() || len(au) == 0 {
+		return false
+	}
+	flags := C.uchar(0)
+	if keyframe {
+		flags = 1
+	}
+	return C.do_send_camera(C.ushort(frame), flags, (*C.uchar)(unsafe.Pointer(&au[0])), C.uint(len(au))) == 0
 }
 
 func (w *MoonlightCgoWrapper) SendMoonlightRawHID(kind, slot, endpoint uint8, total, offset uint16, data []byte, reliable bool) bool {
