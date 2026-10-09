@@ -410,9 +410,9 @@ func EN() *LocalizedStrings {
 
 		EnableUSBBroker:        "Enable",
 		USBBrokerConsentTitle:  "Enable USB passthrough?",
-		USBBrokerConsentBody:   "USB passthrough is powered by a separate, closed-source component (not open-source like the rest of this agent). It stays off until you enable it here. Once enabled, keyboard, mouse, and gamepad passthrough is free; other USB devices (drives, audio, tablets, etc.) require a Pro or Enterprise subscription.",
+		USBBrokerConsentBody:   "USB passthrough is powered by a separate, closed-source component (not open-source like the rest of this agent). It stays off until you enable it here. Once enabled, every USB device passes through for free, except pen tablets (Wacom and similar), which require a Pro or Enterprise subscription.",
 		USBBrokerRunningOnPort: "Running, listening on port %d.",
-		USBBrokerFreeTierNote:  "Keyboard, mouse and gamepad passthrough works without a subscription; other USB devices require Pro or Enterprise.",
+		USBBrokerFreeTierNote:  "Every USB device passes through without a subscription, except pen tablets, which require Pro or Enterprise.",
 		USBBrokerNotRunning:    "The USB broker is not running. The agent retries automatically every 15 seconds.",
 		USBBrokerLastError:     "Last error from the broker:",
 		USBPort:                "USB",
@@ -657,12 +657,12 @@ func ES() *LocalizedStrings {
 
 	locale.EnableUSBBroker = "Habilitar"
 	locale.USBBrokerRunningOnPort = "En ejecución, escuchando en el puerto %d."
-	locale.USBBrokerFreeTierNote = "El passthrough de teclado, ratón y gamepad funciona sin suscripción; otros dispositivos USB requieren Pro o Enterprise."
+	locale.USBBrokerFreeTierNote = "El passthrough de cualquier dispositivo USB funciona sin suscripción, salvo las tabletas gráficas, que requieren Pro o Enterprise."
 	locale.USBBrokerNotRunning = "El USB broker no está en ejecución. El agente lo reintenta automáticamente cada 15 segundos."
 	locale.USBBrokerLastError = "Último error del broker:"
 	locale.USBPortFallback = "(%d ocupado)"
 	locale.USBBrokerConsentTitle = "¿Habilitar USB passthrough?"
-	locale.USBBrokerConsentBody = "El soporte de USB passthrough funciona mediante un componente independiente de código cerrado (no es de código abierto como el resto de este agente). Permanecerá desactivado hasta que lo habilites aquí. Una vez habilitado, el passthrough de teclado, ratón y gamepad es gratuito; otros dispositivos USB (unidades de disco, audio, tabletas, etc.) requieren una suscripción Pro o Enterprise."
+	locale.USBBrokerConsentBody = "El soporte de USB passthrough funciona mediante un componente independiente de código cerrado (no es de código abierto como el resto de este agente). Permanecerá desactivado hasta que lo habilites aquí. Una vez habilitado, el passthrough de cualquier dispositivo USB es gratuito, salvo las tabletas gráficas (Wacom y similares), que requieren una suscripción Pro o Enterprise."
 
 	locale.StreamerConsentTitle = "¿Cambiar al protocolo USBridge?"
 	locale.StreamerConsentBody = "El protocolo USBridge funciona mediante un componente independiente de código cerrado (no es de código abierto como Sunshine y el resto de este agente). Cambiar a este protocolo descargará e instalará el componente USBridge Streamer. ¿Deseas continuar?"
@@ -899,12 +899,12 @@ func UK() *LocalizedStrings {
 
 	locale.EnableUSBBroker = "Увімкнути"
 	locale.USBBrokerRunningOnPort = "Запущено, слухає порт %d."
-	locale.USBBrokerFreeTierNote = "Прокидання клавіатури, миші та геймпада працює без підписки; інші USB-пристрої потребують Pro або Enterprise."
+	locale.USBBrokerFreeTierNote = "Прокидання будь-яких USB-пристроїв працює без підписки, окрім графічних планшетів, які потребують Pro або Enterprise."
 	locale.USBBrokerNotRunning = "USB broker не запущено. Агент автоматично повторює спробу кожні 15 секунд."
 	locale.USBBrokerLastError = "Остання помилка брокера:"
 	locale.USBPortFallback = "(%d зайнятий)"
 	locale.USBBrokerConsentTitle = "Увімкнути USB passthrough?"
-	locale.USBBrokerConsentBody = "Прокидання USB (USB passthrough) працює на окремому компоненті із закритим вихідним кодом (не open-source, на відміну від решти агента). Він залишається вимкненим, доки ви не увімкнете його тут. Після увімкнення прокидання клавіатури, миші та геймпада є безкоштовним; інші USB-пристрої (накопичувачі, аудіо, планшети тощо) потребують підписки Pro або Enterprise."
+	locale.USBBrokerConsentBody = "Прокидання USB (USB passthrough) працює на окремому компоненті із закритим вихідним кодом (не open-source, на відміну від решти агента). Він залишається вимкненим, доки ви не увімкнете його тут. Після увімкнення прокидання будь-яких USB-пристроїв безкоштовне, окрім графічних планшетів (Wacom тощо), які потребують підписки Pro або Enterprise."
 
 	locale.StreamerConsentTitle = "Перемкнути на протокол USBridge?"
 	locale.StreamerConsentBody = "Протокол USBridge працює на окремому компоненті із закритим вихідним кодом (не open-source, на відміну від Sunshine та решти агента). Перемикання на цей протокол завантажить та встановить USBridge Streamer. Бажаєте продовжити?"

@@ -24,7 +24,7 @@ func showUSBBrokerDialog(parent fyne.Window, onResult func(bool)) {
 
 	bodyText := loc().USBBrokerConsentBody
 	if bodyText == "" {
-		bodyText = "USB passthrough is powered by a separate, closed-source component (not open-source like the rest of this agent). It stays off until you enable it here. Once enabled, keyboard, mouse, and gamepad passthrough is free; other USB devices (drives, audio, tablets, etc.) require a Pro or Enterprise subscription."
+		bodyText = "USB passthrough is powered by a separate, closed-source component (not open-source like the rest of this agent). It stays off until you enable it here. Once enabled, every USB device passes through for free, except pen tablets (Wacom and similar), which require a Pro or Enterprise subscription."
 	}
 
 	showConfirmDialog(title, bodyText, onResult, parent)

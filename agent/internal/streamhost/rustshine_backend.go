@@ -614,15 +614,13 @@ func (b *rustshineBackend) Start(adminPort int) error {
 	args = append(args, "--turn-credentials-file", filepath.Join(b.stateDir, "rustshine", "turn-credentials.json"))
 	// This machine's hardware id, exactly as the entitlement token's own
 	// `sub` claim was bound to (see entitlement.VerifyForHardware) -- a
-	// desktop-entitlement build refuses to start without a matching
-	// --hardware-id (see rust-shine's license::entitlement module doc
-	// comment for why the token being checked against THIS value, computed
-	// independently rather than trusted from the token itself, is what
-	// makes a copied token file not work on a different machine). Omitted
-	// (not passed as an empty string) if hwid.Get() itself fails -- a
-	// desktop-entitlement build then fails closed on its own missing-flag
-	// check rather than this package silently sending an empty match-nothing
-	// value.
+	// desktop-entitlement build verifies the token against it (see
+	// rust-shine's license::entitlement module doc comment for why the
+	// token being checked against THIS value, computed independently rather
+	// than trusted from the token itself, is what makes a copied token file
+	// not work on a different machine). Omitted (not passed as an empty
+	// string) if hwid.Get() itself fails -- RustShine then runs its free
+	// tier (no pen tablets, no 4:4:4), as it does with no token at all.
 	if id, err := hwid.Get(); err == nil {
 		args = append(args, "--hardware-id", id)
 	} else {

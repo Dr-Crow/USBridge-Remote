@@ -31,9 +31,8 @@ func withBackendURL(t *testing.T, url string) {
 
 // newTestApp builds a minimal *App directly (not via New(), which starts
 // real OS-level services -- sockets, tailscale, capture) with just enough
-// wired up for recheckEntitlement/downgradeToSunshine to run safely:
-// streamKind stays "" (never "rustshine"), so downgradeToSunshine never
-// touches a.stream, and cfgPath/StateDir point at a scratch temp dir so
+// wired up for recheckEntitlement/dropEntitlementToken to run safely:
+// a.stream stays nil, and cfgPath/StateDir point at a scratch temp dir so
 // SaveConfig/WriteTokenFile have somewhere real to write.
 func newTestApp(t *testing.T, entitlementToken string) *App {
 	t.Helper()
@@ -56,7 +55,7 @@ func newTestApp(t *testing.T, entitlementToken string) *App {
 // unverifiable EntitlementToken -- recheckEntitlement's OWN local
 // VerifyForHardware call rejects it immediately (same as it would reject
 // any tampered/foreign-machine token in production), which is enough to
-// exercise the "no longer valid locally -> downgrade" path both tests
+// exercise the "no longer valid locally -> drop it" path both tests
 // actually care about, without ever reaching the network call. That
 // specific behavior (a still-locally-valid LICENSE token additionally
 // getting network-re-checked, vs. a still-valid TRIAL token not making a
@@ -66,9 +65,10 @@ func newTestApp(t *testing.T, entitlementToken string) *App {
 // WrongProviderRejected), and once, manually, against the live deployed
 // backend during development.
 
-// TestRecheckEntitlement_InvalidCachedToken_DowngradesToSunshine confirms
-// recheckEntitlement downgrades to Sunshine and clears the cached token
-// when what's cached no longer verifies locally (expired trial, corrupted
+// TestRecheckEntitlement_InvalidCachedToken_DropsIt confirms
+// recheckEntitlement clears the cached token (leaving the backend as it is:
+// RustShine runs its free tier without one) when what's cached no longer
+// verifies locally (expired trial, corrupted
 // value, or -- in production -- a token some other install's config.yaml
 // was copied from, since it would fail the hardware-id check) -- this is
 // the same underlying guarantee "hardware binding actually gates access"
@@ -80,7 +80,7 @@ func newTestApp(t *testing.T, entitlementToken string) *App {
 // test to the "stays cleared" half of that behavior, and confirms the
 // network attempt failing doesn't leave the corrupted token behind or
 // panic.
-func TestRecheckEntitlement_InvalidCachedToken_DowngradesToSunshine(t *testing.T) {
+func TestRecheckEntitlement_InvalidCachedToken_DropsIt(t *testing.T) {
 	unreachable := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	unreachable.Close()
 	withBackendURL(t, unreachable.URL)
@@ -91,7 +91,7 @@ func TestRecheckEntitlement_InvalidCachedToken_DowngradesToSunshine(t *testing.T
 	}
 
 	if a.cfg.EntitlementToken != "" {
-		t.Fatalf("expected downgradeToSunshine to clear the cached token, got EntitlementToken=%q", a.cfg.EntitlementToken)
+		t.Fatalf("expected dropEntitlementToken to clear the cached token, got EntitlementToken=%q", a.cfg.EntitlementToken)
 	}
 	if a.entStatus.Linked {
 		t.Error("expected entStatus.Linked=false after an unverifiable cached token")
