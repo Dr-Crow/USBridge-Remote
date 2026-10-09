@@ -59,11 +59,15 @@ func TestExpiredEntitlementKeepsOptedInBackendIntent(t *testing.T) {
 	a := newTestApp(t, "usbent1.invalid.signature")
 	a.cfg.StreamerConsent = true
 	a.cfg.PreferredBackend = "rustshine"
-	a.downgradeToSunshine()
+	a.setStreamKind("rustshine")
+	a.dropEntitlementToken()
 	if a.cfg.EntitlementToken != "" {
 		t.Fatal("invalid token retained")
 	}
 	if a.cfg.PreferredBackend != "rustshine" {
-		t.Fatal("explicit backend choice lost during temporary fallback")
+		t.Fatal("explicit backend choice lost when dropping expired entitlement")
+	}
+	if a.currentStreamKind() != "rustshine" {
+		t.Fatal("dropping an expired entitlement changed the live backend")
 	}
 }

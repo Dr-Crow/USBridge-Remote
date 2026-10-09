@@ -263,6 +263,7 @@ func (dw *DiskWidget) combineDrives() {
 	// disk_widget_pen.go's newPenTabletToggle doc comment), so it has to be
 	// carried over by hand like oldGamepadMode is.
 	oldPenMounted := make(map[string]bool)
+	oldUplinkMounted := make(map[string]bool)
 	for i, d := range dw.allDrives {
 		if d.IsMouse && d.MouseType != "" {
 			oldMouseType = d.MouseType
@@ -275,6 +276,9 @@ func (dw *DiskWidget) combineDrives() {
 		}
 		if d.IsPenTablet && d.PenTabletID != "" {
 			oldPenMounted[d.PenTabletID] = d.IsMounted
+		}
+		if d.IsUplink {
+			oldUplinkMounted[d.UplinkKey] = d.IsMounted
 		}
 		if d.IsUSBAudio && d.USBAudioMode != "" {
 			oldUSBAudioMode = d.USBAudioMode
@@ -531,6 +535,9 @@ func (dw *DiskWidget) combineDrives() {
 			USBAudioMode: oldUSBAudioMode,
 		}
 		dw.allDrives = append(dw.allDrives, usbAudioItem)
+		// The other direction: this client's microphone and MIDI inputs
+		// into the target PC (disk_widget_uplink.go).
+		dw.allDrives = append(dw.allDrives, dw.uplinkItems(oldUplinkMounted)...)
 	}
 
 	for i := range dw.usbPassDevices {
@@ -775,7 +782,7 @@ func (dw *DiskWidget) updateDevicesStatus() {
 		// live as the toggle appearing to take effect (capture starts) and
 		// then getting torn down again within a few hundred ms, every time,
 		// since combineDrives calls syncPenCaptures at its own tail.
-		if drive.IsPenTablet {
+		if drive.IsPenTablet || drive.IsUplink {
 			continue
 		}
 
@@ -994,4 +1001,5 @@ func (dw *DiskWidget) updateDevicesStatus() {
 	dw.updateButtons()
 	dw.syncGamepadCaptures()
 	dw.syncPenCaptures()
+	dw.syncUplinkCaptures()
 }

@@ -19,7 +19,7 @@
 
 ---
 
-**USBridge Remote** to zintegrowany, wysokowydajny klient do zarządzania zdalnymi maszynami. Zaprojektowany, aby łączyć **dostęp do BIOS-u na poziomie sprzętowym** (poprzez urządzenia USBridge KVM) oraz **zdalny pulpit oparty na oprogramowaniu** w jednym, uproszczonym interfejsie.
+**USBridge Remote** to zintegrowany klient o wysokiej wydajności do zarządzania zdalnymi maszynami. Zaprojektowany, aby połączyć **dostęp do BIOS-u na poziomie sprzętowym** (za pomocą urządzeń USBridge KVM) oraz **zdalny pulpit oparty na oprogramowaniu** w jednym, uproszczonym interfejsie.
 
 <div align="center">
   <img src="./assets/Functions.svg" width="1400" alt="USBridge Remote">
@@ -29,20 +29,20 @@
 ## Pobierz
 
 ### Klient
-Klient to interfejs sterujący — zainstalowany na Twoim komputerze stacjonarnym lub laptopie (lub uruchamiany bezpośrednio w przeglądarce). Zarządza połączeniami, zdalnym pulpitem na żywo, przejściem urządzeń wirtualnych oraz rejestracją migawkami.
+Klient to interfejs sterujący — zainstalowany na twoim komputerze stacjonarnym lub laptopie (lub uruchamiany bezpośrednio w przeglądarce). Zarządza połączeniami, zdalnym pulpitem na żywo, przekazywaniem wirtualnych urządzeń oraz rejestrem zrzutów.
 
 | Architektura | Windows | macOS | Linux | Android | iOS | Przeglądarka internetowa |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
 | **x86_64** | [Pobierz](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Windows-x86_64.zip) | — | [Pobierz](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-Linux-x86_64.AppImage) | — | — | [Otwórz aplikację](https://web.usbridge.io) |
 | **ARM64** | — | [Pobierz](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest/download/USBridgeClient-macOS-arm64.dmg) | — | [Google Play](https://play.google.com/store/apps/details?id=io.usbridge.client) | [App Store](https://apps.apple.com/us/app/usbridge-client/id6787665935) | [Otwórz aplikację](https://web.usbridge.io) |
 
-Preferujesz bezpośredni plik APK bez konta w Sklepie Play? Samoaktualizująca się wersja jest również publikowana w [najnowszym wydaniu](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
+Preferujesz bezpośredni plik APK bez konta w Sklepie Play? Samoaktualizująca się wersja jest również publikowana w [najowszym wydaniu](https://github.com/USBridge-Technologies/USBridge-Remote/releases/latest).
 
-🌐 **Klient internetowy bez instalacji**: Nie wymaga instalacji. Po prostu otwórz [web.usbridge.io](https://web.usbridge.io), aby natychmiast się połączyć. *(Uwaga: Klient internetowy działa z pewnymi ograniczeniami funkcji i wydajności z powodu zabezpieczeń przeglądarki i ograniczeń WebRTC. Aby uzyskać pełne, nieograniczone doświadczenie, użyj aplikacji natywnych).* Na świeżo uruchomionym Agencie może zająć do minuty, aby stać się osiągalnym po raz pierwszy (lub po zmianie sieci), podczas gdy przygotowuje zaufany certyfikat HTTPS dla siebie — zobacz wiersz **Status → Certyfikat** Agenta lub [dokumentację Agenta](agent/docs/README.md#platform-notes-from-the-top-level-readme) dla szczegółów.
+🌐 **Klient internetowy bez instalacji**: Nie wymaga instalacji. Po prostu otwórz [web.usbridge.io](https://web.usbridge.io), aby natychmiast się połączyć. *(Uwaga: Klient internetowy działa z pewnymi ograniczeniami funkcji i wydajności z powodu zabezpieczeń przeglądarki i ograniczeń WebRTC. Aby uzyskać pełne, nieograniczone doświadczenie, użyj aplikacji natywnych).* Na świeżo uruchomionym Agencie może zająć do minuty, aby stać się osiągalnym po raz pierwszy (lub po zmianie sieci), podczas gdy przygotowuje zaufany certyfikat HTTPS dla siebie — zobacz wiersz **Status → Certyfikat** Agenta lub [dokumentację Agenta](agent/docs/README.md#platform-notes-from-the-top-level-readme) po szczegóły.
 
 ## Agent
 
-Agent działa na docelowej maszynie — serwerze lub komputerze, do którego chcesz uzyskać zdalny dostęp. Obsługuje przechwytywanie ekranu, wstrzykiwanie wejścia i sieci Tailscale.
+Agent działa na docelowej maszynie — serwerze lub komputerze, do którego chcesz uzyskać zdalny dostęp. Obsługuje przechwytywanie ekranu, wstrzykiwanie wejścia i sieciowanie Tailscale.
 
 <table>
   <tr>
@@ -86,30 +86,30 @@ Agent działa na docelowej maszynie — serwerze lub komputerze, do którego chc
       <i>Standardowe przesyłanie gier</i><br><br>
       ✓ Wbudowany streamer open-source Sunshine<br>
       ✓ Niskolatencyjny dostęp do pulpitu i gier<br>
-      ✓ Dwukierunkowy schowek plików i tekstu<br>    
+      ✓ Dwukierunkowe przesyłanie plików i tekstu do schowka<br>    
       ✓ Przełączanie wyświetlaczy wielomonitorowych<br>
-      ✓ Zintegrowane sieci P2P Tailscale<br>
+      ✓ Zintegrowane sieciowanie P2P Tailscale<br>
       ✓ Wsparcie dla Wayland (przechwytywanie bez komunikatów)
     </td>
     <td width="33%" valign="top">
-      <code>+ PODSTAWOWE CECHY</code><br><br>
+      <code>+ PODSTAWOWE FUNKCJE</code><br><br>
       <b>USBRIDGE FREE</b><br>
       <i>Silnik strumieniowy oparty na Rust</i><br><br>
-      ✓ Niestandardowy protokół zdalny z natychmiastowym połączeniem<br>
+      ✓ Protokół zdalny do natychmiastowego połączenia<br>
+      ✓ Przekazywanie surowych urządzeń peryferyjnych USB<br>
       ✓ Adaptacyjne przesyłanie strumieniowe zoptymalizowane pod kątem stabilności Wi-Fi<br>
       ✓ HDR10<br>
       ✓ Zarządzanie wirtualnym wyświetlaczem bez głowy<br>
-      ✓ Niskolatencyjne przejście kontrolera do gier<br>
-      ✓ Dostęp do klienta w przeglądarce internetowej (bez instalacji)<br>
-      ✓ Dostęp do Windows przed logowaniem (bezpieczne wprowadzanie poświadczeń)
+      ✓ Niskolatencyjne przekazywanie kontrolera do gier<br>
+      ✓ Dostęp do klienta przeglądarki internetowej (bez instalacji)<br>
+      ✓ Dostęp do Windows przed logowaniem (bezpieczne wprowadzanie danych uwierzytelniających)
     </td>
     <td width="33%" valign="top">
-      <code>+ PODSTAWOWE CECHY</code> <code>+ BEZPŁATNE CECHY</code><br><br>
+      <code>+ PODSTAWOWE FUNKCJE</code> <code>+ DARMOWE FUNKCJE</code><br><br>
       <b>USBRIDGE PRO</b><br>
       <i>Profesjonalne przepływy pracy</i><br><br>
-      ✓ Bezstratna dokładność kolorów 4:4:4<br>
-      ✓ Przejście surowych urządzeń peryferyjnych USB<br>
-      ✓ Wsparcie dla tabletów Wacom z ciśnieniem i nachyleniem<br><br>
+      ✓ Bezstratna dokładność koloru 4:4:4 chroma<br>
+      ✓ Wsparcie dla tabletów Wacom z naciskiem i nachyleniem<br><br>
     </td>
   </tr>
 </table>
@@ -131,9 +131,9 @@ Agent działa na docelowej maszynie — serwerze lub komputerze, do którego chc
 <table>
   <tr>
    <td width="33%" valign="top">
-      <b>Kontrola BIOS-u na poziomie sprzętowym</b><br>
-      USBridge Remote integruje się natywnie z urządzeniem USBridge-KVM 2.0 do zarządzania bare-metal, poza pasmem, przed uruchomieniem systemu operacyjnego.<br><br>
-      <a href="https://www.usbridge.io/hardware-agent#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Kup USBridge-KVM 2.0"></a>
+      <b>Kontrola BIOS na poziomie sprzętowym</b><br>
+      USBridge Remote integruje się natywnie z urządzeniem USBridge-KVM 2.0 do zarządzania poza pasmem, na poziomie bare-metal przed uruchomieniem systemu operacyjnego.<br><br>
+      <a href="https://www.usbridge.io/hardware-agent?utm_campaign=readme-kvm&utm_medium=readme&utm_source=github#buy-usbridge-kvm-2-0"><img src="https://img.shields.io/badge/Buy-USBridge--KVM_2.0-2da44e?style=for-the-badge" alt="Kup USBridge-KVM 2.0"></a>
     </td>
     <td width="33%" valign="top">
       <b>Oprogramowanie IP-KVM DIY</b><br>
@@ -142,7 +142,7 @@ Agent działa na docelowej maszynie — serwerze lub komputerze, do którego chc
     </td>
     <td width="33%" valign="top">
       <b>Dongle sprzętowy USB/IP (ESP32-S3)</b><br>
-      Przechodzenie USB w oprogramowaniu napotyka przeszkody w macOS: nie ma sterownika VHCI, do którego można by się podłączyć, więc zdalny tablet Wacom (lub inne urządzenie USB) nie może być prezentowany jako prawdziwy sprzęt. Ten dongle podłącza się do Maca i wykonuje w sprzęcie to, co <code>vhci-hcd</code> robi w oprogramowaniu gdzie indziej — eksportowane urządzenie jest enumerowane z własnym VID/PID, związanym z własnym sterownikiem macOS.<br><br>
+      Przekazywanie USB w oprogramowaniu napotyka przeszkody na macOS: nie ma sterownika VHCI, do którego można by się podłączyć, więc zdalny tablet Wacom (lub inne urządzenie USB) nie może być przedstawiony jako prawdziwy sprzęt. Ten dongle podłącza się do Maca i wykonuje w sprzęcie to, co <code>vhci-hcd</code> robi w oprogramowaniu gdzie indziej — eksportowane urządzenie jest enumerowane z własnym VID/PID, powiązanym z własnym sterownikiem macOS.<br><br>
       <a href="esp32-acm/README.md"><img src="https://img.shields.io/badge/Open_Hardware-esp32--acm-f59e0b?style=for-the-badge" alt="oprogramowanie i dokumentacja esp32-acm"></a>
     </td>
   </tr>
@@ -154,7 +154,7 @@ Agent działa na docelowej maszynie — serwerze lub komputerze, do którego chc
   <tr>
     <td width="33%" valign="top">
       <b>Rozwój i plan działania</b><br>
-      Utrzymuję publiczny pulpit nawigacyjny, aby śledzić wszystkie planowane funkcje, aktualizacje architektoniczne i harmonogramy wydania.<br><br>
+      Utrzymuję publiczny pulpit nawigacyjny, aby śledzić wszystkie planowane funkcje, aktualizacje architektury i harmonogramy wydania.<br><br>
       <a href="https://github.com/orgs/USBridge-Technologies/projects/3">Zobacz na żywo plan działania</a>
     </td>
     <td width="33%" valign="top">

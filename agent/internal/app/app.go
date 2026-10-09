@@ -622,20 +622,14 @@ func New() (*App, error) {
 	instance.setStreamKind("sunshine")
 
 	// If this install was already switched to RustShine last run, pick it
-	// back up from a cold start too — but only via checks that need no
-	// network round-trip (Verify is pure Ed25519 signature+expiry, StagePath
-	// is a stat call), so this can never make boot depend on the
-	// entitlement backend being reachable. A background recheckEntitlement
-	// (see entitlementWatchdog, started from Run) re-verifies against the
-	// backend shortly after and downgrades to Sunshine if the cached token
-	// no longer holds up.
+	// back up from a cold start too -- whenever its binary is staged. No
+	// license is needed to run it: without a valid token (never linked, an
+	// offline machine whose token expired) RustShine runs its free tier,
+	// which lacks only pen tablets and 4:4:4 color; the license only ever
+	// decides those (rust-shine reads the token file itself).
 	if cfg.PreferredBackend == "rustshine" {
-		if hwID, err := hwid.Get(); err == nil {
-			if _, err := entitlement.VerifyForHardware(cfg.EntitlementToken, hwID); err == nil || localruntime.Enabled() {
-				if instance.rustshineStaged() {
-					instance.setStreamKind("rustshine")
-				}
-			}
+		if instance.rustshineStaged() {
+			instance.setStreamKind("rustshine")
 		}
 	}
 	// Punktfunk needs no entitlement, only its binary; without one (it was
@@ -2701,31 +2695,17 @@ func (a *App) ClearLicense() error {
 	return nil
 }
 
-// downgradeToSunshine clears the saved entitlement token and switches back
-// to Sunshine if RustShine was active -- the shared tail end of every path
-// that decides entitlement no longer holds up (a refunded purchase, a
-// locally-expired cached token/trial while offline). Does NOT delete the
-// staged RustShine binary or its mirrored token file (see
-// entitlement.WriteTokenFile) -- a later purchase/trial can reuse the
-// binary without re-downloading, and a stale token file is harmless
-// either way, since it just won't get launched again from the Go side
-// until a fresh license/trial succeeds anyway.
-func (a *App) downgradeToSunshine() {
-	requested := a.cfg.PreferredBackend
+// dropEntitlementToken clears a saved entitlement token that no longer
+// verifies locally (expired while offline, corrupted, copied from another
+// machine). The stream backend stays as it is: RustShine without a token is
+// its free tier (no pen tablets, no 4:4:4), not something to switch away
+// from. The mirrored token file (entitlement.WriteTokenFile) is left alone
+// -- rust-shine verifies it itself and treats a stale one as the free tier.
+func (a *App) dropEntitlementToken() {
 	next := a.cfg
 	next.EntitlementToken = ""
-	next.PreferredBackend = ""
 	_ = a.SaveConfig(next)
 	a.refreshLocalEntitlementStatus()
-	if a.currentStreamKind() == "rustshine" {
-		_ = a.SetStreamBackend("sunshine")
-	}
-	// Preserve an explicit streamer choice for retry after connectivity returns.
-	if requested == "rustshine" && a.cfg.StreamerConsent {
-		next = a.cfg
-		next.PreferredBackend = requested
-		_ = a.SaveConfig(next)
-	}
 }
 
 // entitlementRecheckInterval is how often entitlementWatchdog re-verifies
@@ -3165,12 +3145,11 @@ func (a *App) recheckEntitlement(ctx context.Context) bool {
 
 	_, verifyErr := entitlement.VerifyForHardware(a.cfg.EntitlementToken, hwID)
 	if verifyErr != nil {
-		log.Printf("[app] cached entitlement token is no longer valid locally — switching back to Sunshine: %v", verifyErr)
-		a.downgradeToSunshine()
-		// downgradeToSunshine clears cfg.EntitlementToken -- immediately
-		// try to bootstrap a fresh free token rather than leaving the
-		// customer on Sunshine until whatever's left of this watchdog's
-		// cadence, same reasoning as entitlementRetryInterval itself.
+		log.Printf("[app] cached entitlement token is no longer valid locally — dropping it (free tier): %v", verifyErr)
+		a.dropEntitlementToken()
+		// Immediately try to bootstrap a fresh free token rather than
+		// waiting for whatever's left of this watchdog's cadence, same
+		// reasoning as entitlementRetryInterval itself.
 		return a.bootstrapFreeTier(ctx, hwID)
 	}
 

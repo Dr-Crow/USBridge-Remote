@@ -130,7 +130,7 @@ func ApplyPreviewUserScale() {
 		restorePreviewScaleEnv()
 		return
 	}
-	_ = os.Setenv(phonePreviewScaleEnv, fmt.Sprintf("%.1f", ClampPhonePreviewScale(ForceMobileScale)))
+	setUserScaleEnv(ClampPhonePreviewScale(ForceMobileScale))
 }
 
 // RestorePreviewUserScale puts FYNE_SCALE back to whatever the process
@@ -141,6 +141,10 @@ func RestorePreviewUserScale() {
 }
 
 func restorePreviewScaleEnv() {
+	if dpiPinBase > 0 {
+		setUserScaleEnv(originalUserScale())
+		return
+	}
 	if previewScaleEnv.present {
 		_ = os.Setenv(phonePreviewScaleEnv, previewScaleEnv.value)
 		return

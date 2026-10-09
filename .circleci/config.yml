@@ -157,28 +157,29 @@ workflows:
       - lan-host:
           filters:
             branches:
-              only: [agent-capability-policy, circleci-project-setup, main]
+              only: [agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
       - web-client:
           filters:
             branches:
-              only: [agent-capability-policy, circleci-project-setup, main]
+              only: [agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
       - browser-lan:
           requires: [web-client]
           filters:
             branches:
-              only: [agent-capability-policy, circleci-project-setup, main]
+              only: [agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
       - windows-agent:
           filters:
             branches:
               only:
                 - agent-capability-policy
+                - integrate-upstream-2026-10-09
                 - circleci-project-setup
                 - main
       - linux-agent:
           filters:
             branches:
-              only: [agent-capability-policy, circleci-project-setup, main]
+              only: [agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
       - macos-agent:
           filters:
             branches:
-              only: [agent-capability-policy, circleci-project-setup, main]
+              only: [agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]

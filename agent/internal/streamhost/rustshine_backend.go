@@ -526,6 +526,20 @@ func (b *rustshineBackend) Start(adminPort int) error {
 	// Best-effort: never blocks Start over it.
 	ReconcileSharedAuth(b.stateDir)
 
+	// A client's MIDI input and microphone (sent over ENet with its other
+	// input) become a USB MIDI port and a USB microphone of this machine:
+	// gamestream-server exports them over loopback USB/IP and attaches them
+	// through the USB broker (usbpass, usbip-win2 / vhci_hcd), like the
+	// client's virtual pads and raw HID devices. A value set by hand is
+	// kept.
+	for _, key := range []string{"midi_sink", "mic_sink"} {
+		if b.ConfigKey(key) == "" {
+			if err := b.SetConfigKey(key, "usb"); err != nil {
+				log.Printf("[rustshine] failed to set %s: %v", key, err)
+			}
+		}
+	}
+
 	// Backfill adapter_name if capture=kms was persisted without one (e.g.
 	// a sunshine_capture_mode:"kms" preference inherited from a previous
 	// Sunshine session via app.syncSunshineCaptureMode, written straight
@@ -643,15 +657,13 @@ func (b *rustshineBackend) Start(adminPort int) error {
 	args = append(args, rustshineICEArgs(netpolicy.RuntimeLocal(), b.stateDir)...)
 	// This machine's hardware id, exactly as the entitlement token's own
 	// `sub` claim was bound to (see entitlement.VerifyForHardware) -- a
-	// desktop-entitlement build refuses to start without a matching
-	// --hardware-id (see rust-shine's license::entitlement module doc
-	// comment for why the token being checked against THIS value, computed
-	// independently rather than trusted from the token itself, is what
-	// makes a copied token file not work on a different machine). Omitted
-	// (not passed as an empty string) if hwid.Get() itself fails -- a
-	// desktop-entitlement build then fails closed on its own missing-flag
-	// check rather than this package silently sending an empty match-nothing
-	// value.
+	// desktop-entitlement build verifies the token against it (see
+	// rust-shine's license::entitlement module doc comment for why the
+	// token being checked against THIS value, computed independently rather
+	// than trusted from the token itself, is what makes a copied token file
+	// not work on a different machine). Omitted (not passed as an empty
+	// string) if hwid.Get() itself fails -- RustShine then runs its free
+	// tier (no pen tablets, no 4:4:4), as it does with no token at all.
 	if id, err := hwid.Get(); err == nil {
 		args = append(args, "--hardware-id", id)
 	} else {

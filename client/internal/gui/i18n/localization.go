@@ -177,6 +177,8 @@ type LocalizedStrings struct {
 	DevicesMountNewISO                string
 	DevicesMount                      string
 	DevicesEmptyAudio                 string
+	UplinkMicrophone                  string
+	UplinkMIDIPrefix                  string
 	DevicesEmptyStorage               string
 	DevicesEmptyUSB                   string
 	DevicesCardUSBPassthrough         string
@@ -843,6 +845,8 @@ func EN() *LocalizedStrings {
 		DevicesMountNewISO:                "Mount New ISO",
 		DevicesMount:                      "Mount",
 		DevicesEmptyAudio:                 "No audio devices",
+		UplinkMicrophone:                  "Microphone → remote PC",
+		UplinkMIDIPrefix:                  "MIDI → remote PC: ",
 		DevicesEmptyStorage:               "No storage or ISO media",
 		DevicesEmptyUSB:                   "No USB devices",
 		DevicesCardUSBPassthrough:         "USB-Passthrough",
@@ -1603,6 +1607,8 @@ func ES() *LocalizedStrings {
 	locale.DevicesMountNewISO = "Montar ISO"
 	locale.DevicesMount = "Montar"
 	locale.DevicesEmptyAudio = "Sin audio"
+	locale.UplinkMicrophone = "Micrófono → PC remoto"
+	locale.UplinkMIDIPrefix = "MIDI → PC remoto: "
 	locale.DevicesEmptyStorage = "Sin storage ni ISO"
 	locale.DevicesEmptyUSB = "Sin USB"
 	locale.DevicesCardUSBPassthrough = "USB-Passthrough"
@@ -2000,6 +2006,8 @@ func UKProper() *LocalizedStrings {
 	locale.DevicesMountNewISO = "Новий ISO"
 	locale.DevicesMount = "Монтувати"
 	locale.DevicesEmptyAudio = "Немає аудіо"
+	locale.UplinkMicrophone = "Мікрофон → віддалений ПК"
+	locale.UplinkMIDIPrefix = "MIDI → віддалений ПК: "
 	locale.DevicesEmptyStorage = "Немає storage / ISO"
 	locale.DevicesEmptyUSB = "Немає USB"
 	locale.DevicesCardUSBPassthrough = "USB-Passthrough"
