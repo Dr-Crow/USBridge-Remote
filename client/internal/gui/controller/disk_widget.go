@@ -178,6 +178,7 @@ type DiskWidget struct {
 
 	// Microphone/MIDI inputs played on the host (disk_widget_uplink.go)
 	midiInputs   []platform.MIDIInputInfo
+	cameras      []platform.CameraInfo
 	activeUplink map[string]platform.UplinkCapture
 
 	onStorageInfoUpdate func(usedPct float64, available, total int64)
@@ -450,8 +451,9 @@ type DriveItem struct {
 	// build).
 	IsPenTablet bool
 	PenTabletID string
-	// IsUplink/UplinkKey: this client's microphone ("mic") or one of its
-	// MIDI inputs ("midi:<id>"), played on the streaming host (see
+	// IsUplink/UplinkKey: this client's microphone ("mic"), one of its
+	// MIDI inputs ("midi:<id>") or cameras ("cam:<id>"), played on the
+	// streaming host (see
 	// disk_widget_uplink.go).
 	IsUplink         bool
 	UplinkKey        string

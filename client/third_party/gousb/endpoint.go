@@ -109,6 +109,94 @@ func (e *endpoint) transfer(ctx context.Context, buf []byte) (int, error) {
 	return n, nil
 }
 
+// IsoPacket is one packet of an isochronous transfer (TransferIso).
+type IsoPacket struct {
+	// Length is what the packet asked for, Actual what it carried.
+	Length, Actual int
+	Status         TransferStatus
+}
+
+// IsoTransfer is a submitted isochronous transfer (SubmitIso).
+type IsoTransfer struct {
+	t     *usbTransfer
+	xfer  *libusbTransfer
+	buf   []byte
+	total int
+	in    bool
+}
+
+// SubmitIso submits one isochronous transfer of len(lengths) packets on an
+// isochronous endpoint without waiting for it: packet i is lengths[i] bytes
+// at its offset in buf (the sum of the lengths before it), the layout
+// USB/IP uses. Transfers submitted one after another run back to back, so a
+// stream keeps several in flight. buf must stay untouched until Wait.
+func (e *endpoint) SubmitIso(buf []byte, lengths []int) (*IsoTransfer, error) {
+	if e.Desc.TransferType != TransferTypeIsochronous {
+		return nil, fmt.Errorf("SubmitIso on %s, which is not isochronous", e)
+	}
+	if len(lengths) == 0 {
+		return nil, fmt.Errorf("SubmitIso: no packets")
+	}
+	total := 0
+	for _, l := range lengths {
+		total += l
+	}
+	if total > len(buf) {
+		return nil, fmt.Errorf("SubmitIso: packets need %d bytes, buffer has %d", total, len(buf))
+	}
+	bufLen := total
+	if bufLen == 0 {
+		bufLen = 1
+	}
+	done := make(chan struct{}, 1)
+	xfer, err := e.ctx.libusb.alloc(e.h, &e.Desc, len(lengths), bufLen, done)
+	if err != nil {
+		return nil, err
+	}
+	for i, l := range lengths {
+		setIsoPacketLength(xfer, i, l)
+	}
+	t := &usbTransfer{xfer: xfer, buf: e.ctx.libusb.buffer(xfer), done: done, ctx: e.ctx, rawIso: true}
+	in := e.Desc.Direction == EndpointDirectionIn
+	if !in {
+		copy(t.buf, buf[:total])
+	}
+	if err := t.submit(); err != nil {
+		t.free()
+		return nil, err
+	}
+	return &IsoTransfer{t: t, xfer: xfer, buf: buf, total: total, in: in}, nil
+}
+
+// Wait waits for the transfer and returns every packet's result; IN data
+// lands in the submitted buffer at the packets' offsets -- unlike Read,
+// which packs the packets together and so loses where each one starts. A
+// packet's own error is in its Status, err is for the transfer as a whole.
+// Cancelling ctx cancels the transfer.
+func (x *IsoTransfer) Wait(ctx context.Context) ([]IsoPacket, error) {
+	_, err := x.t.wait(ctx)
+	if err == TransferCancelled && x.t.submitted {
+		// wait gave up on the cancellation: libusb still owns the
+		// transfer, don't read it.
+		return nil, err
+	}
+	defer x.t.free()
+	res := isoPacketResults(x.xfer)
+	if x.in {
+		copy(x.buf, x.t.buf[:x.total])
+	}
+	return res, err
+}
+
+// TransferIso is SubmitIso and Wait.
+func (e *endpoint) TransferIso(ctx context.Context, buf []byte, lengths []int) ([]IsoPacket, error) {
+	x, err := e.SubmitIso(buf, lengths)
+	if err != nil {
+		return nil, err
+	}
+	return x.Wait(ctx)
+}
+
 // InEndpoint represents an IN endpoint open for transfer.
 // InEndpoint implements the io.Reader interface.
 // For high-throughput transfers, consider creating a buffered read stream

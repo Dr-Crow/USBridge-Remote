@@ -771,7 +771,18 @@ func driveIconResource(drive DriveItem) fyne.Resource {
 		if drive.IsMounted {
 			iconRes = view.DeviceDashboardCameraIconActive
 		}
-	case "audio", "usbaudio", "uplink":
+	case "uplink":
+		iconRes = assets.AudioIcon
+		if strings.HasPrefix(drive.UplinkKey, uplinkCameraPrefix) {
+			iconRes = assets.CameraIcon
+		}
+		if drive.IsMounted {
+			iconRes = view.DeviceDashboardAudioIconActive
+			if strings.HasPrefix(drive.UplinkKey, uplinkCameraPrefix) {
+				iconRes = view.DeviceDashboardCameraIconActive
+			}
+		}
+	case "audio", "usbaudio":
 		iconRes = assets.AudioIcon
 		if drive.IsMounted {
 			iconRes = view.DeviceDashboardAudioIconActive

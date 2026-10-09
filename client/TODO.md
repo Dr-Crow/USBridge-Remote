@@ -74,3 +74,26 @@ the character is typed on the host). Done and tested for a Windows host; the res
 - **Web (wasm) client and mobile hardware keyboards** have no Keys mode yet.
 - **Clipboard menu on mobile.** Send/Get are in the desktop footer only; mobile
   keeps just the auto-sync toggle in the mouse menu.
+
+## Camera uplink (client camera -> remote PC)
+
+The camera row of the HID / Audio card (`disk_widget_uplink.go`,
+`platform/uplink_camera_linux.c`) sends H.264 over ENet
+(`LiSendCameraFrame`); the agent's streamer shows it as a USB webcam.
+
+- **Software encode only, for now.** `open_encoder` tries `libx264`
+  (ultrafast, zerolatency, constrained baseline, ~2.5 Mbit/s) *first*; the
+  hardware encoders in its list (`h264_nvenc`, `h264_qsv`, `h264_amf`) are
+  only fallbacks, and there's no VAAPI path. At 720p30 that is roughly
+  5-10% of one core. Put the hardware encoders first (keeping `libx264` as
+  the fallback), add `h264_vaapi` on Linux (needs frames uploaded to a
+  VAAPI surface) and `h264_mf` on Windows, and check that each still emits
+  SPS/PPS with every keyframe and honours a forced keyframe.
+- **The host side decodes in software too**: rust-shine's camera sink uses
+  openh264 (CPU), then scales and converts to YUY2 on the CPU. Fine for one
+  720p30 camera; a hardware decoder (D3D11VA/MF, VAAPI, VideoToolbox) would
+  still copy each frame to system memory for the USB camera.
+- **Linux only.** Windows (Media Foundation capture) and macOS
+  (AVFoundation + VideoToolbox) have no capture yet -- `CameraSupported`
+  is a stub there, same as the microphone and MIDI. See rust-shine's
+  WINDOWS_TODO.md / MACOS_TODO.md for the host side.

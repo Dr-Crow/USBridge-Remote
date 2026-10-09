@@ -26,6 +26,7 @@ const (
 	dirIn           = 1
 	errnoEPIPE      = -32
 	errnoECONNRESET = -104
+	errnoEXDEV      = -18 // an isochronous packet that wasn't transferred
 )
 
 // ExportedDevice is one device advertised on the USB/IP wire.
@@ -84,6 +85,24 @@ type DeviceBackend interface {
 	HandleControl(ctx context.Context, setup [8]byte, wLength int, outData []byte) (status int32, data []byte)
 	HandleBulk(ctx context.Context, ep uint8, dirIn bool, length int, outData []byte) (status int32, data []byte)
 	Close() error
+}
+
+// IsoBackend is a DeviceBackend that also serves isochronous endpoints
+// (webcams, USB audio). A host keeps several isochronous URBs queued and the
+// data only flows while one is in flight, so SubmitIso starts the URB on the
+// device right away -- URBs of one endpoint run back to back in the order
+// they were submitted -- and the returned wait completes it.
+type IsoBackend interface {
+	SubmitIso(ep uint8, dirIn bool, packets []IsoPacket, outData []byte) (wait func(ctx context.Context) (status int32, data []byte), err error)
+}
+
+// IsoPacket is one packet of an isochronous URB: where it sits in the
+// transfer buffer and how long it may be, then what it carried and its
+// status (errno), filled in by the backend.
+type IsoPacket struct {
+	Offset, Length uint32
+	Actual         uint32
+	Status         int32
 }
 
 // Server is an in-process USB/IP v1.1.1 export listener.
@@ -374,6 +393,29 @@ func (s *Server) serveURBs(c net.Conn, dev *ExportedDevice) error {
 			inflight[frame.seq] = cancel
 			inflightMu.Unlock()
 
+			if frame.numPackets > 0 {
+				// Submitted here, in the reader loop, so the device runs
+				// them in the host's order with no gap between them.
+				wait := submitIso(dev, frame)
+				wg.Add(1)
+				go func(f urbFrame) {
+					defer wg.Done()
+					status, data := wait(ctx)
+					inflightMu.Lock()
+					_, stillPending := inflight[f.seq]
+					delete(inflight, f.seq)
+					inflightMu.Unlock()
+					cancel()
+					if !stillPending {
+						return
+					}
+					if werr := writeFrame(packRetSubmitIso(f.seq, status, data, f.iso)); werr != nil {
+						logrus.Debugf("usbpass: conn: write iso RET_SUBMIT seq=%d: %v", f.seq, werr)
+					}
+				}(frame)
+				continue
+			}
+
 			wg.Add(1)
 			go func(f urbFrame) {
 				defer wg.Done()
@@ -411,6 +453,7 @@ type urbFrame struct {
 	interval                       int32
 	setup                          [8]byte
 	data                           []byte
+	iso                            []IsoPacket
 }
 
 var errNeedMore = fmt.Errorf("need more")
@@ -447,6 +490,14 @@ func parseCmd(buf []byte) (urbFrame, int, error) {
 		}
 		if f.direction == dirOut && f.transferLen > 0 {
 			f.data = append([]byte(nil), buf[48:48+int(f.transferLen)]...)
+		}
+		if isoN > 0 {
+			d := buf[need-int(isoN)*16 : need]
+			f.iso = make([]IsoPacket, isoN)
+			for i := range f.iso {
+				f.iso[i].Offset = binary.BigEndian.Uint32(d[i*16:])
+				f.iso[i].Length = binary.BigEndian.Uint32(d[i*16+4:])
+			}
 		}
 		return f, need, nil
 	case cmdUnlink:
@@ -557,6 +608,62 @@ func packRetSubmit(seq uint32, status int32, data []byte, actualLength int32, nu
 	out = appendI32(out, 0) // error_count
 	out = append(out, make([]byte, 8)...)
 	out = append(out, data...)
+	return out
+}
+
+// submitIso starts an isochronous URB on the device; the returned wait
+// completes it. A backend without isochronous support, or a submit that
+// fails, answers with every packet failed.
+func submitIso(dev *ExportedDevice, f urbFrame) func(ctx context.Context) (int32, []byte) {
+	fail := func(status int32) func(context.Context) (int32, []byte) {
+		for i := range f.iso {
+			f.iso[i].Actual, f.iso[i].Status = 0, errnoEXDEV
+		}
+		return func(context.Context) (int32, []byte) { return status, nil }
+	}
+	ib, ok := dev.Backend.(IsoBackend)
+	if !ok {
+		logrus.Debugf("usbpass: isochronous URB on ep=%#02x: backend has no isochronous support", f.ep)
+		return fail(errnoEPIPE)
+	}
+	wait, err := ib.SubmitIso(uint8(f.ep), f.direction == dirIn, f.iso, f.data)
+	if err != nil {
+		logrus.Debugf("usbpass: isochronous URB on ep=%#02x: %v", f.ep, err)
+		return fail(errnoEPIPE)
+	}
+	return wait
+}
+
+// packRetSubmitIso is the RET_SUBMIT of an isochronous URB: for an IN, the
+// packets' data back to back (data, as SubmitIso's wait returns it), then
+// every packet's descriptor -- the importer moves each one to its offset.
+func packRetSubmitIso(seq uint32, status int32, data []byte, packets []IsoPacket) []byte {
+	var actual, errors int32
+	for _, p := range packets {
+		actual += int32(p.Actual)
+		if p.Status != 0 {
+			errors++
+		}
+	}
+	out := make([]byte, 0, 48+len(data)+16*len(packets))
+	out = appendU32(out, retSubmit)
+	out = appendU32(out, seq)
+	out = appendU32(out, 0) // devid
+	out = appendU32(out, 0) // direction
+	out = appendU32(out, 0) // ep
+	out = appendI32(out, status)
+	out = appendI32(out, actual)
+	out = appendI32(out, 0) // start_frame
+	out = appendI32(out, int32(len(packets)))
+	out = appendI32(out, errors)
+	out = append(out, make([]byte, 8)...)
+	out = append(out, data...)
+	for _, p := range packets {
+		out = appendU32(out, p.Offset)
+		out = appendU32(out, p.Length)
+		out = appendU32(out, p.Actual)
+		out = appendI32(out, p.Status)
+	}
 	return out
 }
 

@@ -105,6 +105,7 @@ func TryClaimGousb(dev *ExportedDevice) error {
 	epOwner := make(map[uint8]*gousb.Interface)
 	epType := make(map[uint8]gousb.TransferType)
 	ifaceAlts := make(map[uint8]uint8)
+	ifaces := make(map[uint8]*gousb.Interface)
 	for _, idesc := range cdesc.Interfaces {
 		if len(idesc.AltSettings) == 0 {
 			continue
@@ -118,6 +119,7 @@ func TryClaimGousb(dev *ExportedDevice) error {
 		}
 		intfs = append(intfs, claimed)
 		ifaceAlts[uint8(idesc.Number)] = uint8(setting.Alternate)
+		ifaces[uint8(idesc.Number)] = claimed
 		for addr, epd := range setting.Endpoints {
 			epOwner[uint8(addr)] = claimed
 			epType[uint8(addr)] = epd.TransferType
@@ -186,6 +188,7 @@ func TryClaimGousb(dev *ExportedDevice) error {
 		epOwner:    epOwner,
 		epType:     epType,
 		ifaceAlts:  ifaceAlts,
+		ifaces:     ifaces,
 		deviceDesc: deviceDesc,
 		configDesc: configDesc,
 		configVal:  uint8(cfgNum),
@@ -296,9 +299,9 @@ func filterConfigDesc(cfg []byte, keep map[uint8]bool) []byte {
 }
 
 type gousbBackend struct {
-	ctx        *gousb.Context
-	dev        *gousb.Device
-	cfg        *gousb.Config
+	ctx *gousb.Context
+	dev *gousb.Device
+	cfg *gousb.Config
 
 	// Serializes every individual libusb call against this device's shared
 	// handle that ISN'T already covered by bulkSem's whole-BOT-cycle hold --
@@ -326,7 +329,12 @@ type gousbBackend struct {
 	intfs     []*gousb.Interface
 	epOwner   map[uint8]*gousb.Interface
 	epType    map[uint8]gousb.TransferType
-	ifaceAlts map[uint8]uint8 // claimed interface number -> claimed alt setting
+	ifaceAlts map[uint8]uint8 // claimed interface number -> current alt setting
+	// ifaces: every claimed interface by number, for SET_INTERFACE. epMu
+	// guards these four maps: an alternate setting switch (a webcam
+	// starting its stream) swaps one interface's endpoints.
+	ifaces map[uint8]*gousb.Interface
+	epMu   sync.RWMutex
 
 	deviceDesc []byte
 	configDesc []byte
@@ -549,14 +557,17 @@ func (b *gousbBackend) HandleControl(ctx context.Context, setup [8]byte, wLength
 		}
 		return 0, nil
 	case bm == 0x01 && req == 0x0b: // SET_INTERFACE
-		if claimedAlt, ok := b.ifaceAlts[uint8(wIndex)]; !ok || claimedAlt != uint8(wValue) {
-			logrus.Warnf("usbpass: ignoring SET_INTERFACE(iface=%d alt=%d), claimed alt %d (ok=%v)",
-				uint8(wIndex), uint8(wValue), claimedAlt, ok)
-		}
-		return 0, nil
+		// A device with alternate settings (a webcam or USB audio
+		// interface: alt 0 has no bandwidth, the stream's endpoints live
+		// in the others) only streams once switched; libusb switches it
+		// on the claimed interface. Re-selecting the current setting is a
+		// no-op, as before.
+		return b.setAlternate(uint8(wIndex), uint8(wValue)), nil
 	case bm == 0x80 && req == 0x08: // GET_CONFIGURATION
 		return 0, []byte{b.configVal}
 	case bm == 0x81 && req == 0x0a: // GET_INTERFACE
+		b.epMu.RLock()
+		defer b.epMu.RUnlock()
 		return 0, []byte{b.ifaceAlts[uint8(wIndex)]}
 	case bm == 0x02 && req == 0x01 && wValue == 0x0000: // CLEAR_FEATURE(ENDPOINT_HALT)
 		// See clearEndpointHalt: a raw forwarded control transfer only
@@ -693,7 +704,7 @@ func (b *gousbBackend) HandleBulk(reqCtx context.Context, ep uint8, dirIn bool, 
 	// after it queued behind bulkSem until the 120s holdTimeout backstop
 	// force-reset it — confirmed live, gamepad input arrived once every
 	// ~2 minutes instead of in real time before this branch existed.
-	if b.epType[uint8(fullAddr)] != gousb.TransferTypeBulk {
+	if _, typ := b.endpointOf(uint8(fullAddr)); typ != gousb.TransferTypeBulk {
 		return b.handleNonBulk(reqCtx, uint8(fullAddr), num, dirIn, length, outData)
 	}
 
@@ -763,7 +774,7 @@ func (b *gousbBackend) HandleBulk(reqCtx context.Context, ep uint8, dirIn bool, 
 			logrus.Debugf("usbpass: CSW status=1 residue=%d (short-circuited)", b.shortCircuitXfer)
 			return 0, csw
 		}
-		owner := b.epOwner[uint8(fullAddr)]
+		owner, _ := b.endpointOf(uint8(fullAddr))
 		if owner == nil {
 			logrus.Debugf("usbpass: bulk IN ep=%d: no claimed interface owns it", num)
 			return errnoEPIPE, nil
@@ -883,7 +894,7 @@ func (b *gousbBackend) HandleBulk(reqCtx context.Context, ep uint8, dirIn bool, 
 		b.lastCBWTransfer += uint32(len(outData))
 	}
 
-	owner := b.epOwner[uint8(fullAddr)]
+	owner, _ := b.endpointOf(uint8(fullAddr))
 	if owner == nil {
 		logrus.Debugf("usbpass: bulk OUT ep=%d: no claimed interface owns it", num)
 		return errnoEPIPE, nil
@@ -948,7 +959,7 @@ func (b *gousbBackend) HandleBulk(reqCtx context.Context, ep uint8, dirIn bool, 
 // own the way a SCSI transfer does -- each report is complete in the one
 // URB that carries it.
 func (b *gousbBackend) handleNonBulk(ctx context.Context, fullAddr uint8, num int, dirIn bool, length int, outData []byte) (int32, []byte) {
-	owner := b.epOwner[fullAddr]
+	owner, _ := b.endpointOf(fullAddr)
 	if owner == nil {
 		logrus.Debugf("usbpass: interrupt ep=%#02x: no claimed interface owns it", fullAddr)
 		return errnoEPIPE, nil
@@ -1057,5 +1068,3 @@ func (b *gousbBackend) Close() error {
 	}
 	return nil
 }
-
-

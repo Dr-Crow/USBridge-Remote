@@ -9,7 +9,13 @@ type MIDIInputInfo struct {
 	Name string
 }
 
-// UplinkCapture is a running MIDI or microphone capture.
+// CameraInfo is one local camera.
+type CameraInfo struct {
+	ID   string // stable while the camera stays plugged in
+	Name string
+}
+
+// UplinkCapture is a running MIDI, microphone or camera capture.
 type UplinkCapture interface {
 	Stop()
 }

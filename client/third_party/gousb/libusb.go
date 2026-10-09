@@ -28,6 +28,8 @@ import (
 #include <libusb.h>
 
 int gousb_compact_iso_data(struct libusb_transfer *xfer, unsigned char *status);
+void gousb_set_iso_packet_length(struct libusb_transfer *xfer, int i, unsigned int length);
+void gousb_iso_packet(struct libusb_transfer *xfer, int i, unsigned int *length, unsigned int *actual, int *status);
 struct libusb_transfer *gousb_alloc_transfer_and_buffer(int bufLen, int numIsoPackets);
 void gousb_free_transfer_and_buffer(struct libusb_transfer *xfer);
 int submit(struct libusb_transfer *xfer);
@@ -507,6 +509,29 @@ func (libusbImpl) free(t *libusbTransfer) {
 	delete(xferDoneMap.m, t)
 	xferDoneMap.Unlock()
 	C.gousb_free_transfer_and_buffer((*C.struct_libusb_transfer)(t))
+}
+
+// setIsoPacketLength sets the length of packet i of an isochronous transfer.
+func setIsoPacketLength(t *libusbTransfer, i int, length int) {
+	C.gousb_set_iso_packet_length((*C.struct_libusb_transfer)(t), C.int(i), C.uint(length))
+}
+
+// isoPacketResults reads every packet's descriptor of a finished
+// isochronous transfer.
+func isoPacketResults(t *libusbTransfer) []IsoPacket {
+	n := int(t.num_iso_packets)
+	out := make([]IsoPacket, n)
+	for i := range out {
+		var length, actual C.uint
+		var status C.int
+		C.gousb_iso_packet(((*C.struct_libusb_transfer)(t)), C.int(i), &length, &actual, &status)
+		out[i] = IsoPacket{Length: int(length), Actual: int(actual), Status: TransferStatus(status)}
+	}
+	return out
+}
+
+func transferStatus(t *libusbTransfer) TransferStatus {
+	return TransferStatus(t.status)
 }
 
 func (libusbImpl) setIsoPacketLengths(t *libusbTransfer, length uint32) {

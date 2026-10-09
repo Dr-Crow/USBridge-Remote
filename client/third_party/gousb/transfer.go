@@ -39,6 +39,9 @@ type usbTransfer struct {
 	submitted bool
 	// ctx is the Context that created this transfer.
 	ctx *Context
+	// rawIso leaves an isochronous transfer's packets where libusb put
+	// them (TransferIso) instead of compacting them.
+	rawIso bool
 }
 
 // submits the transfer. After submit() the transfer is in flight and is owned by libusb.
@@ -114,7 +117,12 @@ func (t *usbTransfer) wait(ctx context.Context) (n int, err error) {
 	case <-t.done:
 	}
 	t.submitted = false
-	n, status := t.ctx.libusb.data(t.xfer)
+	var status TransferStatus
+	if t.rawIso {
+		status = transferStatus(t.xfer)
+	} else {
+		n, status = t.ctx.libusb.data(t.xfer)
+	}
 	t.mu.Unlock()
 	if status != TransferCompleted {
 		return n, status
