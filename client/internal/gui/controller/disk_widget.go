@@ -176,6 +176,10 @@ type DiskWidget struct {
 	// Pen/tablet capture (macOS and the web build -- see platform.ListPenTablets)
 	activePenCaptures map[string]penCaptureHandle
 
+	// Microphone/MIDI inputs played on the host (disk_widget_uplink.go)
+	midiInputs   []platform.MIDIInputInfo
+	activeUplink map[string]platform.UplinkCapture
+
 	onStorageInfoUpdate func(usedPct float64, available, total int64)
 	userImages          []*models.DiskInfo
 	allDrives           []DriveItem
@@ -444,8 +448,13 @@ type DriveItem struct {
 	// attached to the *agent's* machine and forwarded raw, not one this
 	// client itself captures (macOS IOKit natively, or WebHID on the web
 	// build).
-	IsPenTablet      bool
-	PenTabletID      string
+	IsPenTablet bool
+	PenTabletID string
+	// IsUplink/UplinkKey: this client's microphone ("mic") or one of its
+	// MIDI inputs ("midi:<id>"), played on the streaming host (see
+	// disk_widget_uplink.go).
+	IsUplink         bool
+	UplinkKey        string
 	IsAudio          bool
 	AudioDevice      *models.SystemDevice
 	IsUSBAudio       bool
@@ -507,6 +516,7 @@ func NewDiskWidget(usbClient *api.USBClient, updateStatus func(), app fyne.App, 
 	go dw.loadGamepadDevices()
 	dw.startGamepadPolling()
 	go dw.loadPenTabletDevices()
+	go dw.loadUplinkDevices()
 	dw.startPenTabletPolling()
 	go dw.loadUSBPassthroughDevices()
 
@@ -553,6 +563,7 @@ func (dw *DiskWidget) startPenTabletPolling() {
 					continue
 				}
 				dw.loadPenTabletDevices()
+				dw.loadUplinkDevices()
 			}
 		}
 	}()
@@ -1366,6 +1377,7 @@ func (dw *DiskWidget) UpdateClient(usbClient *api.USBClient) {
 			dw.updateSDStorageInfo()
 			dw.stopAllGamepadCaptures()
 			dw.stopAllPenCaptures()
+			dw.stopAllUplinkCaptures()
 			dw.combineDrives()
 			dw.requestDevicesRefresh()
 		})

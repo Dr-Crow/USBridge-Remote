@@ -429,6 +429,8 @@ func (dw *DiskWidget) refreshDashboard() {
 				tealChip,
 				extras...,
 			))
+		case drive.IsUplink:
+			audioRows = append(audioRows, view.NewDeviceDashboardAudioRow(icon, name, drive.IsMounted, dw.newUplinkToggle(drive)))
 		case drive.IsAudio || drive.IsUSBAudio:
 			var extras []fyne.CanvasObject
 			if drive.IsUSBAudio {
@@ -769,7 +771,7 @@ func driveIconResource(drive DriveItem) fyne.Resource {
 		if drive.IsMounted {
 			iconRes = view.DeviceDashboardCameraIconActive
 		}
-	case "audio", "usbaudio":
+	case "audio", "usbaudio", "uplink":
 		iconRes = assets.AudioIcon
 		if drive.IsMounted {
 			iconRes = view.DeviceDashboardAudioIconActive

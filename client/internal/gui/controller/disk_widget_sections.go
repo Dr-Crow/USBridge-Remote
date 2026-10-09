@@ -38,7 +38,7 @@ func (dw *DiskWidget) groupDriveIndexes() []deviceSection {
 			backup = append(backup, idx)
 		case drive.IsRNDIS:
 			connectivity = append(connectivity, idx)
-		case drive.IsAudio || drive.IsUSBAudio:
+		case drive.IsAudio || drive.IsUSBAudio || drive.IsUplink:
 			audio = append(audio, idx)
 		case drive.IsVideo || drive.IsKeyboard || drive.IsMouse || drive.IsGamepad:
 			control = append(control, idx)

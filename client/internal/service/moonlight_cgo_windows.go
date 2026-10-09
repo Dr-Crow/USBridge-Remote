@@ -1468,6 +1468,17 @@ static void do_send_pen(unsigned char eventType, unsigned char toolType, unsigne
 {
     LiSendPenEvent(eventType, toolType, penButtons, x, y, pressureOrDistance, 0.0f, 0.0f, rotation, tilt);
 }
+// MIDI input and microphone played by a USBridge host (see moonlight_uplink.go).
+static int do_host_uplink_flags(void) {
+    uint32_t f = LiGetHostFeatureFlags();
+    return ((f & LI_FF_USBRIDGE_MIDI) ? 1 : 0) | ((f & LI_FF_USBRIDGE_MIC) ? 2 : 0);
+}
+static int do_send_midi(const unsigned char *data, unsigned short length) {
+    return LiSendMidiEvent(data, length);
+}
+static int do_send_mic(unsigned short sequence, const unsigned char *data, unsigned short length) {
+    return LiSendMicAudio(sequence, data, length);
+}
 // Raw HID devices rebuilt by a USBridge host (see moonlight_rawhid.go).
 static int do_host_supports_raw_hid(void)
 {
@@ -1795,6 +1806,28 @@ func (w *MoonlightCgoWrapper) RawHIDEpoch() uint64 {
 		return 0
 	}
 	return liRawHIDEpoch.Load()
+}
+
+func (w *MoonlightCgoWrapper) UplinkSupport() (midi, mic bool) {
+	if !liStartConnectionActive.Load() {
+		return false, false
+	}
+	f := C.do_host_uplink_flags()
+	return f&1 != 0, f&2 != 0
+}
+
+func (w *MoonlightCgoWrapper) SendMoonlightMIDI(data []byte) bool {
+	if !liStartConnectionActive.Load() || len(data) == 0 {
+		return false
+	}
+	return C.do_send_midi((*C.uchar)(unsafe.Pointer(&data[0])), C.ushort(len(data))) == 0
+}
+
+func (w *MoonlightCgoWrapper) SendMoonlightMic(sequence uint16, opus []byte) bool {
+	if !liStartConnectionActive.Load() || len(opus) == 0 {
+		return false
+	}
+	return C.do_send_mic(C.ushort(sequence), (*C.uchar)(unsafe.Pointer(&opus[0])), C.ushort(len(opus))) == 0
 }
 
 func (w *MoonlightCgoWrapper) SendMoonlightRawHID(kind, slot, endpoint uint8, total, offset uint16, data []byte, reliable bool) bool {
