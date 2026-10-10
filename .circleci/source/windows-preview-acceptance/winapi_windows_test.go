@@ -146,9 +146,11 @@ func TestWindowsSuspendedLaunchPrivatePipesNaturalEOF(t *testing.T) {
 	if p.wait(3*time.Second) != nil || p.finishProtocol() != nil {
 		t.Fatal("natural child cleanup failed")
 	}
-	pids, e = j.pids()
+	pids, snapshot, e = j.pidsSnapshot()
 	if e != nil || len(pids) != 0 {
-		t.Fatal("job did not empty naturally")
+		// Preserve the exact failed query rather than sampling a second list.
+		logInventorySnapshot(t, j, snapshot, e, p.pid)
+		t.Fatal("natural_job_retirement_failed")
 	}
 }
 func TestWindowsJobCloseKillsInheritedDescendant(t *testing.T) {
