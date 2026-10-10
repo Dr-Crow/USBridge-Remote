@@ -61,6 +61,8 @@ type job struct {
 	once   sync.Once
 	// CI test seam only; never set by runtime flags or descriptors.
 	beforeResume func(uint32)
+	// CI-only comparison seam; never set by runtime flags or descriptors.
+	testDetached bool
 }
 
 func newJob() (*job, error) {
@@ -86,19 +88,25 @@ type jobProcessList struct {
 }
 
 func (j *job) pids() ([]uint32, error) {
+	pids, _, err := j.pidsSnapshot()
+	return pids, err
+}
+
+// Keep the exact queried list for bounded native-test diagnostics.
+func (j *job) pidsSnapshot() ([]uint32, jobProcessList, error) {
 	var list jobProcessList
 	ok, _, _ := queryJob.Call(uintptr(j.handle), 3, uintptr(unsafe.Pointer(&list)), unsafe.Sizeof(list), 0)
 	if ok == 0 || list.Count > 128 || list.Assigned != list.Count {
-		return nil, failure("job_inventory_failed")
+		return nil, list, failure("job_inventory_failed")
 	}
 	pids := make([]uint32, list.Count)
 	for i := range pids {
 		if list.PIDs[i] == 0 || list.PIDs[i] > 0xffffffff {
-			return nil, failure("job_inventory_failed")
+			return nil, list, failure("job_inventory_failed")
 		}
 		pids[i] = uint32(list.PIDs[i])
 	}
-	return pids, nil
+	return pids, list, nil
 }
 func (j *job) contains(h syscall.Handle) bool {
 	var yes int32
@@ -322,7 +330,11 @@ func (j *job) start(path string, args, env []string, dir string) (*child, error)
 	var pi syscall.ProcessInformation
 	// CREATE_SUSPENDED + CREATE_UNICODE_ENVIRONMENT + EXTENDED_STARTUPINFO_PRESENT
 	// + CREATE_NO_WINDOW. The GUI viewer still creates its own normal Fyne HWND.
-	e = syscall.CreateProcess(exe, cmd, nil, nil, true, 0x4|0x400|0x80000|0x08000000, &block[0], cwd, &si.Startup, &pi)
+	consoleFlag := uint32(0x08000000)
+	if j.testDetached {
+		consoleFlag = 0x8 // DETACHED_PROCESS, test comparison only.
+	}
+	e = syscall.CreateProcess(exe, cmd, nil, nil, true, 0x4|0x400|0x80000|consoleFlag, &block[0], cwd, &si.Startup, &pi)
 	runtime.KeepAlive(storage)
 	runtime.KeepAlive(handles)
 	runtime.KeepAlive(block)

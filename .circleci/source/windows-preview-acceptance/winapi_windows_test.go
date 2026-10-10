@@ -8,7 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"runtime"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -115,9 +115,9 @@ func TestWindowsSuspendedLaunchPrivatePipesNaturalEOF(t *testing.T) {
 	if e != nil || string(raw) != "private-test-reply\n" {
 		t.Fatal("private output missing")
 	}
-	pids, e := j.pids()
+	pids, snapshot, e := j.pidsSnapshot()
 	if e != nil || len(pids) != 1 || pids[0] != p.pid {
-		logInventoryQuery(t, j)
+		logInventorySnapshot(t, j, snapshot, e, p.pid)
 		t.Fatal("job ownership inventory mismatch")
 	}
 	p.stdin.Close()
@@ -152,9 +152,9 @@ func TestWindowsJobCloseKillsInheritedDescendant(t *testing.T) {
 	if !j.contains(h) {
 		t.Fatal("descendant did not inherit exact job")
 	}
-	pids, e := j.pids()
+	pids, snapshot, e := j.pidsSnapshot()
 	if e != nil || len(pids) != 2 {
-		logInventoryQuery(t, j)
+		logInventorySnapshot(t, j, snapshot, e, p.pid, uint32(pid64))
 		t.Fatal("descendant inventory mismatch")
 	}
 	j.close()
@@ -207,40 +207,87 @@ func TestWindowsParentCrashRetiresSuspendedChild(t *testing.T) {
 	if state, err := syscall.WaitForSingleObject(suspended, 3000); err != nil || state != syscall.WAIT_OBJECT_0 {
 		t.Fatal("pre-resume parent crash stranded a child")
 	}
-	pids, err := outer.pids()
+	pids, snapshot, err := outer.pidsSnapshot()
 	if err != nil || len(pids) != 0 {
-		logInventoryQuery(t, outer)
+		logInventorySnapshot(t, outer, snapshot, err)
 		t.Fatal("outer safety job was needed to clean up")
 	}
 }
 
-// Query-only diagnostics. Never print native PIDs, handles, paths or child data.
-// Compare the documented optional return-length forms without changing pids().
-func logInventoryQuery(t *testing.T, j *job) {
+// Classify only the exact list returned by the failed query. Never print IDs,
+// handles, paths, process arguments or the strings returned by native APIs.
+func logInventorySnapshot(t *testing.T, j *job, list jobProcessList, queryErr error, expected ...uint32) {
 	t.Helper()
-	for _, withLength := range []bool{false, true} {
-		var list jobProcessList
-		var returned uint32
-		flag := 0
-		var ok uintptr
-		var nativeErr error
-		if withLength {
-			flag = 1
-			ok, _, nativeErr = queryJob.Call(uintptr(j.handle), 3, uintptr(unsafe.Pointer(&list)), unsafe.Sizeof(list), uintptr(unsafe.Pointer(&returned)))
-		} else {
-			ok, _, nativeErr = queryJob.Call(uintptr(j.handle), 3, uintptr(unsafe.Pointer(&list)), unsafe.Sizeof(list), 0)
+	failed, zero, wide, current, matched, consoleHost, other, unavailable := 0, 0, 0, 0, 0, 0, 0, 0
+	if queryErr != nil {
+		failed = 1
+	}
+	for i := uint32(0); i < list.Count && i < uint32(len(list.PIDs)); i++ {
+		value := list.PIDs[i]
+		if value == 0 {
+			zero++
+			continue
 		}
-		runtime.KeepAlive(&returned)
-		var code uint32
-		if ok == 0 {
-			if errno, valid := nativeErr.(syscall.Errno); valid {
-				code = uint32(errno)
+		if value > 0xffffffff {
+			wide++
+			continue
+		}
+		pid := uint32(value)
+		if pid == uint32(os.Getpid()) {
+			current++
+		}
+		found := false
+		for _, wanted := range expected {
+			if pid == wanted {
+				found = true
+				break
 			}
 		}
-		success := 0
-		if ok != 0 {
-			success = 1
+		if found {
+			matched++
+			continue
 		}
-		t.Logf("inventory_probe return_pointer=%d ok=%d error=%d assigned=%d count=%d bytes=%d", flag, success, code, list.Assigned, list.Count, returned)
+		path, handle, err := processPath(pid)
+		if err != nil {
+			unavailable++
+			continue
+		}
+		owned := j.contains(handle)
+		syscall.CloseHandle(handle)
+		systemHost := filepath.Join(os.Getenv("SystemRoot"), "System32", "conhost.exe")
+		if owned && strings.EqualFold(filepath.Clean(path), filepath.Clean(systemHost)) {
+			consoleHost++
+		} else {
+			other++
+		}
+	}
+	t.Logf("inventory_snapshot failed=%d assigned=%d count=%d zero=%d wide=%d current=%d expected=%d console_hosts=%d other=%d unavailable=%d", failed, list.Assigned, list.Count, zero, wide, current, matched, consoleHost, other, unavailable)
+}
+
+func TestWindowsDetachedLaunchComparison(t *testing.T) {
+	j, err := newJob()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.close()
+	j.testDetached = true
+	p := testChild(t, j, "echo")
+	raw, err := p.next(3 * time.Second)
+	if err != nil || string(raw) != "private-test-reply\n" {
+		t.Fatal("private output missing")
+	}
+	pids, snapshot, err := j.pidsSnapshot()
+	if err != nil || len(pids) != 1 || pids[0] != p.pid {
+		logInventorySnapshot(t, j, snapshot, err, p.pid)
+		t.Fatal("detached job ownership inventory mismatch")
+	}
+	p.stdin.Close()
+	if p.wait(3*time.Second) != nil || p.finishProtocol() != nil {
+		t.Fatal("detached natural cleanup failed")
+	}
+	pids, snapshot, err = j.pidsSnapshot()
+	if err != nil || len(pids) != 0 {
+		logInventorySnapshot(t, j, snapshot, err)
+		t.Fatal("detached job did not empty naturally")
 	}
 }
