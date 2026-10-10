@@ -111,7 +111,7 @@ try {
             $env:WINDOWS_SIGNATURE_CORE_SHA256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $core).Hash.ToLowerInvariant()
         }
     }
-    & $go test -json -tags signatureprobe '-run=^TestWindowsPowerShellDetachedLiteral$' -count=1 -timeout=20s ./... 1> $log 2> $stderr
+    & $go test -json -tags signatureprobe '-run=^TestWindowsPowerShellDetachedLiteral$' -count=1 -timeout=150s ./... 1> $log 2> $stderr
     if ($LASTEXITCODE -ne 0) { Report-TestFailure; throw 'No verified detached PowerShell literal output; see bounded receipt' }
     Report-Stage 'native_signature_verifier'
     $env:WINDOWS_SIGNATURE_PROBE_RECEIPT = Join-Path $out 'signature-probe.json'

@@ -63,6 +63,8 @@ type job struct {
 	closed atomic.Bool
 	// CI test seam only; never set by runtime flags or descriptors.
 	beforeResume func(uint32)
+	// CI literal compatibility matrix only; no runtime argument sets this.
+	noWindowDiagnostic bool
 }
 
 func newJob() (*job, error) {
@@ -353,7 +355,11 @@ func (j *job) start(path string, args, env []string, dir string) (*child, error)
 	// CREATE_NO_WINDOW still creates a conhost.exe member, observed in the native
 	// regression; do not hide or allow-list that extra process. The GUI viewer
 	// still creates its own normal Fyne HWND.
-	e = syscall.CreateProcess(exe, cmd, nil, nil, true, 0x4|0x400|0x80000|0x8, &block[0], cwd, &si.Startup, &pi)
+	flags := uint32(0x4 | 0x400 | 0x80000 | 0x8)
+	if j.noWindowDiagnostic {
+		flags = (flags &^ 0x8) | 0x08000000 // test-only CREATE_NO_WINDOW comparison
+	}
+	e = syscall.CreateProcess(exe, cmd, nil, nil, true, flags, &block[0], cwd, &si.Startup, &pi)
 	runtime.KeepAlive(storage)
 	runtime.KeepAlive(handles)
 	runtime.KeepAlive(block)
