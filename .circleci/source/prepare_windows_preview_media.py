@@ -9,6 +9,7 @@ import re
 import subprocess
 
 from windows_preview_build_receipt import stage_dependencies, sha, summarize_tests
+from windows_component_inventory import component_files
 
 SOURCE = '2e07af3484369bc68bc8091d5a04969867eff0f9'
 ARCHIVE = '7a8ec9b04f0b3f090de55dc6fc7194e7bd7caf93a08a11182c7c03dcfce1ab2b'
@@ -78,12 +79,7 @@ def main():
     system = pathlib.Path(os.environ['SystemRoot']) / 'System32'
     agent_dlls, agent_system = stage_dependencies(agent, args.ucrt_bin, system)
     source_dlls, source_system = stage_dependencies(source, args.ucrt_bin, system)
-    files = []
-    for path in sorted(source.parent.iterdir()):
-        assert path.is_file() and not path.is_symlink()
-        assert path == source or path.name in source_dlls
-        files.append({'path': 'bin/' + path.name, 'sha256': sha(path), 'size': path.stat().st_size,
-                      'executable': path == source})
+    files = component_files(source, source_dlls, out / 'staging-failure.json')
     manifest = {'schema': 1, 'components': [{'name': 'source-streamer', 'platform': 'windows/amd64',
                 'version': SOURCE, 'profile': 'source-streamer-v1', 'entry': 'bin/source-streamer.exe', 'files': files}]}
     raw = (json.dumps(manifest, indent=2) + '\n').encode()

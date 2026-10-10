@@ -162,6 +162,16 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Windows boundary preflight failed: $LASTEXITCODE" }
           no_output_timeout: 10m
       - run:
+          name: Compile frozen source and verify exact DLL inventory before the viewer build
+          command: |
+            $ErrorActionPreference = 'Stop'
+            $env:CHERE_INVOKING = 'yes'
+            $env:MSYSTEM = 'UCRT64'
+            $env:USBRIDGE_CI_ROOT = (Get-Location).Path
+            & 'C:\ci\msys64\usr\bin\bash.exe' --login .circleci/test-source-preview-windows-staging.sh
+            if ($LASTEXITCODE -ne 0) { throw "Windows source inventory preflight failed: $LASTEXITCODE" }
+          no_output_timeout: 15m
+      - run:
           name: Build native Windows viewer and verify private protocol boundaries
           command: |
             $ErrorActionPreference = 'Stop'
