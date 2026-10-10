@@ -16,7 +16,7 @@ usbridge_agent --source-streamer-mode \
 
 The component directory uses the existing local-components manifest schema 1,
 with component name `source-streamer`, profile `source-streamer-v1`, platform
-`linux/amd64`, and an entry plus size/SHA-256 for every packaged file. The agent
+`linux/amd64` or `windows/amd64`, and an entry plus size/SHA-256 for every packaged file. The agent
 requires the manifest pin, stages verified files, and rechecks them before launch.
 No vendor download or public fallback occurs. Source builds for other platforms
 must not advertise the v1 Linux X11 capabilities unless actually implemented.
@@ -28,7 +28,7 @@ session key for every launch; the peer must use the same key for encrypted RTSP.
 
 Fields: `schema_version:1`, `owner`, `session_id`, `key_b64`, `key_id`,
 `peer_ip:"127.0.0.1"`, `video_port`/`audio_port` (distinct fixed ports, or 0 for encrypted-SETUP token-bound loopback rendezvous), `display` (local X11,
-for example `:99`), `capture_consent:true`, absolute trusted `ffmpeg` path,
+for example `:99`, or exactly `desktop` on Windows), `capture_consent:true`, absolute trusted `ffmpeg` path,
 `width`, `height`, `fps`, `pixel_format` (`yuv420p` or `yuv444p`), `packet_size`,
 `audio_mode:"silence"`, and `max_seconds` (1–300). Messages are capped at 64 KiB.
 There is deliberately no implicit display or capture consent.
@@ -36,7 +36,8 @@ There is deliberately no implicit display or capture consent.
 The source executable is called with `--launch-stdin`. Its first stdout event
 must be a strict `ready` object with `schema_version:1`, the same `session_id`,
 literal loopback `rtsp_address` and `control_address`, and capabilities
-`rtsp-encrypted`, `video-x11-h264`, `audio-silence`, `control-enet`. The agent
+`rtsp-encrypted`, `video-x11-h264` (Windows: `video-windows-gdi-h264`),
+`audio-silence`, `control-enet`. The agent
 fails closed if any capability is missing or an unknown capability is claimed.
 Readiness means the local listeners are bound; it does not establish that a
 client has completed negotiation or received decoded media. Capture starts only
@@ -69,7 +70,7 @@ source builds require their own acceptance and provenance records.
 Protocol evolution remains fail-closed: optional `input_consent` defaults false.
 The agent requires `input-x11-keyboard-mouse` readiness when it is requested and
 rejects that input capability without the separate consent. The pinned
-02c08c82 source implements bounded X11 keyboard/mouse input and releases held
+2e07af34 source includes the verified 02c08c82 Linux implementation of bounded X11 keyboard/mouse input and releases held
 inputs when its encrypted control peer disconnects. Its standalone native Linux
 CI covered real input into an isolated Xvfb; inspect the combined package CI
 receipt for actual agent-supervised acceptance. View-only sessions validate and
@@ -79,3 +80,10 @@ cleanup before a bounded forced stop; blocked parent output is bounded as well.
 The process-mode initial JSON line must arrive within 10 seconds. SIGTERM or
 interrupt cancels a blocked initial read on supported platforms; inherited-pipe
 I/O is process-scoped, bounded, and never reused after timeout/cancellation.
+
+Windows native support uses only a local-drive absolute FFmpeg `.exe` path and
+literal `desktop` selection. `input_consent:true` is rejected on Windows. The
+source captures a bounded primary-origin region through GDI when PLAY is
+actually authorized; the no-capture Windows integration gate does not send
+PLAY, capture a desktop, inject input, or prove media performance. Inspect
+`lifecycle.json` and the exact package provenance for the tested scope.

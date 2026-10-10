@@ -34,6 +34,9 @@ func TestMain(m *testing.M) {
 			}
 		}
 		ready := Ready{1, "ready", launch.SessionID, "127.0.0.1:12341", "127.0.0.1:12342", []string{"rtsp-encrypted", "video-x11-h264", "audio-silence", "control-enet"}}
+		if launch.Display == "desktop" {
+			ready.Capabilities[1] = "video-windows-gdi-h264"
+		}
 		if launch.InputConsent {
 			ready.Capabilities = append(ready.Capabilities, "input-x11-keyboard-mouse")
 		}
@@ -64,7 +67,12 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 func validLaunch() Launch {
-	return Launch{1, "local-owner", "test-session", base64.StdEncoding.EncodeToString([]byte("freshkey-16-byte")), 17, "127.0.0.1", 50001, 50002, ":99", true, filepath.Join(os.TempDir(), "ffmpeg"), 1280, 720, 60, "yuv420p", 1200, "silence", 30, false}
+	r := Launch{1, "local-owner", "test-session", base64.StdEncoding.EncodeToString([]byte("freshkey-16-byte")), 17, "127.0.0.1", 50001, 50002, ":99", true, filepath.Join(os.TempDir(), "ffmpeg"), 1280, 720, 60, "yuv420p", 1200, "silence", 30, false}
+	if runtime.GOOS == "windows" {
+		r.Display = "desktop"
+		r.FFmpeg += ".exe"
+	}
+	return r
 }
 func TestLaunchValidation(t *testing.T) {
 	cases := []struct {
@@ -151,8 +159,8 @@ func TestSupervisorFailsClosed(t *testing.T) {
 	}
 }
 func TestSupervisorNeedsManifestPin(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("source-streamer v1 is Linux-only")
+	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
+		t.Skip("source-streamer native runtime unavailable")
 	}
 	_, err := Start(context.Background(), localcomponents.Options{StateDir: t.TempDir()}, validLaunch())
 	if err == nil || !strings.Contains(err.Error(), "pinned") {
@@ -161,8 +169,8 @@ func TestSupervisorNeedsManifestPin(t *testing.T) {
 }
 
 func TestStartVerifiedManifest(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("source-streamer v1 is Linux-only")
+	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
+		t.Skip("source-streamer native runtime unavailable")
 	}
 	t.Setenv("USBRIDGE_SOURCE_TEST_HELPER", "valid")
 	binary, err := os.Executable()
@@ -238,14 +246,38 @@ func TestLaunchPacketAlignment(t *testing.T) {
 
 func TestInputCapabilityRequiresSeparateConsent(t *testing.T) {
 	ready := Ready{1, "ready", "session", "127.0.0.1:1000", "127.0.0.1:1001", []string{"rtsp-encrypted", "video-x11-h264", "audio-silence", "control-enet"}}
-	if ready.validate("session", true) == nil {
+	if ready.validate("session", true, "video-x11-h264") == nil {
 		t.Fatal("missing input capability accepted")
 	}
 	ready.Capabilities = append(ready.Capabilities, "input-x11-keyboard-mouse")
-	if ready.validate("session", false) == nil {
+	if ready.validate("session", false, "video-x11-h264") == nil {
 		t.Fatal("input capability accepted without consent")
 	}
-	if err := ready.validate("session", true); err != nil {
+	if err := ready.validate("session", true, "video-x11-h264"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWindowsLaunchAndCapabilityBoundary(t *testing.T) {
+	r := validLaunch()
+	r.Display = "desktop"
+	r.FFmpeg = `C:\trusted\ffmpeg.exe`
+	r.InputConsent = false
+	if err := r.validatePlatform("windows"); err != nil {
+		t.Fatal(err)
+	}
+	for _, mutate := range []func(*Launch){func(r *Launch) { r.Display = ":99" }, func(r *Launch) { r.InputConsent = true }, func(r *Launch) { r.FFmpeg = `\\server\share\ffmpeg.exe` }, func(r *Launch) { r.FFmpeg = `C:ffmpeg.exe` }, func(r *Launch) { r.FFmpeg = `C:\trusted\ffmpeg.bat` }} {
+		bad := r
+		mutate(&bad)
+		if bad.validatePlatform("windows") == nil {
+			t.Fatal("invalid Windows launch accepted")
+		}
+	}
+	ready := Ready{1, "ready", "session", "127.0.0.1:1000", "127.0.0.1:1001", []string{"rtsp-encrypted", "video-windows-gdi-h264", "audio-silence", "control-enet"}}
+	if err := ready.validate("session", false, "video-windows-gdi-h264"); err != nil {
+		t.Fatal(err)
+	}
+	if ready.validate("session", false, "video-x11-h264") == nil || ready.validate("session", true, "video-windows-gdi-h264") == nil {
+		t.Fatal("cross-platform capability accepted")
 	}
 }

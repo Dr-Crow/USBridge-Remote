@@ -10,7 +10,7 @@ mkdir -p "$WORK" "$OUT/package/agent" "$OUT/package/components/bin" "$OUT/packag
 /usr/bin/python3 - "$ROOT" "$WORK" <<'PY'
 import hashlib,json,pathlib,sys,tarfile
 root,work=map(pathlib.Path,sys.argv[1:]);snap=root/'.circleci/source-snapshots'
-expected={'streamer':'02c08c82d966ceb7442a76d44762042f42bc1cbf','broker':'176801ad075ad4d5e503d913f683948980baae2d'}
+expected={'streamer':'2e07af3484369bc68bc8091d5a04969867eff0f9','broker':'176801ad075ad4d5e503d913f683948980baae2d'}
 for name,pin in expected.items():
     meta=json.loads((snap/f'source-{name}.json').read_text());archive=snap/meta['archive']
     assert meta['commit']==pin
@@ -22,7 +22,7 @@ for name,pin in expected.items():
         assert all(m.isfile() and m.name.startswith('source/') and '..' not in pathlib.PurePosixPath(m.name).parts for m in members)
         t.extractall(target)
 PY
-STREAMER_COMMIT=02c08c82d966ceb7442a76d44762042f42bc1cbf
+STREAMER_COMMIT=2e07af3484369bc68bc8091d5a04969867eff0f9
 BROKER_COMMIT=176801ad075ad4d5e503d913f683948980baae2d
 (cd "$WORK/streamer/source" && go test -race ./... && go build -trimpath -ldflags "-s -w -X main.version=$STREAMER_COMMIT" -o "$OUT/package/components/bin/source-streamer" ./cmd/source-streamer) 2>&1 | tee "$OUT/source-streamer-build-tests.txt"
 (cd "$WORK/broker/source" && go test -race ./... && go build -trimpath -ldflags "-s -w -X main.version=$BROKER_COMMIT" -o "$OUT/package/components/bin/broker-session" ./cmd/broker-session) 2>&1 | tee "$OUT/source-broker-build-tests.txt"

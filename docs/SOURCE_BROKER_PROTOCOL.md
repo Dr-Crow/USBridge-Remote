@@ -22,8 +22,9 @@ route through the vendor entitlement or modified-binary path. The agent probes t
 `session_supported: true`, matching platform/profile and all three v1 transport
 capabilities. Unsupported builds fail before credentials are passed. Linux has
 real agent integration coverage. The pinned broker source also passed native
-Windows standalone CLI/mTLS acceptance; the combined agent wrapper on Windows
-and macOS still needs native runtime acceptance.
+Windows standalone CLI/mTLS acceptance. The combined Windows package also
+runs the real agent-wrapper mTLS fixture; require its successful receipt for
+the exact artifact. macOS still needs native runtime acceptance.
 
 The first newline-delimited JSON object contains `version: 1`, literal private
 or loopback `address` with port, absolute local `certificate_file`, `key_file`

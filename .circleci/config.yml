@@ -98,6 +98,16 @@ jobs:
             & 'C:\ci\msys64\usr\bin\bash.exe' --login .circleci/build-windows.sh
             if ($LASTEXITCODE -ne 0) { throw "Agent build failed: $LASTEXITCODE" }
           no_output_timeout: 20m
+      - run:
+          name: Verify native Windows source supervisors and package experimental runtimes
+          command: |
+            $ErrorActionPreference = 'Stop'
+            $env:CHERE_INVOKING = 'yes'
+            $env:MSYSTEM = 'UCRT64'
+            $env:USBRIDGE_CI_ROOT = (Get-Location).Path
+            & 'C:\ci\msys64\usr\bin\bash.exe' --login .circleci/test-source-windows.sh
+            if ($LASTEXITCODE -ne 0) { throw "Source integration failed: $LASTEXITCODE" }
+          no_output_timeout: 15m
       - save_cache:
           key: windows-agent-go1266-v1-{{ checksum "agent/go.sum" }}
           paths:

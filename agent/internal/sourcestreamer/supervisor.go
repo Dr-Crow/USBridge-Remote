@@ -31,6 +31,7 @@ const MaxMessage = 64 << 10
 
 var localDisplay = regexp.MustCompile(`^:[0-9]{1,5}(\.[0-9]{1,2})?$`)
 var identifier = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+var windowsFFmpeg = regexp.MustCompile(`^[A-Za-z]:[\\/].+\.[Ee][Xx][Ee]$`)
 
 // Launch is passed over a private pipe. KeyB64 must come from the current
 // explicitly authorized session; it must not be persisted, printed, or reused.
@@ -58,6 +59,10 @@ type Launch struct {
 }
 
 func (r Launch) Validate() error {
+	return r.validatePlatform(runtime.GOOS)
+}
+
+func (r Launch) validatePlatform(platform string) error {
 	if r.SchemaVersion != 1 || len(r.Owner) == 0 || len(r.Owner) > 256 || !identifier.MatchString(r.SessionID) {
 		return errors.New("invalid source-streamer protocol or session identity")
 	}
@@ -74,10 +79,17 @@ func (r Launch) Validate() error {
 	if r.VideoPort < 0 || r.VideoPort > 65535 || r.AudioPort < 0 || r.AudioPort > 65535 || (r.VideoPort == r.AudioPort && r.VideoPort != 0) {
 		return errors.New("invalid source-streamer media ports")
 	}
-	if !localDisplay.MatchString(r.Display) {
+	if platform == "windows" {
+		if r.Display != "desktop" || r.InputConsent {
+			return errors.New("Windows source-streamer requires desktop selection and does not support input")
+		}
+		if !windowsFFmpeg.MatchString(r.FFmpeg) {
+			return errors.New("Windows source-streamer requires a local-drive FFmpeg executable")
+		}
+	} else if !localDisplay.MatchString(r.Display) {
 		return errors.New("source-streamer needs an explicit local X11 display")
 	}
-	if !filepath.IsAbs(r.FFmpeg) || strings.ContainsAny(r.FFmpeg, "\x00\r\n") {
+	if (platform != "windows" && !filepath.IsAbs(r.FFmpeg)) || len(r.FFmpeg) > 4096 || strings.ContainsAny(r.FFmpeg, "\x00\r\n") {
 		return errors.New("source-streamer needs an absolute trusted FFmpeg path")
 	}
 	if r.Width < 2 || r.Width > 1920 || r.Height < 2 || r.Height > 1080 || r.Width%2 != 0 || r.Height%2 != 0 || r.FPS < 1 || r.FPS > 120 {
@@ -131,7 +143,7 @@ type Ready struct {
 	Capabilities   []string `json:"capabilities"`
 }
 
-func (r Ready) validate(session string, inputConsent bool) error {
+func (r Ready) validate(session string, inputConsent bool, videoCapability string) error {
 	if r.SchemaVersion != 1 || r.Event != "ready" || r.SessionID != session {
 		return errors.New("source-streamer readiness identity mismatch")
 	}
@@ -145,7 +157,13 @@ func (r Ready) validate(session string, inputConsent bool) error {
 	if len(r.Capabilities) == 0 || len(r.Capabilities) > 32 {
 		return errors.New("source-streamer returned invalid capabilities")
 	}
-	required := map[string]bool{"rtsp-encrypted": false, "video-x11-h264": false, "audio-silence": false, "control-enet": false}
+	if videoCapability != "video-x11-h264" && videoCapability != "video-windows-gdi-h264" {
+		return errors.New("unsupported source-streamer video platform")
+	}
+	if videoCapability == "video-windows-gdi-h264" && inputConsent {
+		return errors.New("Windows source-streamer input is unsupported")
+	}
+	required := map[string]bool{"rtsp-encrypted": false, videoCapability: false, "audio-silence": false, "control-enet": false}
 	inputAvailable := false
 	for _, c := range r.Capabilities {
 		if c == "input-x11-keyboard-mouse" {
@@ -187,8 +205,8 @@ type Session struct {
 // local source selection. Only the source-streamer-v1 profile may enter this
 // protocol; stock binaries cannot accidentally be launched with these flags.
 func Start(ctx context.Context, source localcomponents.Options, request Launch) (*Session, error) {
-	if runtime.GOOS != "linux" {
-		return nil, errors.New("source-streamer v1 requires Linux X11 and ENet")
+	if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
+		return nil, errors.New("source-streamer v1 requires Linux X11 or Windows GDI with ENet")
 	}
 	if err := request.Validate(); err != nil {
 		return nil, err
@@ -253,7 +271,11 @@ func startBinary(ctx context.Context, binary string, request Launch) (*Session, 
 					cancel()
 					break
 				}
-				if err := event.validate(request.SessionID, request.InputConsent); err != nil {
+				videoCapability := "video-x11-h264"
+				if request.Display == "desktop" {
+					videoCapability = "video-windows-gdi-h264"
+				}
+				if err := event.validate(request.SessionID, request.InputConsent, videoCapability); err != nil {
 					protocolError <- err
 					cancel()
 					break
