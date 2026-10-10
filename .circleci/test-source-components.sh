@@ -7,7 +7,7 @@ export PATH="$HOME/ci-toolchain/go/bin:$PATH" GOTOOLCHAIN=local CGO_ENABLED=1
 sudo apt-get update
 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y ffmpeg xvfb python3-cryptography libopus0
 mkdir -p "$WORK" "$OUT/package/agent" "$OUT/package/components/bin" "$OUT/package/source"
-python3 - "$ROOT" "$WORK" <<'PY'
+/usr/bin/python3 - "$ROOT" "$WORK" <<'PY'
 import hashlib,json,pathlib,sys,tarfile
 root,work=map(pathlib.Path,sys.argv[1:]);snap=root/'.circleci/source-snapshots'
 expected={'streamer':'d0512f8dbbd1e771e5ad1373cdab8997012c2fc6','broker':'a35981e8d0eb4d173cb08892f919ac94cc1811d7'}
@@ -31,7 +31,7 @@ bash "$WORK/streamer/source/controltransport/testdata/build_client.sh" "$WORK/en
 cp "$ROOT/.circleci/source-snapshots/"* "$OUT/package/source/"
 cp "$WORK/streamer/source/LICENSE" "$OUT/package/source/STREAMER-LICENSE"
 cp "$WORK/broker/source/LICENSE" "$OUT/package/source/BROKER-LICENSE"
-python3 - "$OUT/package/components" "$STREAMER_COMMIT" "$BROKER_COMMIT" <<'PY'
+/usr/bin/python3 - "$OUT/package/components" "$STREAMER_COMMIT" "$BROKER_COMMIT" <<'PY'
 import hashlib,json,pathlib,sys
 root=pathlib.Path(sys.argv[1]);components=[]
 for name,entry,version in [('source-streamer','bin/source-streamer',sys.argv[2]),('source-broker','bin/broker-session',sys.argv[3])]:
@@ -41,11 +41,11 @@ for name,entry,version in [('source-streamer','bin/source-streamer',sys.argv[2])
 (root/'MANIFEST.sha256').write_text(hashlib.sha256((root/'manifest.json').read_bytes()).hexdigest()+'  manifest.json\n')
 PY
 AGENT_SOURCE_BINARY="$OUT/package/agent/usbridge-agent" BROKER_SESSION_BINARY="$OUT/package/components/bin/broker-session" bash -c 'cd "$1"; go test -race -count=5 -run "^(TestPortableSessionExecutableMutualTLS|TestPortableAgentBrokerSessionMutualTLS)$" -v ./brokersession' _ "$WORK/broker/source" 2>&1 | tee "$OUT/agent-broker-mutual-tls.txt"
-python3 "$ROOT/.circleci/source/test_agent_source_lifecycle.py" --agent "$OUT/package/agent/usbridge-agent" --streamer "$OUT/package/components/bin/source-streamer" --output "$OUT/lifecycle"
-python3 "$ROOT/.circleci/source/test_agent_source_media.py" --agent "$OUT/package/agent/usbridge-agent" --components "$OUT/package/components" --enet-helper "$WORK/enet-control-test-client" --output "$OUT/media"
+/usr/bin/python3 "$ROOT/.circleci/source/test_agent_source_lifecycle.py" --agent "$OUT/package/agent/usbridge-agent" --streamer "$OUT/package/components/bin/source-streamer" --output "$OUT/lifecycle"
+/usr/bin/python3 "$ROOT/.circleci/source/test_agent_source_media.py" --agent "$OUT/package/agent/usbridge-agent" --components "$OUT/package/components" --enet-helper "$WORK/enet-control-test-client" --output "$OUT/media"
 cp "$ROOT/docs/SOURCE_COMPONENT_PACKAGE.md" "$OUT/package/README.md"
 cp "$ROOT/docs/SOURCE_STREAMER_PROTOCOL.md" "$ROOT/docs/SOURCE_BROKER_PROTOCOL.md" "$OUT/package/"
-python3 - "$OUT" "${CIRCLE_SHA1:-unknown}" "$STREAMER_COMMIT" "$BROKER_COMMIT" <<'PY'
+/usr/bin/python3 - "$OUT" "${CIRCLE_SHA1:-unknown}" "$STREAMER_COMMIT" "$BROKER_COMMIT" <<'PY'
 import hashlib,json,pathlib,sys
 out=pathlib.Path(sys.argv[1]);files={str(p.relative_to(out/'package')):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted((out/'package').rglob('*')) if p.is_file()}
 (out/'package/BUILD-PROVENANCE.json').write_text(json.dumps({'agent_commit':sys.argv[2],'source_streamer_commit':sys.argv[3],'source_broker_commit':sys.argv[4],'files_sha256':files,'hardware_tested':False,'audio_source':'synthesized silence','source_broker_included':True,'usb_os_attached':False,'production_parity':False,'provenance':'Independent reconstruction with licensed public dependencies, not recovered proprietary source.'},indent=2)+'\n')
