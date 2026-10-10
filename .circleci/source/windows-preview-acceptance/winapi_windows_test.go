@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -78,7 +79,7 @@ func TestWindowsPrivatePipeHelper(t *testing.T) {
 	os.Exit(0)
 }
 func TestWindowsAPILayouts(t *testing.T) {
-	if unsafe.Sizeof(jobLimits{}) != 64 || unsafe.Sizeof(extendedJobLimits{}) != 144 || unsafe.Sizeof(bitmapHeader{}) != 40 || unsafe.Sizeof(startupInfoEx{}) != 112 {
+	if unsafe.Sizeof(jobLimits{}) != 64 || unsafe.Sizeof(extendedJobLimits{}) != 144 || unsafe.Sizeof(bitmapHeader{}) != 40 || unsafe.Sizeof(startupInfoEx{}) != 112 || unsafe.Sizeof(jobProcessList{}) != 1032 || unsafe.Offsetof(jobProcessList{}.PIDs) != 8 {
 		t.Fatal("Windows amd64 ABI layout changed")
 	}
 }
@@ -116,6 +117,7 @@ func TestWindowsSuspendedLaunchPrivatePipesNaturalEOF(t *testing.T) {
 	}
 	pids, e := j.pids()
 	if e != nil || len(pids) != 1 || pids[0] != p.pid {
+		logInventoryQuery(t, j)
 		t.Fatal("job ownership inventory mismatch")
 	}
 	p.stdin.Close()
@@ -152,6 +154,7 @@ func TestWindowsJobCloseKillsInheritedDescendant(t *testing.T) {
 	}
 	pids, e := j.pids()
 	if e != nil || len(pids) != 2 {
+		logInventoryQuery(t, j)
 		t.Fatal("descendant inventory mismatch")
 	}
 	j.close()
@@ -206,6 +209,38 @@ func TestWindowsParentCrashRetiresSuspendedChild(t *testing.T) {
 	}
 	pids, err := outer.pids()
 	if err != nil || len(pids) != 0 {
+		logInventoryQuery(t, outer)
 		t.Fatal("outer safety job was needed to clean up")
+	}
+}
+
+// Query-only diagnostics. Never print native PIDs, handles, paths or child data.
+// Compare the documented optional return-length forms without changing pids().
+func logInventoryQuery(t *testing.T, j *job) {
+	t.Helper()
+	for _, withLength := range []bool{false, true} {
+		var list jobProcessList
+		var returned uint32
+		flag := 0
+		var ok uintptr
+		var nativeErr error
+		if withLength {
+			flag = 1
+			ok, _, nativeErr = queryJob.Call(uintptr(j.handle), 3, uintptr(unsafe.Pointer(&list)), unsafe.Sizeof(list), uintptr(unsafe.Pointer(&returned)))
+		} else {
+			ok, _, nativeErr = queryJob.Call(uintptr(j.handle), 3, uintptr(unsafe.Pointer(&list)), unsafe.Sizeof(list), 0)
+		}
+		runtime.KeepAlive(&returned)
+		var code uint32
+		if ok == 0 {
+			if errno, valid := nativeErr.(syscall.Errno); valid {
+				code = uint32(errno)
+			}
+		}
+		success := 0
+		if ok != 0 {
+			success = 1
+		}
+		t.Logf("inventory_probe return_pointer=%d ok=%d error=%d assigned=%d count=%d bytes=%d", flag, success, code, list.Assigned, list.Count, returned)
 	}
 }

@@ -79,11 +79,14 @@ func newJob() (*job, error) {
 	return j, nil
 }
 func (j *job) close() { j.once.Do(func() { _ = syscall.CloseHandle(j.handle) }) }
+
+type jobProcessList struct {
+	Assigned, Count uint32
+	PIDs            [128]uintptr
+}
+
 func (j *job) pids() ([]uint32, error) {
-	var list struct {
-		Assigned, Count uint32
-		PIDs            [128]uintptr
-	}
+	var list jobProcessList
 	ok, _, _ := queryJob.Call(uintptr(j.handle), 3, uintptr(unsafe.Pointer(&list)), unsafe.Sizeof(list), 0)
 	if ok == 0 || list.Count > 128 || list.Assigned != list.Count {
 		return nil, failure("job_inventory_failed")

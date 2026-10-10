@@ -43,6 +43,7 @@ function Report-TestFailure {
     $tests = @{}
     $locations = @{}
     $categories = @{}
+    $inventory = @{}
     $codes = @('job_create_failed', 'job_limits_failed', 'job_inventory_failed',
         'pipe_create_failed', 'pipe_inheritance_failed', 'handle_list_failed',
         'atomic_job_attribute_failed', 'suspended_launch_failed', 'atomic_job_membership_failed',
@@ -60,6 +61,9 @@ function Report-TestFailure {
                 $message = [string]$row.Output
                 foreach ($code in $codes) { if ($message.Contains($code)) { $categories[$code] = $true } }
                 if ($message.Contains('panic: test timed out')) { $categories['test_timeout'] = $true }
+                foreach ($match in [regex]::Matches($message, 'inventory_probe return_pointer=([01]) ok=([01]) error=([0-9]{1,10}) assigned=([0-9]{1,10}) count=([0-9]{1,10}) bytes=([0-9]{1,10})')) {
+                    $inventory[$match.Value] = [ordered]@{ return_pointer = [int]$match.Groups[1].Value; success = [int]$match.Groups[2].Value; win32_error = [uint32]$match.Groups[3].Value; assigned_count = [uint32]$match.Groups[4].Value; returned_count = [uint32]$match.Groups[5].Value; returned_bytes = [uint32]$match.Groups[6].Value }
+                }
                 foreach ($match in [regex]::Matches($message, '(?m)^\s*(main_test\.go|safety_test\.go|winapi_windows_test\.go):([1-9][0-9]{0,4}):')) {
                     $locations[($match.Groups[1].Value + ':' + $match.Groups[2].Value)] = $true
                 }
@@ -74,6 +78,7 @@ function Report-TestFailure {
         test_names = @($tests.Keys | Sort-Object)
         test_locations = @($locations.Keys | Sort-Object)
         failure_categories = @($categories.Keys | Sort-Object)
+        inventory_queries = @($inventory.Keys | Sort-Object | ForEach-Object { $inventory[$_] })
         raw_output_published = $false
         media_session_started = $false
         source_or_binary_artifacts_published = $false
