@@ -229,8 +229,9 @@ func (o *signatureConsoleOwner) collect(j *job, p *child, r *graphicsOSInspectio
 	}
 }
 
-// Runs while the root primary thread remains suspended. No startup admission
-// after ResumeThread is permitted for this signature-only graph.
+// Resume only the locked OS PowerShell root. The OS creates conhost afterward;
+// the immutable script emits a literal and waits for private stdin before any
+// file query. startup freezes exact host admission before a request is sent.
 func (o *signatureConsoleOwner) beforeResume(j *job, pid uint32) error {
 	path, h, err := processPath(pid)
 	if err != nil {
@@ -240,24 +241,92 @@ func (o *signatureConsoleOwner) beforeResume(j *job, pid uint32) error {
 	if !strings.EqualFold(graphicsPath(path), filepath.Join(filepath.Dir(o.path), "WindowsPowerShell", "v1.0", "powershell.exe")) {
 		return failure("signature_root_identity_failed")
 	}
-	p := &child{pid: pid, handle: h}
+	if !j.contains(h) {
+		return failure("signature_root_membership_failed")
+	}
 	o.policy.root = pid
 	ids, err := j.pids()
 	if err != nil {
 		return err
 	}
 	o.beforeCount = uint32(len(ids))
-	if err = o.observe(j, p, ids); err != nil {
-		return err
-	}
 	a, err := signatureAccounting(j)
 	if err != nil {
 		return err
 	}
 	o.beforeTotal, o.beforeActive = a.Total, a.Active
-	if !signatureExactInitialSet(ids, pid, o.policy.host) || a.Total != 2 || a.Active != 2 {
-		return failure("signature_suspended_graph_incomplete")
+	if len(ids) != 1 || ids[0] != pid || a.Total != 1 || a.Active != 1 {
+		return failure("signature_suspended_root_incomplete")
 	}
-	o.policy.frozen = true
 	return nil
+}
+func (o *signatureConsoleOwner) startup(j *job, p *child, r *graphicsOSInspection) error {
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		zero, err := signatureProcessZero(p.handle)
+		if err != nil {
+			return err
+		}
+		if zero {
+			return failure("signature_startup_early_exit")
+		}
+		ids, err := j.pids()
+		if err != nil {
+			return failure("signature_startup_inventory_failed")
+		}
+		if err = o.observe(j, p, ids); err != nil {
+			return err
+		}
+		if _, err = signatureAccounting(j); err != nil {
+			return err
+		}
+		select {
+		case packet, ok := <-p.packets:
+			if !ok || packet.err != nil {
+				return failure("signature_startup_marker_missing")
+			}
+			defer clear(packet.line)
+			// Revalidate the exact, still-live graph when accepting the literal.
+			ids, err = j.pids()
+			if err != nil {
+				return failure("signature_startup_inventory_failed")
+			}
+			if err = o.observe(j, p, ids); err != nil {
+				return err
+			}
+			a, err := signatureAccounting(j)
+			if err != nil {
+				return err
+			}
+			if !signatureExactInitialSet(ids, p.pid, o.policy.host) {
+				return failure("signature_startup_graph_incomplete")
+			}
+			if zero, err = signatureProcessZero(p.handle); err != nil || zero {
+				return failure("signature_startup_early_exit")
+			}
+			if err = o.policy.freezeStartup(packet.line, a.Total, a.Active); err != nil {
+				return err
+			}
+			if zero, err = signatureProcessZero(o.handle); err != nil || zero {
+				return failure("signature_startup_host_exited")
+			}
+			// No request was sent yet. Any queued extra output is not a query result.
+			select {
+			case extra, ok := <-p.packets:
+				if ok {
+					clear(extra.line)
+				}
+				return failure("signature_startup_early_output")
+			default:
+			}
+			r.StartupHandshakeVerified = true
+			return nil
+		case <-ticker.C:
+		case <-timer.C:
+			return failure("signature_startup_timeout")
+		}
+	}
 }

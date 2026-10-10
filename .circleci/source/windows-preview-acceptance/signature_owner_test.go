@@ -50,3 +50,30 @@ func TestSignatureOnlyOwnerRequiresExactSuspendedSet(t *testing.T) {
 		}
 	}
 }
+
+func TestSignatureOwnerStartupHandshakeNegatives(t *testing.T) {
+	for _, marker := range []string{"", "ready\n", "{}\n", signatureStartupMarker + "\nextra\n", signatureStartupMarker} {
+		s := signatureOwnerPolicy{root: 10, host: 20}
+		if s.freezeStartup([]byte(marker), 2, 2) == nil || s.frozen {
+			t.Fatal("missing or early result admitted")
+		}
+	}
+	for _, s := range []signatureOwnerPolicy{{root: 10}, {root: 10, host: 20, rootExited: true}, {root: 10, host: 20, frozen: true}} {
+		if s.freezeStartup([]byte(signatureStartupMarker+"\n"), 2, 2) == nil {
+			t.Fatal("invalid startup admitted")
+		}
+	}
+	s := signatureOwnerPolicy{root: 10, host: 20}
+	if s.freezeStartup([]byte(signatureStartupMarker+"\r\n"), 2, 2) != nil {
+		t.Fatal("exact startup rejected")
+	}
+	if s.admit(30, true, true, true) == nil {
+		t.Fatal("post-handshake host admitted")
+	}
+	for _, counts := range [][2]uint32{{1, 1}, {3, 2}, {2, 1}} {
+		s := signatureOwnerPolicy{root: 10, host: 20}
+		if s.freezeStartup([]byte(signatureStartupMarker+"\n"), counts[0], counts[1]) == nil {
+			t.Fatal("inexact startup accounting admitted")
+		}
+	}
+}

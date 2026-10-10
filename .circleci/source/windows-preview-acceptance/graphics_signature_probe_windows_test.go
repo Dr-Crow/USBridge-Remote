@@ -24,6 +24,18 @@ func TestWindowsSignatureVerifierSystemFile(t *testing.T) {
 	if _, err := os.Lstat(out); !os.IsNotExist(err) {
 		t.Fatal("os_signature_receipt_must_be_new")
 	}
+	for _, fixture := range []struct{ name, script, want string }{
+		{"missing_marker", "$null=[Console]::In.ReadLine()", "signature_startup_timeout"},
+		{"early_output", "[Console]::Out.WriteLine('{}');$null=[Console]::In.ReadLine()", "signature_startup_marker_invalid"},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			observed := graphicsOSInspection{}
+			err := runGraphicsSignatureScript("", root, &observed, fixture.script)
+			if err == nil || err.Error() != fixture.want || !observed.CleanupJoined || observed.NaturalCleanup || !observed.SafetyJobClosed || observed.StartupHandshakeVerified || observed.Signature != nil || observed.Accepted {
+				t.Fatal("signature_negative_lifecycle_failed")
+			}
+		})
+	}
 	r := graphicsOSInspection{}
 	inspect := func() error {
 		path := filepath.Join(root, "System32", "kernel32.dll")
@@ -49,7 +61,7 @@ func TestWindowsSignatureVerifierSystemFile(t *testing.T) {
 	if err := inspect(); err != nil {
 		r.Failure = err.Error()
 	}
-	passed := r.Failure == "" && r.CleanupJoined && r.SuspendedGraphVerified && !r.SafetyJobClosed && r.ConsoleHostVerified && r.TotalOwnedProcesses == 2 && r.NaturalCleanup && r.Signature != nil && r.Signature.Status == 0 && r.Signature.OSBinary
+	passed := !t.Failed() && r.Failure == "" && r.CleanupJoined && r.SuspendedRootVerified && r.StartupHandshakeVerified && !r.SafetyJobClosed && r.ConsoleHostVerified && r.TotalOwnedProcesses == 2 && r.NaturalCleanup && r.Signature != nil && r.Signature.Status == 0 && r.Signature.OSBinary
 	receipt := struct {
 		Schema     int                  `json:"schema_version"`
 		Commit     string               `json:"commit"`

@@ -62,3 +62,12 @@ func TestGraphicsSignatureInspectionParsingAndTrustPolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestSignatureScriptWaitsForPrivateQueryAfterLiteral(t *testing.T) {
+	marker := strings.Index(graphicsSignatureScript, "[Console]::Out.WriteLine('"+signatureStartupMarker+"')")
+	input := strings.Index(graphicsSignatureScript, "[Console]::In.ReadLine()")
+	query := strings.Index(graphicsSignatureScript, "Get-AuthenticodeSignature")
+	if marker < 0 || input <= marker || query <= input {
+		t.Fatal("signature query precedes owned startup handshake")
+	}
+}

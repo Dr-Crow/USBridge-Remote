@@ -43,3 +43,16 @@ func signatureUniqueInventory(ids []uint32) error {
 func signatureExactInitialSet(ids []uint32, root, host uint32) bool {
 	return root != 0 && host != 0 && root != host && len(ids) == 2 && signatureUniqueInventory(ids) == nil && ((ids[0] == root && ids[1] == host) || (ids[1] == root && ids[0] == host))
 }
+
+const signatureStartupMarker = "signature_owner_ready_v1"
+
+func (s *signatureOwnerPolicy) freezeStartup(marker []byte, total, active uint32) error {
+	if string(marker) != signatureStartupMarker+"\r\n" && string(marker) != signatureStartupMarker+"\n" {
+		return failure("signature_startup_marker_invalid")
+	}
+	if s.frozen || s.rootExited || s.host == 0 || total != 2 || active != 2 {
+		return failure("signature_startup_graph_incomplete")
+	}
+	s.frozen = true
+	return nil
+}

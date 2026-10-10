@@ -60,7 +60,13 @@ func inspectGraphicsOSFile(path, systemRoot string, r *graphicsOSInspection) (re
 	return runGraphicsSignature(final, systemRoot, r)
 }
 
-func runGraphicsSignature(final, systemRoot string, r *graphicsOSInspection) (result error) {
+func runGraphicsSignature(final, systemRoot string, r *graphicsOSInspection) error {
+	return runGraphicsSignatureScript(final, systemRoot, r, graphicsSignatureScript)
+}
+
+// Only the immutable production constant above is reachable from runtime paths.
+// The native prerequisite supplies source-owned negative scripts through tests.
+func runGraphicsSignatureScript(final, systemRoot string, r *graphicsOSInspection, scriptText string) (result error) {
 	started := time.Now()
 	defer func() { r.ElapsedMillis = time.Since(started).Milliseconds() }()
 	work, err := os.MkdirTemp("", "owned-signature-")
@@ -69,7 +75,7 @@ func runGraphicsSignature(final, systemRoot string, r *graphicsOSInspection) (re
 	}
 	defer os.Remove(work)
 	scriptPath := filepath.Join(work, "verify-os-file.ps1")
-	if err := os.WriteFile(scriptPath, []byte(graphicsSignatureScript), 0600); err != nil {
+	if err := os.WriteFile(scriptPath, []byte(scriptText), 0600); err != nil {
 		return failure("os_verifier_script_failed")
 	}
 	defer os.Remove(scriptPath)
@@ -78,7 +84,7 @@ func runGraphicsSignature(final, systemRoot string, r *graphicsOSInspection) (re
 		return failure("os_verifier_script_lock_failed")
 	}
 	defer script.Close()
-	digest := sha256.Sum256([]byte(graphicsSignatureScript))
+	digest := sha256.Sum256([]byte(scriptText))
 	r.ScriptSHA = hex.EncodeToString(digest[:])
 	if got, e := fileSHA(script, 65536); e != nil || got != r.ScriptSHA {
 		return failure("os_verifier_script_hash_failed")
@@ -115,7 +121,7 @@ func runGraphicsSignature(final, systemRoot string, r *graphicsOSInspection) (re
 		if suspendedErr != nil {
 			j.close()
 		} else {
-			r.SuspendedGraphVerified = true
+			r.SuspendedRootVerified = true
 		}
 	}
 	watchStop, watchDone := make(chan struct{}), make(chan struct{})
@@ -201,6 +207,9 @@ func runGraphicsSignature(final, systemRoot string, r *graphicsOSInspection) (re
 	}
 	if err != nil {
 		return failure("os_verifier_start_failed")
+	}
+	if err = console.startup(j, p, r); err != nil {
+		return err
 	}
 	input, err := json.Marshal(map[string]string{"path": final})
 	if err != nil {
