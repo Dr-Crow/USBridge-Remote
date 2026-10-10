@@ -75,35 +75,36 @@ type caseReceipt struct {
 	GraphicsModules  map[string]string `json:"viewer_graphics_modules_sha256,omitempty"`
 }
 type receipt struct {
-	Schema               int           `json:"schema_version"`
-	Passed               bool          `json:"passed"`
-	Failure              string        `json:"failure_code,omitempty"`
-	Platform             string        `json:"platform"`
-	Commit               string        `json:"commit,omitempty"`
-	SourceCommit         string        `json:"source_streamer_commit"`
-	SourceArchive        string        `json:"source_archive_sha256"`
-	Role                 string        `json:"encoder_role"`
-	AgentSHA             string        `json:"agent_sha256,omitempty"`
-	ViewerSHA            string        `json:"viewer_sha256,omitempty"`
-	FixtureSHA           string        `json:"fixture_sha256,omitempty"`
-	SourceSHA            string        `json:"source_sha256,omitempty"`
-	ManifestSHA          string        `json:"manifest_sha256,omitempty"`
-	FixtureManifestSHA   string        `json:"fixture_manifest_sha256,omitempty"`
-	ActualAgentCLI       bool          `json:"actual_agent_cli_supervision"`
-	ActualAgentAppNew    bool          `json:"actual_agent_app_new"`
-	ActualMedia          bool          `json:"actual_media_tested"`
-	ActualPixels         bool          `json:"actual_owned_window_pixels_tested"`
-	PhysicalPresentation bool          `json:"physical_display_presentation_tested"`
-	DesktopCapture       bool          `json:"desktop_capture_tested"`
-	InputInjection       bool          `json:"input_injection_tested"`
-	ManagerEnabled       bool          `json:"windows_agent_preview_manager_enabled"`
-	SourceChanged        bool          `json:"source_snapshot_changed"`
-	Published            bool          `json:"source_or_binary_artifacts_published"`
-	PixelsSaved          bool          `json:"pixels_saved"`
-	SystemOnlyPath       bool          `json:"system_only_path"`
-	JobContainment       bool          `json:"job_containment"`
-	FreshRestart         bool          `json:"fresh_restart_verified"`
-	Cases                []caseReceipt `json:"cases"`
+	Schema               int                      `json:"schema_version"`
+	Passed               bool                     `json:"passed"`
+	Failure              string                   `json:"failure_code,omitempty"`
+	GraphicsRejection    *graphicsModuleRejection `json:"graphics_module_rejection,omitempty"`
+	Platform             string                   `json:"platform"`
+	Commit               string                   `json:"commit,omitempty"`
+	SourceCommit         string                   `json:"source_streamer_commit"`
+	SourceArchive        string                   `json:"source_archive_sha256"`
+	Role                 string                   `json:"encoder_role"`
+	AgentSHA             string                   `json:"agent_sha256,omitempty"`
+	ViewerSHA            string                   `json:"viewer_sha256,omitempty"`
+	FixtureSHA           string                   `json:"fixture_sha256,omitempty"`
+	SourceSHA            string                   `json:"source_sha256,omitempty"`
+	ManifestSHA          string                   `json:"manifest_sha256,omitempty"`
+	FixtureManifestSHA   string                   `json:"fixture_manifest_sha256,omitempty"`
+	ActualAgentCLI       bool                     `json:"actual_agent_cli_supervision"`
+	ActualAgentAppNew    bool                     `json:"actual_agent_app_new"`
+	ActualMedia          bool                     `json:"actual_media_tested"`
+	ActualPixels         bool                     `json:"actual_owned_window_pixels_tested"`
+	PhysicalPresentation bool                     `json:"physical_display_presentation_tested"`
+	DesktopCapture       bool                     `json:"desktop_capture_tested"`
+	InputInjection       bool                     `json:"input_injection_tested"`
+	ManagerEnabled       bool                     `json:"windows_agent_preview_manager_enabled"`
+	SourceChanged        bool                     `json:"source_snapshot_changed"`
+	Published            bool                     `json:"source_or_binary_artifacts_published"`
+	PixelsSaved          bool                     `json:"pixels_saved"`
+	SystemOnlyPath       bool                     `json:"system_only_path"`
+	JobContainment       bool                     `json:"job_containment"`
+	FreshRestart         bool                     `json:"fresh_restart_verified"`
+	Cases                []caseReceipt            `json:"cases"`
 }
 
 func baseReceipt(c config) receipt {
@@ -150,6 +151,7 @@ func main() {
 		r.Failure = err.Error()
 	} else if err = execute(c, &r); err != nil {
 		r.Failure = err.Error()
+		r.GraphicsRejection = graphicsRejection(err)
 	} else {
 		r.Passed = true
 	}

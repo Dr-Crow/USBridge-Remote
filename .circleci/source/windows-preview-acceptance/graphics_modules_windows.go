@@ -8,14 +8,11 @@ import (
 	"encoding/json"
 	"io"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
 	"time"
 	"unsafe"
 )
-
-var graphicsDLLName = regexp.MustCompile(`^[A-Za-z0-9_.+-]{1,100}\.[dD][lL][lL]$`)
 
 func parseGraphicsStaging(raw []byte) (map[string]string, error) {
 	var header struct {
@@ -118,11 +115,11 @@ func graphicsModules(pid uint32, executable, systemRoot string, expected map[str
 		seen[lower] = true
 		if declared, present := allowed[lower]; present {
 			if !strings.EqualFold(path, graphicsPath(filepath.Join(directory, declared))) {
-				return nil, failure("graphics_module_not_app_local")
+				return nil, rejectedGraphicsModule("graphics_module_not_app_local", name, path, directory, systemRoot, true)
 			}
 			loaded[declared] = expected[declared]
 		} else if !strings.EqualFold(path, graphicsPath(executable)) && !strings.HasPrefix(strings.ToLower(path), system) {
-			return nil, failure("graphics_module_not_in_verified_closure")
+			return nil, rejectedGraphicsModule("graphics_module_not_in_verified_closure", name, path, directory, systemRoot, false)
 		}
 		entry = graphicsModuleEntry{Size: uint32(unsafe.Sizeof(graphicsModuleEntry{}))}
 		ok, _, err = next.Call(snapshot, uintptr(unsafe.Pointer(&entry)))

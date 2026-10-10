@@ -265,3 +265,12 @@ official LLVM22.1.8-3 archive (SHA256
 installing or aliasing a different ABI. Its exact DLL hash is
 `ecef91d79184533faa2d74d1965c0737843f4c2e02c7cb8dd3309a6c97ddec9b`.
 These staging repairs do not establish a WGL or visible-pixel pass.
+
+At `1b1b781`, staging and the owned WGL probe passed with Mesa 26.2.4,
+llvmpipe/LLVM22.1.8 and natural cleanup. The normal viewer then created its exact
+owned visible window, but the loaded-module inventory rejected a location
+outside its verified closure. This failure preceded media/pixel execution and
+required safety cleanup. The follow-on diagnostic emits only the first rejected
+DLL's bounded basename, a closed location category and whether it was declared
+in staging. It preserves the original fatal code and every module acceptance
+rule. A Windows side-by-side location is a diagnostic hint, never an exemption.

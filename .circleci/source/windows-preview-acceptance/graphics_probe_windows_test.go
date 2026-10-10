@@ -23,25 +23,26 @@ type graphicsProbeResult struct {
 }
 
 type graphicsProbeReceipt struct {
-	Schema        int               `json:"schema_version"`
-	Role          string            `json:"role"`
-	Passed        bool              `json:"passed"`
-	Failure       string            `json:"failure_code,omitempty"`
-	ProbeSHA      string            `json:"probe_sha256"`
-	StagingSHA    string            `json:"staging_sha256"`
-	Vendor        string            `json:"gl_vendor,omitempty"`
-	Renderer      string            `json:"gl_renderer,omitempty"`
-	Version       string            `json:"gl_version,omitempty"`
-	Modules       map[string]string `json:"loaded_runtime_dlls_sha256"`
-	FixedDriver   string            `json:"fixed_driver"`
-	FixedSoftware bool              `json:"fixed_software"`
-	Natural       bool              `json:"natural_cleanup"`
-	JobEmpty      bool              `json:"job_empty_before_safety_close"`
-	SafetyKill    bool              `json:"safety_job_kill_used"`
-	ActualViewer  bool              `json:"actual_viewer_tested"`
-	ActualPixels  bool              `json:"actual_window_pixels_tested"`
-	Capture       bool              `json:"desktop_capture_tested"`
-	Input         bool              `json:"input_injection_tested"`
+	Schema            int                      `json:"schema_version"`
+	Role              string                   `json:"role"`
+	Passed            bool                     `json:"passed"`
+	Failure           string                   `json:"failure_code,omitempty"`
+	GraphicsRejection *graphicsModuleRejection `json:"graphics_module_rejection,omitempty"`
+	ProbeSHA          string                   `json:"probe_sha256"`
+	StagingSHA        string                   `json:"staging_sha256"`
+	Vendor            string                   `json:"gl_vendor,omitempty"`
+	Renderer          string                   `json:"gl_renderer,omitempty"`
+	Version           string                   `json:"gl_version,omitempty"`
+	Modules           map[string]string        `json:"loaded_runtime_dlls_sha256"`
+	FixedDriver       string                   `json:"fixed_driver"`
+	FixedSoftware     bool                     `json:"fixed_software"`
+	Natural           bool                     `json:"natural_cleanup"`
+	JobEmpty          bool                     `json:"job_empty_before_safety_close"`
+	SafetyKill        bool                     `json:"safety_job_kill_used"`
+	ActualViewer      bool                     `json:"actual_viewer_tested"`
+	ActualPixels      bool                     `json:"actual_window_pixels_tested"`
+	Capture           bool                     `json:"desktop_capture_tested"`
+	Input             bool                     `json:"input_injection_tested"`
 }
 
 func graphicsASCII(value string) bool {
@@ -165,6 +166,7 @@ func TestWindowsOwnedSoftwareGraphicsProbe(t *testing.T) {
 		FixedDriver: "llvmpipe", FixedSoftware: true, Modules: map[string]string{}}
 	if err := executeGraphicsProbe(probe, probeSHA, staging, stagingSHA, t.TempDir(), &r); err != nil {
 		r.Failure = err.Error()
+		r.GraphicsRejection = graphicsRejection(err)
 	} else {
 		r.Passed = true
 	}
