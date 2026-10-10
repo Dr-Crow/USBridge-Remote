@@ -29,7 +29,7 @@ mkdir -p "$WORK/context/agent" "$WORK/context/gate"
 python3 -m unittest discover -s .circleci/source -p test_engine_preview.py -v
 python3 -m unittest discover -s .circleci/source -p test_preview_processes.py -v
 python3 -m unittest discover -s .circleci/source -p test_preview_windows.py -v
-for file in engine_preview_container.py engine_preview_contract.py preview_engine.py preview_pixels.py preview_processes.py preview_windows.py engine-preview-config.yaml; do
+for file in engine_preview_container.py engine_preview_contract.py engine_preview_diagnostics.py preview_engine.py preview_pixels.py preview_processes.py preview_windows.py engine-preview-config.yaml; do
  cp ".circleci/source/$file" "$WORK/context/gate/"
 done
 python3 .circleci/source/prepare_engine_preview.py "$ROOT" "$WORK/context" "$COMMIT"

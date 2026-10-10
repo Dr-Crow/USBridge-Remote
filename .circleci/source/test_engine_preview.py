@@ -9,6 +9,7 @@ import unittest
 from unittest import mock
 from engine_preview_contract import BASE_IMAGE_SHA256, FLAGS, FALSE_FLAGS, HASHES, validate_receipt, tcp_udp_tables
 from preview_windows import parent_window
+from engine_preview_diagnostics import failure, validate_failure
 
 HERE = pathlib.Path(__file__).parent
 
@@ -144,6 +145,37 @@ class EngineWindowTests(unittest.TestCase):
         self.scope['process'].pid = 99
         with self.assertRaises(AssertionError):
             self.scope['mapped']()
+
+
+class FailureDiagnosticTests(unittest.TestCase):
+    def test_exception_values_and_arbitrary_metadata_are_never_copied(self):
+        error = KeyError('secret-key-or-config')
+        value = failure(error, 4, {'controls': [{'id': 'status', 'text': 'The preview failed: secret-key-or-config'}], 'key': 'secret-key-or-config'}, {'ffmpeg': 2, 'secret-key-or-config': 123})
+        self.assertNotIn('secret-key-or-config', json.dumps(value))
+        self.assertEqual(value['category'], 'KeyError')
+        self.assertEqual(value['ui_phase'], 'failed')
+        self.assertEqual(value['media_counts']['ffmpeg'], 2)
+        self.assertEqual(value['locations'], [])
+
+    def test_only_owned_code_locations_are_reported(self):
+        namespace = {}
+        exec(compile('def wait_for():\n    raise AssertionError("private-exception-message")\n', '/opt/gate/preview_engine.py', 'exec'), namespace)
+        try:
+            namespace['wait_for']()
+        except AssertionError as error:
+            value = failure(error, 4)
+        self.assertEqual(value['locations'], [{'file': 'preview_engine.py', 'function': 'wait_for', 'line': 2}])
+        self.assertNotIn('private-exception-message', json.dumps(value))
+
+    def test_unknown_fields_and_free_text_are_rejected(self):
+        for key, value in [('message', 'private'), ('category', 'arbitrary'), ('ui_phase', 'private'), ('stage', True)]:
+            data = failure(AssertionError('private'), 4); data[key] = value
+            with self.assertRaises(AssertionError):
+                validate_failure(data)
+        data = failure(AssertionError(), 4)
+        data['locations'] = [{'file': '/private/path', 'function': 'wait_for', 'line': 2}]
+        with self.assertRaises(AssertionError):
+            validate_failure(data)
 
 
 class StageTests(unittest.TestCase):

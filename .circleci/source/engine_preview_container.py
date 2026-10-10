@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 from engine_preview_contract import BASE_IMAGE_SHA256, preflight, validate_receipt
+from engine_preview_diagnostics import failure, validate_failure
 
 ROOT = pathlib.Path('/work')
 
@@ -63,9 +64,17 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except BaseException:
+    except BaseException as error:
         # Never print raw application logs, config, authentication or descriptors.
         stage = (ROOT / 'failure-stage').read_text() if (ROOT / 'failure-stage').is_file() else '0'
         stage = stage if re.fullmatch(r'(?:[0-9]|10)', stage) else '0'
+        diagnostic = failure(error, int(stage))
+        path = ROOT / 'failure-diagnostic.json'
+        if path.is_file() and not path.is_symlink() and path.stat().st_size <= 4096:
+            try:
+                diagnostic = validate_failure(json.loads(path.read_text()))
+            except BaseException:
+                pass
+        print('ENGINE_DIAGNOSTIC ' + json.dumps(diagnostic, sort_keys=True), file=sys.stderr)
         print('Engine preview gate failed; last completed stage ' + stage + '. Private diagnostics discarded.', file=sys.stderr)
         sys.exit(1)

@@ -11,6 +11,7 @@ import signal
 import socket
 import stat
 import subprocess
+import sys
 import time
 import urllib.request
 from collections import Counter
@@ -18,6 +19,7 @@ import dbus
 from engine_preview_contract import FLAGS, FALSE_FLAGS, tcp_udp_tables
 from preview_processes import validate_capture_chain
 from preview_windows import parent_window
+from engine_preview_diagnostics import failure
 
 WORK = pathlib.Path('/work')
 OUT = WORK / 'samples'
@@ -457,6 +459,17 @@ try:
     result['sandbox_helpers_joined'] = False
     result.update(passed=True, preview_runs=4, pixel_samples=pixel_samples, lifetime_seconds=int(time.monotonic() - started))
 finally:
+    error = sys.exc_info()[1]
+    if error is not None:
+        try:
+            metadata = ui()
+        except BaseException:
+            metadata = {}
+        try:
+            counts = Counter(media_processes().values()) if process is not None else {}
+        except BaseException:
+            counts = {}
+        (WORK / 'failure-diagnostic.json').write_text(json.dumps(failure(error, stage, metadata, counts)) + '\n')
     if process is not None and process.poll() is None:
         os.killpg(process.pid, signal.SIGTERM)
         try:
