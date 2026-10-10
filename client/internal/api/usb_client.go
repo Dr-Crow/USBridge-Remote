@@ -190,8 +190,15 @@ func NewUSBClientWithScheme(scheme, host string, port int, timeout int, httpClie
 	} else if timeout > 0 && httpClient.Timeout == 0 {
 		httpClient.Timeout = time.Duration(timeout) * time.Second
 	}
+	// "host:port" (an agent listening on another port than the default,
+	// typed in or from its QR/link) wins over the default port.
+	if h, p, err := net.SplitHostPort(strings.TrimSpace(host)); err == nil {
+		if n, err := strconv.Atoi(p); err == nil && n > 0 && n <= 65535 {
+			host, port = h, n
+		}
+	}
 	return &USBClient{
-		baseURL:    fmt.Sprintf("%s://%s:%d", scheme, host, port),
+		baseURL:    fmt.Sprintf("%s://%s", scheme, net.JoinHostPort(host, strconv.Itoa(port))),
 		httpClient: httpClient,
 	}
 }

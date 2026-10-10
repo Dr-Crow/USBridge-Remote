@@ -4059,7 +4059,7 @@ func (a *App) QRLink() (string, string) {
 	// free-tier entitlement token for it (see desktopLicense.ts's
 	// documented trust model), no new capability against this device.
 	hwID, _ := hwid.Get()
-	link := buildQRLink(internalHost, tailscaleHost, masterKey, hwID)
+	link := buildQRLink(netutil.WithAPIPort(internalHost, a.cfg.HTTPPort), netutil.WithAPIPort(tailscaleHost, a.cfg.HTTPPort), masterKey, hwID)
 	return link, masterKey
 }
 

@@ -4,6 +4,7 @@ package api
 
 import (
 	"crypto/tls"
+	"net"
 	"net/http"
 	"time"
 )
@@ -20,7 +21,12 @@ import (
 // browser sandbox to trip mixed-content blocking on this path.
 func NewDirectUSBClient(host string, port, tlsPort int, timeout int) *USBClient {
 	t := time.Duration(timeout) * time.Second
-	dialer := buildDirectDialer(host)
+	// The dialer picks the LAN interface by address: without a ":port".
+	dialHost := host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		dialHost = h
+	}
+	dialer := buildDirectDialer(dialHost)
 	dialer.Timeout = t
 	transport := &http.Transport{
 		DialContext:         dialer.DialContext,

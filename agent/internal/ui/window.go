@@ -3227,6 +3227,11 @@ func (w *Window) quickConnectTargets() (internalHost string, tailscaleHost strin
 	// rather than a hard failure here.
 	hwID, _ = hwid.Get()
 
+	// Another API port than the clients' default goes along with the
+	// addresses ("192.168.1.5:9090"), or they'd knock on 8080.
+	internalHost = netutil.WithAPIPort(internalHost, w.cfg.HTTPPort)
+	tailscaleHost = netutil.WithAPIPort(tailscaleHost, w.cfg.HTTPPort)
+
 	if tailscaleHost != "" {
 		return internalHost, tailscaleHost, "tailscale", hwID
 	}

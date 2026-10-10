@@ -107,6 +107,28 @@ func NewMoonlightService(config *models.AppConfig) *MoonlightService {
 	}
 }
 
+// sunshineAdminPort is the Sunshine admin port the connected agent reports
+// in /api/video/info (0: not reported -- a board, or an older agent).
+var sunshineAdminPort atomic.Int32
+
+// SetSunshineAdminPort tells Moonlight the agent's Sunshine admin port (its
+// "Sunshine port" setting, 47990 by default): the NvHTTP port is one below,
+// HTTPS five below that. 0 goes back to the defaults.
+func SetSunshineAdminPort(port int) {
+	if port < 7 || port > 65535 {
+		port = 0
+	}
+	sunshineAdminPort.Store(int32(port))
+}
+
+// MoonlightPorts are the NvHTTP and HTTPS ports to reach Sunshine on.
+func MoonlightPorts() (httpPort, httpsPort int) {
+	if p := int(sunshineAdminPort.Load()); p > 0 {
+		return p - 1, p - 6
+	}
+	return 47989, 47984
+}
+
 func (m *MoonlightService) ConnectToMoonlight() error {
 	// Create a fresh abort channel for this connection attempt so Disconnect()
 	// can interrupt any blocking HTTP call or post-connect setup.
@@ -164,6 +186,7 @@ func (m *MoonlightService) ConnectToMoonlight() error {
 	if m.client.Host == "0.0.0.0" || m.client.Host == "" {
 		m.client.Host = "127.0.0.1" // Default to localhost if unbound
 	}
+	m.client.Port, m.client.HTTPSPort = MoonlightPorts()
 
 	// 1b. Use the tsnet-aware dialer for Moonlight HTTP only when the target host is
 	// actually a Tailscale peer. tsnet's userspace netstack does not route plain LAN
@@ -182,7 +205,7 @@ func (m *MoonlightService) ConnectToMoonlight() error {
 		// before firing the first real request -- see WaitForPeerReachable's
 		// doc comment for why a real dial (not just Status()) matters here,
 		// e.g. after a DERP relay change.
-		m.tailscaleSvc.WaitForPeerReachable(context.Background(), m.client.Host, "47989", 8*time.Second)
+		m.tailscaleSvc.WaitForPeerReachable(context.Background(), m.client.Host, strconv.Itoa(m.client.Port), 8*time.Second)
 	}
 
 	tConnect := time.Now()

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -289,11 +290,12 @@ func (s *TailscaleService) WarmUpPeer(tailscaleIP string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		conn, err := srv.Dial(ctx, "tcp", net.JoinHostPort(tailscaleIP, "47989"))
+		httpPort, _ := MoonlightPorts()
+		conn, err := srv.Dial(ctx, "tcp", net.JoinHostPort(tailscaleIP, strconv.Itoa(httpPort)))
 		if err == nil {
 			conn.Close()
 		}
-		logrus.Debugf("🛰️ [tsnet] peer warmup %s:47989 done (err=%v)", tailscaleIP, err)
+		logrus.Debugf("🛰️ [tsnet] peer warmup %s:%d done (err=%v)", tailscaleIP, httpPort, err)
 	}()
 }
 
