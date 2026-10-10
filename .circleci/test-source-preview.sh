@@ -19,6 +19,8 @@ cp -a "$ROOT/artifacts/source-components/package" "$OUT/package"
 cp "$ROOT/client/dist/source-preview-viewer" "$OUT/package/components/bin/source-preview-viewer"
 cp "$ROOT/client/LICENSE" "$OUT/package/source/VIEWER-LICENSE"
 cp "$ROOT/client/docs/SOURCE_PREVIEW_VIEWER.md" "$OUT/package/"
+cp "$ROOT/docs/SOURCE_PREVIEW_USER_TEST.md" "$OUT/package/"
+/usr/bin/python3 "$ROOT/.circleci/source/package_viewer_notices.py" "$ROOT/client" "$OUT/package"
 /usr/bin/python3 - "$OUT/package/components" "${CIRCLE_SHA1:?}" <<'PY'
 import hashlib,json,pathlib,sys
 root=pathlib.Path(sys.argv[1]);p=root/'bin/source-preview-viewer';data=p.read_bytes();m=json.loads((root/'manifest.json').read_text())

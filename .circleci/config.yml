@@ -149,13 +149,36 @@ jobs:
                 name: Build real source preview viewer and verify presented pixels on isolated displays
                 command: bash .circleci/test-source-preview.sh
                 no_output_timeout: 30m
+            - run:
+                name: Exercise shipped agent settings and Source preview dialog on isolated displays
+                command: bash .circleci/test-source-preview-dialog.sh
+                no_output_timeout: 15m
       - save_cache:
           key: audited-components-v03131-linux-v1-{{ checksum "agent/internal/localruntime/pinned.go" }}
           paths:
             - artifacts/components
-      - store_artifacts:
-          path: artifacts
-          destination: linux-agent
+      # During source-audience review, this test-only branch publishes numeric
+      # receipts only. It must not upload a rebuilt source-containing archive.
+      - when:
+          condition:
+            equal: [source-preview-experiment, << pipeline.git.branch >>]
+          steps:
+            - run:
+                name: Collect source-free native preview receipts
+                command: |
+                  python3 -m unittest discover -s .circleci/source -p test_collect_preview_receipts.py -v
+                  python3 .circleci/source/collect_preview_receipts.py artifacts
+                when: always
+            - store_artifacts:
+                path: artifacts/preview-evidence
+                destination: linux-agent/preview-evidence
+      - unless:
+          condition:
+            equal: [source-preview-experiment, << pipeline.git.branch >>]
+          steps:
+            - store_artifacts:
+                path: artifacts
+                destination: linux-agent
   macos-agent:
     macos:
       xcode: "16.4.0"

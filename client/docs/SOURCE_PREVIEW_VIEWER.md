@@ -70,7 +70,7 @@ encryption defaults and key-ID behavior are unchanged.
 ## Smallest native Linux CI build
 
 Use a complete checkout of the candidate, including its vendored PyroWave files.
-Use the repository Go version (1.26.6 here). On an apt-based Linux CI machine:
+Use the repository Go version (1.26.9 here). On an apt-based Linux CI machine:
 
 ```sh
 sudo apt-get update
