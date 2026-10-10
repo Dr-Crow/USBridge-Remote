@@ -10,7 +10,7 @@ mkdir -p "$WORK" "$OUT/package/agent" "$OUT/package/components/bin" "$OUT/packag
 /usr/bin/python3 - "$ROOT" "$WORK" <<'PY'
 import hashlib,json,pathlib,sys,tarfile
 root,work=map(pathlib.Path,sys.argv[1:]);snap=root/'.circleci/source-snapshots'
-expected={'streamer':'d0512f8dbbd1e771e5ad1373cdab8997012c2fc6','broker':'a35981e8d0eb4d173cb08892f919ac94cc1811d7'}
+expected={'streamer':'02c08c82d966ceb7442a76d44762042f42bc1cbf','broker':'176801ad075ad4d5e503d913f683948980baae2d'}
 for name,pin in expected.items():
     meta=json.loads((snap/f'source-{name}.json').read_text());archive=snap/meta['archive']
     assert meta['commit']==pin
@@ -22,9 +22,9 @@ for name,pin in expected.items():
         assert all(m.isfile() and m.name.startswith('source/') and '..' not in pathlib.PurePosixPath(m.name).parts for m in members)
         t.extractall(target)
 PY
-STREAMER_COMMIT=d0512f8dbbd1e771e5ad1373cdab8997012c2fc6
-BROKER_COMMIT=a35981e8d0eb4d173cb08892f919ac94cc1811d7
-(cd "$WORK/streamer/source" && go test -race ./streamer ./controltransport && go build -trimpath -ldflags "-s -w -X main.version=$STREAMER_COMMIT" -o "$OUT/package/components/bin/source-streamer" ./cmd/source-streamer) 2>&1 | tee "$OUT/source-streamer-build-tests.txt"
+STREAMER_COMMIT=02c08c82d966ceb7442a76d44762042f42bc1cbf
+BROKER_COMMIT=176801ad075ad4d5e503d913f683948980baae2d
+(cd "$WORK/streamer/source" && go test -race ./... && go build -trimpath -ldflags "-s -w -X main.version=$STREAMER_COMMIT" -o "$OUT/package/components/bin/source-streamer" ./cmd/source-streamer) 2>&1 | tee "$OUT/source-streamer-build-tests.txt"
 (cd "$WORK/broker/source" && go test -race ./... && go build -trimpath -ldflags "-s -w -X main.version=$BROKER_COMMIT" -o "$OUT/package/components/bin/broker-session" ./cmd/broker-session) 2>&1 | tee "$OUT/source-broker-build-tests.txt"
 cp "$ROOT/agent/dist/linux/usbridge-agent" "$OUT/package/agent/usbridge-agent"
 bash "$WORK/streamer/source/controltransport/testdata/build_client.sh" "$WORK/enet-control-test-client"

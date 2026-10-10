@@ -12,5 +12,5 @@ import (
 func runSourceBroker(state, directory, manifest string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return sourcebroker.RunStdio(ctx, localcomponents.Options{StateDir: state, Directory: directory, ManifestSHA256: manifest}, os.Stdin, &sourceProcessOutput{context: ctx, output: os.Stdout})
+	return sourcebroker.RunStdio(ctx, localcomponents.Options{StateDir: state, Directory: directory, ManifestSHA256: manifest}, &sourceProcessInput{context: ctx, input: os.Stdin}, &sourceProcessOutput{context: ctx, output: os.Stdout})
 }

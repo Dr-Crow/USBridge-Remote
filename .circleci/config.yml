@@ -127,6 +127,10 @@ jobs:
           name: Build pinned source component and verify real agent media lifecycle
           command: bash .circleci/test-source-components.sh
           no_output_timeout: 15m
+      - run:
+          name: Verify actual source package with WAN blocked and full public client
+          command: bash .circleci/test-source-isolation.sh
+          no_output_timeout: 15m
       - save_cache:
           key: audited-components-v03131-linux-v1-{{ checksum "agent/internal/localruntime/pinned.go" }}
           paths:

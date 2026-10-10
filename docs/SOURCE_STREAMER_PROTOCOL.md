@@ -2,7 +2,8 @@
 
 This is a separate, opt-in source-built backend contract. It is not a drop-in
 replacement for stock RustShine, does not use vendor runtime rekeying, and does
-not enable an agent remote endpoint or OS input/USB passthrough.
+not enable an agent remote endpoint or OS USB passthrough. X11 input requires
+separate explicit consent and a matching runtime capability.
 
 ## Agent invocation
 
@@ -54,8 +55,8 @@ manifest/profile checks, secret-free arguments, invalid readiness, non-loopback
 listeners, missing capabilities, oversized output, and child startup timeout.
 Those fixtures do not establish interoperability with a source implementation.
 Real encrypted-RTSP/ENet/media acceptance must be recorded separately against a
-specific source commit. Native audio, non-Linux capture, hardware encoders, OS
-input, authenticated remote forwarding, and production desktop parity remain
+specific source commit. Native audio, non-Linux capture, hardware encoders,
+authenticated remote forwarding, and production desktop parity remain
 outside this experimental v1 boundary.
 
 An independent real-process lifecycle acceptance passed on October 10, 2026:
@@ -67,7 +68,14 @@ source builds require their own acceptance and provenance records.
 
 Protocol evolution remains fail-closed: optional `input_consent` defaults false.
 The agent requires `input-x11-keyboard-mouse` readiness when it is requested and
-rejects that input capability without the separate consent. The currently
-packaged d0512f8 source does not provide this capability, so input is unavailable
-in that package. Cancellation closes the private child pipe first, permitting
+rejects that input capability without the separate consent. The pinned
+02c08c82 source implements bounded X11 keyboard/mouse input and releases held
+inputs when its encrypted control peer disconnects. Its standalone native Linux
+CI covered real input into an isolated Xvfb; inspect the combined package CI
+receipt for actual agent-supervised acceptance. View-only sessions validate and
+drop supported input without OS effects. Cancellation closes the private child pipe first, permitting
 cleanup before a bounded forced stop; blocked parent output is bounded as well.
+
+The process-mode initial JSON line must arrive within 10 seconds. SIGTERM or
+interrupt cancels a blocked initial read on supported platforms; inherited-pipe
+I/O is process-scoped, bounded, and never reused after timeout/cancellation.

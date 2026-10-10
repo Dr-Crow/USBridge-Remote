@@ -3,14 +3,53 @@ package main
 import (
 	"bytes"
 	"context"
+	"io"
 	"sync"
 	"testing"
+	"time"
 )
 
 type blockedSourceOutput struct {
 	release chan struct{}
 	mu      sync.Mutex
 	calls   int
+}
+
+func TestSourceInputCancellationBeforeLaunch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	in, out := io.Pipe()
+	defer in.Close()
+	defer out.Close()
+	reader := &sourceProcessInput{context: ctx, input: in}
+	cancel()
+	if _, err := reader.Read(make([]byte, 32)); err == nil {
+		t.Fatal("uncanceled input")
+	}
+	if _, err := reader.Read(make([]byte, 32)); err == nil {
+		t.Fatal("failed input reused")
+	}
+}
+
+func TestSourceInputLaunchDeadline(t *testing.T) {
+	in, out := io.Pipe()
+	defer in.Close()
+	defer out.Close()
+	reader := &sourceProcessInput{context: context.Background(), input: in, launchDeadline: time.Now().Add(20 * time.Millisecond)}
+	if _, err := reader.Read(make([]byte, 32)); err == nil {
+		t.Fatal("initial input did not time out")
+	}
+}
+
+func TestSourceInputLaunchDisablesInitialDeadline(t *testing.T) {
+	reader := &sourceProcessInput{context: context.Background(), input: bytes.NewBufferString("{}\nclose\n")}
+	p := make([]byte, 3)
+	if n, err := reader.Read(p); n != 3 || err != nil || string(p) != "{}\n" {
+		t.Fatal(n, err)
+	}
+	reader.launchDeadline = time.Now().Add(-time.Second)
+	if n, err := reader.Read(p); n != 3 || err != nil || string(p) != "clo" {
+		t.Fatal(n, err)
+	}
 }
 
 func (w *blockedSourceOutput) Write(p []byte) (int, error) {

@@ -21,7 +21,9 @@ launch it, never passes credentials in command-line arguments, and does not
 route through the vendor entitlement or modified-binary path. The agent probes the verified executable with `--capabilities` and requires
 `session_supported: true`, matching platform/profile and all three v1 transport
 capabilities. Unsupported builds fail before credentials are passed. Linux has
-real integration coverage; Windows and macOS need native runtime acceptance.
+real agent integration coverage. The pinned broker source also passed native
+Windows standalone CLI/mTLS acceptance; the combined agent wrapper on Windows
+and macOS still needs native runtime acceptance.
 
 The first newline-delimited JSON object contains `version: 1`, literal private
 or loopback `address` with port, absolute local `certificate_file`, `key_file`
@@ -59,3 +61,7 @@ It does not establish physical USB compatibility, kernel/VHCI attachment,
 non-Linux runtime behavior, stock browser protocol compatibility or USB product
 parity. Source commit pins and CI receipts must be recorded independently for
 distribution artifacts.
+
+The process-mode initial JSON line must arrive within 10 seconds. SIGTERM or
+interrupt cancels a blocked initial read on supported platforms; inherited-pipe
+I/O is process-scoped, bounded, and never reused after timeout/cancellation.

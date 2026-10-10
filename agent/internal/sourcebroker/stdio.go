@@ -205,16 +205,27 @@ func runBinary(ctx context.Context, binary string, launch Launch, in io.Reader, 
 			inputClosed = true
 		case err := <-processDone:
 			stopOnce.Do(func() { exitErr = err })
-			if err != nil {
-				return err
-			}
-			// Drain the final stopped frame if it preceded the process exit.
+			// Wait runs after the reader enqueues its final frame. Preserve that
+			// typed terminal event even when the child exits nonzero immediately
+			// after reporting an idle remote-session loss.
 			select {
 			case event := <-events:
-				if event.Event == "stopped" && event.validateStatus() == nil {
-					return encoder.Encode(event)
+				if statusErr := event.validateStatus(); statusErr != nil {
+					return statusErr
+				}
+				if writeErr := encoder.Encode(event); writeErr != nil {
+					return errors.New("write source-broker status")
+				}
+				if event.Event == "error" && event.Error == "session_closed" {
+					return errors.New("source-broker remote session closed")
+				}
+				if event.Event == "stopped" {
+					return exitErr
 				}
 			default:
+			}
+			if err != nil {
+				return err
 			}
 			if inputClosed {
 				return errors.New("source-broker exited without stopped acknowledgement")

@@ -10,7 +10,8 @@ included in `source/`; binary/source hashes are in `BUILD-PROVENANCE.json`.
 ## Current acceptance boundary
 
 - Linux X11 H.264 software capture through a trusted local FFmpeg executable,
-  encrypted RTSP, ENet control and synthesized-silence Opus audio.
+  encrypted RTSP, ENet control and synthesized-silence Opus audio. Optional
+  X11 keyboard/mouse input requires separate consent and advertised support.
 - USB/IP importer-client over mutual TLS 1.3 with CA/name/certificate-pin
   checks, explicit per-device consent, bounded transfers and cancellation.
 - The USB client does not attach devices to an operating system. This is not
@@ -35,9 +36,13 @@ preselected physical device.
 
 CI acceptance runs against an isolated Xvfb and a synthetic loopback mTLS USB
 service, not a user's desktop or physical USB hardware. Inspect the pipeline's
-media/lifecycle and broker receipts for the exact tested commit. The separate
-LAN Docker test verifies its host/test-client internal network; it does not by
-itself demonstrate zero WAN egress for this entire source-component package.
-Windows/macOS source runtime, physical device compatibility, native input,
+media/lifecycle and broker receipts for the exact tested commit. The
+`internal-network/result.json` acceptance runs the actual packaged agent with
+both source components inside a Docker internal network, using unchanged pinned
+public-client code for video/audio and separately consented isolated-Xvfb input,
+plus a mutual-TLS USB fixture. The test explicitly requires blocked WAN TCP.
+This demonstrates operation with egress blocked, not that a process never
+attempted a WAN request. A missing receipt is not a pass.
+Windows/macOS source runtime, physical device compatibility,
 hardware acceleration and full desktop interoperability require additional
 acceptance. A successful source process launch alone does not establish them.

@@ -48,6 +48,10 @@ func TestMain(m *testing.M) {
 			os.Exit(0)
 		}
 		encoder.Encode(ready)
+		if mode == "session-closed" {
+			encoder.Encode(Event{Event: "error", Error: "session_closed"})
+			os.Exit(2)
+		}
 		scanner := bufio.NewScanner(reader)
 		for scanner.Scan() {
 			var command Command
@@ -177,5 +181,37 @@ func TestCapabilityProbe(t *testing.T) {
 				t.Fatal("unexpected probe result:", err)
 			}
 		})
+	}
+}
+
+func TestIdleSessionLossPreservesTerminalEvent(t *testing.T) {
+	t.Setenv("USBRIDGE_BROKER_TEST_HELPER", "session-closed")
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		in, writer := io.Pipe()
+		var out bytes.Buffer
+		err := runBinary(ctx, binary, validLaunch(), in, &out)
+		writer.Close()
+		in.Close()
+		cancel()
+		if err == nil || !strings.Contains(err.Error(), "remote session closed") {
+			t.Fatalf("idle loss result: %v", err)
+		}
+		var events []Event
+		scanner := bufio.NewScanner(&out)
+		for scanner.Scan() {
+			var event Event
+			if err := decode(scanner.Bytes(), &event); err != nil {
+				t.Fatal(err)
+			}
+			events = append(events, event)
+		}
+		if len(events) != 2 || events[0].Event != "ready" || events[1].Event != "error" || events[1].Error != "session_closed" {
+			t.Fatalf("lost typed terminal event: %+v", events)
+		}
 	}
 }
