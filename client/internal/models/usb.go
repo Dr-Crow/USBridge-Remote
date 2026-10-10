@@ -200,6 +200,9 @@ type VideoInfoData struct {
 	StreamURL        string         `json:"stream_url"`
 	UDPListenerReady bool           `json:"udp_listener_ready"`
 	AvailableDevices []SystemDevice `json:"available_devices,omitempty"`
+	// SunshinePort is an agent's Sunshine admin port (47990 unless changed
+	// in the agent): Moonlight's ports follow it (service.SetSunshineAdminPort).
+	SunshinePort int `json:"sunshine_port,omitempty"`
 }
 
 func ParseVideoInfoData(data interface{}) (*VideoInfoData, error) {

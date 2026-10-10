@@ -15,6 +15,7 @@ import (
 	"usbridge-client/internal/gui/i18n"
 	"usbridge-client/internal/gui/view"
 	"usbridge-client/internal/models"
+	"usbridge-client/internal/service"
 
 	"fyne.io/fyne/v2"
 	"github.com/sirupsen/logrus"
@@ -98,6 +99,8 @@ func getVideoInfoDataForDevice(usbClient *api.USBClient, devicePath string) (*mo
 
 	info, err := models.ParseVideoInfoData(resp.Data)
 	if err == nil && info != nil {
+		// An agent may run Sunshine on other ports than the defaults.
+		service.SetSunshineAdminPort(info.SunshinePort)
 		logrus.Infof("🎯 [CODEC-TRACE] GET /api/video/info (device=%q) -> encoding=%q mode=%q streaming=%v -- \"encoding\" is the agent's best-effort report of what the server is ACTUALLY running right now",
 			devicePath, info.Encoding, info.Mode, info.Streaming)
 	}

@@ -71,10 +71,12 @@ benchmark run -- plus its own GPU line:
   macOS/iOS; `--` on the web client and wherever the host side hasn't
   answered yet).
 
-Every 500 ms, on the agent (`agent/internal/hostload`, Windows performance
-counters -- the ones Task Manager shows; other host OSes, and any PDH
-failure, send no samples and now also name why, see `/api/bench/load/stop`
-below): whole-machine CPU and the streamer processes' CPU (`sunshine`,
+Every 500 ms, on the agent (`agent/internal/hostload`: Windows performance
+counters -- the ones Task Manager shows; Linux `/proc` for CPU and, for the
+GPU, `nvidia-smi` on NVIDIA or the kernel's DRM fdinfo on Intel/AMD (plus
+amdgpu's `gpu_busy_percent`); macOS `ps` for CPU and the IOAccelerator's
+Device Utilization (3d) from `ioreg`; a reader that can't start sends no
+samples and names why, see `/api/bench/load/stop` below): whole-machine CPU and the streamer processes' CPU (`sunshine`,
 `usbridge-streamer`; percent of all cores), and GPU utilization per engine
 type -- `3d`, `encode`, `decode`, `copy`, and `codec` for a shared
 encode+decode block (AMD's "Video Codec") -- for the whole machine and for
@@ -132,6 +134,14 @@ operator's choosing.
 | `POST /api/bench/prepare` | download the test video |
 | `POST /api/bench/video/start` / `stop` | play / close the test video |
 | `POST /api/bench/load/start` / `stop` | sample host CPU/GPU load; `stop` returns `{"samples":[...]}`, plus `"error"` naming why whenever `samples` is empty (`hostload.Sampler.LastError`) |
+
+A USBridge KVM (`usbridge`'s `web/bench_kvm.go`) answers the same
+endpoints: its one streamer is `rustshine` (switching to it is a no-op,
+another kind is refused), it has no test video (prepare says so, the run
+records whatever the target PC's screen shows -- play something on it for
+a moving picture), and load start/stop samples the KVM's own CPU and the
+streamer's share (no GPU counters there). `gpu` is the device and its chip,
+e.g. "NanoKVM (SG2002)", "Radxa Zero 3 (RK3566)".
 
 The player stops on its own after 15 minutes if no client stops it. On
 Windows it is launched into the interactive session (a Session 0 window

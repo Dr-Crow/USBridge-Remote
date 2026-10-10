@@ -56,6 +56,12 @@ type LocalizedStrings struct {
 	ScanQR                            string
 	ScanQRShort                       string
 	PasteLink                         string
+	AddOverUSB                        string
+	AddOverUSBSearching               string
+	AddOverUSBDone                    string
+	AddOverUSBNotFound                string
+	AddOverUSBClaimed                 string
+	AddOverUSBWindowClosed            string
 	ManualEntry                       string
 	OrEnterManually                   string
 	AddConnectionSubtitle             string
@@ -725,6 +731,12 @@ func EN() *LocalizedStrings {
 		ScanQR:                            "Scan QR",
 		ScanQRShort:                       "QR",
 		PasteLink:                         "Paste Link",
+		AddOverUSB:                        "Over USB",
+		AddOverUSBSearching:               "Looking for the KVM over USB...",
+		AddOverUSBDone:                    "Got it from the KVM over USB",
+		AddOverUSBNotFound:                "No KVM found over USB.\n\nConnect the KVM's USB cable to this computer and wait a few seconds after it powers on: a new network adapter appears (no driver needed on Windows 10/11, macOS or Linux).\n\nA KVM that's already set up doesn't offer this any more: connect to it over the network, or reset it to factory settings.",
+		AddOverUSBClaimed:                 "this KVM was already set up and its master key handed out. If that wasn't you, reset the KVM to factory settings.",
+		AddOverUSBWindowClosed:            "The KVM hands out its key only during the first 30 minutes after it powers on. Power it off and on again, then try once more.",
 		ManualEntry:                       "Manual",
 		OrEnterManually:                   "OR ENTER MANUALLY",
 		AddConnectionSubtitle:             "Pair a hardware or software agent using its IP address and master key.",
@@ -1385,6 +1397,12 @@ func ES() *LocalizedStrings {
 	locale.AddConnectHintLine2 = "para agregar un agent de hardware o software"
 	locale.ScanQR = "Escanear QR"
 	locale.PasteLink = "Pegar enlace"
+	locale.AddOverUSB = "Por USB"
+	locale.AddOverUSBSearching = "Buscando el KVM por USB..."
+	locale.AddOverUSBDone = "Recibido del KVM por USB"
+	locale.AddOverUSBNotFound = "No se encontró ningún KVM por USB.\n\nConecta el cable USB del KVM a este ordenador y espera unos segundos tras encenderlo: aparece un nuevo adaptador de red (sin drivers en Windows 10/11, macOS o Linux).\n\nUn KVM ya configurado deja de ofrecerlo: conéctate por la red o restablécelo de fábrica."
+	locale.AddOverUSBClaimed = "este KVM ya se configuró y entregó su clave maestra. Si no fuiste tú, restablece el KVM de fábrica."
+	locale.AddOverUSBWindowClosed = "El KVM entrega su clave solo durante los primeros 30 minutos tras encenderse. Apágalo y enciéndelo de nuevo y vuelve a intentarlo."
 	locale.ManualEntry = "Manual"
 	locale.OrEnterManually = "O INTRODUCIR MANUALMENTE"
 	locale.AddConnectionSubtitle = "Empareja un agent de hardware o software con su IP y master key."
@@ -1786,6 +1804,12 @@ func UKProper() *LocalizedStrings {
 	locale.AddConnectHintLine2 = "щоб додати hardware або software agent"
 	locale.ScanQR = "Сканувати QR"
 	locale.PasteLink = "Посилання"
+	locale.AddOverUSB = "Через USB"
+	locale.AddOverUSBSearching = "Шукаю KVM через USB..."
+	locale.AddOverUSBDone = "Отримано від KVM через USB"
+	locale.AddOverUSBNotFound = "KVM через USB не знайдено.\n\nПідключіть USB-кабель KVM до цього комп'ютера й зачекайте кілька секунд після ввімкнення: з'явиться новий мережевий адаптер (без драйверів у Windows 10/11, macOS і Linux).\n\nВже налаштований KVM цього більше не пропонує: підключайтеся через мережу або скиньте його до заводських налаштувань."
+	locale.AddOverUSBClaimed = "цей KVM вже налаштовано, його майстер-ключ видано. Якщо це були не ви, скиньте KVM до заводських налаштувань."
+	locale.AddOverUSBWindowClosed = "KVM видає ключ лише протягом перших 30 хвилин після ввімкнення. Вимкніть і ввімкніть його знову й спробуйте ще раз."
 	locale.ManualEntry = "Вручну"
 	locale.OrEnterManually = "АБО ВВЕСТИ ВРУЧНУ"
 	locale.AddConnectionSubtitle = "Прив'яжіть hardware або software agent за IP та master key."

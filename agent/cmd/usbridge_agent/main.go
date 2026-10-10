@@ -8,6 +8,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"usbridge_agent/internal/app"
 	"usbridge_agent/internal/localruntime"
+	"usbridge_agent/internal/logcap"
 	"usbridge_agent/internal/netpolicy"
 	"usbridge_agent/internal/ui"
 )
@@ -72,12 +73,15 @@ func doStart(headless, tray bool, attach string) {
 
 func setupLogging() {
 	logFilePath := appLogPath()
+	logcap.Cap(logFilePath)
 	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		log.SetOutput(os.Stdout)
 		log.Printf("logging fallback to stdout: %v", err)
 		return
 	}
+	// A ring of two files, never more than 2 x logcap.MaxBytes.
+	logcap.Watch(logFilePath)
 
 	output, err := setupPlatformLogOutput(logFile)
 	if err != nil {

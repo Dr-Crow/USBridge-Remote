@@ -42,6 +42,7 @@ import (
 	"usbridge_agent/internal/input"
 	"usbridge_agent/internal/localcomponents"
 	"usbridge_agent/internal/localruntime"
+	"usbridge_agent/internal/logcap"
 	"usbridge_agent/internal/netpolicy"
 	"usbridge_agent/internal/netutil"
 	"usbridge_agent/internal/permissions"
@@ -619,6 +620,8 @@ func New() (*App, error) {
 		instance.setEntError(fmt.Sprintf("local component setup: %v", localStartupErr))
 	}
 	instance.logPath = filepath.Join(cfg.StateDir, "logs", "sunshine-stdout.log")
+	// The streamer's output: a ring too (see logcap).
+	logcap.Watch(instance.logPath)
 	instance.setStreamKind("sunshine")
 
 	// If this install was already switched to RustShine last run, pick it
@@ -4180,7 +4183,7 @@ func (a *App) QRLink() (string, string) {
 	// free-tier entitlement token for it (see desktopLicense.ts's
 	// documented trust model), no new capability against this device.
 	hwID, _ := hwid.Get()
-	link := buildQRLink(internalHost, tailscaleHost, masterKey, hwID)
+	link := buildQRLink(netutil.WithAPIPort(internalHost, a.cfg.HTTPPort), netutil.WithAPIPort(tailscaleHost, a.cfg.HTTPPort), masterKey, hwID)
 	return link, masterKey
 }
 

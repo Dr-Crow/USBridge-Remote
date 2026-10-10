@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
 	"image/color"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/driver/desktop"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/theme"
@@ -1482,11 +1484,60 @@ func showConnectionEditorDialog(parent fyne.Window, window fyne.Window, spec con
 		if view.UseMobileConnections() {
 			iconTop, dividerTop, dividerBottom = 6, 6, 6
 		}
-		formContent = container.NewVBox(
-			view.NewInset(iconRow, 0, 0, iconTop, 0),
+		buttonRows := []fyne.CanvasObject{view.NewInset(iconRow, 0, 0, iconTop, 0)}
+
+		// Over USB (desktop): a KVM not set up yet hands its key over its
+		// USB cable (connection_usb_setup.go) -- no screen, QR or
+		// provisioning file needed. Fills the fields; Save/Connect as usual.
+		if usbSetupSupported && !view.IsMobile() {
+			var usbBtn *connectionDialogSecondaryButton
+			usbBtn = newConnectionDialogWideActionButton(i18n.Current.AddOverUSB, assets.USBTabIconActive, design.ColorConnectionAddFill, func() {
+				usbBtn.SetDisabled(true)
+				usbBtn.SetLabel(i18n.Current.AddOverUSBSearching)
+				go func() {
+					res, err := claimKVMOverUSB()
+					fyne.Do(func() {
+						usbBtn.SetDisabled(false)
+						var claimed usbSetupClaimedError
+						switch {
+						case err == nil:
+							if pasteActive {
+								showNormalFields()
+							}
+							lanEntry.SetText(res.Host)
+							tokenEntry.SetText(res.MasterKey)
+							if strings.TrimSpace(nameEntry.Text) == "" && res.Hostname != "" {
+								nameEntry.SetText(res.Hostname)
+							}
+							usbBtn.SetLabel("✓ " + i18n.Current.AddOverUSBDone)
+							logrus.Infof("Over USB: got the KVM's key (host %s)", res.Host)
+						case errors.Is(err, errUSBSetupNotFound):
+							usbBtn.SetLabel(i18n.Current.AddOverUSB)
+							dialog.ShowInformation(i18n.Current.AddOverUSB, i18n.Current.AddOverUSBNotFound, parent)
+						case errors.As(err, &claimed):
+							usbBtn.SetLabel(i18n.Current.AddOverUSB)
+							msg := i18n.Current.AddOverUSBClaimed
+							if claimed.at != nil {
+								msg = claimed.at.Local().Format("2006-01-02 15:04") + ": " + msg
+							}
+							dialog.ShowInformation(i18n.Current.AddOverUSB, msg, parent)
+						case errors.Is(err, errUSBSetupWindowClosed):
+							usbBtn.SetLabel(i18n.Current.AddOverUSB)
+							dialog.ShowInformation(i18n.Current.AddOverUSB, i18n.Current.AddOverUSBWindowClosed, parent)
+						default:
+							usbBtn.SetLabel(i18n.Current.AddOverUSB)
+							dialog.ShowError(err, parent)
+						}
+					})
+				}()
+			})
+			buttonRows = append(buttonRows, view.NewInset(usbBtn, 0, 0, 9, 0))
+		}
+		buttonRows = append(buttonRows,
 			view.NewInset(newConnectionDialogManualDivider(), 0, 0, dividerTop, dividerBottom),
 			normalForm,
 		)
+		formContent = container.NewVBox(buttonRows...)
 	}
 
 	var feedback fyne.CanvasObject

@@ -16,6 +16,7 @@ import (
 	"usbridge-client/internal/gui"
 	"usbridge-client/internal/gui/i18n"
 	"usbridge-client/internal/gui/view"
+	"usbridge-client/internal/logcap"
 	"usbridge-client/internal/models"
 	"usbridge-client/internal/update"
 	"usbridge-client/internal/usbpass"
@@ -217,12 +218,15 @@ func setupLogging(level string) {
 	})
 
 	logFilePath := appLogPath()
+	logcap.Cap(logFilePath)
 	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		logrus.SetOutput(os.Stdout)
 		logrus.Warnf("Failed to open log file: %v", err)
 		return
 	}
+	// A ring of two files, never more than 2 x logcap.MaxBytes.
+	logcap.Watch(logFilePath)
 
 	output, err := setupPlatformLogOutput(logFile)
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"net"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -359,7 +360,7 @@ func isLikelyTailscaleAuthKey(token string) bool {
 }
 
 func isLikelyTailscaleHost(host string) bool {
-	host = strings.TrimSpace(strings.ToLower(host))
+	host, _ = splitAPIHostPort(strings.ToLower(host))
 	return host != "" && (strings.HasSuffix(host, ".ts.net") || strings.HasPrefix(host, "100."))
 }
 
@@ -877,8 +878,11 @@ func (mw *MainWindow) reconnectViaTailscaleAfterRegistration(host, masterKey str
 }
 
 func (mw *MainWindow) doConnectWithProtocol(ctx context.Context, host, protocol string, gen uint64) error {
+	// host may carry the agent's API port ("192.168.1.5:9090", see
+	// useConnectionAPIPort); lookups of saved connections use it as saved.
+	savedHost := host
 	connectTailscale := func(ctx context.Context) error {
-		resolvedHost := strings.TrimSpace(host)
+		resolvedHost := strings.TrimSpace(savedHost)
 
 		// If the current host is not a Tailscale address (e.g. it's a LAN IP from QR scan),
 		// look up the Tailscale IP stored by a previous sync for this connection.
@@ -896,6 +900,7 @@ func (mw *MainWindow) doConnectWithProtocol(ctx context.Context, host, protocol 
 		if resolvedHost == "" || !isLikelyTailscaleHost(resolvedHost) {
 			return fmt.Errorf("no tailscale address available for bridge (do a fresh sync to register)")
 		}
+		resolvedHost = mw.useConnectionAPIPort(resolvedHost)
 
 		// dialTailscaleTarget is platform-split: tsnet on desktop/Android
 		// (main_window_connection_tailscale_default.go), a plain direct HTTP
@@ -917,6 +922,8 @@ func (mw *MainWindow) doConnectWithProtocol(ctx context.Context, host, protocol 
 
 	logrus.Infof("🔗 [CONNECT] protocol=%s host=%s", protocol, host)
 	mw.seedAgentIdentityFromSaved(host)
+	// The direct paths below: the bare host, the API port from it.
+	host = mw.useConnectionAPIPort(savedHost)
 
 	switch protocol {
 	case models.ConnectionProtocolTailscale:
@@ -932,6 +939,7 @@ func (mw *MainWindow) doConnectWithProtocol(ctx context.Context, host, protocol 
 				return errConnectAborted
 			}
 			logrus.Warnf("⚠️ Tailscale auto-connect failed, falling back to direct: %v", err)
+			host = mw.useConnectionAPIPort(savedHost)
 			tempClient := api.NewDirectUSBClient(host, mw.config.USBPort, mw.config.USBTLSPort, mw.config.APITimeout)
 			if err2 := testConnectionWithRetry(ctx, tempClient, host); err2 != nil {
 				if mw.connectAborted(ctx, gen) {
@@ -1522,4 +1530,46 @@ func (mw *MainWindow) resolveVideoBindHost() string {
 		}
 	}
 	return "127.0.0.1"
+}
+
+// apiPortDefault is the API port from the config (usb_port, 8080 unless set
+// otherwise), kept apart from mw.config.USBPort, which follows the
+// connection being made: an agent can be told to listen elsewhere.
+var apiPortDefault int
+
+// useConnectionAPIPort points every API client (all built from
+// mw.config.USBPort) at the port in host ("192.168.1.5:9090" -- typed in,
+// or from an agent's QR/link when it doesn't listen on the default), or
+// back at the default one, and returns host without it: Moonlight, NBD and
+// the rest take the bare address.
+func (mw *MainWindow) useConnectionAPIPort(host string) string {
+	if apiPortDefault == 0 {
+		apiPortDefault = mw.config.USBPort
+		if apiPortDefault == 0 {
+			apiPortDefault = 8080
+		}
+	}
+	bare, port := splitAPIHostPort(host)
+	if port > 0 {
+		mw.config.USBPort = port
+		logrus.Infof("🔗 [CONNECT] %s: API port %d", bare, port)
+	} else {
+		mw.config.USBPort = apiPortDefault
+	}
+	return bare
+}
+
+// splitAPIHostPort splits "host:port" ("[v6]:port"); a host without a
+// port (a bare IPv6 address included) comes back as is, with port 0.
+func splitAPIHostPort(host string) (string, int) {
+	host = strings.TrimSpace(host)
+	h, p, err := net.SplitHostPort(host)
+	if err != nil {
+		return host, 0
+	}
+	n, err := strconv.Atoi(p)
+	if err != nil || n <= 0 || n > 65535 {
+		return host, 0
+	}
+	return h, n
 }
