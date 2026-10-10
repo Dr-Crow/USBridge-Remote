@@ -115,11 +115,11 @@ func graphicsModules(pid uint32, executable, systemRoot string, expected map[str
 		seen[lower] = true
 		if declared, present := allowed[lower]; present {
 			if !strings.EqualFold(path, graphicsPath(filepath.Join(directory, declared))) {
-				return nil, rejectedGraphicsModule("graphics_module_not_app_local", name, path, directory, systemRoot, true)
+				return nil, inspectedGraphicsRejection("graphics_module_not_app_local", name, path, directory, systemRoot, true)
 			}
 			loaded[declared] = expected[declared]
 		} else if !strings.EqualFold(path, graphicsPath(executable)) && !strings.HasPrefix(strings.ToLower(path), system) {
-			return nil, rejectedGraphicsModule("graphics_module_not_in_verified_closure", name, path, directory, systemRoot, false)
+			return nil, inspectedGraphicsRejection("graphics_module_not_in_verified_closure", name, path, directory, systemRoot, false)
 		}
 		entry = graphicsModuleEntry{Size: uint32(unsafe.Sizeof(graphicsModuleEntry{}))}
 		ok, _, err = next.Call(snapshot, uintptr(unsafe.Pointer(&entry)))

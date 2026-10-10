@@ -274,3 +274,16 @@ required safety cleanup. The follow-on diagnostic emits only the first rejected
 DLL's bounded basename, a closed location category and whether it was declared
 in staging. It preserves the original fatal code and every module acceptance
 rule. A Windows side-by-side location is a diagnostic hint, never an exemption.
+
+The `2789ddd` native receipt identified the rejected module as `gdiplus.dll`
+in Windows side-by-side storage. The next diagnostic locks only that observed
+file, verifies its resolved handle path and SHA256, then invokes the installed
+Windows PowerShell signature verifier inside a separate bounded owned Job.
+It records the existing catalog-aware signature status, `IsOSBinary`, bounded
+certificate names/fingerprint and matching file hash. Full paths stay on private
+pipes. No certificate, revocation, execution-policy or system setting changes
+are made. The verifier must naturally exit and leave a complete empty Job.
+This is evidence collection only: even a Valid signature keeps the module
+rejected, and cannot establish pixel or natural-viewer-cleanup acceptance.
+Signature validity and certificate display names alone are not authorization
+or an independently established publisher trust decision.

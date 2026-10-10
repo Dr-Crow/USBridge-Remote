@@ -12,9 +12,10 @@ var graphicsDLLName = regexp.MustCompile(`^[A-Za-z0-9_.+-]{1,100}\.[dD][lL][lL]$
 // A rejection stays fatal. These bounded hints describe only the first rejected
 // module of the already-owned process; no full path or unrelated PID is emitted.
 type graphicsModuleRejection struct {
-	Name     string `json:"module_basename,omitempty"`
-	Location string `json:"location_category"`
-	Declared bool   `json:"declared_in_staging"`
+	Name       string                `json:"module_basename,omitempty"`
+	Location   string                `json:"location_category"`
+	Declared   bool                  `json:"declared_in_staging"`
+	Inspection *graphicsOSInspection `json:"os_file_inspection,omitempty"`
 }
 
 type graphicsModuleFailure struct {
