@@ -47,7 +47,10 @@ func TestGraphicsSignatureInspectionParsingAndTrustPolicy(t *testing.T) {
 	if err != nil || v.Status != 4 {
 		t.Fatal("trust failure hidden")
 	}
-	args := strings.Join(graphicsSignatureArguments(), " ")
+	args := strings.Join(graphicsSignatureArguments(`C:\owned\verify-os-file.ps1`), " ") + " " + graphicsSignatureScript
+	if !strings.Contains(args, "-File C:\\owned\\verify-os-file.ps1") || strings.Contains(args, "-Command") {
+		t.Fatal("fixed local script invocation required")
+	}
 	for _, required := range []string{"-NoProfile", "-NonInteractive", "Get-AuthenticodeSignature -LiteralPath $request.path", "Get-FileHash -Algorithm SHA256 -LiteralPath $request.path"} {
 		if !strings.Contains(args, required) {
 			t.Fatal("missing bounded verifier contract")

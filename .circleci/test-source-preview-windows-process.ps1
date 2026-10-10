@@ -100,7 +100,7 @@ Push-Location (Join-Path $root '.circleci\source\windows-preview-acceptance')
 try {
     Report-Stage 'native_signature_verifier'
     $env:WINDOWS_SIGNATURE_PROBE_RECEIPT = Join-Path $out 'signature-probe.json'
-    & $go test -tags signatureprobe '-run=^TestWindowsSignatureVerifierSystemFile$' -count=1 -timeout=20s ./... 1> $log 2> $stderr
+    & $go test -json -tags signatureprobe '-run=^TestWindowsSignatureVerifierSystemFile$' -count=1 -timeout=20s ./... 1> $log 2> $stderr
     if ($LASTEXITCODE -ne 0) { Report-TestFailure; throw 'Native signature verifier failed; see bounded signature receipt' }
     Remove-Item Env:WINDOWS_SIGNATURE_PROBE_RECEIPT
     Report-Stage 'natural_retirement_probe'

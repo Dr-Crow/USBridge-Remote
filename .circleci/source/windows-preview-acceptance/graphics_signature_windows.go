@@ -3,6 +3,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,6 +67,21 @@ func runGraphicsSignature(final, systemRoot string, r *graphicsOSInspection) (re
 		return failure("os_verifier_work_failed")
 	}
 	defer os.Remove(work)
+	scriptPath := filepath.Join(work, "verify-os-file.ps1")
+	if err := os.WriteFile(scriptPath, []byte(graphicsSignatureScript), 0600); err != nil {
+		return failure("os_verifier_script_failed")
+	}
+	defer os.Remove(scriptPath)
+	script, err := lockFile(scriptPath)
+	if err != nil {
+		return failure("os_verifier_script_lock_failed")
+	}
+	defer script.Close()
+	digest := sha256.Sum256([]byte(graphicsSignatureScript))
+	r.ScriptSHA = hex.EncodeToString(digest[:])
+	if got, e := fileSHA(script, 65536); e != nil || got != r.ScriptSHA {
+		return failure("os_verifier_script_hash_failed")
+	}
 	j, err := newJob()
 	if err != nil {
 		return err
@@ -72,17 +89,11 @@ func runGraphicsSignature(final, systemRoot string, r *graphicsOSInspection) (re
 	defer j.close()
 	watchdog := time.AfterFunc(7*time.Second, j.close)
 	defer watchdog.Stop()
-	p, err := j.start(filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), graphicsSignatureArguments(), childEnvironment(systemRoot, work), work)
+	p, err := j.start(filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), graphicsSignatureArguments(scriptPath), childEnvironment(systemRoot, work), work)
 	if err != nil {
 		return failure("os_verifier_start_failed")
 	}
 	defer func() {
-		select {
-		case <-p.done:
-			value := p.exitCode
-			r.ExitCode = &value
-		default:
-		}
 		if ids, e := j.pids(); j.closed.Load() || e != nil || len(ids) != 0 || p.alive() {
 			r.NaturalCleanup = false
 			j.close()
@@ -90,6 +101,12 @@ func runGraphicsSignature(final, systemRoot string, r *graphicsOSInspection) (re
 			if result == nil {
 				result = failure("os_verifier_cleanup_failed")
 			}
+		}
+		select {
+		case <-p.done:
+			value := p.exitCode
+			r.ExitCode = &value
+		default:
 		}
 		p.close()
 	}()
@@ -104,6 +121,11 @@ func runGraphicsSignature(final, systemRoot string, r *graphicsOSInspection) (re
 			r.ResultFailure = err.Error()
 		default:
 			r.ResultFailure = "other_protocol_failure"
+		}
+		// Observe a natural startup failure before safety retirement; never turn
+		// missing output into a successful signature result.
+		if p.wait(time.Second) == nil && p.finishProtocol() == nil && waitRetiredInventory(j.pids, map[uint32]bool{p.pid: true}, time.Second) == nil {
+			r.NaturalCleanup = true
 		}
 		return failure("os_verifier_result_failed")
 	}

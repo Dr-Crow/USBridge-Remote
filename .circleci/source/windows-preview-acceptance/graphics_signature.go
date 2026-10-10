@@ -14,6 +14,7 @@ type graphicsOSInspection struct {
 	ResultFailure    string             `json:"verifier_result_failure,omitempty"`
 	ExitCode         *uint32            `json:"verifier_exit_code,omitempty"`
 	ElapsedMillis    int64              `json:"verifier_elapsed_ms,omitempty"`
+	ScriptSHA        string             `json:"verifier_script_sha256,omitempty"`
 }
 
 type graphicsSignature struct {
@@ -78,6 +79,6 @@ try {
  [Console]::Out.WriteLine(($result | ConvertTo-Json -Compress)); exit 0
 } catch { [Console]::Out.WriteLine(([ordered]@{schema_version=1;failure_stage=$stage} | ConvertTo-Json -Compress)); exit 0 }`
 
-func graphicsSignatureArguments() []string {
-	return []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-Command", graphicsSignatureScript}
+func graphicsSignatureArguments(script string) []string {
+	return []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-File", script}
 }
