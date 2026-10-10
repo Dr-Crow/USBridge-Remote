@@ -157,3 +157,22 @@ UI button clicking, startup cancellation, source-crash behavior and descriptor
 expiry are outside this first native harness's executed cases. Unit tests cover
 its protocol, pin, environment and receipt validation; do not claim those tests
 establish the omitted native scenarios.
+
+## Native console-host finding (2026-10-10)
+
+The first native inventory gate failed: `CREATE_NO_WINDOW` added an owned
+`System32/conhost.exe`, beyond the expected helper processes. The exact same-query
+classification identified that system host without disclosing process IDs or
+paths. A separate `DETACHED_PROCESS` comparison passed all 20 native repetitions.
+The runner now starts pipe-only children detached from any console, retaining
+atomic Job Object assignment, suspended membership verification and the three
+explicit pipe handles. Tests still require exact process identities and counts;
+no unknown or system-console process is exempted from inventory or cleanup.
+
+The generated encoder fixture is linked as a Windows GUI-subsystem pipe program
+(`-H=windowsgui`), so the frozen source's ordinary encoder spawn cannot allocate
+a console for this CI-only substitute. This is an explicit generated-fixture
+build choice, not evidence of production FFmpeg console behavior. The source
+itself remains a console-subsystem build; the actual agent supervisor now starts
+it with `DETACHED_PROCESS`. Private current-source encoder launch changes and
+production desktop acceptance require their separate private integration gate.

@@ -20,7 +20,7 @@ PY
  CGO_ENABLED=0 go test -json -count=1 -timeout=2m ./... | tee "$WORK/tests/fixture.jsonl"
  CGO_ENABLED=0 go vet ./...
  python3 build_assets.py --ffmpeg "$(cygpath -m /ucrt64/bin/ffmpeg.exe)" --output "$(cygpath -m "$WORK/fixture")"
- CGO_ENABLED=0 go build -trimpath -ldflags "$(cat "$WORK/fixture/fixture-ldflags.txt")" -o "$WORK/fixture/ffmpeg-fixture.exe" .
+ CGO_ENABLED=0 go build -trimpath -ldflags "-H=windowsgui $(cat "$WORK/fixture/fixture-ldflags.txt")" -o "$WORK/fixture/ffmpeg-fixture.exe" .
  python3 verify_fixture.py --ffmpeg "$(cygpath -m /ucrt64/bin/ffmpeg.exe)" --fixture "$(cygpath -m "$WORK/fixture/ffmpeg-fixture.exe")" > "$OUT/generated-encoder.json"
 )
 # Extract only the unchanged snapshot that already exists in this public tree.
@@ -46,6 +46,7 @@ PY
 )
 (
  cd agent
+ go test -json -count=5 -timeout=3m ./internal/sourcestreamer | tee "$WORK/tests/source-supervisor.jsonl"
  go build -trimpath -ldflags '-H=windowsgui -X usbridge_agent/internal/update.Channel=manual' -o "$WORK/agent/USBridgeAgent.exe" ./cmd/usbridge_agent
 )
 # Native helper tests establish the Job Object and pipe prerequisites before

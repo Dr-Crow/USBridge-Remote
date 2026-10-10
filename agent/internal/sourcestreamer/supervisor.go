@@ -243,6 +243,7 @@ func Start(ctx context.Context, source localcomponents.Options, request Launch) 
 func startBinary(ctx context.Context, binary string, request Launch) (*Session, error) {
 	processCtx, cancel := context.WithTimeout(ctx, time.Duration(request.MaxSeconds+15)*time.Second)
 	cmd := exec.CommandContext(processCtx, binary, "--launch-stdin")
+	configurePipeProcess(cmd)
 	// stdout is a bounded protocol channel. Child stderr is deliberately not
 	// relayed because a malformed child could echo the session's secret request.
 	cmd.Stderr = io.Discard

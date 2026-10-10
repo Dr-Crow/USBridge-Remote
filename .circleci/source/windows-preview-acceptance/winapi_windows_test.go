@@ -62,6 +62,7 @@ func TestWindowsPrivatePipeHelper(t *testing.T) {
 			os.Exit(2)
 		}
 		cmd := exec.Command(exe, "-test.run=^TestWindowsPrivatePipeHelper$")
+		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x8} // no console for the pipe-only owned leaf
 		cmd.Env = append(childEnvironment(os.Getenv("SystemRoot"), os.Getenv("TEMP")), "WINDOWS_PREVIEW_TEST_CHILD=leaf")
 		pipe, e := cmd.StdinPipe()
 		if e != nil {
@@ -264,13 +265,12 @@ func logInventorySnapshot(t *testing.T, j *job, list jobProcessList, queryErr er
 	t.Logf("inventory_snapshot failed=%d assigned=%d count=%d zero=%d wide=%d current=%d expected=%d console_hosts=%d other=%d unavailable=%d", failed, list.Assigned, list.Count, zero, wide, current, matched, consoleHost, other, unavailable)
 }
 
-func TestWindowsDetachedLaunchComparison(t *testing.T) {
+func TestWindowsPipeOnlyLaunchDoesNotAllocateConsoleHost(t *testing.T) {
 	j, err := newJob()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer j.close()
-	j.testDetached = true
 	p := testChild(t, j, "echo")
 	raw, err := p.next(3 * time.Second)
 	if err != nil || string(raw) != "private-test-reply\n" {

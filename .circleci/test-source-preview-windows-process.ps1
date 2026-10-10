@@ -56,7 +56,7 @@ function Report-TestFailure {
     if ((Test-Path $log) -and (Get-Item $log).Length -le 8MB) {
         foreach ($line in Get-Content $log) {
             try { $row = $line | ConvertFrom-Json } catch { $categories['invalid_test_json'] = $true; continue }
-            if ($row.Action -ceq 'pass' -and $null -ne $row.PSObject.Properties['Test'] -and $row.Test -ceq 'TestWindowsDetachedLaunchComparison') { $comparisons++ }
+            if ($row.Action -ceq 'pass' -and $null -ne $row.PSObject.Properties['Test'] -and $row.Test -ceq 'TestWindowsPipeOnlyLaunchDoesNotAllocateConsoleHost') { $comparisons++ }
             if ($row.Action -ceq 'build-fail') { $categories['build_failed'] = $true }
             if ($row.Action -ceq 'fail' -and $null -ne $row.PSObject.Properties['Test'] -and $row.Test -cmatch '^Test[A-Za-z0-9_]{1,128}$') { $tests[$row.Test] = $true }
             if ($null -ne $row.PSObject.Properties['Output']) {
@@ -101,6 +101,7 @@ try {
 } finally { Pop-Location }
 $required = @(
     'TestWindowsAPILayouts',
+    'TestWindowsPipeOnlyLaunchDoesNotAllocateConsoleHost',
     'TestWindowsSuspendedLaunchPrivatePipesNaturalEOF',
     'TestWindowsJobCloseKillsInheritedDescendant',
     'TestWindowsParentCrashRetiresSuspendedChild'
