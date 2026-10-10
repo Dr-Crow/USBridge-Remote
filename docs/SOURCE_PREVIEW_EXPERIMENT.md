@@ -8,6 +8,12 @@ The local dialog selects the component directory and trusted manifest checksum, 
 
 The currently packaged source pin remains `2e07af3484369bc68bc8091d5a04969867eff0f9`. Later source testing exposed intermittent FFmpeg output-rate overproduction in that implementation. The pixel/lifecycle tests below establish actual presentation and cleanup, not stable delivered 30fps cadence or desktop performance. A later source fix requires a separately verified package update; its results must not be attributed to this older package.
 
+The same older source also has an observed intermittent listener retirement race:
+`TestLaunchListenerTCPFlowAndCancellation` failed at line 61 during the first
+`55461e5` CI run and reproduced in a separate repeated local run. A same-commit
+retry does not remove this known startup limitation. The later component fix is
+not included in this package; no assertion is excluded to hide the failure.
+
 The manager generates a fresh 16-byte key, key ID and session ID. A source-preview-viewer component with profile source-preview-v1 must be in the same hash-pinned manifest. Its only argument is --source-preview-stdin. The bounded JSON descriptor is sent through private stdin, which remains open as the lease. The viewer receives schema_version/profile/session_id/rtsp_url/key_b64/key_id/width/height/fps/bitrate_kbps/expires_at. Keys are not saved, shown, logged or put in argv/environment. Typed stdout events ready, first_frame and stopped carry only version/session identity and a fixed stopped reason. The UI says viewing only after a decoded image is submitted to the native canvas. The event alone does not prove presented pixels; the independent X11 pixel gate must pass.
 
 On stop/close/deadline/child failure, the manager joins the viewer before the source so encrypted client teardown can finish. Concurrent startup is reserved, startup cancellation is propagated, fresh launches do not reuse prior session material, and callbacks from stopped sessions cannot alter another session.

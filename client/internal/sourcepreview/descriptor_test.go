@@ -114,6 +114,93 @@ func TestRejectMalformedDescriptors(t *testing.T) {
 		}
 	}
 }
+
+func TestRejectJSONFieldAliases(t *testing.T) {
+	for field, value := range validWire(t) {
+		aliases := []string{strings.ToUpper(field)}
+		// encoding/json also folds long s and Kelvin sign to ASCII s and k.
+		if alias := strings.NewReplacer("s", "ſ", "k", "K").Replace(field); alias != field {
+			aliases = append(aliases, alias)
+		}
+		for _, alias := range aliases {
+			for _, replace := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/replace=%t", alias, replace), func(t *testing.T) {
+					w := validWire(t)
+					if replace {
+						delete(w, field)
+					}
+					w[alias] = value
+					d, err := Decode(encoded(t, w), testNow)
+					if d != nil {
+						d.Destroy()
+						t.Fatal("accepted JSON field alias")
+					}
+					if err == nil || err.Error() != "invalid source preview descriptor" {
+						t.Fatal("missing or non-generic wire error")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestRejectNonCanonicalBase64Keys(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0xa5}, 16))
+	cases := map[string]string{
+		"leading CR":       "\r" + key,
+		"leading LF":       "\n" + key,
+		"embedded CR":      key[:8] + "\r" + key[8:],
+		"embedded LF":      key[:8] + "\n" + key[8:],
+		"embedded CRLF":    key[:8] + "\r\n" + key[8:],
+		"padding CRLF":     key[:len(key)-1] + "\r\n" + key[len(key)-1:],
+		"trailing CR":      key + "\r",
+		"trailing LF":      key + "\n",
+		"space":            key[:8] + " " + key[8:],
+		"tab":              key[:8] + "\t" + key[8:],
+		"missing padding":  strings.TrimRight(key, "="),
+		"extra padding":    key + "=",
+		"nonzero pad bits": key[:len(key)-3] + "R==",
+		"URL alphabet":     base64.URLEncoding.EncodeToString(bytes.Repeat([]byte{0xff}, 16)),
+	}
+	for name, key := range cases {
+		t.Run(name, func(t *testing.T) {
+			w := validWire(t)
+			w["key_b64"] = key
+			d, err := Decode(encoded(t, w), testNow)
+			if d != nil {
+				d.Destroy()
+				t.Fatal("accepted non-canonical base64 key")
+			}
+			if err == nil || err.Error() != "invalid source preview descriptor" {
+				t.Fatal("missing or non-generic wire error")
+			}
+		})
+	}
+}
+
+func TestDecodeCanonicalBase64Keys(t *testing.T) {
+	for _, keyByte := range []byte{0x00, 0xa5, 0xfb, 0xff} {
+		t.Run(fmt.Sprintf("%02x", keyByte), func(t *testing.T) {
+			key := bytes.Repeat([]byte{keyByte}, 16)
+			w := validWire(t)
+			w["key_b64"] = base64.StdEncoding.EncodeToString(key)
+			w["key_id"] = 0
+			d, err := Decode(encoded(t, w), testNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d.Destroy()
+			c, err := d.Consume(testNow)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(c.Key[:], key) || c.KeyID != 0 {
+				t.Fatal("canonical key or zero key ID changed")
+			}
+		})
+	}
+}
+
 func TestOnlyEncryptedLoopbackEndpoint(t *testing.T) {
 	for _, url := range []string{"rtsp://127.0.0.1:1234", "rtspenc://localhost:1234", "rtspenc://[::1]:1234", "rtspenc://0.0.0.0:1234", "rtspenc://192.168.1.1:1234", "rtspenc://127.0.0.1:0", "rtspenc://127.0.0.1:65536", "rtspenc://127.0.0.1:1234/", "rtspenc://127.0.0.1:1234?key=x", "rtspenc://127.0.0.1:1234#x", "rtspenc://user@127.0.0.1:1234", "rtspenc://127.0.0.1:01234"} {
 		if ValidateRTSPURL(url) == nil {

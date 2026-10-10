@@ -111,7 +111,7 @@ func (c Command) Validate() error {
 		}
 	}
 	data, err := base64.StdEncoding.Strict().DecodeString(c.Data)
-	if err != nil || len(data) > MaxTransfer {
+	if err != nil || len(data) > MaxTransfer || len(c.Data) != base64.StdEncoding.EncodedLen(len(data)) {
 		return errors.New("invalid source-broker transfer data")
 	}
 	if (c.Direction == 1 && len(data) != 0) || (c.Direction == 0 && len(data) != int(c.Length)) {
@@ -156,8 +156,8 @@ func (e Event) validateStatus() error {
 		if !idPattern.MatchString(e.ID) || e.ActualLength > MaxTransfer {
 			return errors.New("source-broker completion exceeds bounds")
 		}
-		data, err := base64.StdEncoding.DecodeString(e.Data)
-		if err != nil || len(data) > MaxTransfer || len(data) > int(e.ActualLength) {
+		data, err := base64.StdEncoding.Strict().DecodeString(e.Data)
+		if err != nil || len(data) > MaxTransfer || len(data) > int(e.ActualLength) || len(e.Data) != base64.StdEncoding.EncodedLen(len(data)) {
 			return errors.New("invalid source-broker completion payload")
 		}
 		if e.Error != "" && e.Error != "canceled" && e.Error != "deadline_exceeded" && e.Error != "transfer_failed" {

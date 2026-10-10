@@ -117,6 +117,8 @@ func Decode(data []byte, now time.Time) (*Descriptor, error) {
 	if err != nil || tok != json.Delim('{') {
 		return nil, invalid
 	}
+	// Check exact names before struct decoding, which otherwise accepts case
+	// aliases, including Unicode folds such as long s and Kelvin sign.
 	allowed := map[string]bool{"schema_version": true, "profile": true, "session_id": true, "rtsp_url": true, "key_b64": true, "key_id": true, "width": true, "height": true, "fps": true, "bitrate_kbps": true, "expires_at": true}
 	seen := make(map[string]bool)
 	for dec.More() {
@@ -167,6 +169,11 @@ func Decode(data []byte, now time.Time) (*Descriptor, error) {
 		return nil, invalid
 	}
 	if !now.Before(wire.ExpiresAt) || wire.ExpiresAt.Sub(now) > MaxLifetime {
+		return nil, invalid
+	}
+	// Strict checks padding bits but still ignores CR/LF. Requiring the exact
+	// encoded length as well as 16 decoded bytes rules out those aliases.
+	if len(wire.KeyB64) != base64.StdEncoding.EncodedLen(16) {
 		return nil, invalid
 	}
 	key, err := base64.StdEncoding.Strict().DecodeString(wire.KeyB64)

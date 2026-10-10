@@ -69,7 +69,7 @@ func (r Launch) validatePlatform(platform string) error {
 		return errors.New("invalid source-streamer protocol or session identity")
 	}
 	key, err := base64.StdEncoding.Strict().DecodeString(r.KeyB64)
-	if err != nil || len(key) != 16 {
+	if err != nil || len(key) != 16 || len(r.KeyB64) != base64.StdEncoding.EncodedLen(16) {
 		return errors.New("source-streamer needs a fresh 16-byte session key")
 	}
 	if !r.CaptureConsent {
