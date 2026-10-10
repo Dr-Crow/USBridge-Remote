@@ -1,5 +1,5 @@
-# Official Go 1.26.6 linux/amd64 image manifest, verified 2026-10-08.
-FROM golang:1.26.6-bookworm@sha256:433f9dc4f8ea3a1ce4e28f9f15d0f7c056b10475307f886d6f1ac1ccc4abd976 AS build
+# Official Go 1.26.9 linux/amd64 image manifest, verified 2026-10-10.
+FROM golang:1.26.9-bookworm@sha256:bcef992b77b1e2031aaaa51da75cebc32da8e9c182e12e633ea79023c79d9eff AS build
 ENV GOTOOLCHAIN=local GOFLAGS=-mod=readonly CGO_ENABLED=0
 WORKDIR /source/client
 COPY client/go.mod client/go.sum ./
