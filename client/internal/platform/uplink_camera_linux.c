@@ -28,6 +28,12 @@
 #include <libavutil/opt.h>
 #include <libswscale/swscale.h>
 
+// FFmpeg 4.x exposes these profiles under the older FF_PROFILE prefix.
+// The values are identical; retain compatibility with Ubuntu 22.04's SDK.
+#ifndef AV_PROFILE_H264_CONSTRAINED_BASELINE
+#define AV_PROFILE_H264_CONSTRAINED_BASELINE FF_PROFILE_H264_CONSTRAINED_BASELINE
+#endif
+
 #define CAM_BUFFERS 4
 #define CAM_MAX_W 1280
 #define CAM_MAX_H 720

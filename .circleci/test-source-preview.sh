@@ -13,7 +13,7 @@ git submodule update --init --recursive client/moonlight-common-c
 [[ -z "$(git -C client/moonlight-common-c status --porcelain)" ]]
 (cd client && bash scripts/build_source_preview_viewer.sh) 2>&1 | tee "$OUT/viewer-build.txt"
 git -C client/moonlight-common-c diff > "$OUT/moonlight-build-patch.diff"
-(cd client && go test -race -timeout 5m ./internal/sourcepreview ./internal/api/moonlight && go test -race -timeout 5m -run '^TestSourcePreview' ./internal/service && go test -race ./cmd/source-preview-viewer/environment.go ./cmd/source-preview-viewer/environment_test.go ./cmd/source-preview-viewer/events.go ./cmd/source-preview-viewer/events_test.go) 2>&1 | tee "$OUT/viewer-tests.txt"
+(cd client && go test -race -timeout 5m ./internal/sourcepreview ./internal/api/moonlight && go test -race -timeout 5m -run '^Test(SourcePreview|Disconnect)' ./internal/service && go test -race ./cmd/source-preview-viewer/environment.go ./cmd/source-preview-viewer/environment_test.go ./cmd/source-preview-viewer/events.go ./cmd/source-preview-viewer/events_test.go) 2>&1 | tee "$OUT/viewer-tests.txt"
 cp -a "$ROOT/artifacts/source-components/package" "$OUT/package"
 cp "$ROOT/client/dist/source-preview-viewer" "$OUT/package/components/bin/source-preview-viewer"
 cp "$ROOT/client/LICENSE" "$OUT/package/source/VIEWER-LICENSE"
@@ -27,8 +27,8 @@ PY
 AUTH="$WORK/xauthority"; touch "$AUTH"; chmod 600 "$AUTH"
 for D in :96 :97; do [[ ! -e "/tmp/.X11-unix/X${D#:}" ]] || { echo 'Refusing an existing display' >&2; exit 1; }; xauth -f "$AUTH" add "$D" . "$(openssl rand -hex 16)"; done
 export XAUTHORITY="$AUTH"
-Xvfb :96 -screen 0 128x72x24 -nolisten tcp -auth "$AUTH" > "$OUT/capture-xvfb.log" 2>&1 & CAPTURE_PID=$!
-Xvfb :97 -screen 0 1024x768x24 -nolisten tcp -auth "$AUTH" > "$OUT/viewer-xvfb.log" 2>&1 & VIEWER_PID=$!
+Xvfb :96 -noreset -screen 0 128x72x24 -nolisten tcp -auth "$AUTH" > "$OUT/capture-xvfb.log" 2>&1 & CAPTURE_PID=$!
+Xvfb :97 -noreset -screen 0 1024x768x24 -nolisten tcp -auth "$AUTH" > "$OUT/viewer-xvfb.log" 2>&1 & VIEWER_PID=$!
 cleanup(){ kill "$CAPTURE_PID" "$VIEWER_PID" 2>/dev/null || true; wait "$CAPTURE_PID" "$VIEWER_PID" 2>/dev/null || true; rm -f "$AUTH"; }
 trap cleanup EXIT
 for D in :96 :97; do ready=0; for _ in $(seq 1 100); do if DISPLAY="$D" xdpyinfo >/dev/null 2>&1; then ready=1; break; fi; sleep .05; done; [[ "$ready" == 1 ]]; done
