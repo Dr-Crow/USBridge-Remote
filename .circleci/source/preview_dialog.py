@@ -4,6 +4,7 @@ Hit-target metadata is read-only; decisions execute through XTest/WM/DBus events
 No screenshots, frames, descriptors, session keys, or key hashes are saved.
 """
 import ctypes as C
+from collections import Counter
 import json
 import os
 import pathlib
@@ -14,6 +15,7 @@ import sys
 import time
 
 import dbus
+from preview_processes import validate_capture_chain
 
 WORK = pathlib.Path(os.environ['SOURCE_PREVIEW_DIALOG_WORK'])
 OUT = pathlib.Path(os.environ['SOURCE_PREVIEW_DIALOG_OUTPUT'])
@@ -214,8 +216,19 @@ def start_and_view(number, label):
     assert not hit('consent').get('checked', False), 'capture grant not consumed'
     assert snapshot_counts()['stream_starts'] == number
     assert snapshot_counts()['viewer_starts'] == number
-    children = wait_for(lambda: media_processes() if set(media_processes().values()) == {'source-streamer', 'source-preview-viewer', 'ffmpeg'} else None)
-    assert len(children) == 3, 'exactly one capture chain and one viewer required'
+    def complete_chain():
+        children = media_processes()
+        if Counter(children.values()) == {'source-streamer': 1, 'source-preview-viewer': 1, 'ffmpeg': 2}:
+            return children
+        return None
+    children = wait_for(complete_chain)
+    # Source uses distinct video and silence-to-Opus FFmpeg processes.
+    def codec_arguments(pid):
+        raw = pathlib.Path(f'/proc/{pid}/cmdline').read_bytes()
+        assert len(raw) <= 65536
+        return [part.decode('ascii') for part in raw.split(b'\0') if part]
+    validate_capture_chain(children, codec_arguments)
+    assert len(children) == 4, 'exactly one source, one viewer and two codecs required'
     sockets = socket_inodes(children)
     inet = inet_sockets()
     owned_inet = {i: inet[i] for i in sockets if i in inet}
@@ -370,6 +383,7 @@ try:
                   parent_wm_close_to_tray_joined=True, tray_reopen_did_not_capture=True,
                   real_dbus_tray_quit=True, private_fixture_tray_host=True,
                   owned_processes_and_transport_sockets_gone=True, launches=final,
+                  generated_video_and_private_pcm_codecs_verified=True, media_processes_per_launch=4,
                   capture_display=':96', parent_and_viewer_display=':97',
                   isolated_state=True, isolated_loopback_network=True,
                   production_engine_started=False, production_engine_entrypoint_tested=False,

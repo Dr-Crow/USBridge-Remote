@@ -11,6 +11,7 @@ export PATH="$HOME/ci-toolchain/go/bin:$PATH" GOTOOLCHAIN=local CGO_ENABLED=1
 [[ "$(id -u)" != 0 ]]
 [[ -f "$ROOT/artifacts/source-preview/package/components/MANIFEST.sha256" ]]
 mkdir -p "$OUT"
+/usr/bin/python3 -m unittest discover -s "$ROOT/.circleci/source" -p test_preview_processes.py -v
 printf '{"passed":false,"agent_parent_window_interaction_tested":false,"state":"not-run"}\n' > "$OUT/result.json"
 COMMIT="$(git rev-parse HEAD)"
 [[ -z "${CIRCLE_SHA1:-}" || "$COMMIT" == "$CIRCLE_SHA1" ]]
