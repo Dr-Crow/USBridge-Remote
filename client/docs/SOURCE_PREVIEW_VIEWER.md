@@ -252,3 +252,15 @@ private-pipe, atomic Job Object creation, normal EOF, descendant cleanup and
 parent-crash-before-resume tests twenty times. Its receipt cannot establish
 viewer pixels, a media session or the Windows production Manager/UI. The larger
 viewer job retains those separate generated-media and owned-window gates.
+
+The fast native boundary preflight compiles the C preambles from the actual
+Windows viewer files with implicit-declaration errors enabled, then runs those
+exact files and privacy tests five times in console and GUI subsystems. This
+occurs immediately after the verified toolchain setup, before Fyne or codec
+compilation. Its receipt includes elapsed time and exact source-file/toolchain
+identities; it cannot replace full viewer rendering acceptance. The full build
+uses one fresh job-local cache and consistent trimmed-path flags across tests
+and final linking, avoiding an unconditional rebuild of identical compilation
+units. Only the Go module download cache is restored across jobs, keyed by the
+pinned Go version and client go.sum. Native headers/libraries are rebuilt before
+testing and are not taken from an unverified cross-job binary cache.

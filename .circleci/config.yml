@@ -152,6 +152,16 @@ jobs:
           command: .\.circleci\setup-windows.ps1
           no_output_timeout: 15m
       - run:
+          name: Check native UCRT accessors and private pipes before the full viewer build
+          command: |
+            $ErrorActionPreference = 'Stop'
+            $env:CHERE_INVOKING = 'yes'
+            $env:MSYSTEM = 'UCRT64'
+            $env:USBRIDGE_CI_ROOT = (Get-Location).Path
+            & 'C:\ci\msys64\usr\bin\bash.exe' --login .circleci/test-source-preview-windows-preflight.sh
+            if ($LASTEXITCODE -ne 0) { throw "Windows boundary preflight failed: $LASTEXITCODE" }
+          no_output_timeout: 10m
+      - run:
           name: Build native Windows viewer and verify private protocol boundaries
           command: |
             $ErrorActionPreference = 'Stop'

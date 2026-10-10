@@ -5,7 +5,8 @@ set -euo pipefail
 if [[ -n "${USBRIDGE_CI_ROOT:-}" ]]; then cd "$(cygpath -u "$USBRIDGE_CI_ROOT")"; fi
 ROOT="$PWD"; WORK="$ROOT/.source-preview-windows-build"; OUT="$ROOT/artifacts/windows-preview-evidence"
 export PATH="/c/ci/go/bin:/ucrt64/bin:/usr/bin:$PATH" CC=gcc CXX=g++ CGO_ENABLED=1 GOTOOLCHAIN=local
-export GOPATH='C:\ci\gopath' GOCACHE='C:\ci\go-build'
+export GOPATH='C:\ci\gopath' GOCACHE='C:\ci\go-build' GOROOT='C:\ci\go'
+export GOENV=off GOWORK=off GOFLAGS='-trimpath -mod=readonly' GOCACHEPROG= GOEXPERIMENT=
 export CMAKE_GENERATOR=Ninja PKG_CONFIG=pkg-config PKG_CONFIG_LIBDIR=/ucrt64/lib/pkgconfig
 [[ "$(go version)" == 'go version go1.26.9 windows/amd64' ]]
 [[ "$(git rev-parse HEAD)" == "${CIRCLE_SHA1:?exact source commit required}" ]]
@@ -35,7 +36,9 @@ GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$(cygpath -m "$WORK/public-git.config")
  go test -json -count=1 ./internal/service -run '^(TestSourcePreview|TestDisconnect)' | tee "$WORK/tests/service.jsonl"
  go test -json -count=1 ./cmd/source-preview-viewer | tee "$WORK/tests/command.jsonl"
  go test -json -count=1 -ldflags='-H=windowsgui' ./cmd/source-preview-viewer | tee "$WORK/tests/command-gui.jsonl"
- go build -a -trimpath -ldflags='-H=windowsgui' -o "$WORK/bin/source-preview-viewer.exe" ./cmd/source-preview-viewer
+ # Native dependencies are built before all tests; this cache is fresh per job.
+ # Reuse those exact trimmed-path compilation units instead of rebuilding all.
+ go build -trimpath -ldflags='-H=windowsgui' -o "$WORK/bin/source-preview-viewer.exe" ./cmd/source-preview-viewer
 )
 python3 .circleci/source/windows_preview_build_receipt.py \
  --work "$(cygpath -m "$WORK")" --output "$(cygpath -m "$OUT/build.json")" \

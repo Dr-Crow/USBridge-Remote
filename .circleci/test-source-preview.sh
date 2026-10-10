@@ -6,6 +6,7 @@ export PATH="$HOME/ci-toolchain/go/bin:$PATH" GOTOOLCHAIN=local CGO_ENABLED=1
 [[ "$(go version)" == 'go version go1.26.9 linux/amd64' ]]
 mkdir -p "$OUT" "$WORK"
 python3 -m unittest discover -s .circleci/source -p test_windows_preview_build_receipt.py
+python3 -m unittest discover -s .circleci/source -p test_windows_preview_preflight.py
 python3 -m unittest discover -s .circleci/source -p test_prepare_windows_preview_media.py
 (cd .circleci/source/windows-preview-fixture && go test -race -count=3 ./... && go vet ./...)
 (cd .circleci/source/windows-preview-acceptance && go test -race -count=3 ./... && go vet ./...)
