@@ -31,6 +31,9 @@
 
 static volatile int g_li_active          = 0;
 static volatile int g_audio_muted        = 0;
+// Source preview negotiates/decrypts/decodes audio but never opens a playback
+// backend. Set only between streams, before any audio callback can run.
+static int g_audio_discard = 0;
 static OpusMSDecoder *g_opus_ms_decoder  = NULL;
 static int g_audio_channels              = 2;
 static int g_audio_samples_per_frame     = 960;
@@ -113,7 +116,7 @@ static int ar_init(int audioConfig, const POPUS_MULTISTREAM_CONFIGURATION cfg, v
         cfg->streams, cfg->coupledStreams,
         cfg->mapping, &error);
     if (error != OPUS_OK) return -1;
-    platform_ar_init(g_audio_channels, (int)cfg->sampleRate);
+    if (!g_audio_discard) platform_ar_init(g_audio_channels, (int)cfg->sampleRate);
     return 0;
 }
 
@@ -121,7 +124,7 @@ static void ar_start(void)   {}
 static void ar_stop(void)    {}
 
 static void ar_cleanup(void) {
-    platform_ar_cleanup();
+    if (!g_audio_discard) platform_ar_cleanup();
     if (g_opus_ms_decoder) {
         opus_multistream_decoder_destroy(g_opus_ms_decoder);
         g_opus_ms_decoder = NULL;
@@ -146,6 +149,10 @@ static void ar_decode(char *data, int len) {
         }
         return;
     }
+    // Keep the Opus transport/decoder alive for protocol compatibility, then
+    // discard synthetic silence without touching PulseAudio (or another output
+    // backend), regardless of ambient PULSE_SERVER or audio-device settings.
+    if (g_audio_discard) return;
     int byte_count = samples * g_audio_channels * 2;
     if (g_audio_muted) {
         memset(pcm, 0, byte_count);
@@ -184,7 +191,7 @@ static int dr_submit(PDECODE_UNIT du) {
 //
 // pipeFd is ignored — all platforms decode natively without a pipe.
 
-int do_li_start(
+int do_li_start_configured(
     const char *address,
     const char *appVersion,
     const char *gfeVersion,
@@ -193,10 +200,13 @@ int do_li_start(
     int videoFormat,
     int width, int height, int fps, int bitrate,
     const unsigned char *rikey,
-    int rikeyid,
-    int pipeFd
+    uint32_t rikeyid,
+    int pipeFd,
+    int packetSize,
+    int encryptedPreview
 ) {
     (void)pipeFd;
+    g_audio_discard = encryptedPreview != 0;
     if (videoFormat == 0) videoFormat = VIDEO_FORMAT_H264; // default
     printf("DEBUG: do_li_start(addr=%s, codec_fmt=%d, %dx%d@%d, bit=%d)\n",
            address, videoFormat, width, height, fps, bitrate);
@@ -215,14 +225,14 @@ int do_li_start(
     cfg.height                = height;
     cfg.fps                   = fps;
     cfg.bitrate               = bitrate;
-    cfg.packetSize            = 1200;
-    cfg.streamingRemotely     = STREAM_CFG_AUTO;
+    cfg.packetSize            = packetSize;
+    cfg.streamingRemotely     = encryptedPreview ? STREAM_CFG_LOCAL : STREAM_CFG_AUTO;
     cfg.audioConfiguration    = AUDIO_CONFIGURATION_STEREO;
     cfg.supportedVideoFormats = videoFormat;
     cfg.clientRefreshRateX100 = fps * 100;
     // Opt into audio encryption exactly like the official Moonlight clients do
     // (moonlight-android/moonlight-qt default to ENCFLG_AUDIO).
-    cfg.encryptionFlags       = ENCFLG_AUDIO;
+    cfg.encryptionFlags       = encryptedPreview ? ENCFLG_ALL : ENCFLG_AUDIO;
     if (rikey) {
         memcpy(cfg.remoteInputAesKey, rikey, 16);
         // remoteInputAesIv holds the rikeyid in BIG-endian (network) byte order —
@@ -302,7 +312,7 @@ int do_li_start(
     // it happens to gate, matching what the user explicitly chose over
     // the alternative (a custom >10ms duration outside what the real
     // protocol's own SdpGenerator.c logic ever produces).
-    ar.capabilities = CAPABILITY_SLOW_OPUS_DECODER;
+    ar.capabilities = encryptedPreview ? 0 : CAPABILITY_SLOW_OPUS_DECODER;
 
     CONNECTION_LISTENER_CALLBACKS cl;
     LiInitializeConnectionCallbacks(&cl);
@@ -318,6 +328,19 @@ int do_li_start(
     if (ret != 0) return ret;
     g_li_active = 1;
     return 0;
+}
+
+// Legacy entrypoint retained for any platform caller of this shared header.
+// Keep stock defaults, including key ID as supplied by its existing caller.
+int do_li_start(
+    const char *address, const char *appVersion, const char *gfeVersion,
+    const char *rtspSessionUrl, int serverCodecModeSupport, int videoFormat,
+    int width, int height, int fps, int bitrate,
+    const unsigned char *rikey, int rikeyid, int pipeFd
+) {
+    return do_li_start_configured(address, appVersion, gfeVersion,
+        rtspSessionUrl, serverCodecModeSupport, videoFormat, width, height,
+        fps, bitrate, rikey, (uint32_t)rikeyid, pipeFd, 1200, 0);
 }
 
 // do_get_rtp_video_stats copies LiGetRTPVideoStats()'s 7 uint32 fields into

@@ -8,11 +8,12 @@ package service
 #include <stdint.h>
 #include <stdlib.h>
 
-extern int do_li_start(
+extern int do_li_start_configured(
     const char *address, const char *appVersion, const char *gfeVersion,
     const char *rtspSessionUrl, int serverCodecModeSupport, int videoFormat,
     int width, int height, int fps, int bitrate,
-    const unsigned char *rikey, int rikeyid, int pipeFd);
+    const unsigned char *rikey, uint32_t rikeyid, int pipeFd,
+    int packetSize, int encryptedPreview);
 extern void do_li_stop(void);
 extern void do_li_interrupt(void);
 extern void set_audio_pipe_fd(int fd);
@@ -66,6 +67,7 @@ import (
 
 	usbapi "usbridge-client/internal/api"
 	"usbridge-client/internal/models"
+	"usbridge-client/internal/sourcepreview"
 )
 
 // RTPVideoStats mirrors Limelight.h's RTP_VIDEO_STATS. FecFailed > 0 means a
@@ -270,10 +272,19 @@ type MoonlightCgoWrapper struct {
 	pipeWrite      *os.File
 	audioPipeWrite *os.File
 	audioMuted     bool
+	viewOnly       bool
 }
 
 func NewMoonlightCgoWrapper(host string) *MoonlightCgoWrapper {
 	return &MoonlightCgoWrapper{host: host}
+}
+
+// moonlightNativeOptions is private: only the locally authorized preview path
+// may request the encrypted source profile. The stock defaults remain unchanged.
+type moonlightNativeOptions struct {
+	keyID            uint32
+	packetSize       int
+	encryptedPreview bool
 }
 
 func (w *MoonlightCgoWrapper) StartStream(
@@ -287,6 +298,33 @@ func (w *MoonlightCgoWrapper) StartStream(
 	audioPipeWrite *os.File,
 	onStop func(error),
 ) error {
+	return w.startStream(rtspSessionUrl, rikey, appVersion, gfeVersion,
+		serverCodecModeSupport, videoFormat, width, height, fps, bitrate,
+		pipeWrite, audioPipeWrite, onStop,
+		moonlightNativeOptions{keyID: 1, packetSize: 1200})
+}
+
+func (w *MoonlightCgoWrapper) startStream(
+	rtspSessionUrl string,
+	rikey []byte,
+	appVersion, gfeVersion string,
+	serverCodecModeSupport int,
+	videoFormat int,
+	width, height, fps, bitrate int,
+	pipeWrite *os.File,
+	audioPipeWrite *os.File,
+	onStop func(error),
+	options moonlightNativeOptions,
+) error {
+	if options.encryptedPreview {
+		if err := sourcepreview.ValidateRTSPURL(rtspSessionUrl); err != nil {
+			return err
+		}
+		if len(rikey) != 16 || options.packetSize != sourcepreview.PacketSize || videoFormat != sourcepreview.VideoFormat {
+			return fmt.Errorf("invalid source preview native profile")
+		}
+	}
+	w.viewOnly = options.encryptedPreview
 	w.pipeWrite = pipeWrite
 	w.audioPipeWrite = audioPipeWrite
 
@@ -306,7 +344,11 @@ func (w *MoonlightCgoWrapper) StartStream(
 	host := C.CString(w.host)
 	appVer := C.CString(appVersion)
 	gfeVer := C.CString(gfeVersion)
-	rtsp := C.CString("rtsp://" + rtspSessionUrl)
+	rtspURL := "rtsp://" + rtspSessionUrl
+	if options.encryptedPreview {
+		rtspURL = rtspSessionUrl
+	}
+	rtsp := C.CString(rtspURL)
 
 	var cRikey *C.uchar
 	if len(rikey) == 16 {
@@ -362,12 +404,16 @@ func (w *MoonlightCgoWrapper) StartStream(
 			}
 		}
 
-		ret := C.do_li_start(
+		encryptedPreview := C.int(0)
+		if options.encryptedPreview {
+			encryptedPreview = 1
+		}
+		ret := C.do_li_start_configured(
 			host, appVer, gfeVer, rtsp,
 			C.int(serverCodecModeSupport), C.int(videoFormat),
 			C.int(width), C.int(height), C.int(fps), C.int(bitrate),
-			cRikey, C.int(1),
-			pipeFd,
+			cRikey, C.uint32_t(options.keyID),
+			pipeFd, C.int(options.packetSize), encryptedPreview,
 		)
 		liStartMu.Unlock()
 
@@ -457,7 +503,7 @@ func (w *MoonlightCgoWrapper) GetAudioMuted() bool { return w.audioMuted }
 // ── Input methods ─────────────────────────────────────────────────────────────
 
 func (w *MoonlightCgoWrapper) SendMoonlightKey(vkCode int16, action int8, modifiers int8) {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		logrus.Warnf("🌕 [Moonlight/CGO] SendMoonlightKey failed: liStartConnectionActive is false")
 		return
 	}
@@ -466,28 +512,28 @@ func (w *MoonlightCgoWrapper) SendMoonlightKey(vkCode int16, action int8, modifi
 }
 
 func (w *MoonlightCgoWrapper) SendMoonlightMouseMove(dx, dy int16) {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return
 	}
 	C.do_send_mouse_move(C.short(dx), C.short(dy))
 }
 
 func (w *MoonlightCgoWrapper) SendMoonlightMousePosition(x, y, refW, refH int16) {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return
 	}
 	C.do_send_mouse_position(C.short(x), C.short(y), C.short(refW), C.short(refH))
 }
 
 func (w *MoonlightCgoWrapper) SendMoonlightMouseButton(action int8, button int) {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return
 	}
 	C.do_send_mouse_button(C.char(action), C.int(button))
 }
 
 func (w *MoonlightCgoWrapper) SendMoonlightScroll(clicks int8) {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return
 	}
 	C.do_send_scroll(C.schar(clicks))
@@ -499,7 +545,7 @@ func (w *MoonlightCgoWrapper) SendMoonlightControllerEvent(
 	leftStickX int16, leftStickY int16,
 	rightStickX int16, rightStickY int16,
 ) {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return
 	}
 	C.do_send_multi_controller(
@@ -514,7 +560,7 @@ func (w *MoonlightCgoWrapper) SendMoonlightControllerArrival(
 	controllerNumber uint16, activeGamepadMask uint16, controllerType uint8,
 	supportedButtonFlags uint32, capabilities uint16,
 ) {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return
 	}
 	C.do_send_controller_arrival(
@@ -528,7 +574,7 @@ func (w *MoonlightCgoWrapper) SendMoonlightPenEvent(
 	x, y, pressureOrDistance float32,
 	rotation uint16, tilt uint8,
 ) {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return
 	}
 	C.do_send_pen(
@@ -539,18 +585,18 @@ func (w *MoonlightCgoWrapper) SendMoonlightPenEvent(
 }
 
 func (w *MoonlightCgoWrapper) IsInputActive() bool {
-	return liStartConnectionActive.Load()
+	return !w.viewOnly && liStartConnectionActive.Load()
 }
 
 func (w *MoonlightCgoWrapper) RawHIDEpoch() uint64 {
-	if !liStartConnectionActive.Load() || C.do_host_supports_raw_hid() == 0 {
+	if w.viewOnly || !liStartConnectionActive.Load() || C.do_host_supports_raw_hid() == 0 {
 		return 0
 	}
 	return liRawHIDEpoch.Load()
 }
 
 func (w *MoonlightCgoWrapper) UplinkSupport() (midi, mic bool) {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return false, false
 	}
 	f := C.do_host_uplink_flags()
@@ -558,25 +604,25 @@ func (w *MoonlightCgoWrapper) UplinkSupport() (midi, mic bool) {
 }
 
 func (w *MoonlightCgoWrapper) SendMoonlightMIDI(data []byte) bool {
-	if !liStartConnectionActive.Load() || len(data) == 0 {
+	if w.viewOnly || !liStartConnectionActive.Load() || len(data) == 0 {
 		return false
 	}
 	return C.do_send_midi((*C.uchar)(unsafe.Pointer(&data[0])), C.ushort(len(data))) == 0
 }
 
 func (w *MoonlightCgoWrapper) SendMoonlightMic(sequence uint16, opus []byte) bool {
-	if !liStartConnectionActive.Load() || len(opus) == 0 {
+	if w.viewOnly || !liStartConnectionActive.Load() || len(opus) == 0 {
 		return false
 	}
 	return C.do_send_mic(C.ushort(sequence), (*C.uchar)(unsafe.Pointer(&opus[0])), C.ushort(len(opus))) == 0
 }
 
 func (w *MoonlightCgoWrapper) CameraUplinkSupported() bool {
-	return liStartConnectionActive.Load() && C.do_host_camera() != 0
+	return !w.viewOnly && liStartConnectionActive.Load() && C.do_host_camera() != 0
 }
 
 func (w *MoonlightCgoWrapper) SendMoonlightCamera(frame uint16, keyframe bool, au []byte) bool {
-	if !liStartConnectionActive.Load() || len(au) == 0 {
+	if w.viewOnly || !liStartConnectionActive.Load() || len(au) == 0 {
 		return false
 	}
 	flags := C.uchar(0)
@@ -587,7 +633,7 @@ func (w *MoonlightCgoWrapper) SendMoonlightCamera(frame uint16, keyframe bool, a
 }
 
 func (w *MoonlightCgoWrapper) SendMoonlightRawHID(kind, slot, endpoint uint8, total, offset uint16, data []byte, reliable bool) bool {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return false
 	}
 	var p *C.uchar
@@ -603,7 +649,7 @@ func (w *MoonlightCgoWrapper) SendMoonlightRawHID(kind, slot, endpoint uint8, to
 }
 
 func (w *MoonlightCgoWrapper) SendMoonlightUtf8Text(text string) {
-	if !liStartConnectionActive.Load() || len(text) == 0 {
+	if w.viewOnly || !liStartConnectionActive.Load() || len(text) == 0 {
 		return
 	}
 	cs := C.CString(text)

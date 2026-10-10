@@ -30,6 +30,7 @@ import (
 	"usbridge_agent/internal/hwid"
 	"usbridge_agent/internal/netpolicy"
 	"usbridge_agent/internal/netutil"
+	"usbridge_agent/internal/sourcepreview"
 	"usbridge_agent/internal/streamhost"
 	"usbridge_agent/internal/tailscale"
 	"usbridge_agent/internal/tlshost"
@@ -200,6 +201,9 @@ type Window struct {
 	token TokenProvider
 	perms PermsProvider
 	ts    TailscaleProvider
+
+	sourcePreviewManager *sourcepreview.Manager
+	sourcePreviewClose   func()
 
 	// awaitingLocalLogin is true only while the local "Sign In With Google"
 	// button has an interactive login in flight. It gates auto-opening a
@@ -1012,6 +1016,14 @@ func (w *Window) refreshUSBPortRow(usb usbpass.Status) {
 }
 
 func (w *Window) ShowAndRun(onClose func()) {
+	defer w.stopSourcePreview()
+	originalClose := onClose
+	onClose = func() {
+		w.stopSourcePreview()
+		if originalClose != nil {
+			originalClose()
+		}
+	}
 	win := w.app.NewWindow(loc().AppTitle)
 	w.guiWin = win
 	raise := func() {
@@ -1745,6 +1757,7 @@ func (w *Window) ShowAndRun(onClose func()) {
 	w.refreshAutostartChrome()
 
 	win.SetCloseIntercept(func() {
+		w.stopSourcePreview()
 		w.persistWindowPlacement()
 		if w.tray != nil {
 			log.Printf("[ui] window close intercepted -- minimizing to tray")
@@ -1941,6 +1954,7 @@ func (w *Window) showSettingsMenu(win fyne.Window, anchor fyne.CanvasObject) {
 	}
 	showStyledLightMenu(anchor, []styledMenuItem{
 		{Label: loc().GeneralSettings, Icon: assets.SettingsIconLight, OnTap: func() { w.showGeneralSettingsDialog(win) }},
+		{Label: "Source preview (experimental)", OnTap: func() { w.showSourcePreviewDialog(win) }},
 		{Label: loc().Language, Icon: assets.LanguageIconLight, OnTap: func() { w.showLanguageMenu(anchor) }},
 		{Label: loc().Info, Icon: assets.InfoIconLight, OnTap: func() { w.showInfoMenu(anchor) }},
 	})

@@ -34,10 +34,12 @@ type MoonlightService struct {
 	onPairingPINRequired func(pin string) // fired when the usbridge auto-pair endpoint isn't available (e.g. a stock Sunshine/GameStream host) and the user must enter the PIN on the host themselves
 	onPairingPINResolved func()           // fired once Pair() returns (success or failure), so the UI can dismiss the PIN dialog raised via onPairingPINRequired
 
-	mu         sync.Mutex    // protects isRunning, connecting, stopPlayerCh, activeWrapper, abort
-	abort      chan struct{} // closed by Disconnect to cancel an in-progress ConnectToMoonlight
-	isRunning  bool
-	connecting bool // true for the duration of an in-flight ConnectToMoonlight call; see its doc comment
+	mu             sync.Mutex    // protects isRunning, connecting, stopPlayerCh, activeWrapper, abort
+	abort          chan struct{} // closed by Disconnect to cancel an in-progress ConnectToMoonlight
+	isRunning      bool
+	disconnectDone chan struct{}
+	disconnecting  bool
+	connecting     bool // true for the duration of an in-flight ConnectToMoonlight call; see its doc comment
 	// connGen identifies the "current" ConnectToMoonlight attempt. A fast
 	// reconnect (e.g. right after a capture-device switch) can have a new
 	// ConnectToMoonlight call start before a previous, failing one's
@@ -73,6 +75,9 @@ type MoonlightService struct {
 	stopPlayerCh       chan struct{}        // closed to stop the active video/audio decoder goroutines
 	activeWrapper      *MoonlightCgoWrapper // set while a stream is running, used for input routing
 	tailscaleSvc       *TailscaleService    // optional; if set, Moonlight uses its dialer for Tailscale IPs
+	sourcePreview      *sourcePreviewState  // ephemeral lease; never saved in AppConfig
+	sourcePreviewUsed  bool                 // this renderer accepts only one source descriptor
+	sourcePreviewOnly  bool                 // permanently prevents stock reconnect after a preview
 	stopMoonlightProxy func()               // non-nil when a tsnet proxy is active for internet streaming
 }
 
@@ -130,6 +135,12 @@ func MoonlightPorts() (httpPort, httpsPort int) {
 }
 
 func (m *MoonlightService) ConnectToMoonlight() error {
+	m.mu.Lock()
+	sourceOnly := m.sourcePreviewOnly
+	m.mu.Unlock()
+	if sourceOnly {
+		return fmt.Errorf("source preview requires a fresh locally authorized descriptor")
+	}
 	// Create a fresh abort channel for this connection attempt so Disconnect()
 	// can interrupt any blocking HTTP call or post-connect setup.
 	abort := make(chan struct{})
@@ -147,7 +158,7 @@ func (m *MoonlightService) ConnectToMoonlight() error {
 	// transient reordering blip. Reject the second attempt outright; the
 	// existing reconcile "coalesced" retry picks it up once the first one
 	// finishes.
-	if m.connecting {
+	if m.connecting || m.disconnecting {
 		m.mu.Unlock()
 		return fmt.Errorf("connect already in progress")
 	}
@@ -366,6 +377,38 @@ func (m *MoonlightService) ConnectToMoonlight() error {
 	m.lastAppId = appId
 	logrus.Infof("🚀 Moonlight App Launched! RTSP Session URL: %s", sessionUrl)
 
+	return m.startMoonlightRenderer(moonlightRendererParameters{
+		host: m.client.Host, sessionURL: sessionUrl, key: rikey,
+		appVersion: serverInfo.AppVersion, gfeVersion: serverInfo.GfeVersion,
+		serverCodecModeSupport: serverInfo.ServerCodecModeSupport,
+		width:                  m.width, height: m.height, fps: fps, bitrate: bitrate,
+	}, myConnGen, abort, tConnect)
+}
+
+// moonlightRendererParameters describes only renderer setup. The stock HTTP
+// pairing/launch path and local authorization remain separate callers.
+type moonlightRendererParameters struct {
+	host, sessionURL, appVersion, gfeVersion string
+	key                                      []byte
+	serverCodecModeSupport                   int
+	width, height, fps, bitrate              int
+	source                                   *sourcePreviewNativeConfig
+}
+
+func (m *MoonlightService) startMoonlightRenderer(p moonlightRendererParameters, myConnGen uint64, abort <-chan struct{}, tConnect time.Time) error {
+	aborted := func() bool {
+		select {
+		case <-abort:
+			return true
+		default:
+			return false
+		}
+	}
+	if aborted() {
+		return fmt.Errorf("connect aborted before renderer setup")
+	}
+	sessionUrl, rikey := p.sessionURL, p.key
+	fps, bitrate := p.fps, p.bitrate
 	// Stop any previous player goroutines before starting new ones.
 	// Protected by mu to prevent concurrent close from Disconnect().
 	m.mu.Lock()
@@ -379,7 +422,7 @@ func (m *MoonlightService) ConnectToMoonlight() error {
 	}
 	stopCh := newStopCh // capture for closures below
 
-	width, height := m.width, m.height
+	width, height := p.width, p.height
 	if width == 0 {
 		width = 1920
 	}
@@ -396,28 +439,35 @@ func (m *MoonlightService) ConnectToMoonlight() error {
 	//     startMoonlightVideoDecoder's signature uniform across platforms.
 	pipeRead, pipeWrite, err := os.Pipe()
 	if err != nil {
+		m.mu.Lock()
 		m.isRunning = false
+		m.mu.Unlock()
 		return fmt.Errorf("pipe: %v", err)
 	}
 
 	// 5aa. Audio pipe: ar_decode writes S16LE PCM for startMoonlightAudio to consume.
 	var audioPipeWrite *os.File
-	if audioPipeRead, apw, aerr := os.Pipe(); aerr != nil {
-		logrus.Warnf("🔊 [Moonlight/Audio] failed to create audio pipe: %v — audio disabled", aerr)
-	} else {
-		audioPipeWrite = apw
-		if aerr := startMoonlightAudio(audioPipeRead, stopCh, func(err error) {
-			if err != nil {
-				logrus.Warnf("🔊 [Moonlight/Audio] stopped: %v", err)
-			} else {
-				logrus.Info("🔊 [Moonlight/Audio] stopped cleanly")
+	// The silent source profile must not initialize an audio-output backend.
+	// Native Opus packets are still decoded and discarded by the source policy.
+	if p.source == nil {
+		if audioPipeRead, apw, aerr := os.Pipe(); aerr != nil {
+			logrus.Warnf("🔊 [Moonlight/Audio] failed to create audio pipe: %v — audio disabled", aerr)
+		} else {
+			audioPipeWrite = apw
+			if aerr := startMoonlightAudio(audioPipeRead, stopCh, func(err error) {
+				if err != nil {
+					logrus.Warnf("🔊 [Moonlight/Audio] stopped: %v", err)
+				} else {
+					logrus.Info("🔊 [Moonlight/Audio] stopped cleanly")
+				}
+			}); aerr != nil {
+				logrus.Warnf("🔊 [Moonlight/Audio] failed to start: %v — audio disabled", aerr)
+				_ = audioPipeRead.Close()
+				_ = audioPipeWrite.Close()
+				audioPipeWrite = nil
 			}
-		}); aerr != nil {
-			logrus.Warnf("🔊 [Moonlight/Audio] failed to start: %v — audio disabled", aerr)
-			_ = audioPipeRead.Close()
-			_ = audioPipeWrite.Close()
-			audioPipeWrite = nil
 		}
+
 	}
 
 	// 5b. Start video decode path (non-blocking). On every platform,
@@ -469,7 +519,9 @@ func (m *MoonlightService) ConnectToMoonlight() error {
 		if audioPipeWrite != nil {
 			_ = audioPipeWrite.Close()
 		}
+		m.mu.Lock()
 		m.isRunning = false
+		m.mu.Unlock()
 		return fmt.Errorf("failed to start video decode path: %v", err)
 	}
 
@@ -486,15 +538,15 @@ func (m *MoonlightService) ConnectToMoonlight() error {
 	// which (a) meant "Tailscale" didn't actually mean Tailscale, and (b)
 	// wasn't even the fix for the control-stream disconnects it was
 	// suspected of — reconnects were reproduced on both paths.
-	moonlightHost := m.client.Host
-	if m.tailscaleSvc != nil && isLikelyTailnetHost(m.client.Host) {
+	moonlightHost := p.host
+	if p.source == nil && m.tailscaleSvc != nil && isLikelyTailnetHost(p.host) {
 		rtspPort := 48010 // default; parse from sessionUrl for accuracy
 		if _, portStr, splitErr := net.SplitHostPort(sessionUrl); splitErr == nil {
 			if p, perr := strconv.Atoi(portStr); perr == nil && p > 0 {
 				rtspPort = p
 			}
 		}
-		stopProxy, localRTSPPort, proxyErr := startMoonlightProxy(m.tailscaleSvc, m.client.Host, rtspPort)
+		stopProxy, localRTSPPort, proxyErr := startMoonlightProxy(m.tailscaleSvc, p.host, rtspPort)
 		if proxyErr != nil {
 			logrus.Warnf("🌕 [Moonlight/tsnet] proxy failed (%v) — C sockets will use the Tailscale IP directly (needs system VPN)", proxyErr)
 		} else {
@@ -529,15 +581,27 @@ func (m *MoonlightService) ConnectToMoonlight() error {
 		logrus.Infof("🌕 [Moonlight/HDR-debug] HDR requested but this display/decoder can't show it now -- asking the host for SDR")
 	}
 	requestedVideoFormat := moonlightVideoFormat(m.videoMode, m.color444, hdr)
+	if p.source != nil {
+		requestedVideoFormat = 1
+	} // H264 4:2:0 only
 	logrus.Infof("🌕 [Moonlight/HDR-debug] mode=%s color444=%v hdr=%v -> requestedVideoFormat=0x%04X, serverCodecModeSupport=0x%08X",
-		m.videoMode, m.color444, hdr, requestedVideoFormat, serverInfo.ServerCodecModeSupport)
+		m.videoMode, m.color444, hdr, requestedVideoFormat, p.serverCodecModeSupport)
 	logrus.Infof("🎯 [CODEC-TRACE] ConnectToMoonlight: about to call wrapper.StartStream with requestedVideoFormat=0x%04X (from videoMode=%q) -- this bitmask is what actually drives RTSP codec negotiation with the server, independent of /launch's \"mode\" param",
 		requestedVideoFormat, m.videoMode)
 
-	if err := wrapper.StartStream(
+	startStream := wrapper.StartStream
+	if p.source != nil {
+		startStream = sourcePreviewStartStream(wrapper, *p.source)
+	}
+	// Arm before submitting the asynchronous native start: loopback can be ready
+	// before StartStream returns. The source path must never lose that signal.
+	if p.source != nil {
+		m.armStreamReadyCallback()
+	}
+	if err := startStream(
 		sessionUrl, rikey,
-		serverInfo.AppVersion, serverInfo.GfeVersion,
-		serverInfo.ServerCodecModeSupport,
+		p.appVersion, p.gfeVersion,
+		p.serverCodecModeSupport,
 		requestedVideoFormat,
 		width, height, fps, bitrate,
 		pipeWrite, audioPipeWrite,
@@ -550,7 +614,9 @@ func (m *MoonlightService) ConnectToMoonlight() error {
 			// leaks its bound UDP port (127.0.0.1:47999), which fails the next
 			// reconnect's proxy bind with "address already in use" and forces
 			// it onto the unreliable direct-Tailscale-IP fallback instead.
-			m.stopActiveProxy()
+			if p.source == nil {
+				m.stopActiveProxy()
+			}
 
 			// A newer ConnectToMoonlight attempt may already be running (or have
 			// succeeded) by the time this callback fires for a stale/superseded
@@ -585,6 +651,9 @@ func (m *MoonlightService) ConnectToMoonlight() error {
 				if m.onStateChanged != nil {
 					m.onStateChanged("disconnected")
 				}
+			}
+			if p.source != nil {
+				m.finishSourcePreview(myConnGen)
 			}
 		},
 	); err != nil {
@@ -621,7 +690,9 @@ func (m *MoonlightService) ConnectToMoonlight() error {
 	// VideoWidget's 4s no-frame watchdog used to start on this callback and
 	// LiStopConnection a live handshake (WSAEINTR / error 10004). The real
 	// ready signal is goMoonlightConnected → notifyMoonlightStreamReady.
-	m.armStreamReadyCallback()
+	if p.source == nil {
+		m.armStreamReadyCallback()
+	}
 
 	return nil
 }
@@ -644,13 +715,37 @@ func (m *MoonlightService) stopActiveProxy() {
 	}
 }
 
-func (m *MoonlightService) Disconnect() error {
+func (m *MoonlightService) Disconnect() error { return m.disconnect(0) }
+
+func (m *MoonlightService) disconnect(expectedSourceGeneration uint64) error {
 	logrus.Info("🌕 Moonlight protocol: Disconnect called")
-	clearMoonlightStreamReadyHandler()
 
 	// Take a snapshot of everything we need to clean up under the lock,
 	// then do all blocking operations outside the lock.
 	m.mu.Lock()
+	if expectedSourceGeneration != 0 && (m.sourcePreview == nil || m.sourcePreview.generation != expectedSourceGeneration) {
+		m.mu.Unlock()
+		return nil
+	}
+	if m.disconnecting {
+		done := m.disconnectDone
+		m.mu.Unlock()
+		if done != nil {
+			<-done
+		}
+		return nil
+	}
+	clearMoonlightStreamReadyHandler()
+	m.disconnecting = true
+	disconnectDone := make(chan struct{})
+	m.disconnectDone = disconnectDone
+	defer func() {
+		m.mu.Lock()
+		m.disconnecting = false
+		m.disconnectDone = nil
+		close(disconnectDone)
+		m.mu.Unlock()
+	}()
 	m.isRunning = false
 
 	// Signal any in-progress ConnectToMoonlight to abort.
@@ -669,6 +764,8 @@ func (m *MoonlightService) Disconnect() error {
 
 	activeWrapper := m.activeWrapper
 	m.activeWrapper = nil
+	sourceState := m.sourcePreview
+	sourceOnly := m.sourcePreviewOnly
 
 	stopCh := m.stopPlayerCh
 	m.stopPlayerCh = nil
@@ -689,11 +786,14 @@ func (m *MoonlightService) Disconnect() error {
 	// (e.g. switching codecs) that a direct LAN connection never used to hit.
 	if activeWrapper != nil {
 		activeWrapper.StopStream()
-	} else {
+	} else if !sourceOnly {
 		NewMoonlightCgoWrapper(m.host()).StopStream()
 	}
 
 	m.stopActiveProxy()
+	if sourceState != nil {
+		m.finishSourcePreview(sourceState.generation)
+	}
 
 	if stopCh != nil {
 		close(stopCh)
@@ -849,6 +949,12 @@ func (m *MoonlightService) host() string {
 }
 
 func (m *MoonlightService) Reconnect() error {
+	m.mu.Lock()
+	sourceOnly := m.sourcePreviewOnly
+	m.mu.Unlock()
+	if sourceOnly {
+		return fmt.Errorf("source preview requires fresh capture approval and a new descriptor")
+	}
 	_ = m.Disconnect()
 	// Tell Sunshine to end the current session before reconnecting. This resets
 	// Sunshine's internal session state so the next Launch() gets a fresh session

@@ -141,6 +141,14 @@ jobs:
           name: Verify actual source package with WAN blocked and full public client
           command: bash .circleci/test-source-isolation.sh
           no_output_timeout: 15m
+      - when:
+          condition:
+            equal: [source-preview-experiment, << pipeline.git.branch >>]
+          steps:
+            - run:
+                name: Build real source preview viewer and verify presented pixels on isolated displays
+                command: bash .circleci/test-source-preview.sh
+                no_output_timeout: 30m
       - save_cache:
           key: audited-components-v03131-linux-v1-{{ checksum "agent/internal/localruntime/pinned.go" }}
           paths:
@@ -196,7 +204,7 @@ workflows:
       - linux-agent:
           filters:
             branches:
-              only: [agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
+              only: [agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main, source-preview-experiment]
       - macos-agent:
           filters:
             branches:

@@ -29,6 +29,8 @@ import (
 const Profile = "source-streamer-v1"
 const MaxMessage = 64 << 10
 
+var ErrFrameTooLarge = errors.New("source-streamer frame exceeds the bounded packetizer limit")
+
 var localDisplay = regexp.MustCompile(`^:[0-9]{1,5}(\.[0-9]{1,2})?$`)
 var identifier = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 var windowsFFmpeg = regexp.MustCompile(`^[A-Za-z]:[\\/].+\.[Ee][Xx][Ee]$`)
@@ -131,6 +133,7 @@ type Stopped struct {
 	Event         string `json:"event"`
 	SessionID     string `json:"session_id"`
 	Reason        string `json:"reason"`
+	FailureCode   string `json:"failure_code,omitempty"`
 	Stats         *Stats `json:"stats"`
 }
 
@@ -141,6 +144,16 @@ type Ready struct {
 	RTSPAddress    string   `json:"rtsp_address"`
 	ControlAddress string   `json:"control_address"`
 	Capabilities   []string `json:"capabilities"`
+}
+
+func (s Stopped) validate(session string) error {
+	if s.Stats == nil || s.SchemaVersion != 1 || s.Event != "stopped" || s.SessionID != session || (s.Reason != "completed" && s.Reason != "failed") {
+		return errors.New("invalid source-streamer terminal status")
+	}
+	if s.FailureCode != "" && (s.Reason != "failed" || s.FailureCode != "frame_too_large") {
+		return errors.New("invalid source-streamer failure code")
+	}
+	return nil
 }
 
 func (r Ready) validate(session string, inputConsent bool, videoCapability string) error {
@@ -284,7 +297,7 @@ func startBinary(ctx context.Context, binary string, request Launch) (*Session, 
 				continue
 			}
 			var terminal Stopped
-			if err := strictJSON(scanner.Bytes(), &terminal); err != nil || terminal.Stats == nil || terminal.SchemaVersion != 1 || terminal.Event != "stopped" || terminal.SessionID != request.SessionID || (terminal.Reason != "completed" && terminal.Reason != "failed") {
+			if err := strictJSON(scanner.Bytes(), &terminal); err != nil || terminal.validate(request.SessionID) != nil {
 				protocolErr = errors.New("invalid source-streamer terminal status")
 				cancel()
 				break
@@ -309,6 +322,8 @@ func startBinary(ctx context.Context, binary string, request Launch) (*Session, 
 			s.err = protocolErr
 		} else if scanErr != nil {
 			s.err = errors.New("source-streamer status exceeded protocol bounds")
+		} else if s.terminal != nil && s.terminal.FailureCode == "frame_too_large" {
+			s.err = ErrFrameTooLarge
 		} else if s.terminal == nil || s.terminal.Reason != "completed" {
 			s.err = errors.New("source-streamer did not report clean completion")
 		} else if waitErr != nil {
