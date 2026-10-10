@@ -35,6 +35,18 @@ var drivePath = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
 // Errors and receipts contain fixed codes only, never paths, child text or keys.
 func failure(code string) error { return errors.New(code) }
 
+// An OS exit code cannot prove natural cleanup: kill-on-job-close may report
+// zero. The known safety action is authoritative regardless of the exit value.
+func naturalChildExit(exitCode uint32, safetyClosed bool) error {
+	if safetyClosed {
+		return failure("safety_job_closed")
+	}
+	if exitCode != 0 {
+		return failure("child_nonzero_exit")
+	}
+	return nil
+}
+
 type config struct {
 	Agent, AgentSHA, Viewer, ViewerSHA, Fixture, FixtureSHA string
 	Components, ManifestSHA, SourceSHA, FixtureManifestSHA  string

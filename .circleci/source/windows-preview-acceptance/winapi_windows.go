@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -59,6 +60,7 @@ type extendedJobLimits struct {
 type job struct {
 	handle syscall.Handle
 	once   sync.Once
+	closed atomic.Bool
 	// CI test seam only; never set by runtime flags or descriptors.
 	beforeResume func(uint32)
 }
@@ -78,7 +80,12 @@ func newJob() (*job, error) {
 	}
 	return j, nil
 }
-func (j *job) close() { j.once.Do(func() { _ = syscall.CloseHandle(j.handle) }) }
+func (j *job) close() {
+	j.once.Do(func() {
+		j.closed.Store(true)
+		_ = syscall.CloseHandle(j.handle)
+	})
+}
 
 type jobProcessList struct {
 	Assigned, Count uint32
@@ -117,6 +124,7 @@ type protocolPacket struct {
 	err  error
 }
 type child struct {
+	owner                 *job
 	waitHandle            syscall.Handle
 	handle                syscall.Handle
 	pid                   uint32
@@ -147,10 +155,7 @@ func (p *child) alive() bool {
 func (p *child) wait(timeout time.Duration) error {
 	select {
 	case <-p.done:
-		if p.exitCode != 0 {
-			return failure("child_nonzero_exit")
-		}
-		return nil
+		return naturalChildExit(p.exitCode, p.owner == nil || p.owner.closed.Load())
 	case <-time.After(timeout):
 		return failure("natural_exit_timeout")
 	}
@@ -364,7 +369,7 @@ func (j *job) start(path string, args, env []string, dir string) (*child, error)
 		syscall.CloseHandle(waitHandle)
 		return failed("child_resume_failed")
 	}
-	p := &child{handle: pi.Process, waitHandle: waitHandle, pid: pi.ProcessId, stdin: inW, stdout: outR, stderr: errR, packets: make(chan protocolPacket, 4), drained: make(chan error, 1), done: make(chan struct{})}
+	p := &child{owner: j, handle: pi.Process, waitHandle: waitHandle, pid: pi.ProcessId, stdin: inW, stdout: outR, stderr: errR, packets: make(chan protocolPacket, 4), drained: make(chan error, 1), done: make(chan struct{})}
 	success = true
 	p.read()
 	return p, nil

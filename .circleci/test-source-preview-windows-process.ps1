@@ -49,7 +49,7 @@ function Report-TestFailure {
         'pipe_create_failed', 'pipe_inheritance_failed', 'handle_list_failed',
         'atomic_job_attribute_failed', 'suspended_launch_failed', 'atomic_job_membership_failed',
         'process_arguments_failed', 'process_environment_failed', 'process_handle_failed',
-        'process_wait_handle_failed', 'child_resume_failed', 'child_nonzero_exit',
+        'process_wait_handle_failed', 'child_resume_failed', 'child_nonzero_exit', 'safety_job_closed',
         'natural_exit_timeout', 'protocol_ended_early', 'protocol_timeout',
         'extra_child_output', 'protocol_eof_timeout', 'stderr_eof_timeout',
         'bounded_protocol_failed', 'unexpected_child_stderr')

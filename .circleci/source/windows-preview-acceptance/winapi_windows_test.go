@@ -161,7 +161,7 @@ func TestWindowsJobCloseKillsInheritedDescendant(t *testing.T) {
 	j.close()
 	select {
 	case <-p.done:
-		if p.exitCode == 0 {
+		if err := p.wait(time.Second); err == nil || err.Error() != "safety_job_closed" {
 			t.Fatal("safety termination masqueraded as clean exit")
 		}
 	case <-time.After(3 * time.Second):

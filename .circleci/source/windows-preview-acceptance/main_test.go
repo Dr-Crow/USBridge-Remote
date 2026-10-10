@@ -191,3 +191,18 @@ func TestPlanCannotClaimNativePass(t *testing.T) {
 		t.Fatal("plan claims execution")
 	}
 }
+
+func TestSafetyClosureRejectsZeroAndNonzeroExit(t *testing.T) {
+	for _, code := range []uint32{0, 1, 259, 0xffffffff} {
+		err := naturalChildExit(code, true)
+		if err == nil || err.Error() != "safety_job_closed" {
+			t.Fatal("known safety action accepted as natural completion")
+		}
+	}
+	if naturalChildExit(0, false) != nil {
+		t.Fatal("natural zero exit rejected")
+	}
+	if naturalChildExit(1, false) == nil {
+		t.Fatal("natural nonzero exit accepted")
+	}
+}

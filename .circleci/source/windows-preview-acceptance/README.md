@@ -176,3 +176,12 @@ build choice, not evidence of production FFmpeg console behavior. The source
 itself remains a console-subsystem build; the actual agent supervisor now starts
 it with `DETACHED_PROCESS`. Private current-source encoder launch changes and
 production desktop acceptance require their separate private integration gate.
+
+The subsequent native gate reached a distinct assertion: closing the kill-on-close
+job ended the direct helper with exit code zero. Microsoft's kill-on-close
+contract guarantees termination, without promising a nonzero code. The runner
+therefore records its own safety-close action and rejects `wait` as non-natural
+regardless of the kernel exit value. The descendant test still requires both
+owned processes to terminate; portable tests explicitly prove that safety close
+plus exit zero cannot pass. A normal successful case must finish and empty its
+job before the safety handle is closed.
