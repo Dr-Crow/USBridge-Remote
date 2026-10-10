@@ -6,7 +6,7 @@ ROOT="$(pwd)"; OUT="$ROOT/artifacts/source-components-windows"; WORK="$ROOT/.sou
 export PATH="/c/ci/go/bin:/ucrt64/bin:/usr/bin:$PATH" CC=gcc CXX=g++ CGO_ENABLED=1 GOTOOLCHAIN=local
 export GOPATH='C:\ci\gopath' GOCACHE='C:\ci\go-build'
 [[ "$(go env GOOS)/$(go env GOARCH)" == windows/amd64 ]]
-[[ "$(go version)" == 'go version go1.26.6 windows/amd64' ]]
+[[ "$(go version)" == 'go version go1.26.9 windows/amd64' ]]
 STREAMER_COMMIT=2e07af3484369bc68bc8091d5a04969867eff0f9
 BROKER_COMMIT=69b4722ca94aa766875c968beb9cc19a669c4199
 mkdir -p "$WORK" "$OUT/package/agent" "$OUT/package/components/bin" "$OUT/package/source"

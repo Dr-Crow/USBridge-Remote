@@ -4,11 +4,11 @@ ROOT="$(pwd)"
 OS="$(uname -s)"
 mkdir -p "$HOME/ci-toolchain" "$ROOT/artifacts"
 if [[ "$OS" == Darwin ]]; then
-  ARCHIVE=go1.26.6.darwin-arm64.tar.gz
-  HASH=2dc95ce4675829f2df0e86b28bcef3283635902062a5f0580ca659bf570f3204
+  ARCHIVE=go1.26.9.darwin-arm64.tar.gz
+  HASH=f9bb7c0a02506c5d9bf0d1eb1f7ee6c7684f844ae49558308a0427b830e022cc
 else
-  ARCHIVE=go1.26.6.linux-amd64.tar.gz
-  HASH=708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89
+  ARCHIVE=go1.26.9.linux-amd64.tar.gz
+  HASH=42d158b4d8f7b61ac0a830567c940a86098fb7aac52e467a5ebec03ef5cc2f8d
   sudo apt-get update
   sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y libgl1-mesa-dev xorg-dev libxkbcommon-dev libfuse2 patchelf pkg-config
 fi

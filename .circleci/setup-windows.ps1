@@ -12,7 +12,7 @@ function Get-VerifiedFile($Url, $Path, $ExpectedHash) {
 
 # Pinned upstream archives. Pacman's rolling package versions are captured
 # in build-info.txt so a CI result records its actual resolved dependencies.
-Get-VerifiedFile 'https://go.dev/dl/go1.26.6.windows-amd64.zip' 'C:\ci\go.zip' '5b6c5b556525810463b5c897b50dc7a82d6a3dc0bfaf55d990a7e9f31d6b2318'
+Get-VerifiedFile 'https://go.dev/dl/go1.26.9.windows-amd64.zip' 'C:\ci\go.zip' 'd722201a9c0c086d1610e111c48203009af690892ed708072bd5ae20160e7a59'
 Expand-Archive -LiteralPath 'C:\ci\go.zip' -DestinationPath 'C:\ci' -Force
 Get-VerifiedFile 'https://github.com/msys2/msys2-installer/releases/download/2026-09-27/msys2-base-x86_64-20260927.sfx.exe' 'C:\ci\msys2.exe' 'ad336cccfda47758b5e15cda993fbba421115cb0b126697daef1ee4dfe37209f'
 $extract = Start-Process -FilePath 'C:\ci\msys2.exe' -ArgumentList '-y', '-oC:\ci' -Wait -PassThru
