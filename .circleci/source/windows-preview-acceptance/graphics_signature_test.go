@@ -51,12 +51,12 @@ func TestGraphicsSignatureInspectionParsingAndTrustPolicy(t *testing.T) {
 	if !strings.Contains(args, "-File C:\\owned\\verify-os-file.ps1") || strings.Contains(args, "-Command") {
 		t.Fatal("fixed local script invocation required")
 	}
-	for _, required := range []string{"-NoProfile", "-NonInteractive", "Get-AuthenticodeSignature -LiteralPath $request.path", "Get-FileHash -Algorithm SHA256 -LiteralPath $request.path"} {
+	for _, required := range []string{"-NoProfile", "-NonInteractive", "$input | Out-String", "ConvertTo-Json -Compress | Write-Output", "Get-AuthenticodeSignature -LiteralPath $request.path", "Get-FileHash -Algorithm SHA256 -LiteralPath $request.path"} {
 		if !strings.Contains(args, required) {
 			t.Fatal("missing bounded verifier contract")
 		}
 	}
-	for _, forbidden := range []string{"ExecutionPolicy", "Bypass", "SkipCertificate", "Import-Certificate", "Set-Item", "Add-Type", "Invoke-Expression"} {
+	for _, forbidden := range []string{"[Console]::In", "[Console]::Out", "ExecutionPolicy", "Bypass", "SkipCertificate", "Import-Certificate", "Set-Item", "Add-Type", "Invoke-Expression"} {
 		if strings.Contains(args, forbidden) {
 			t.Fatal("trust or execution policy changed")
 		}

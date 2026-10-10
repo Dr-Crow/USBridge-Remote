@@ -61,7 +61,7 @@ func parseGraphicsSignature(raw []byte, digest string) (*graphicsSignature, erro
 // installs certificates nor suppresses trust/revocation/signature failures.
 const graphicsSignatureScript = `$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; $stage='read_request';
 try {
- $request = [Console]::In.ReadLine() | ConvertFrom-Json
+ $request = ($input | Out-String) | ConvertFrom-Json
  $stage='query_signature'
  $signature = Get-AuthenticodeSignature -LiteralPath $request.path
  $stage='read_certificate'
@@ -76,8 +76,9 @@ try {
  $digest=(Get-FileHash -Algorithm SHA256 -LiteralPath $request.path).Hash.ToLowerInvariant()
  $stage='write_result'
  $result=[ordered]@{schema_version=1;status_code=[int]$signature.Status;is_os_binary=[bool]$signature.IsOSBinary;signature_type=[string]$signature.SignatureType;publisher_name=$publisher;issuer_name=$issuer;signer_thumbprint=$thumbprint;file_sha256=$digest}
- [Console]::Out.WriteLine(($result | ConvertTo-Json -Compress)); exit 0
-} catch { [Console]::Out.WriteLine(([ordered]@{schema_version=1;failure_stage=$stage} | ConvertTo-Json -Compress)); exit 0 }`
+ $result | ConvertTo-Json -Compress | Write-Output
+ exit 0
+} catch { [ordered]@{schema_version=1;failure_stage=$stage} | ConvertTo-Json -Compress | Write-Output; exit 0 }`
 
 func graphicsSignatureArguments(script string) []string {
 	return []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-File", script}
