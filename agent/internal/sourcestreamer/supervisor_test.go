@@ -21,6 +21,9 @@ import (
 
 func TestMain(m *testing.M) {
 	if mode := os.Getenv("USBRIDGE_SOURCE_TEST_HELPER"); mode != "" && len(os.Args) > 1 && os.Args[1] == "--launch-stdin" {
+		if platformSourceHelper(mode) {
+			return
+		}
 		reader := bufio.NewReader(os.Stdin)
 		line, _ := reader.ReadBytes('\n')
 		var launch Launch

@@ -17,6 +17,9 @@ import (
 
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 && os.Args[1] == "--source-preview-stdin" {
+		if platformViewerHelper() {
+			return
+		}
 		var d descriptor
 		if json.NewDecoder(os.Stdin).Decode(&d) != nil {
 			os.Exit(2)
@@ -53,12 +56,16 @@ func preparedTestViewer(t *testing.T) string {
 		t.Fatal(e)
 	}
 	root := t.TempDir()
-	path := filepath.Join(root, "viewer")
+	name := "viewer"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(root, name)
 	if e = os.WriteFile(path, data, 0700); e != nil {
 		t.Fatal(e)
 	}
 	h := sha256.Sum256(data)
-	manifest := localcomponents.Manifest{Schema: 1, Components: []localcomponents.Component{{Name: "source-preview-viewer", Platform: runtime.GOOS + "/" + runtime.GOARCH, Version: "test", Profile: Profile, Entry: "viewer", Files: []localcomponents.File{{Path: "viewer", SHA256: hex.EncodeToString(h[:]), Size: int64(len(data)), Executable: true}}}}}
+	manifest := localcomponents.Manifest{Schema: 1, Components: []localcomponents.Component{{Name: "source-preview-viewer", Platform: runtime.GOOS + "/" + runtime.GOARCH, Version: "test", Profile: Profile, Entry: name, Files: []localcomponents.File{{Path: name, SHA256: hex.EncodeToString(h[:]), Size: int64(len(data)), Executable: true}}}}}
 	raw, _ := json.Marshal(manifest)
 	if e = os.WriteFile(filepath.Join(root, "manifest.json"), raw, 0600); e != nil {
 		t.Fatal(e)

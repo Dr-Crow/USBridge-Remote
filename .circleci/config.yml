@@ -135,6 +135,10 @@ jobs:
           name: Verify production pipe-owner lifecycle with synthetic native child trees
           command: .\.circleci\test-windows-preview-owner.ps1
           no_output_timeout: 15m
+      - run:
+          name: Verify production source and viewer child ownership with synthetic processes
+          command: .\.circleci\test-windows-preview-wiring.ps1
+          no_output_timeout: 15m
       - store_artifacts:
           path: artifacts/windows-preview-process-evidence
           destination: windows-preview-process-evidence

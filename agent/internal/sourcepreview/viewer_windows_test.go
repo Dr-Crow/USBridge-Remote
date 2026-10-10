@@ -1,6 +1,6 @@
 //go:build windows
 
-package sourcestreamer
+package sourcepreview
 
 import (
 	"bufio"
@@ -23,7 +23,8 @@ import (
 
 // Every executable in these tests is this Go test binary. No GUI, desktop,
 // device, media, input, or private component is invoked.
-func platformSourceHelper(mode string) bool {
+func platformViewerHelper() bool {
+	mode := os.Getenv("TEST_SOURCE_PREVIEW_EVENT")
 	if !strings.HasPrefix(mode, "windows-") {
 		return false
 	}
@@ -34,7 +35,7 @@ func platformSourceHelper(mode string) bool {
 	}
 	publish := func(ids []int) {
 		raw, _ := json.Marshal(ids)
-		if os.WriteFile(os.Getenv("TEST_WINDOWS_SOURCE_IDS"), raw, 0600) != nil {
+		if os.WriteFile(os.Getenv("TEST_WINDOWS_VIEWER_IDS"), raw, 0600) != nil {
 			os.Exit(40)
 		}
 	}
@@ -44,21 +45,23 @@ func platformSourceHelper(mode string) bool {
 			time.Sleep(time.Hour)
 		}
 	}
-	var request Launch
+	var request descriptor
 	reader := bufio.NewReader(os.Stdin)
 	raw, err := reader.ReadBytes('\n')
 	if err != nil || json.Unmarshal(raw, &request) != nil {
 		os.Exit(41)
 	}
 	secret := request.KeyB64
-	ready := Ready{1, "ready", request.SessionID, "127.0.0.1:12341", "127.0.0.1:12342", []string{"rtsp-encrypted", "video-windows-gdi-h264", "audio-silence", "control-enet"}}
-	emitReady := func() { _ = json.NewEncoder(os.Stdout).Encode(ready) }
+	emit := func(kind, reason string) {
+		_ = json.NewEncoder(os.Stdout).Encode(viewerEvent{1, kind, request.SessionID, reason})
+	}
+	emitReady := func() { emit("ready", ""); emit("first_frame", "") }
 	emitStop := func(failed bool) {
-		terminal := Stopped{SchemaVersion: 1, Event: "stopped", SessionID: request.SessionID, Reason: "completed", Stats: &Stats{}}
 		if failed {
-			terminal.Reason, terminal.FailureCode = "failed", "frame_too_large"
+			emit("stopped", "failed")
+		} else {
+			emit("stopped", "completed")
 		}
-		_ = json.NewEncoder(os.Stdout).Encode(terminal)
 	}
 
 	for _, arg := range os.Args {
@@ -72,14 +75,14 @@ func platformSourceHelper(mode string) bool {
 		if err != nil {
 			os.Exit(43)
 		}
-		cmd := exec.Command(exe, "--launch-stdin")
+		cmd := exec.Command(exe, "--source-preview-stdin")
 		cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x8}
 		for _, entry := range os.Environ() {
-			if !strings.HasPrefix(entry, "USBRIDGE_SOURCE_TEST_HELPER=") {
+			if !strings.HasPrefix(entry, "TEST_SOURCE_PREVIEW_EVENT=") {
 				cmd.Env = append(cmd.Env, entry)
 			}
 		}
-		cmd.Env = append(cmd.Env, "USBRIDGE_SOURCE_TEST_HELPER=windows-leaf")
+		cmd.Env = append(cmd.Env, "TEST_SOURCE_PREVIEW_EVENT=windows-leaf")
 		cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 		if cmd.Start() != nil {
 			os.Exit(44)
@@ -116,28 +119,25 @@ func platformSourceHelper(mode string) bool {
 	return true
 }
 
-func windowsSourceSession(t *testing.T, ctx context.Context, mode string) *Session {
+func windowsViewerSession(t *testing.T, ctx context.Context, mode string) *viewerProcess {
 	t.Helper()
-	t.Setenv("USBRIDGE_SOURCE_TEST_HELPER", mode)
-	t.Setenv("TEST_WINDOWS_SOURCE_IDS", filepath.Join(t.TempDir(), "owned-pids.json"))
-	binary, err := os.Executable()
-	if err != nil {
-		t.Fatal("self executable missing")
-	}
-	session, err := startBinary(ctx, binary, validLaunch())
+	t.Setenv("TEST_SOURCE_PREVIEW_EVENT", mode)
+	t.Setenv("TEST_WINDOWS_VIEWER_IDS", filepath.Join(t.TempDir(), "owned-pids.json"))
+	v, err := startViewer(ctx, preparedTestViewer(t), descriptor{SchemaVersion: 1, Profile: Profile, SessionID: "test", KeyB64: "private-test-key"})
 	if err != nil {
 		t.Fatal(err)
 	}
+	session := v.(*viewerProcess)
 	t.Cleanup(func() { _ = session.Stop() })
 	return session
 }
 
-func windowsSourceHandles(t *testing.T, count int) []syscall.Handle {
+func windowsViewerHandles(t *testing.T, count int) []syscall.Handle {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	var ids []int
 	for time.Now().Before(deadline) {
-		raw, err := os.ReadFile(os.Getenv("TEST_WINDOWS_SOURCE_IDS"))
+		raw, err := os.ReadFile(os.Getenv("TEST_WINDOWS_VIEWER_IDS"))
 		if err == nil && json.Unmarshal(raw, &ids) == nil && len(ids) == count {
 			break
 		}
@@ -157,7 +157,7 @@ func windowsSourceHandles(t *testing.T, count int) []syscall.Handle {
 	}
 	return handles
 }
-func windowsSourceExited(t *testing.T, handles []syscall.Handle) {
+func windowsViewerExited(t *testing.T, handles []syscall.Handle) {
 	t.Helper()
 	for _, handle := range handles {
 		state, err := syscall.WaitForSingleObject(handle, 3000)
@@ -166,7 +166,7 @@ func windowsSourceExited(t *testing.T, handles []syscall.Handle) {
 		}
 	}
 }
-func windowsSourceWait(t *testing.T, session *Session) error {
+func windowsViewerWait(t *testing.T, session *viewerProcess) error {
 	t.Helper()
 	select {
 	case <-session.Done():
@@ -185,54 +185,54 @@ func windowsSourceWait(t *testing.T, session *Session) error {
 	return err
 }
 
-func TestWindowsSourceCooperativeEOFIsNatural(t *testing.T) {
-	session := windowsSourceSession(t, context.Background(), "windows-cooperative")
-	handles := windowsSourceHandles(t, 1)
+func TestWindowsViewerCooperativeEOFIsNatural(t *testing.T) {
+	session := windowsViewerSession(t, context.Background(), "windows-cooperative")
+	handles := windowsViewerHandles(t, 1)
 	if err := session.Stop(); err != nil {
 		t.Fatal(err)
 	}
-	if err := windowsSourceWait(t, session); err != nil {
+	if err := windowsViewerWait(t, session); err != nil {
 		t.Fatal(err)
 	}
 	if err := session.Stop(); err != nil {
 		t.Fatal("repeated Stop lost natural completion")
 	}
-	windowsSourceExited(t, handles)
+	windowsViewerExited(t, handles)
 }
 
-func TestWindowsSourceCrashRetiresInheritedOutput(t *testing.T) {
-	session := windowsSourceSession(t, context.Background(), "windows-crash")
-	handles := windowsSourceHandles(t, 2)
+func TestWindowsViewerCrashRetiresInheritedOutput(t *testing.T) {
+	session := windowsViewerSession(t, context.Background(), "windows-crash")
+	handles := windowsViewerHandles(t, 2)
 	if _, err := session.child.Stdin.Write([]byte("x")); err != nil {
 		t.Fatal("crash trigger failed")
 	}
-	err := windowsSourceWait(t, session)
+	err := windowsViewerWait(t, session)
 	if !errors.Is(err, previewprocess.ErrForcedCleanup) {
 		t.Fatal("crashed descendant tree not classified as forced cleanup")
 	}
-	windowsSourceExited(t, handles)
+	windowsViewerExited(t, handles)
 }
 
-func TestWindowsSourceZeroExitStillRecordsForcedCleanup(t *testing.T) {
-	session := windowsSourceSession(t, context.Background(), "windows-zero")
-	handles := windowsSourceHandles(t, 2)
+func TestWindowsViewerZeroExitStillRecordsForcedCleanup(t *testing.T) {
+	session := windowsViewerSession(t, context.Background(), "windows-zero")
+	handles := windowsViewerHandles(t, 2)
 	if _, err := session.child.Stdin.Write([]byte("x")); err != nil {
 		t.Fatal("zero-exit trigger failed")
 	}
-	err := windowsSourceWait(t, session)
+	err := windowsViewerWait(t, session)
 	if !errors.Is(err, previewprocess.ErrForcedCleanup) {
 		t.Fatal("exit0 erased forced cleanup")
 	}
-	windowsSourceExited(t, handles)
+	windowsViewerExited(t, handles)
 }
 
-func TestWindowsSourceBlockedStdinStopAndCancel(t *testing.T) {
+func TestWindowsViewerBlockedStdinStopAndCancel(t *testing.T) {
 	for _, cancelInstead := range []bool{false, true} {
 		t.Run(strconv.FormatBool(cancelInstead), func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			session := windowsSourceSession(t, ctx, "windows-block")
-			handles := windowsSourceHandles(t, 2)
+			session := windowsViewerSession(t, ctx, "windows-block")
+			handles := windowsViewerHandles(t, 2)
 			writer := make(chan struct{})
 			go func() { _, _ = session.child.Stdin.Write(bytes.Repeat([]byte("x"), 8<<20)); close(writer) }()
 			select {
@@ -245,7 +245,7 @@ func TestWindowsSourceBlockedStdinStopAndCancel(t *testing.T) {
 			} else if !errors.Is(session.Stop(), previewprocess.ErrForcedCleanup) {
 				t.Fatal("blocked Stop lost forced cleanup")
 			}
-			if !errors.Is(windowsSourceWait(t, session), previewprocess.ErrForcedCleanup) {
+			if !errors.Is(windowsViewerWait(t, session), previewprocess.ErrForcedCleanup) {
 				t.Fatal("blocked lifecycle lost forced cleanup")
 			}
 			select {
@@ -253,27 +253,23 @@ func TestWindowsSourceBlockedStdinStopAndCancel(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("blocked write not released")
 			}
-			windowsSourceExited(t, handles)
+			windowsViewerExited(t, handles)
 		})
 	}
 }
 
-func TestWindowsSourceStartupCancellationJoinsBlockedWrite(t *testing.T) {
-	t.Setenv("USBRIDGE_SOURCE_TEST_HELPER", "windows-block-start")
-	t.Setenv("TEST_WINDOWS_SOURCE_IDS", filepath.Join(t.TempDir(), "startup-pid.json"))
+func TestWindowsViewerStartupCancellationJoinsBlockedWrite(t *testing.T) {
+	t.Setenv("TEST_SOURCE_PREVIEW_EVENT", "windows-block-start")
+	t.Setenv("TEST_WINDOWS_VIEWER_IDS", filepath.Join(t.TempDir(), "startup-pid.json"))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	binary, err := os.Executable()
-	if err != nil {
-		t.Fatal("self executable missing")
-	}
-	request := validLaunch()
-	// Exercise the internal write boundary with an intentionally oversized
-	// fixture; public Start still rejects this before any launch.
-	request.Owner = strings.Repeat("x", 8<<20)
+	binary := preparedTestViewer(t)
+	// The private launcher is stressed with an oversized synthetic descriptor;
+	// Manager's bounded production descriptor and platform gate are unchanged.
+	request := descriptor{SchemaVersion: 1, Profile: Profile, SessionID: "test", KeyB64: strings.Repeat("x", 8<<20)}
 	result := make(chan error, 1)
-	go func() { _, err := startBinary(ctx, binary, request); result <- err }()
-	handles := windowsSourceHandles(t, 1)
+	go func() { _, err := startViewer(ctx, binary, request); result <- err }()
+	handles := windowsViewerHandles(t, 1)
 	select {
 	case <-result:
 		t.Fatal("startup did not block")
@@ -288,18 +284,11 @@ func TestWindowsSourceStartupCancellationJoinsBlockedWrite(t *testing.T) {
 	case <-time.After(7 * time.Second):
 		t.Fatal("canceled startup stranded its request write")
 	}
-	windowsSourceExited(t, handles)
+	windowsViewerExited(t, handles)
 }
 
-func TestWindowsSourceTypedFrameFailure(t *testing.T) {
-	session := windowsSourceSession(t, context.Background(), "windows-frame")
-	handles := windowsSourceHandles(t, 1)
-	if _, err := session.child.Stdin.Write([]byte("x")); err != nil {
-		t.Fatal("terminal trigger failed")
+func TestWindowsManagerRemainsDisabled(t *testing.T) {
+	if New().deps.permitted() {
+		t.Fatal("production Windows preview gate changed")
 	}
-	err := windowsSourceWait(t, session)
-	if !errors.Is(err, ErrFrameTooLarge) || errors.Is(err, previewprocess.ErrForcedCleanup) {
-		t.Fatal("typed natural frame failure lost")
-	}
-	windowsSourceExited(t, handles)
 }
