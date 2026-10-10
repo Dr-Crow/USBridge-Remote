@@ -2,6 +2,7 @@ import json
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 import windows_component_inventory as inventory
 
 
@@ -26,6 +27,22 @@ class InventoryTests(unittest.TestCase):
         result = self.check()
         self.assertEqual({v['path'] for v in result}, {'bin/source-streamer.exe', 'bin/runtime.dll'})
         self.assertFalse(self.failure.exists())
+
+    def test_source_alias_uses_identity_not_lexical_equality(self):
+        alias = self.directory / '..' / self.directory.name / self.source.name
+        self.assertNotEqual(alias, self.source)
+        self.assertTrue(alias.samefile(self.source))
+        with mock.patch.object(pathlib.Path, 'iterdir', return_value=iter([self.source, self.dll])):
+            files = inventory.component_files(alias, self.expected, self.failure)
+        executable = [x for x in files if x['executable']]
+        self.assertEqual(len(executable), 1)
+        self.assertEqual(executable[0]['path'], 'bin/source-streamer.exe')
+
+    def test_identical_bytes_and_basename_do_not_replace_file_identity(self):
+        other = self.root / self.source.name
+        other.write_bytes(self.source.read_bytes())
+        self.assertFalse(inventory.expected_source_file(other, self.source))
+        self.assertFalse(inventory.expected_source_file(self.directory / 'missing.exe', self.source))
 
     def test_unknown_entry_fails_with_bounded_diagnostic(self):
         (self.directory / 'extra.pdb').write_bytes(b'not an authorized dependency')

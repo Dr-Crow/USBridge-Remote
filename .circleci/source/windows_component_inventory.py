@@ -13,6 +13,17 @@ class InventoryError(Exception):
     pass
 
 
+def expected_source_file(path, source):
+    # Path spellings from a Windows directory iterator need not compare equal
+    # to the command-line path. Require its exact basename and OS file identity.
+    if path.name != source.name:
+        return False
+    try:
+        return path.samefile(source)
+    except OSError:
+        return False
+
+
 def component_files(source, dependencies, failure_path):
     expected = {source.name: sha(source), **dependencies}
     entries = sorted(source.parent.iterdir())
@@ -20,23 +31,24 @@ def component_files(source, dependencies, failure_path):
     files = []
     invalid = len(entries) > 128
     for path in entries[:128]:
-        exact = path == source or path.name in dependencies
+        source_identity = expected_source_file(path, source)
+        exact = source_identity or path.name in dependencies
         regular = path.is_file() and not path.is_symlink()
         bounded = regular and path.stat().st_size <= 64 << 20
         digest = sha(path) if bounded else None
-        expected_digest = expected.get(source.name if path == source else path.name)
+        expected_digest = expected.get(source.name if source_identity else path.name)
         valid = exact and bounded and digest == expected_digest
         invalid |= not valid
         safe_name = path.name if re.fullmatch(r'[A-Za-z0-9_.+-]{1,100}', path.name) else None
         facts.append({'name': safe_name, 'name_sha256': hashlib.sha256(path.name.encode()).hexdigest(),
-                      'source_path_equal': path == source, 'exact_dependency_name': path.name in dependencies,
+                      'source_path_equal': path == source, 'source_file_identity': source_identity, 'exact_dependency_name': path.name in dependencies,
                       'casefold_dependency_name': any(path.name.casefold() == n.casefold() for n in dependencies),
                       'regular_nonsymlink': regular, 'bounded_size': bounded,
                       'expected_hash_matches': digest is not None and digest == expected_digest,
                       'sha256': digest})
         if valid:
             files.append({'path': 'bin/' + path.name, 'sha256': digest,
-                          'size': path.stat().st_size, 'executable': path == source})
+                          'size': path.stat().st_size, 'executable': source_identity})
     if len(files) != len(expected):
         invalid = True
     if invalid:
