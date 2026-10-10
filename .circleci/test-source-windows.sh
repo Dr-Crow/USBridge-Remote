@@ -8,7 +8,7 @@ export GOPATH='C:\ci\gopath' GOCACHE='C:\ci\go-build'
 [[ "$(go env GOOS)/$(go env GOARCH)" == windows/amd64 ]]
 [[ "$(go version)" == 'go version go1.26.6 windows/amd64' ]]
 STREAMER_COMMIT=2e07af3484369bc68bc8091d5a04969867eff0f9
-BROKER_COMMIT=176801ad075ad4d5e503d913f683948980baae2d
+BROKER_COMMIT=69b4722ca94aa766875c968beb9cc19a669c4199
 mkdir -p "$WORK" "$OUT/package/agent" "$OUT/package/components/bin" "$OUT/package/source"
 python3 - "$ROOT" "$WORK" "$STREAMER_COMMIT" "$BROKER_COMMIT" <<'PY'
 import hashlib,json,pathlib,sys,tarfile
@@ -40,7 +40,7 @@ raw=(json.dumps({'schema':1,'components':components},indent=2)+'\n').encode();(r
 PY
 CGO_ENABLED=0 go build -o "$WORK/windows-lifecycle.exe" "$ROOT/.circleci/source/windows_lifecycle.go"
 "$WORK/windows-lifecycle.exe" "$(cygpath -m "$OUT/package/agent/USBridgeAgent.exe")" "$(cygpath -m "$OUT/package/components")" "$(cygpath -m "$OUT/lifecycle.json")"
-(cd "$WORK/broker/source" && CGO_ENABLED=0 AGENT_SOURCE_BINARY="$(cygpath -m "$OUT/package/agent/USBridgeAgent.exe")" BROKER_SESSION_BINARY="$(cygpath -m "$OUT/package/components/bin/broker-session.exe")" go test -count=5 -run '^(TestPortableSessionExecutableMutualTLS|TestPortableAgentBrokerSessionMutualTLS)$' -v ./brokersession) 2>&1 | tee "$OUT/agent-broker-mutual-tls.txt"
+(cd "$WORK/broker/source" && CGO_ENABLED=0 AGENT_SOURCE_BINARY="$(cygpath -m "$OUT/package/agent/USBridgeAgent.exe")" BROKER_SESSION_BINARY="$(cygpath -m "$OUT/package/components/bin/broker-session.exe")" go test -count=5 -run '^TestPortable' -v ./brokersession) 2>&1 | tee "$OUT/agent-broker-mutual-tls.txt"
 cp "$ROOT/docs/SOURCE_COMPONENT_PACKAGE.md" "$OUT/package/README.md"
 cp "$ROOT/docs/SOURCE_STREAMER_PROTOCOL.md" "$ROOT/docs/SOURCE_BROKER_PROTOCOL.md" "$OUT/package/"
 python3 - "$OUT" "${CIRCLE_SHA1:-unknown}" "$STREAMER_COMMIT" "$BROKER_COMMIT" <<'PY'

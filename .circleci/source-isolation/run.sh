@@ -13,7 +13,7 @@ else:
 pathlib.Path('/results/network.json').write_text(json.dumps(result,indent=2)+'\n')
 PY
 export BROKER_SESSION_BINARY=/package/components/bin/broker-session AGENT_SOURCE_BINARY=/package/agent/usbridge-agent
-/acceptance/broker-session-tests -test.run '^(TestPortableSessionExecutableMutualTLS|TestPortableAgentBrokerSessionMutualTLS)$' -test.count=5 -test.v | tee /results/broker-mutual-tls.txt
+/acceptance/broker-session-tests -test.run '^TestPortable' -test.count=5 -test.v | tee /results/broker-mutual-tls.txt
 /usr/bin/python3 /acceptance/test_agent_source_lifecycle.py --agent /package/agent/usbridge-agent --streamer /package/components/bin/source-streamer --output /results/lifecycle
 /usr/bin/python3 /acceptance/test_agent_source_media.py --agent /package/agent/usbridge-agent --components /package/components --enet-helper /acceptance/enet-control-test-client --output /results/media
 /usr/bin/python3 /acceptance/test_agent_source_full_client.py --agent /package/agent/usbridge-agent --streamer /package/components/bin/source-streamer --client /acceptance/full-client --output /results/full-public-client
