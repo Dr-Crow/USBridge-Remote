@@ -1,5 +1,8 @@
 # Device-free native containment gate. Only its closed JSON receipt is published.
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$timer = [Diagnostics.Stopwatch]::StartNew()
+function Report-Stage([string] $name) { Write-Host ("process_gate_stage={0} elapsed_seconds={1}" -f $name, [int]$timer.Elapsed.TotalSeconds) }
 Set-StrictMode -Version Latest
 $root = (Get-Location).Path
 $work = Join-Path $root '.source-preview-windows-process'
@@ -11,8 +14,10 @@ if ($LASTEXITCODE -ne 0 -or $commit -cnotmatch '^[0-9a-f]{40}$' -or $commit -cne
 $archiveSHA = 'd722201a9c0c086d1610e111c48203009af690892ed708072bd5ae20160e7a59'
 $archive = Join-Path $work 'go1.26.9.windows-amd64.zip'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-Invoke-WebRequest -UseBasicParsing -Uri 'https://go.dev/dl/go1.26.9.windows-amd64.zip' -OutFile $archive
+Report-Stage 'download_toolchain'
+Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -Uri 'https://go.dev/dl/go1.26.9.windows-amd64.zip' -OutFile $archive
 if ((Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant() -cne $archiveSHA) { throw 'Go archive checksum mismatch' }
+Report-Stage 'extract_toolchain'
 Expand-Archive -LiteralPath $archive -DestinationPath $work
 $go = Join-Path $work 'go\bin\go.exe'
 $env:GOROOT = Join-Path $work 'go'
@@ -34,8 +39,10 @@ $log = Join-Path $work 'tests.jsonl'
 $stderr = Join-Path $work 'test-stderr.txt'
 Push-Location (Join-Path $root '.circleci\source\windows-preview-acceptance')
 try {
+    Report-Stage 'native_tests'
     & $go test -json -count=20 -timeout=5m ./... 1> $log 2> $stderr
     if ($LASTEXITCODE -ne 0) { throw 'Native process containment tests failed; raw helper diagnostics remain private' }
+    Report-Stage 'native_vet'
     & $go vet ./... 1> (Join-Path $work 'vet-stdout.txt') 2> (Join-Path $work 'vet-stderr.txt')
     if ($LASTEXITCODE -ne 0) { throw 'Native process containment vet failed' }
 } finally { Pop-Location }
@@ -66,6 +73,7 @@ if ($packagePass -ne 1) { throw 'Missing unique package pass' }
 foreach ($name in $required) { if ($counts[$name] -ne 20) { throw "Missing native test repetitions: $name" } }
 $receipt = [ordered]@{
     schema_version = 1
+    elapsed_seconds = [int]$timer.Elapsed.TotalSeconds
     source_commit = $commit
     platform = 'windows/amd64'
     go_version = $version

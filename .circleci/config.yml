@@ -308,6 +308,7 @@ workflows:
             branches:
               only: [source-preview-experiment]
       - windows-source-preview:
+          requires: [windows-preview-process]
           filters:
             branches:
               only: [source-preview-experiment]
