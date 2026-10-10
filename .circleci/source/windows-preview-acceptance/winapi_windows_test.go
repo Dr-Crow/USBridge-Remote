@@ -84,6 +84,24 @@ func TestWindowsAPILayouts(t *testing.T) {
 		t.Fatal("Windows amd64 ABI layout changed")
 	}
 }
+func requireNoninheritable(t *testing.T, h syscall.Handle) {
+	t.Helper()
+	var flags uint32
+	ok, _, _ := kernel32.NewProc("GetHandleInformation").Call(uintptr(h), uintptr(unsafe.Pointer(&flags)))
+	if ok == 0 || flags&syscall.HANDLE_FLAG_INHERIT != 0 {
+		t.Fatal("owner handle is inheritable")
+	}
+}
+func TestWindowsPipeEndpointsBeginNoninheritable(t *testing.T) {
+	r, w, err := privatePipe()
+	if err != nil {
+		t.Fatal("private pipe creation failed")
+	}
+	defer r.Close()
+	defer w.Close()
+	requireNoninheritable(t, syscall.Handle(r.Fd()))
+	requireNoninheritable(t, syscall.Handle(w.Fd()))
+}
 func testChild(t *testing.T, j *job, mode string) *child {
 	t.Helper()
 	exe, e := os.Executable()
@@ -99,6 +117,9 @@ func testChild(t *testing.T, j *job, mode string) *child {
 	t.Cleanup(func() { j.close(); _ = p.wait(3 * time.Second); p.close() })
 	if !j.contains(p.handle) {
 		t.Fatal("child not in exact job")
+	}
+	for _, h := range []syscall.Handle{j.handle, p.handle, p.waitHandle, syscall.Handle(p.stdin.Fd()), syscall.Handle(p.stdout.Fd()), syscall.Handle(p.stderr.Fd())} {
+		requireNoninheritable(t, h)
 	}
 	if _, e = p.stdin.Write([]byte("private-test-request\n")); e != nil {
 		t.Fatal("private pipe write failed")

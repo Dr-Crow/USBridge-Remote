@@ -101,6 +101,7 @@ try {
 } finally { Pop-Location }
 $required = @(
     'TestWindowsAPILayouts',
+    'TestWindowsPipeEndpointsBeginNoninheritable',
     'TestWindowsPipeOnlyLaunchDoesNotAllocateConsoleHost',
     'TestWindowsSuspendedLaunchPrivatePipesNaturalEOF',
     'TestWindowsJobCloseKillsInheritedDescendant',

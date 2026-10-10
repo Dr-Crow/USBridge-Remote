@@ -131,6 +131,10 @@ jobs:
           name: Verify native atomic process containment without desktop or media
           command: .\.circleci\test-source-preview-windows-process.ps1
           no_output_timeout: 15m
+      - run:
+          name: Verify production pipe-owner lifecycle with synthetic native child trees
+          command: .\.circleci\test-windows-preview-owner.ps1
+          no_output_timeout: 15m
       - store_artifacts:
           path: artifacts/windows-preview-process-evidence
           destination: windows-preview-process-evidence
@@ -316,7 +320,7 @@ workflows:
       - windows-preview-process:
           filters:
             branches:
-              only: [source-preview-experiment]
+              only: [source-preview-experiment, windows-pipe-owner-tests]
       - windows-source-preview:
           requires: [windows-preview-process]
           filters:

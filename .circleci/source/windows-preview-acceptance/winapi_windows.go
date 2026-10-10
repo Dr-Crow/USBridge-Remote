@@ -229,20 +229,30 @@ type startupInfoEx struct {
 	Attributes uintptr
 }
 
+func privatePipe() (*os.File, *os.File, error) {
+	var read, write syscall.Handle
+	// os.Pipe on Windows creates inheritable endpoints. A nil security
+	// attribute starts both endpoints noninheritable instead.
+	if err := syscall.CreatePipe(&read, &write, nil, 0); err != nil {
+		return nil, nil, err
+	}
+	return os.NewFile(uintptr(read), "preview-pipe"), os.NewFile(uintptr(write), "preview-pipe"), nil
+}
+
 func (j *job) start(path string, args, env []string, dir string) (*child, error) {
 	// Handles are created non-inheritable and only the child ends are explicitly
 	// permitted by PROC_THREAD_ATTRIBUTE_HANDLE_LIST. No outer-job handle leaks.
-	inR, inW, e := os.Pipe()
+	inR, inW, e := privatePipe()
 	if e != nil {
 		return nil, failure("pipe_create_failed")
 	}
-	outR, outW, e := os.Pipe()
+	outR, outW, e := privatePipe()
 	if e != nil {
 		inR.Close()
 		inW.Close()
 		return nil, failure("pipe_create_failed")
 	}
-	errR, errW, e := os.Pipe()
+	errR, errW, e := privatePipe()
 	if e != nil {
 		inR.Close()
 		inW.Close()
