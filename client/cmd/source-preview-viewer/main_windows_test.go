@@ -118,3 +118,33 @@ func TestClearPreviewEnvironmentScrubsActualCRT(t *testing.T) {
 		t.Fatal("native scrub is not idempotent")
 	}
 }
+
+func TestClearPreviewEnvironmentReacquiresCRTArrays(t *testing.T) {
+	// Refill and scrub twice so neither accessor can reuse a pointer to an
+	// earlier CRT environment array. Unknown mixed-case names remain covered.
+	for round := 0; round < 2; round++ {
+		var keys []string
+		for i := 0; i < 64; i++ {
+			key := fmt.Sprintf("uSbRiDgE_ACCESSOR_%d_%d", round, i)
+			keys = append(keys, key)
+			if err := previewCRTSetenv(key, "native-private-diagnostic"); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = previewCRTSetenv(key, "") })
+		}
+		if err := previewCRTSetWideProbe(); err != nil {
+			t.Fatal(err)
+		}
+		if err := clearPreviewEnvironment(); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range keys {
+			if _, ok := previewCRTLookupEnv(key); ok {
+				t.Fatal("repopulated CRT retained a diagnostic")
+			}
+		}
+		if previewCRTContainsWideProbe() {
+			t.Fatal("repopulated wide CRT retained a diagnostic")
+		}
+	}
+}

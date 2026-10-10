@@ -1,0 +1,90 @@
+# Device-free native containment gate. Only its closed JSON receipt is published.
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+$root = (Get-Location).Path
+$work = Join-Path $root '.source-preview-windows-process'
+$out = Join-Path $root 'artifacts\windows-preview-process-evidence'
+if ((Test-Path $work) -or (Test-Path $out)) { throw 'Process gate requires fresh work and receipt directories' }
+New-Item -ItemType Directory -Force $work, $out | Out-Null
+$commit = (& git rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $commit -cnotmatch '^[0-9a-f]{40}$' -or $commit -cne $env:CIRCLE_SHA1) { throw 'Exact source commit required' }
+$archiveSHA = 'd722201a9c0c086d1610e111c48203009af690892ed708072bd5ae20160e7a59'
+$archive = Join-Path $work 'go1.26.9.windows-amd64.zip'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+Invoke-WebRequest -UseBasicParsing -Uri 'https://go.dev/dl/go1.26.9.windows-amd64.zip' -OutFile $archive
+if ((Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant() -cne $archiveSHA) { throw 'Go archive checksum mismatch' }
+Expand-Archive -LiteralPath $archive -DestinationPath $work
+$go = Join-Path $work 'go\bin\go.exe'
+$env:GOROOT = Join-Path $work 'go'
+$env:GOENV = 'off'
+$env:GOFLAGS = ''
+$env:GOCACHEPROG = ''
+$env:GOEXPERIMENT = ''
+$env:GOPROXY = 'off'
+$env:GOTOOLCHAIN = 'local'
+$env:CGO_ENABLED = '0'
+$env:GOOS = 'windows'
+$env:GOARCH = 'amd64'
+$env:GOCACHE = Join-Path $work 'cache'
+$env:GOPATH = Join-Path $work 'gopath'
+$env:GOWORK = 'off'
+$version = (& $go version).Trim()
+if ($LASTEXITCODE -ne 0 -or $version -cne 'go version go1.26.9 windows/amd64') { throw 'Unexpected native Go toolchain' }
+$log = Join-Path $work 'tests.jsonl'
+$stderr = Join-Path $work 'test-stderr.txt'
+Push-Location (Join-Path $root '.circleci\source\windows-preview-acceptance')
+try {
+    & $go test -json -count=20 -timeout=5m ./... 1> $log 2> $stderr
+    if ($LASTEXITCODE -ne 0) { throw 'Native process containment tests failed; raw helper diagnostics remain private' }
+    & $go vet ./... 1> (Join-Path $work 'vet-stdout.txt') 2> (Join-Path $work 'vet-stderr.txt')
+    if ($LASTEXITCODE -ne 0) { throw 'Native process containment vet failed' }
+} finally { Pop-Location }
+$required = @(
+    'TestWindowsAPILayouts',
+    'TestWindowsSuspendedLaunchPrivatePipesNaturalEOF',
+    'TestWindowsJobCloseKillsInheritedDescendant',
+    'TestWindowsParentCrashRetiresSuspendedChild'
+)
+$counts = [ordered]@{}
+foreach ($name in $required) { $counts[$name] = 0 }
+$packagePass = 0
+$totalPass = 0
+foreach ($line in Get-Content $log) {
+    $row = $line | ConvertFrom-Json
+    if ($row.Action -in @('fail', 'skip', 'build-fail')) { throw 'Unexpected failure or skip in native process tests' }
+    if ($row.Action -ceq 'pass') {
+        if ($null -ne $row.PSObject.Properties['Test']) {
+            $totalPass++
+            if ($counts.Contains($row.Test)) { $counts[$row.Test]++ }
+        } else {
+            if ($row.Package -cne 'usbridge.test/windows-preview-acceptance') { throw 'Unexpected test package' }
+            $packagePass++
+        }
+    }
+}
+if ($packagePass -ne 1) { throw 'Missing unique package pass' }
+foreach ($name in $required) { if ($counts[$name] -ne 20) { throw "Missing native test repetitions: $name" } }
+$receipt = [ordered]@{
+    schema_version = 1
+    source_commit = $commit
+    platform = 'windows/amd64'
+    go_version = $version
+    go_archive_sha256 = $archiveSHA
+    native_execution = $true
+    tests = $counts
+    total_test_passes = $totalPass
+    failures = 0
+    skips = 0
+    atomic_job_membership = $true
+    private_pipes = $true
+    natural_eof_cleanup = $true
+    descendant_job_close_cleanup = $true
+    pre_resume_parent_crash_cleanup = $true
+    production_manager_enabled = $false
+    media_session_started = $false
+    window_or_desktop_opened = $false
+    input_injected = $false
+    source_or_binary_artifacts_published = $false
+}
+[IO.File]::WriteAllText((Join-Path $out 'process.json'), (($receipt | ConvertTo-Json -Depth 6) + [Environment]::NewLine), (New-Object Text.UTF8Encoding($false)))
+Write-Host 'Native atomic Job Object, private pipe, EOF, descendant and parent-crash checks passed 20 times.'

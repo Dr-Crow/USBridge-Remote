@@ -22,7 +22,8 @@ FIXTURE_REQUIRED = {
 }
 NATIVE_REQUIRED = {'TestWindowsAPILayouts',
                    'TestWindowsSuspendedLaunchPrivatePipesNaturalEOF',
-                   'TestWindowsJobCloseKillsInheritedDescendant'}
+                   'TestWindowsJobCloseKillsInheritedDescendant',
+                   'TestWindowsParentCrashRetiresSuspendedChild'}
 
 
 def summarize_fixture(path):

@@ -17,9 +17,11 @@ REQUIRED = {
                 'TestSourcePreviewWindowsDecodesAudioWithoutWASAPI',
                 'TestSourcePreviewWindowsViewOnlyCannotBecomeStock'},
     'command': {'TestPrivateEventWriterIsolatesWindowsAndCRTOutput',
-                'TestClearPreviewEnvironmentScrubsActualCRT'},
+                'TestClearPreviewEnvironmentScrubsActualCRT',
+                'TestClearPreviewEnvironmentReacquiresCRTArrays'},
     'command-gui': {'TestPrivateEventWriterIsolatesWindowsAndCRTOutput',
-                    'TestClearPreviewEnvironmentScrubsActualCRT'},
+                    'TestClearPreviewEnvironmentScrubsActualCRT',
+                    'TestClearPreviewEnvironmentReacquiresCRTArrays'},
 }
 
 

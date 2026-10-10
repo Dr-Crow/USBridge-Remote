@@ -32,6 +32,29 @@ func TestWindowsPrivatePipeHelper(t *testing.T) {
 	if e != nil || raw != "private-test-request\n" {
 		os.Exit(2)
 	}
+	if mode == "pre-resume-exit" {
+		inner, err := newJob()
+		if err != nil {
+			os.Exit(2)
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			os.Exit(2)
+		}
+		inner.beforeResume = func(pid uint32) {
+			fmt.Fprintf(os.Stdout, "%d\n", pid)
+			ack, err := reader.ReadString('\n')
+			if err != nil || ack != "exit-before-resume\n" {
+				os.Exit(2)
+			}
+			// Deliberately bypass every defer. Windows must close the owning
+			// job handle at process exit and retire the never-resumed child.
+			os.Exit(0)
+		}
+		env := append(childEnvironment(os.Getenv("SystemRoot"), os.Getenv("TEMP")), "WINDOWS_PREVIEW_TEST_CHILD=leaf")
+		_, _ = inner.start(exe, []string{"-test.run=^TestWindowsPrivatePipeHelper$"}, env, os.Getenv("TEMP"))
+		os.Exit(2)
+	}
 	if mode == "spawn" {
 		exe, e := os.Executable()
 		if e != nil {
@@ -143,5 +166,46 @@ func TestWindowsJobCloseKillsInheritedDescendant(t *testing.T) {
 	result, e := syscall.WaitForSingleObject(h, 3000)
 	if e != nil || result != syscall.WAIT_OBJECT_0 {
 		t.Fatal("owned descendant survived job closure")
+	}
+}
+
+func TestWindowsParentCrashRetiresSuspendedChild(t *testing.T) {
+	outer, err := newJob()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outer.close()
+	parent := testChild(t, outer, "pre-resume-exit")
+	raw, err := parent.next(3 * time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 32)
+	if err != nil {
+		t.Fatal("suspended child PID missing")
+	}
+	_, suspended, err := processPath(uint32(pid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.CloseHandle(suspended)
+	if !outer.contains(suspended) {
+		t.Fatal("suspended child did not inherit outer containment")
+	}
+	if state, err := syscall.WaitForSingleObject(suspended, 0); err != nil || state != syscall.WAIT_TIMEOUT {
+		t.Fatal("suspended child was not alive before parent exit")
+	}
+	if _, err := parent.stdin.Write([]byte("exit-before-resume\n")); err != nil {
+		t.Fatal(err)
+	}
+	if parent.wait(3*time.Second) != nil || parent.finishProtocol() != nil {
+		t.Fatal("parent exit failed")
+	}
+	if state, err := syscall.WaitForSingleObject(suspended, 3000); err != nil || state != syscall.WAIT_OBJECT_0 {
+		t.Fatal("pre-resume parent crash stranded a child")
+	}
+	pids, err := outer.pids()
+	if err != nil || len(pids) != 0 {
+		t.Fatal("outer safety job was needed to clean up")
 	}
 }

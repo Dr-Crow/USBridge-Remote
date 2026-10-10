@@ -236,3 +236,19 @@ are outside these three cases. A forced safety cleanup cannot count as a natural
 shutdown. See `.circleci/source/windows-preview-acceptance/README.md` for exact
 checks. Native execution and receipt verification are required before reporting
 any of these runtime checks as passed.
+
+### Native Windows validation follow-up
+
+The first native viewer build reached and passed the service/profile tests, then
+failed while compiling the new command's CRT environment scrub: MinGW UCRT does
+not declare `_get_environ` or `_get_wenviron`. This was introduced by the preview
+implementation. The correction uses the accessors declared by MinGW's UCRT
+headers and adds repeated array-repopulation/scrub coverage; native confirmation
+is still a required CI gate. It does not suppress compiler diagnostics or remove
+privacy tests.
+
+The device-free `windows-preview-process` job independently repeats native
+private-pipe, atomic Job Object creation, normal EOF, descendant cleanup and
+parent-crash-before-resume tests twenty times. Its receipt cannot establish
+viewer pixels, a media session or the Windows production Manager/UI. The larger
+viewer job retains those separate generated-media and owned-window gates.

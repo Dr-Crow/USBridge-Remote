@@ -120,6 +120,21 @@ jobs:
           path: artifacts
           destination: windows-agent
 
+  windows-preview-process:
+    resource_class: windows.medium
+    machine:
+      image: windows-server-2022-gui:2026.05.1
+      shell: powershell.exe -NoProfile -ExecutionPolicy Bypass
+    steps:
+      - checkout
+      - run:
+          name: Verify native atomic process containment without desktop or media
+          command: .\.circleci\test-source-preview-windows-process.ps1
+          no_output_timeout: 15m
+      - store_artifacts:
+          path: artifacts/windows-preview-process-evidence
+          destination: windows-preview-process-evidence
+
   windows-source-preview:
     resource_class: windows.medium
     machine:
@@ -278,6 +293,10 @@ workflows:
           filters:
             branches:
               only: [agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main, source-preview-experiment]
+      - windows-preview-process:
+          filters:
+            branches:
+              only: [source-preview-experiment]
       - windows-source-preview:
           filters:
             branches:

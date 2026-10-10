@@ -12,12 +12,29 @@ static int preview_wide_environment_probe(int set) {
     return _wgetenv(L"USBRIDGE_WIDE_ONLY") != NULL;
 }
 
+// MinGW-w64's UCRT stdlib.h exposes these accessors (also used by its
+// _environ/_wenviron macros), not Microsoft's _get_environ/_get_wenviron.
+// Reacquire the current array after mutations; a NULL array is valid when
+// that character-width environment has not been initialized yet.
+static int preview_get_environ(char ***out) {
+    char ***current = __p__environ();
+    if (!current) return -1;
+    *out = *current;
+    return 0;
+}
+static int preview_get_wenviron(wchar_t ***out) {
+    wchar_t ***current = __p__wenviron();
+    if (!current) return -1;
+    *out = *current;
+    return 0;
+}
+
 // UCRT environment copies can differ from Win32's environment block. Enumerate
 // both copies directly, restarting after each erase because _putenv_s can move
 // the array. Only variable names are copied; values never leave native memory.
 static int preview_clear_crt_environment(void) {
     char **env = NULL;
-    if (_get_environ(&env) != 0) return -1;
+    if (preview_get_environ(&env) != 0) return -1;
     for (size_t i = 0; env && env[i];) {
         if (_strnicmp(env[i], "USBRIDGE_", 9) != 0) { ++i; continue; }
         char *eq = strchr(env[i], '=');
@@ -28,11 +45,11 @@ static int preview_clear_crt_environment(void) {
         memcpy(name, env[i], n); name[n] = 0;
         int result = _putenv_s(name, "");
         free(name);
-        if (result != 0 || _get_environ(&env) != 0) return -1;
+        if (result != 0 || preview_get_environ(&env) != 0) return -1;
         i = 0;
     }
     wchar_t **wide = NULL;
-    if (_get_wenviron(&wide) != 0) return -1;
+    if (preview_get_wenviron(&wide) != 0) return -1;
     for (size_t i = 0; wide && wide[i];) {
         if (_wcsnicmp(wide[i], L"USBRIDGE_", 9) != 0) { ++i; continue; }
         wchar_t *eq = wcschr(wide[i], L'=');
@@ -43,7 +60,7 @@ static int preview_clear_crt_environment(void) {
         memcpy(name, wide[i], n * sizeof(wchar_t)); name[n] = 0;
         int result = _wputenv_s(name, L"");
         free(name);
-        if (result != 0 || _get_wenviron(&wide) != 0) return -1;
+        if (result != 0 || preview_get_wenviron(&wide) != 0) return -1;
         i = 0;
     }
     return 0;

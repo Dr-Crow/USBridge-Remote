@@ -22,7 +22,6 @@ var gdi32 = syscall.NewLazyDLL("gdi32.dll")
 var createJob = kernel32.NewProc("CreateJobObjectW")
 var setJob = kernel32.NewProc("SetInformationJobObject")
 var queryJob = kernel32.NewProc("QueryInformationJobObject")
-var assignJob = kernel32.NewProc("AssignProcessToJobObject")
 var isInJob = kernel32.NewProc("IsProcessInJob")
 var resumeThread = kernel32.NewProc("ResumeThread")
 var initAttributes = kernel32.NewProc("InitializeProcThreadAttributeList")
@@ -60,6 +59,8 @@ type extendedJobLimits struct {
 type job struct {
 	handle syscall.Handle
 	once   sync.Once
+	// CI test seam only; never set by runtime flags or descriptors.
+	beforeResume func(uint32)
 }
 
 func newJob() (*job, error) {
@@ -254,20 +255,33 @@ func (j *job) start(path string, args, env []string, dir string) (*child, error)
 		}
 	}
 	var size uintptr
-	initAttributes.Call(0, 1, 0, uintptr(unsafe.Pointer(&size)))
+	initAttributes.Call(0, 2, 0, uintptr(unsafe.Pointer(&size)))
 	if size == 0 || size > 65536 {
 		return nil, failure("handle_list_failed")
 	}
 	storage := make([]byte, size)
 	attrs := uintptr(unsafe.Pointer(&storage[0]))
-	ok, _, _ := initAttributes.Call(attrs, 1, 0, uintptr(unsafe.Pointer(&size)))
+	ok, _, _ := initAttributes.Call(attrs, 2, 0, uintptr(unsafe.Pointer(&size)))
 	if ok == 0 {
 		return nil, failure("handle_list_failed")
 	}
-	defer func() { deleteAttributes.Call(attrs); runtime.KeepAlive(storage); runtime.KeepAlive(handles) }()
+	jobs := []syscall.Handle{j.handle}
+	defer func() {
+		deleteAttributes.Call(attrs)
+		runtime.KeepAlive(storage)
+		runtime.KeepAlive(handles)
+		runtime.KeepAlive(jobs)
+	}()
 	ok, _, _ = updateAttributes.Call(attrs, 0, 0x20002, uintptr(unsafe.Pointer(&handles[0])), uintptr(len(handles))*unsafe.Sizeof(handles[0]), 0, 0)
 	if ok == 0 {
 		return nil, failure("handle_list_failed")
+	}
+	// PROC_THREAD_ATTRIBUTE_JOB_LIST assigns containment atomically with process
+	// creation. A parent crash cannot strand a created-but-unassigned suspended
+	// child. Windows Server 2022 supports this Windows 10/Server 2016 API.
+	ok, _, _ = updateAttributes.Call(attrs, 0, 0x2000D, uintptr(unsafe.Pointer(&jobs[0])), uintptr(len(jobs))*unsafe.Sizeof(jobs[0]), 0, 0)
+	if ok == 0 {
+		return nil, failure("atomic_job_attribute_failed")
 	}
 	si := startupInfoEx{Attributes: attrs}
 	si.Startup.Cb = uint32(unsafe.Sizeof(si))
@@ -319,9 +333,11 @@ func (j *job) start(path string, args, env []string, dir string) (*child, error)
 		_ = syscall.CloseHandle(pi.Process)
 		return nil, failure(code)
 	}
-	ok, _, _ = assignJob.Call(uintptr(j.handle), uintptr(pi.Process))
-	if ok == 0 || !j.contains(pi.Process) {
-		return failed("job_assignment_failed")
+	if !j.contains(pi.Process) {
+		return failed("atomic_job_membership_failed")
+	}
+	if j.beforeResume != nil {
+		j.beforeResume(pi.ProcessId)
 	}
 	current, e := syscall.GetCurrentProcess()
 	if e != nil {

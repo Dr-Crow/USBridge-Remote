@@ -147,7 +147,7 @@ func main() {
 	}
 }
 func testPlan() any {
-	return map[string]any{"schema_version": 1, "native_required": "windows/amd64", "cases": []string{"window_close", "stdin_eof", "stdin_extra"}, "encoder_role": "synthetic-substitution-only", "pixel_probe": "PrintWindow into owned memory DIB only", "child_launch": "suspended, assign kill-on-close job, then resume", "source_supervision": "actual agent --source-streamer-mode", "desktop_capture_tested": false, "windows_agent_preview_manager_enabled": false}
+	return map[string]any{"schema_version": 1, "native_required": "windows/amd64", "cases": []string{"window_close", "stdin_eof", "stdin_extra"}, "encoder_role": "synthetic-substitution-only", "pixel_probe": "PrintWindow into owned memory DIB only", "child_launch": "atomically create in kill-on-close job, verify, then resume", "source_supervision": "actual agent --source-streamer-mode", "desktop_capture_tested": false, "windows_agent_preview_manager_enabled": false}
 }
 func validateConfig(c config) error {
 	for _, h := range []string{c.AgentSHA, c.ViewerSHA, c.FixtureSHA, c.SourceSHA, c.ManifestSHA, c.FixtureManifestSHA} {

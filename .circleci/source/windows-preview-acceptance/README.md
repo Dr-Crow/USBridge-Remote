@@ -76,7 +76,11 @@ go run . --plan
 Portable tests and cross-builds are **not** native execution or media acceptance.
 Native unit tests additionally establish suspended launch, private pipe I/O,
 natural EOF cleanup, exact Job Object membership, inherited descendant membership
-and kill-on-close behavior using only test-owned helper processes.
+and kill-on-close behavior using only test-owned helper processes. A separate
+`windows-preview-process` CI job runs these native checks twenty times without
+waiting for the viewer/codec build; it uses the checksum-pinned official Go ZIP
+and publishes only `process.json`, with media and window claims explicitly false.
+Atomic startup uses Microsoft's [JOB_LIST attribute](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute).
 
 ## Gates and safe failure behavior
 
@@ -108,10 +112,14 @@ unknown/duplicate/case-aliased/null JSON fields, malformed/trailing data, missin
 or extra events and oversized output fail closed.
 
 A separate non-breakaway, kill-on-close Job Object owns each case's full process
-tree. The agent and viewer are created suspended, assigned, then resumed, using
-an explicit three-handle stdin/stdout/stderr inheritance list. The agent's source
+tree. The agent and viewer are created suspended with atomic JOB_LIST membership,
+verified in that job, then resumed, using an explicit three-handle
+stdin/stdout/stderr inheritance list. There is no created-but-unassigned crash
+window; no fallback to post-creation assignment is permitted. A native regression
+exits the owning parent before ResumeThread and requires the never-resumed child
+to exit without closing the outer safety job. The agent's source
 and the source's two fixture instances inherit that job on creation. The job
-handle itself is not inherited. A denied nested-job assignment is a failure;
+handle itself is not inherited. An unsupported atomic job attribute or denied nested-job creation is a failure;
 the runner never resumes uncontained children or changes runner security policy.
 During media checks, the runner inventories only its job's PIDs, hash-verifies
 their executable files, permits only those four component identities, and
