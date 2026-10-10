@@ -75,7 +75,9 @@ func (w *Window) showSourcePreviewDialog(parent fyne.Window) {
 			fyne.Do(func() {
 				if err != nil {
 					status.SetText(err.Error())
-					start.Enable()
+					if !errors.Is(err, sourcepreview.ErrCleanupUncertain) {
+						start.Enable()
+					}
 					return
 				}
 				active = session
@@ -96,12 +98,17 @@ func (w *Window) showSourcePreviewDialog(parent fyne.Window) {
 						if active == session {
 							active = nil
 							stop.Disable()
-							start.Enable()
-							if errors.Is(err, sourcepreview.ErrFrameTooLarge) {
+							if errors.Is(err, sourcepreview.ErrCleanupUncertain) {
+								start.Disable()
+								status.SetText(sourcepreview.ErrCleanupUncertain.Error())
+							} else if errors.Is(err, sourcepreview.ErrFrameTooLarge) {
+								start.Enable()
 								status.SetText("This capture exceeded the bounded frame size. Select the smaller 128×72 profile, or use a verified bounded-encoding profile when available.")
 							} else if err != nil {
+								start.Enable()
 								status.SetText("The preview failed and both children have stopped. Capture or transport limits may be responsible; inspect the selected display and tested profile before retrying.")
 							} else {
+								start.Enable()
 								status.SetText("Preview stopped. Capture and viewer have been joined.")
 							}
 						}

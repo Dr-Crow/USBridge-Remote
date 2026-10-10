@@ -373,10 +373,37 @@ func TestWindowsStartupCanceledBeforeResume(t *testing.T) {
 		}
 		cancel()
 	})
-	if p != nil || !errors.Is(e, context.Canceled) || retained == 0 {
+	if p != nil || e != context.Canceled || retained == 0 {
 		t.Fatal("canceled suspended startup did not fail closed")
 	}
-	requireSignal(t, retained)
+	state, e := syscall.WaitForSingleObject(retained, 0)
+	if e != nil || state != syscall.WAIT_OBJECT_0 {
+		t.Fatal("canceled suspended child was not joined before startup returned")
+	}
+}
+func TestWindowsStartupCanceledWithCleanupFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var retained syscall.Handle
+	p, e := startWithHook(ctx, helperSpec(t, "leaf"), func(pid uint32, j *nativeJob) {
+		retained = processHandle(t, pid)
+		if !j.contains(retained) {
+			t.Fatal("suspended child uncontained")
+		}
+		// Safely retire the exact owned job early. Cleanup's later terminate must
+		// report its closed-job failure, even though kill-on-close retires the child.
+		if j.close() != nil {
+			t.Fatal("synthetic job retirement failed")
+		}
+		cancel()
+	})
+	if p != nil || !errors.Is(e, context.Canceled) || !errors.Is(e, ErrContainment) || errors.Is(e, ErrCleanupTimeout) || retained == 0 {
+		t.Fatal("startup cancellation hid failed native cleanup")
+	}
+	state, e := syscall.WaitForSingleObject(retained, 0)
+	if e != nil || state != syscall.WAIT_OBJECT_0 {
+		t.Fatal("synthetic startup failure did not join its child")
+	}
 }
 func TestWindowsOwnerExitBeforeResumeRetiresSuspendedChild(t *testing.T) {
 	// Deliberately do not use Process for the OUTER observer fixture: its root

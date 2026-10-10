@@ -167,7 +167,7 @@ func start(ctx context.Context, spec Spec) (*Process, error) { return startWithH
 
 // The per-call seam is used only by this package's synthetic native tests.
 // There is no global hook, runtime flag, environment switch, or exported bypass.
-func startWithHook(ctx context.Context, spec Spec, beforeResume func(uint32, *nativeJob)) (*Process, error) {
+func startWithHook(ctx context.Context, spec Spec, beforeResume func(uint32, *nativeJob)) (_ *Process, startErr error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -291,19 +291,26 @@ func startWithHook(ctx context.Context, spec Spec, beforeResume func(uint32, *na
 	if e != nil {
 		return nil, ErrStart
 	}
-	defer syscall.CloseHandle(pi.Thread)
-	defer syscall.CloseHandle(pi.Process)
 	var waitHandle syscall.Handle
 	defer func() {
+		cleanup := startupCleanupResult{}
 		if !success {
 			// Even a cancellation before resume must retire the atomically contained
 			// suspended child. Close is a second safety net if termination fails.
-			_ = j.terminate()
-			_ = j.close()
-			_, _ = syscall.WaitForSingleObject(pi.Process, uint32(CleanupTimeout.Milliseconds()))
+			cleanup.terminateErr = j.terminate()
+			cleanup.jobCloseErr = j.close()
+			state, waitErr := syscall.WaitForSingleObject(pi.Process, uint32(CleanupTimeout.Milliseconds()))
+			cleanup.waitErr = waitErr
+			cleanup.rootExited = waitErr == nil && state == syscall.WAIT_OBJECT_0
+			cleanup.timedOut = waitErr == nil && state == uint32(syscall.WAIT_TIMEOUT)
 			if waitHandle != 0 {
-				_ = syscall.CloseHandle(waitHandle)
+				cleanup.waitHandleCloseErr = syscall.CloseHandle(waitHandle)
 			}
+		}
+		cleanup.processHandleCloseErr = syscall.CloseHandle(pi.Process)
+		cleanup.threadHandleCloseErr = syscall.CloseHandle(pi.Thread)
+		if !success {
+			startErr = startupCleanupError(startErr, cleanup)
 		}
 	}()
 	if !j.contains(pi.Process) {

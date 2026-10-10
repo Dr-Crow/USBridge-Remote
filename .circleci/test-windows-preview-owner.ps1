@@ -43,7 +43,7 @@ $required = @('TestWindowsNativeLayoutsAndEmptyEnvironment', 'TestWindowsPrivate
     'TestWindowsHandleListExcludesUnknownInheritableHandle', 'TestWindowsRootCrashRetiresOutputHoldingDescendant',
     'TestWindowsZeroExitStillRecordsForcedDescendantCleanup', 'TestWindowsCancellationJoinsOwnedTree',
     'TestWindowsBlockedStdinCannotDeadlockStop', 'TestWindowsBlockedStdinCannotDeadlockCancellation',
-    'TestWindowsStartupCanceledBeforeResume', 'TestWindowsOwnerExitBeforeResumeRetiresSuspendedChild',
+    'TestWindowsStartupCanceledBeforeResume', 'TestWindowsStartupCanceledWithCleanupFailure', 'TestWindowsOwnerExitBeforeResumeRetiresSuspendedChild',
     'TestWindowsRepeatedLifecycleReleasesHandles', 'TestWindowsBlockedOutputReadsJoinOnStop')
 $selector = '^(' + ($required -join '|') + ')$'
 $counts = [ordered]@{}
@@ -100,15 +100,15 @@ try {
             if ($null -ne $row.PSObject.Properties['Test']) { $contractPasses++ } else { $contractPackages++ }
         }
     }
-    if ($contractPackages -ne 1 -or $contractPasses -ne 29) { throw 'Missing owner contract assertions' }
+    if ($contractPackages -ne 1 -or $contractPasses -ne 31) { throw 'Missing owner contract assertions' }
     $stage = 'vet'
     & $go vet ./... 1> (Join-Path $work 'vet-stdout.txt') 2> (Join-Path $work 'vet-stderr.txt')
     if ($LASTEXITCODE -ne 0) { Write-OwnerFailure; throw 'Owner native vet failed' }
 } catch { Write-OwnerFailure; throw } finally { Pop-Location }
 $receipt = [ordered]@{ schema_version = 1; passed = $true; source_commit = $commit;
     platform = 'windows/amd64'; go_version = 'go1.26.9'; source_files_sha256 = $hashes;
-    native_execution = $true; native_assertions = $counts; required_native_passes = 240;
+    native_execution = $true; native_assertions = $counts; required_native_passes = 260;
     failures = 0; skips = 0; native_vet = $true; contract_test_passes = $contractPasses; production_integration_enabled = $false;
     window_or_media_started = $false; source_or_binary_artifacts_published = $false }
 [IO.File]::WriteAllText((Join-Path $out 'owner.json'), (($receipt | ConvertTo-Json -Depth 6) + "`n"), (New-Object Text.UTF8Encoding($false)))
-Write-Host 'Native pipe owner: all 12 assertions passed 20 times, plus contract tests and vet.'
+Write-Host 'Native pipe owner: all 13 assertions passed 20 times, plus contract tests and vet.'

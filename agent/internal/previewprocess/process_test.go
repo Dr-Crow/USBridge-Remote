@@ -229,6 +229,42 @@ func TestErrorsDoNotIncludeNativeContent(t *testing.T) {
 	}
 }
 
+func TestStartupCleanupErrorPreservesCauseAndSanitizesFailures(t *testing.T) {
+	nativeErr := errors.New(`C:\private\child.exe --secret env=value native-output`)
+	cases := []struct {
+		name        string
+		cleanup     startupCleanupResult
+		containment bool
+		timeout     bool
+	}{
+		{name: "joined", cleanup: startupCleanupResult{rootExited: true}},
+		{name: "terminate", cleanup: startupCleanupResult{rootExited: true, terminateErr: nativeErr}, containment: true},
+		{name: "job-close", cleanup: startupCleanupResult{rootExited: true, jobCloseErr: nativeErr}, containment: true},
+		{name: "wait-error", cleanup: startupCleanupResult{waitErr: nativeErr}, containment: true},
+		{name: "unknown-wait", containment: true},
+		{name: "wait-handle-close", cleanup: startupCleanupResult{rootExited: true, waitHandleCloseErr: nativeErr}, containment: true},
+		{name: "process-handle-close", cleanup: startupCleanupResult{rootExited: true, processHandleCloseErr: nativeErr}, containment: true},
+		{name: "thread-handle-close", cleanup: startupCleanupResult{rootExited: true, threadHandleCloseErr: nativeErr}, containment: true},
+		{name: "timeout", cleanup: startupCleanupResult{timedOut: true}, timeout: true},
+		{name: "failed-termination-and-timeout", cleanup: startupCleanupResult{terminateErr: nativeErr, timedOut: true}, containment: true, timeout: true},
+		{name: "failed-close-and-timeout", cleanup: startupCleanupResult{jobCloseErr: nativeErr, waitHandleCloseErr: nativeErr, timedOut: true}, containment: true, timeout: true},
+	}
+	for _, cause := range []error{ErrStart, context.Canceled, context.DeadlineExceeded, ErrContainment} {
+		for _, tc := range cases {
+			got := startupCleanupError(cause, tc.cleanup)
+			if !errors.Is(got, cause) || errors.Is(got, ErrContainment) != (tc.containment || cause == ErrContainment) || errors.Is(got, ErrCleanupTimeout) != tc.timeout {
+				t.Fatalf("%s: startup cause or cleanup uncertainty lost", tc.name)
+			}
+			if !tc.containment && !tc.timeout && got != cause {
+				t.Fatalf("%s: joined cleanup changed original error", tc.name)
+			}
+			if errors.Is(got, nativeErr) || bytes.Contains([]byte(got.Error()), []byte(nativeErr.Error())) {
+				t.Fatalf("%s: raw native error escaped", tc.name)
+			}
+		}
+	}
+}
+
 func TestDoneWaitsForOwnedCloserAfterTreeExit(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	var once sync.Once

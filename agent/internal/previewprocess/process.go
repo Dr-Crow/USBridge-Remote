@@ -78,6 +78,29 @@ func resultError(r Result) error {
 	return nil
 }
 
+// startupCleanupResult records failed-start cleanup separately from its original
+// cause. Native errors are observations only: never include their text in the
+// caller-visible error. A successful wait must explicitly observe root exit.
+type startupCleanupResult struct {
+	terminateErr, jobCloseErr, waitErr, waitHandleCloseErr error
+	processHandleCloseErr, threadHandleCloseErr            error
+	rootExited, timedOut                                   bool
+}
+
+func startupCleanupError(cause error, r startupCleanupResult) error {
+	var uncertainty error
+	if r.terminateErr != nil || r.jobCloseErr != nil || r.waitErr != nil || r.waitHandleCloseErr != nil || r.processHandleCloseErr != nil || r.threadHandleCloseErr != nil || (!r.rootExited && !r.timedOut) {
+		uncertainty = ErrContainment
+	}
+	if r.timedOut {
+		uncertainty = errors.Join(uncertainty, ErrCleanupTimeout)
+	}
+	if uncertainty == nil {
+		return cause
+	}
+	return errors.Join(cause, uncertainty)
+}
+
 // Process exposes private streams, without exposing native handles. Streams are
 // safe for concurrent use/Close. Callers own reading and closing Stdout/Stderr;
 // successful natural completion preserves unread output for draining to EOF.

@@ -11,7 +11,7 @@ if ((Get-FileHash -Algorithm SHA256 (Join-Path $tools 'go1.26.9.windows-amd64.zi
 $commit = (& git rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $commit -cnotmatch '^[0-9a-f]{40}$' -or $commit -cne $env:CIRCLE_SHA1) { throw 'Exact source commit required' }
 $owner = Get-Content -Raw (Join-Path $out 'owner.json') | ConvertFrom-Json
-if ($owner.passed -ne $true -or $owner.source_commit -cne $commit -or $owner.required_native_passes -ne 240 -or $owner.failures -ne 0 -or $owner.skips -ne 0 -or $owner.native_execution -ne $true -or $owner.platform -cne 'windows/amd64' -or $owner.go_version -cne 'go1.26.9') { throw 'Same-commit native owner prerequisite missing' }
+if ($owner.passed -ne $true -or $owner.source_commit -cne $commit -or $owner.required_native_passes -ne 260 -or $owner.failures -ne 0 -or $owner.skips -ne 0 -or $owner.native_execution -ne $true -or $owner.platform -cne 'windows/amd64' -or $owner.go_version -cne 'go1.26.9') { throw 'Same-commit native owner prerequisite missing' }
 New-Item -ItemType Directory -Force $work, $out | Out-Null
 $env:GOROOT = Join-Path $tools 'go'
 $env:GOTOOLCHAIN = 'local'
@@ -53,6 +53,7 @@ $files = @(
     'internal/sourcepreview/acceptance_observer.go',
     'internal/sourcepreview/acceptance_observer_test.go',
     'internal/sourcepreview/manager.go',
+    'internal/sourcepreview/manager_lease_test.go',
     'internal/sourcepreview/manager_test.go',
     'internal/sourcepreview/native_acceptance_test.go',
     'internal/sourcepreview/viewer.go',
@@ -98,6 +99,49 @@ $subtests = @('TestWindowsSourceBlockedStdinStopAndCancel/false', 'TestWindowsSo
     'TestWindowsViewerBlockedStdinStopAndCancel/false', 'TestWindowsViewerBlockedStdinStopAndCancel/true')
 $portable = @('TestJoinSharesOneDeadlineAndRetainsTimeout', 'TestLifecyclePreservesTypedOwnerFailures', 'TestViewerLifecyclePreservesTypedOwnerFailures')
 $packages = @('./internal/previewchild', './internal/sourcestreamer', './internal/sourcepreview')
+$lease = @(
+    'TestPreviewLeaseSourceStartupUncertainty/previewprocess:_cleanup_deadline_exceeded',
+    'TestPreviewLeaseSourceStartupUncertainty/previewprocess:_containment_verification_failed',
+    'TestPreviewLeaseSourceStartupUncertainty',
+    'TestPreviewLeaseViewerStartupCombinesSourceCleanup/viewer-timeout',
+    'TestPreviewLeaseViewerStartupCombinesSourceCleanup/viewer-containment-source-frame',
+    'TestPreviewLeaseViewerStartupCombinesSourceCleanup/source-timeout',
+    'TestPreviewLeaseViewerStartupCombinesSourceCleanup/source-containment-viewer-frame',
+    'TestPreviewLeaseViewerStartupCombinesSourceCleanup',
+    'TestPreviewLeaseTerminalUncertaintyOutranksOtherErrors/source-terminal-timeout',
+    'TestPreviewLeaseTerminalUncertaintyOutranksOtherErrors/viewer-terminal-containment',
+    'TestPreviewLeaseTerminalUncertaintyOutranksOtherErrors/viewer-timeout-source-frame',
+    'TestPreviewLeaseTerminalUncertaintyOutranksOtherErrors/source-containment-viewer-frame',
+    'TestPreviewLeaseTerminalUncertaintyOutranksOtherErrors/source-joined-frame-timeout',
+    'TestPreviewLeaseTerminalUncertaintyOutranksOtherErrors/forced-viewer-source-timeout',
+    'TestPreviewLeaseTerminalUncertaintyOutranksOtherErrors',
+    'TestPreviewLeaseProvedCleanupAllowsFreshRetry/clean',
+    'TestPreviewLeaseProvedCleanupAllowsFreshRetry/forced-tree-retired',
+    'TestPreviewLeaseProvedCleanupAllowsFreshRetry/frame-limit',
+    'TestPreviewLeaseProvedCleanupAllowsFreshRetry/frame-limit-forced-tree-retired',
+    'TestPreviewLeaseProvedCleanupAllowsFreshRetry/other-safe-failure',
+    'TestPreviewLeaseProvedCleanupAllowsFreshRetry',
+    'TestPreviewLeaseStartupProvedCleanupAllowsRetry/source-forced',
+    'TestPreviewLeaseStartupProvedCleanupAllowsRetry/source-canceled',
+    'TestPreviewLeaseStartupProvedCleanupAllowsRetry/source-frame',
+    'TestPreviewLeaseStartupProvedCleanupAllowsRetry/viewer-forced',
+    'TestPreviewLeaseStartupProvedCleanupAllowsRetry/viewer-canceled-source-forced',
+    'TestPreviewLeaseStartupProvedCleanupAllowsRetry/viewer-failed-source-frame',
+    'TestPreviewLeaseStartupProvedCleanupAllowsRetry',
+    'TestPreviewLeaseStartRacingCleanupRechecksBlock',
+    'TestPreviewLeaseStartupCancellationAndDoubleClick/source/parent',
+    'TestPreviewLeaseStartupCancellationAndDoubleClick/source/manager-stop',
+    'TestPreviewLeaseStartupCancellationAndDoubleClick/viewer/parent',
+    'TestPreviewLeaseStartupCancellationAndDoubleClick/viewer/manager-stop',
+    'TestPreviewLeaseStartupCancellationAndDoubleClick',
+    'TestPreviewLeaseConcurrentStopCannotReleaseUncertainCleanup',
+    'TestPreviewLeaseStatusNeverExposesRawChildErrors/cleanup',
+    'TestPreviewLeaseStatusNeverExposesRawChildErrors/containment',
+    'TestPreviewLeaseStatusNeverExposesRawChildErrors/frame',
+    'TestPreviewLeaseStatusNeverExposesRawChildErrors/forced',
+    'TestPreviewLeaseStatusNeverExposesRawChildErrors/generic',
+    'TestPreviewLeaseStatusNeverExposesRawChildErrors'
+)
 $log = Join-Path $work 'native.jsonl'
 $stage = 'native_launch_adapters'
 function Write-WiringFailure {
@@ -120,7 +164,7 @@ function Write-WiringFailure {
         window_or_media_started = $false; source_or_binary_artifacts_published = $false }
     [IO.File]::WriteAllText((Join-Path $out 'wiring-failure.json'), (($failure | ConvertTo-Json -Depth 6) + "`n"), (New-Object Text.UTF8Encoding($false)))
 }
-function Read-ExactPasses($expected) {
+function Read-ExactPasses($expected, [int] $repetitions = 20, [int] $packageCount = 3) {
     $counts = [ordered]@{}
     foreach ($name in $expected) { $counts[$name] = 0 }
     $packageNames = @{}
@@ -129,7 +173,7 @@ function Read-ExactPasses($expected) {
         if ($row.Action -in @('fail', 'skip', 'build-fail')) { throw 'Native wiring failure or skip' }
         if ($row.Action -ceq 'pass') {
             if ($null -ne $row.PSObject.Properties['Test']) {
-                if (!$counts.Contains($row.Test)) { throw 'Unexpected wiring assertion' }
+                if (!($expected -ccontains $row.Test)) { throw 'Unexpected wiring assertion' }
                 $counts[$row.Test]++
             } else {
                 if ($row.Package -cnotmatch '^usbridge_agent/internal/(previewchild|sourcestreamer|sourcepreview)$' -or $packageNames.ContainsKey($row.Package)) { throw 'Unexpected wiring package' }
@@ -137,8 +181,8 @@ function Read-ExactPasses($expected) {
             }
         }
     }
-    if ($packageNames.Count -ne 3) { throw 'Missing wiring package passes' }
-    foreach ($name in $expected) { if ($counts[$name] -ne 20) { throw 'Missing exact wiring repetitions' } }
+    if ($packageNames.Count -ne $packageCount) { throw 'Missing wiring package passes' }
+    foreach ($name in $expected) { if ($counts[$name] -ne $repetitions) { throw 'Missing exact wiring repetitions' } }
     return ,$counts
 }
 Push-Location $work
@@ -153,6 +197,11 @@ try {
     & $go test -json -count=20 -timeout=2m "-run=$selector" @packages 1> $log 2> (Join-Path $work 'contracts-stderr.txt')
     if ($LASTEXITCODE -ne 0) { throw 'Portable lifecycle contracts failed' }
     $contractCounts = Read-ExactPasses $portable
+    $stage = 'cleanup_lease_policy'
+    $log = Join-Path $work 'lease.jsonl'
+    & $go test -json -count=100 -timeout=3m '-run=^TestPreviewLease' ./internal/sourcepreview 1> $log 2> (Join-Path $work 'lease-stderr.txt')
+    if ($LASTEXITCODE -ne 0) { throw 'Cleanup lease policy failed' }
+    $leaseCounts = Read-ExactPasses $lease 100 1
     $stage = 'vet'
     & $go vet ./... 1> (Join-Path $work 'vet-stdout.txt') 2> (Join-Path $work 'vet-stderr.txt')
     if ($LASTEXITCODE -ne 0) { throw 'Native production adapter vet failed' }
@@ -161,6 +210,7 @@ $receipt = [ordered]@{ schema_version = 1; passed = $true; source_commit = $comm
     platform = 'windows/amd64'; go_version = 'go1.26.9'; source_files_sha256 = $hashes;
     native_execution = $true; native_assertions = $nativeCounts; portable_contracts = $contractCounts;
     required_native_top_level_passes = 260; required_native_leaf_cases = 300; portable_contract_passes = 60;
+    lease_policy_assertions = $leaseCounts; lease_policy_top_level_passes = 900; lease_policy_leaf_cases = 3400;
     failures = 0; skips = 0; native_vet = $true; production_launch_adapters_exercised = $true;
     production_manager_enabled = $false; window_or_media_started = $false; source_or_binary_artifacts_published = $false }
 [IO.File]::WriteAllText((Join-Path $out 'wiring.json'), (($receipt | ConvertTo-Json -Depth 6) + "`n"), (New-Object Text.UTF8Encoding($false)))
