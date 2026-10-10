@@ -15,7 +15,13 @@ pacman --noconfirm -S --needed mingw-w64-ucrt-x86_64-cmake mingw-w64-ucrt-x86_64
  mingw-w64-ucrt-x86_64-ffmpeg mingw-w64-ucrt-x86_64-vulkan-headers mingw-w64-ucrt-x86_64-vulkan-loader
 pacman -Q > "$WORK/packages.txt"
 PIN=a232e27d5c423eb8e7de8da91f0eefcf9171348f
-git submodule update --init --recursive client/moonlight-common-c
+# Windows checkout configuration can rewrite HTTPS to SSH. This dependency is
+# public: ignore only command-scoped global/system Git configuration and use
+# its reviewed HTTPS URL. Do not disable SSH/TLS verification or add credentials.
+: > "$WORK/public-git.config"
+GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL="$(cygpath -m "$WORK/public-git.config")" GIT_CONFIG_COUNT=0 \
+ git -c credential.helper= -c submodule.client/moonlight-common-c.url=https://github.com/itsme228/moonlight-common-c.git \
+ submodule update --init --recursive client/moonlight-common-c
 [[ "$(git -C client/moonlight-common-c rev-parse HEAD)" == "$PIN" ]]
 (
  cd client
