@@ -8,7 +8,6 @@ from collections import Counter
 import json
 import os
 import pathlib
-import re
 import signal
 import subprocess
 import sys
@@ -16,6 +15,7 @@ import time
 
 import dbus
 from preview_processes import validate_capture_chain
+from preview_windows import parent_window
 
 WORK = pathlib.Path(os.environ['SOURCE_PREVIEW_DIALOG_WORK'])
 OUT = pathlib.Path(os.environ['SOURCE_PREVIEW_DIALOG_OUTPUT'])
@@ -76,11 +76,16 @@ def hit(name):
     return matches[0] if matches else None
 
 
-def window_id():
-    title = ui()['title']
-    ids = command('xdotool', 'search', '--pid', str(process.pid), '--name', '^' + re.escape(title) + '$').splitlines()
-    assert len(ids) == 1
-    return ids[0]
+verified_parent_xid = None
+
+
+def window_id(required=True):
+    global verified_parent_xid
+    selected = parent_window(command, process.pid, ui()['title'], required=required)
+    if selected is not None:
+        assert verified_parent_xid in (None, selected), 'native parent identity changed'
+        verified_parent_xid = selected
+    return selected
 
 
 def click(name, allow_disabled=False):
@@ -260,7 +265,10 @@ def joined(number, children, sockets, label):
 
 def parent_nonblank():
     r = C.c_ulong(); xx = C.c_int(); yy = C.c_int(); ww = C.c_uint(); hh = C.c_uint(); b = C.c_uint(); depth = C.c_uint()
-    wid = int(window_id())
+    selected = window_id(required=False)
+    if selected is None:
+        return None
+    wid = int(selected)
     assert x.XGetGeometry(xd, wid, C.byref(r), C.byref(xx), C.byref(yy), C.byref(ww), C.byref(hh), C.byref(b), C.byref(depth))
     if ww.value < 640 or hh.value < 400:
         return None
@@ -297,7 +305,10 @@ def wm_close():
 
 
 def mapped():
-    return 'Map State: IsViewable' in command('xwininfo', '-id', window_id())
+    # The close-to-tray assertion deliberately inspects our previously verified
+    # XID: a new onlyvisible search cannot discover an unmapped window.
+    assert verified_parent_xid is not None
+    return 'Map State: IsViewable' in command('xwininfo', '-id', verified_parent_xid)
 
 
 def tray_event(label):
