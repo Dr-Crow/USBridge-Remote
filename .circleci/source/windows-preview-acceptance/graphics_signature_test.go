@@ -13,6 +13,12 @@ func TestGraphicsSignatureInspectionParsingAndTrustPolicy(t *testing.T) {
 	if _, err := parseGraphicsSignature(good, digest); err != nil {
 		t.Fatal(err)
 	}
+	for _, stage := range []string{"read_request", "query_signature", "read_certificate", "hash_file", "write_result"} {
+		_, err := parseGraphicsSignature([]byte(`{"schema_version":1,"failure_stage":"`+stage+`"}`), digest)
+		if err == nil || err.Error() != "os_verifier_"+stage+"_failed" {
+			t.Fatal("closed failure stage lost")
+		}
+	}
 	for _, raw := range [][]byte{
 		append(append([]byte{}, good...), []byte(`{}`)...),
 		[]byte(strings.Replace(string(good), `"schema_version":1`, `"schema_version":1,"schema_version":1`, 1)),

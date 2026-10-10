@@ -54,6 +54,12 @@ func inspectGraphicsOSFile(path, systemRoot string, r *graphicsOSInspection) (re
 	if err != nil {
 		return failure("os_module_hash_failed")
 	}
+	return runGraphicsSignature(final, systemRoot, r)
+}
+
+func runGraphicsSignature(final, systemRoot string, r *graphicsOSInspection) (result error) {
+	started := time.Now()
+	defer func() { r.ElapsedMillis = time.Since(started).Milliseconds() }()
 	work, err := os.MkdirTemp("", "owned-signature-")
 	if err != nil {
 		return failure("os_verifier_work_failed")
@@ -71,6 +77,12 @@ func inspectGraphicsOSFile(path, systemRoot string, r *graphicsOSInspection) (re
 		return failure("os_verifier_start_failed")
 	}
 	defer func() {
+		select {
+		case <-p.done:
+			value := p.exitCode
+			r.ExitCode = &value
+		default:
+		}
 		if ids, e := j.pids(); j.closed.Load() || e != nil || len(ids) != 0 || p.alive() {
 			r.NaturalCleanup = false
 			j.close()
@@ -87,13 +99,15 @@ func inspectGraphicsOSFile(path, systemRoot string, r *graphicsOSInspection) (re
 	_ = p.stdin.Close()
 	raw, err := p.next(5 * time.Second)
 	if err != nil {
+		switch err.Error() {
+		case "protocol_timeout", "protocol_ended_early", "bounded_protocol_failed":
+			r.ResultFailure = err.Error()
+		default:
+			r.ResultFailure = "other_protocol_failure"
+		}
 		return failure("os_verifier_result_failed")
 	}
 	defer clear(raw)
-	r.Signature, err = parseGraphicsSignature(raw, r.FileSHA)
-	if err != nil {
-		return err
-	}
 	if err = p.wait(time.Second); err != nil {
 		return failure("os_verifier_exit_failed")
 	}
@@ -104,5 +118,6 @@ func inspectGraphicsOSFile(path, systemRoot string, r *graphicsOSInspection) (re
 		return failure("os_verifier_inventory_failed")
 	}
 	r.NaturalCleanup = true
-	return nil
+	r.Signature, err = parseGraphicsSignature(raw, r.FileSHA)
+	return err
 }

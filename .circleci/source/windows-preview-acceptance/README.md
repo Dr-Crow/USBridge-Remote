@@ -287,3 +287,10 @@ This is evidence collection only: even a Valid signature keeps the module
 rejected, and cannot establish pixel or natural-viewer-cleanup acceptance.
 Signature validity and certificate display names alone are not authorization
 or an independently established publisher trust decision.
+
+The first exact-file inspection at `0b01ca6` verified the observed final path
+and SHA256, but obtained no signature result. A mandatory, device-free native
+preflight now exercises the same private-pipe verifier against the existing
+System32 `kernel32.dll` before the large viewer build. Its closed receipt records
+signature/result stage, exit status and elapsed time; raw exception text and
+paths remain private. This isolates verifier defects from window/media work.
