@@ -28,11 +28,56 @@ FALSE_FLAGS = {'production_parity', 'user_desktop_captured', 'real_audio_capture
 HASHES = {'commit', 'manifest_sha256', 'plain_binary_sha256', 'observed_binary_sha256',
           'source_binary_sha256', 'viewer_binary_sha256', 'base_image_sha256', 'runtime_image_sha256'}
 COUNTS = {'preview_runs', 'pixel_samples', 'lifetime_seconds', 'schema_version'}
+PRIVATE_MOUNTS = {
+    '/tmp': (True, 0o1777, 0, 128 << 20),
+    '/tmp/.X11-unix': (True, 0o1777, 0, 1 << 20),
+    '/run': (True, 0o755, 0, 16 << 20),
+    '/work': (True, 0o700, 10001, 768 << 20),
+    '/work/state': (True, 0o700, 10001, 64 << 20),
+    '/work/state/source-preview': (False, 0o700, 10001, 256 << 20),
+}
+
+
+def validate_private_mounts(value):
+    assert type(value) is dict and set(value) == set(PRIVATE_MOUNTS)
+    for path, (noexec, mode, owner, capacity) in PRIVATE_MOUNTS.items():
+        record = value[path]
+        assert type(record) is dict and set(record) == {'type', 'rw', 'nosuid', 'nodev', 'noexec', 'mode', 'uid', 'gid', 'size_bytes'}
+        assert record['type'] == 'tmpfs'
+        assert all(type(record[key]) is bool and record[key] for key in ('rw', 'nosuid', 'nodev'))
+        assert type(record['noexec']) is bool and record['noexec'] == noexec
+        for key, expected in (('mode', mode), ('uid', owner), ('gid', owner), ('size_bytes', capacity)):
+            assert type(record[key]) is int and record[key] == expected
+    return value
+
+
+def private_mount_receipt(mount_rows):
+    value = {}
+    for row in mount_rows:
+        path = row[4]
+        if any(path == root or path.startswith(root + '/') for root in ('/work', '/tmp', '/run')):
+            assert path in PRIVATE_MOUNTS, 'unapproved mount in private writable state'
+    for path in PRIVATE_MOUNTS:
+        rows = [row for row in mount_rows if row[4] == path]
+        assert len(rows) == 1
+        row = rows[0]
+        separator = row.index('-')
+        flags = set(row[5].split(','))
+        node = pathlib.Path(path)
+        assert not node.is_symlink()
+        info = node.stat()
+        capacity = os.statvfs(path)
+        value[path] = {'type': row[separator + 1],
+                       **{key: key in flags for key in ('rw', 'nosuid', 'nodev', 'noexec')},
+                       'mode': stat.S_IMODE(info.st_mode), 'uid': info.st_uid, 'gid': info.st_gid,
+                       'size_bytes': capacity.f_frsize * capacity.f_blocks}
+    return validate_private_mounts(value)
 
 
 def validate_receipt(value):
     assert isinstance(value, dict)
-    assert set(value) == FLAGS | HASHES | COUNTS | {'instrumentation'}
+    assert set(value) == FLAGS | HASHES | COUNTS | {'instrumentation', 'private_mounts'}
+    validate_private_mounts(value['private_mounts'])
     assert all(type(value[k]) is bool for k in FLAGS)
     assert value['instrumentation'] == 'source_preview_engine_acceptance/read-only-v1'
     for key in HASHES:
@@ -87,15 +132,11 @@ def preflight():
         if stat.S_ISCHR(mode):
             assert str(path) in {'/dev/null', '/dev/zero', '/dev/full', '/dev/random', '/dev/urandom', '/dev/tty', '/dev/pts/ptmx'}
     mount_rows = [line.split() for line in pathlib.Path('/proc/self/mountinfo').read_text().splitlines()]
-    for private_path in ('/tmp', '/run', '/work'):
-        mounts = [row for row in mount_rows if row[4] == private_path]
-        assert len(mounts) == 1 and 'tmpfs' in mounts[0]
-    assert pathlib.Path('/work').stat().st_uid == 10001
-    assert stat.S_IMODE(pathlib.Path('/work').stat().st_mode) == 0o700
+    mounts = private_mount_receipt(mount_rows)
     xdir = pathlib.Path('/tmp/.X11-unix')
     assert xdir.is_dir() and not xdir.is_symlink() and not list(xdir.iterdir())
     assert xdir.stat().st_uid == 0 and stat.S_IMODE(xdir.stat().st_mode) == 0o1777
     xmount = [row for row in mount_rows if row[4] == str(xdir)]
     assert len(xmount) == 1 and 'tmpfs' in xmount[0]
     assert os.environ['HOME'] == '/work/home'
-    return True
+    return mounts

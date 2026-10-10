@@ -1,5 +1,27 @@
 """Validate codec roles without retaining process arguments or media."""
 from collections import Counter
+import os
+import pathlib
+
+
+def namespace_media_processes(proc=pathlib.Path('/proc')):
+    """Private-PID-namespace census, including media reparented to init.
+
+    Call only in the disposable engine container, never as a host-process probe.
+    Permission failures remain fatal: incomplete visibility cannot prove cleanup.
+    """
+    found = {}
+    for entry in proc.glob('[0-9]*'):
+        if not entry.name.isdecimal():
+            continue
+        try:
+            executable = os.readlink(entry / 'exe')
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        name = pathlib.Path(executable.removesuffix(' (deleted)')).name
+        if name in {'source-streamer', 'source-preview-viewer', 'ffmpeg'}:
+            found[int(entry.name)] = name
+    return found
 
 
 def validate_capture_chain(processes, arguments):

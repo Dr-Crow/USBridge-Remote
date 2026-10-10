@@ -22,7 +22,7 @@ def setup_state(base):
 
 def main():
     os.umask(0o077)
-    preflight()
+    mounts = preflight()
     setup_state(ROOT)
     setup_state(ROOT / 'plain')
     auth = ROOT / 'xauthority'
@@ -58,6 +58,7 @@ def main():
     result['sandbox_helpers_joined'] = True
     result['base_image_sha256'] = BASE_IMAGE_SHA256
     result['runtime_image_sha256'] = os.environ['RUNTIME_IMAGE_SHA256']
+    result['private_mounts'] = mounts
     validate_receipt(result)
     print(json.dumps(result, sort_keys=True))
 

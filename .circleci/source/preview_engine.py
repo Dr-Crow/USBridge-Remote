@@ -17,7 +17,7 @@ import urllib.request
 from collections import Counter
 import dbus
 from engine_preview_contract import FLAGS, FALSE_FLAGS, tcp_udp_tables
-from preview_processes import validate_capture_chain
+from preview_processes import namespace_media_processes, validate_capture_chain
 from preview_windows import parent_window
 from engine_preview_diagnostics import failure
 
@@ -228,18 +228,13 @@ def wait_for(fn, timeout=15):
 
 
 def media_processes():
-    found = {}
-    for pid in descendants(process.pid):
-        try:
-            name = pathlib.Path(os.readlink(f'/proc/{pid}/exe')).name
-        except (FileNotFoundError, ProcessLookupError, PermissionError):
-            continue
-        if name in {'source-streamer', 'source-preview-viewer', 'ffmpeg'}:
-            found[pid] = name
-    return found
+    # The preflight proves a private PID namespace. Include reparented media:
+    # descendant-only scans can miss a child orphaned during failed startup.
+    return namespace_media_processes()
 
 
 def verify_media_shape(children):
+    assert set(children) <= descendants(process.pid), 'media escaped agent ownership'
     # Reuse the unchanged independently unit-tested four-process classifier.
     def arguments(pid):
         return pathlib.Path(f'/proc/{pid}/cmdline').read_bytes().decode().rstrip('\0').split('\0')
@@ -341,6 +336,7 @@ def joined(children, sockets, label):
 def exited(children, sockets, state):
     assert process.wait(timeout=15) == 0
     assert not pathlib.Path('/proc/' + str(process.pid)).exists()
+    assert not media_processes(), 'media remained in the private PID namespace'
     assert all(not pathlib.Path('/proc/' + str(pid)).exists() for pid in children)
     assert not (set(sockets) & set(tcp_udp_tables()))
     assert not health()

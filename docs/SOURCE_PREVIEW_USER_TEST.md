@@ -33,6 +33,8 @@ a remote connection, Windows viewing, USB OS attachment, or production parity.
 5. Keep the **128 × 72** profile for the accepted transport test. It captures a
    top-left pixel region rather than scaling the entire desktop. Larger current
    lossless profiles can exceed the bounded frame size on complex content.
+   The packaged older source has a known intermittent output-rate issue; these
+   presentation tests do not establish stable 30fps delivery or desktop performance.
 6. Review the scope, check the capture approval box, and click **Start approved
    preview**. Each new attempt consumes a new approval and fresh private keys.
 7. A separate native viewer opens. Stop with its button, the parent **Stop
@@ -53,6 +55,9 @@ verified source binary and the real viewer. It uses two authenticated disposable
 Xvfb displays with generated content, inspects actual displayed pixels, and checks
 viewer stop, parent-manager stop, expiry, fresh-session restart, canceled startup,
 no inherited recording diagnostics, and no configured PulseAudio contact.
-It does not yet automate interaction with the shipped agent's parent settings
-window. That integration remains a separate acceptance requirement and must not
-be reported as complete from the manager fixture alone.
+A separate native settings/dialog fixture passed at
+`8bf63eceaaa648f5d5b08c45ee6d2cbfc853d40d`, including real pointer/keyboard actions,
+three fresh previews and Stop/Close/close-to-tray cleanup. That fixture uses an
+offline parent-engine facade. The additional ordinary CLI/App.New Docker gate
+still fails before verified preview presentation, so installed production-engine
+startup remains an open acceptance requirement.

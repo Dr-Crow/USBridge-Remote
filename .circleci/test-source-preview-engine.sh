@@ -52,7 +52,9 @@ docker create --name "$CONTAINER" --network none --read-only \
  --tmpfs /tmp:rw,nosuid,nodev,noexec,mode=1777,size=128m \
  --tmpfs /tmp/.X11-unix:rw,nosuid,nodev,noexec,mode=1777,uid=0,gid=0,size=1m \
  --tmpfs /run:rw,nosuid,nodev,noexec,mode=0755,size=16m \
- --tmpfs /work:rw,nosuid,nodev,mode=0700,uid=10001,gid=10001,size=768m \
+ --tmpfs /work:rw,nosuid,nodev,noexec,mode=0700,uid=10001,gid=10001,size=768m \
+ --tmpfs /work/state:rw,nosuid,nodev,noexec,mode=0700,uid=10001,gid=10001,size=64m \
+ --tmpfs /work/state/source-preview:rw,nosuid,nodev,exec,mode=0700,uid=10001,gid=10001,size=256m \
  --env "RUNTIME_IMAGE_SHA256=$RUNTIME_IMAGE_SHA256" "${NAMESPACES[@]}" "$IMAGE" > /dev/null
 # Both Xvfb instances, D-Bus, CLI and all four media children are private here.
 # A timeout/forced removal cleans up failed work but NEVER yields a passing gate.

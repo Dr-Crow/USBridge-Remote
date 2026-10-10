@@ -7,7 +7,7 @@ import types
 import tempfile
 import unittest
 from unittest import mock
-from engine_preview_contract import BASE_IMAGE_SHA256, FLAGS, FALSE_FLAGS, HASHES, validate_receipt, tcp_udp_tables
+from engine_preview_contract import BASE_IMAGE_SHA256, FLAGS, FALSE_FLAGS, HASHES, PRIVATE_MOUNTS, validate_receipt, validate_private_mounts, private_mount_receipt, tcp_udp_tables
 from preview_windows import parent_window
 from engine_preview_diagnostics import failure, validate_failure
 
@@ -20,6 +20,11 @@ def receipt():
     value['base_image_sha256'] = BASE_IMAGE_SHA256
     value.update(instrumentation='source_preview_engine_acceptance/read-only-v1',
                  schema_version=1, preview_runs=4, pixel_samples=24, lifetime_seconds=83)
+    value['private_mounts'] = {
+        path: dict(type='tmpfs', rw=True, nosuid=True, nodev=True, noexec=noexec,
+                   mode=mode, uid=owner, gid=owner, size_bytes=size)
+        for path, (noexec, mode, owner, size) in PRIVATE_MOUNTS.items()
+    }
     return value
 
 
@@ -74,6 +79,40 @@ class EngineReceiptTests(unittest.TestCase):
             (root/'net/tcp').write_text('header\n 0: 0100007F:1F90 00000000:0000 0A 00000000:00000000 00:00000000 00000000 10001 0 12345 1\n')
             self.assertEqual(tcp_udp_tables(root), {'12345': {'proto': 'tcp', 'local': '0100007F:1F90', 'remote': '00000000:0000', 'state': '0A'}})
 
+    def test_only_approved_nested_staging_mount_can_execute(self):
+        mounts = receipt()['private_mounts']
+        validate_private_mounts(mounts)
+        self.assertEqual([path for path, value in mounts.items() if not value['noexec']], ['/work/state/source-preview'])
+        for path in mounts:
+            for key, invalid in [('noexec', not mounts[path]['noexec']), ('nosuid', False), ('nodev', False), ('rw', False), ('size_bytes', mounts[path]['size_bytes'] + 4096), ('uid', 123), ('mode', 0o777), ('type', 'overlay')]:
+                changed = json.loads(json.dumps(mounts)); changed[path][key] = invalid
+                with self.assertRaises(AssertionError):
+                    validate_private_mounts(changed)
+        mounts['/unapproved'] = mounts['/work'].copy()
+        with self.assertRaises(AssertionError):
+            validate_private_mounts(mounts)
+
+    def test_mount_receipt_uses_kernel_flags_and_capacity(self):
+        rows = []
+        for path, (noexec, mode, owner, size) in PRIVATE_MOUNTS.items():
+            flags = 'rw,nosuid,nodev' + (',noexec' if noexec else '')
+            rows.append(f'1 2 0:42 / {path} {flags} - tmpfs tmpfs rw'.split())
+        def info(node):
+            noexec, mode, owner, size = PRIVATE_MOUNTS[str(node)]
+            return types.SimpleNamespace(st_mode=mode, st_uid=owner, st_gid=owner)
+        def capacity(path):
+            return types.SimpleNamespace(f_frsize=4096, f_blocks=PRIVATE_MOUNTS[path][3] // 4096)
+        with mock.patch('engine_preview_contract.pathlib.Path.stat', info), mock.patch('engine_preview_contract.pathlib.Path.is_symlink', return_value=False), mock.patch('engine_preview_contract.os.statvfs', side_effect=capacity):
+            self.assertEqual(private_mount_receipt(rows), receipt()['private_mounts'])
+            # Docker silently retaining its default noexec must fail preflight.
+            rows[-1][5] += ',noexec'
+            with self.assertRaises(AssertionError):
+                private_mount_receipt(rows)
+            rows[-1][5] = rows[-1][5].removesuffix(',noexec')
+            for path in ('/work/extra', '/work/state/source-preview/extra', '/tmp/extra', '/run/extra'):
+                with self.assertRaises(AssertionError):
+                    private_mount_receipt(rows + [f'1 2 0:43 / {path} rw,nosuid,nodev - tmpfs tmpfs rw'.split()])
+
     def test_native_driver_does_not_import_offline_facade(self):
         source = (HERE/'preview_engine.py').read_text()
         ast.parse(source)
@@ -93,6 +132,10 @@ class EngineReceiptTests(unittest.TestCase):
             self.assertIn(required, source)
         for forbidden in ('--privileged', '--pid host', '--network host', '--device ', '--group-add', 'docker push', 'docker save', 'git clone', 'curl ', 'wget ', 'tar '):
             self.assertNotIn(forbidden, source)
+        self.assertIn('--tmpfs /work:rw,nosuid,nodev,noexec,mode=0700,uid=10001,gid=10001,size=768m', source)
+        self.assertIn('--tmpfs /work/state:rw,nosuid,nodev,noexec,mode=0700,uid=10001,gid=10001,size=64m', source)
+        self.assertIn('--tmpfs /work/state/source-preview:rw,nosuid,nodev,exec,mode=0700,uid=10001,gid=10001,size=256m', source)
+        self.assertEqual(len(re.findall(r'(?<!no)\bexec,', source)), 1)
 
 class EngineWindowTests(unittest.TestCase):
     def setUp(self):

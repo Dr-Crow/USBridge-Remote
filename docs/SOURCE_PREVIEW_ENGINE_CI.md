@@ -57,9 +57,19 @@ this is not a byte-for-byte reproducible dependency-build claim.
 - Unprivileged UID/GID 10001, all capabilities dropped, no-new-privileges,
   default seccomp, read-only root, resource/PID limits.
 - Private `/tmp`, `/run`, and mode-0700 `/work` tmpfs, with a separate empty
-  root-owned 1777 `/tmp/.X11-unix` tmpfs for unprivileged Xvfb socket creation. Only `/work` permits
-  execution, because the real component resolver stages verified binaries there.
-  Docker removes the tmpfs state, including new master keys, at container exit.
+  root-owned 1777 `/tmp/.X11-unix` tmpfs for unprivileged Xvfb socket creation.
+  Docker defaults tmpfs mounts to `noexec`, including `/work` when that option is
+  omitted. This blocked the original fixture's production staging path. Following
+  explicit approval, only `/work/state/source-preview` has a separate executable
+  tmpfs: exactly 256 MiB, mode 0700, UID/GID 10001, `nosuid,nodev`. Its `/work`
+  and separately mounted `/work/state` parents remain `noexec`, as do `/tmp`
+  and `/run`. The state parent is 64 MiB and mode 0700 under the same user.
+  The real resolver still copies and rehashes both executables beneath
+  `/work/state/source-preview/local-components`; there is no `/opt` or symlink
+  bypass. Preflight reads actual kernel mount flags, file ownership/mode and
+  filesystem capacity; the closed `private_mounts` receipt preserves those
+  values and rejects any unexpected executable mount or larger capacity.
+  Docker removes tmpfs state, including new master keys, at container exit.
 - Both authenticated Xvfb displays are created inside the container. Only :96
   receives generated 128×72 blue pixels. The actual GUI/viewer runs on :97.
 - The plain native CLI is built without any acceptance tag and must boot visibly,
@@ -105,6 +115,9 @@ recorded. Repeated Start must not create overlapping children.
 The four terminal actions are Stop, dialog Close, parent close-to-tray (then real
 tray reopen), and real tray Quit while the fourth preview remains active. Every
 known media PID and socket inode must disappear before a passing assertion.
+Idle and terminal checks also census the entire private PID namespace, so a
+media process reparented to init before the captured PID snapshot cannot escape
+cleanup assertions. Live media must remain descendants of the actual agent.
 Stop/Close return to the real agent's baseline loopback listeners; USBPass is
 unconditionally created by App.New even without USB consent. Only actual CLI
 process exit must release that USBPass listener and the HTTP/admin listeners.
@@ -119,7 +132,10 @@ existing source-free receipt collector. An exact closed schema permits booleans,
 bounded integers, SHA hashes, and one fixed instrumentation identifier. Unknown
 fields, free-text diagnostics, keys, descriptors, source or binary artifacts are
 rejected. All private runtime logs/configuration/authentication stay in tmpfs;
-only a bounded last-completed-stage number leaves a failed container. Stages
+only a bounded last-completed-stage number and closed diagnostic categories leave
+a failed container. Diagnostics contain owned code locations, a fixed exception
+category/UI phase and bounded child counts; never exception text, raw paths,
+arguments or application logs. Stages
 1–2 are plain startup/close; 3 is observed idle; 4 is consent/manifest rejection;
 5–7 are Stop/Close/close-to-tray; 8 is post-cooldown idle; 9 is active fourth
 preview; 10 is verified CLI exit. Existing fixture and
