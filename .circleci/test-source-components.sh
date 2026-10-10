@@ -40,7 +40,7 @@ for name,entry,version in [('source-streamer','bin/source-streamer',sys.argv[2])
 (root/'manifest.json').write_text(json.dumps({'schema':1,'components':components},indent=2)+'\n')
 (root/'MANIFEST.sha256').write_text(hashlib.sha256((root/'manifest.json').read_bytes()).hexdigest()+'  manifest.json\n')
 PY
-AGENT_SOURCE_BINARY="$OUT/package/agent/usbridge-agent" BROKER_SESSION_BINARY="$OUT/package/components/bin/broker-session" bash -c 'cd "$1"; go test -race -count=5 -run "^(TestPortableSessionExecutableMutualTLS|TestPortableAgentBrokerSessionMutualTLS)$" -v ./brokersession' _ "$WORK/broker/source" 2>&1 | tee "$OUT/agent-broker-mutual-tls.txt"
+(cd "$WORK/broker/source" && AGENT_SOURCE_BINARY="$OUT/package/agent/usbridge-agent" BROKER_SESSION_BINARY="$OUT/package/components/bin/broker-session" "$HOME/ci-toolchain/go/bin/go" test -race -count=5 -run '^(TestPortableSessionExecutableMutualTLS|TestPortableAgentBrokerSessionMutualTLS)$' -v ./brokersession) 2>&1 | tee "$OUT/agent-broker-mutual-tls.txt"
 /usr/bin/python3 "$ROOT/.circleci/source/test_agent_source_lifecycle.py" --agent "$OUT/package/agent/usbridge-agent" --streamer "$OUT/package/components/bin/source-streamer" --output "$OUT/lifecycle"
 /usr/bin/python3 "$ROOT/.circleci/source/test_agent_source_media.py" --agent "$OUT/package/agent/usbridge-agent" --components "$OUT/package/components" --enet-helper "$WORK/enet-control-test-client" --output "$OUT/media"
 cp "$ROOT/docs/SOURCE_COMPONENT_PACKAGE.md" "$OUT/package/README.md"
