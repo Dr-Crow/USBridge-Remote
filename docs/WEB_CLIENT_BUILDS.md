@@ -29,7 +29,7 @@ bridge is not a browser runtime dependency; its existing configuration still
 fetches the bridge from GitHub. It is not included or described as an offline
 feature in this bundle.
 
-Go 1.26.6 is pinned; CI verifies its official Linux amd64 archive SHA256.
+Go 1.26.9 is pinned; CI verifies its official Linux amd64 archive SHA256.
 The image's Node version is recorded for Go's WASM mock tests. If no compatible
 Node >=18 exists, CI uses SHA256-pinned Node 22.15.0. wasm_exec.js comes directly
 from the same Go toolchain that compiled app.wasm. Node tests exercise mock
@@ -52,7 +52,7 @@ LAN_ONLY_PLAN.md for the separate strict-LAN deployment milestone.
 
 ## Local checks
 
-Use Go 1.26.6, Node >=18 and Python 3. Run the following from the repository root,
+Use Go 1.26.9, Node >=18 and Python 3. Run the following from the repository root,
 with USBRIDGE_WEB_GO pointing to an existing verified Go executable:
 
     USBRIDGE_WEB_GO=/path/to/go/bin/go bash .circleci/build-web.sh

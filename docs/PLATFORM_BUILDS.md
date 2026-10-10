@@ -26,7 +26,7 @@ All builds use manual agent self-update to avoid being replaced by upstream buil
 No tokens, user configuration or private keys are bundled. Quit the existing agent
 and back up configuration before testing. See FORK_TEST_PLAN.md for behavioral tests.
 
-Build inputs: Go 1.26.6 archives are SHA256 verified. Linux uses CircleCI Ubuntu 22.04
+Build inputs: Go 1.26.9 archives are SHA256 verified. Linux uses CircleCI Ubuntu 22.04
 current; macOS uses Xcode 16.4.0 on M4 Pro. Platform toolchains are recorded in artifacts.
 
 ## Native packaged-agent startup probe

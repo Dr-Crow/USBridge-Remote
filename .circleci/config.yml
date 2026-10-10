@@ -26,13 +26,13 @@ jobs:
       - checkout
       - restore_cache:
           keys:
-            - web-client-go1266-v1-{{ checksum "client/go.sum" }}
+            - web-client-go1269-v1-{{ checksum "client/go.sum" }}
       - run:
           name: Test, build and verify complete Go WASM web bundle
           command: bash .circleci/build-web.sh
           no_output_timeout: 20m
       - save_cache:
-          key: web-client-go1266-v1-{{ checksum "client/go.sum" }}
+          key: web-client-go1269-v1-{{ checksum "client/go.sum" }}
           paths:
             - ~/go/pkg/mod
             - ~/.cache/go-build
@@ -83,7 +83,7 @@ jobs:
             - audited-components-v03131-windows-v1-{{ checksum "agent/internal/localruntime/pinned.go" }}
       - restore_cache:
           keys:
-            - windows-agent-go1266-v1-{{ checksum "agent/go.sum" }}
+            - windows-agent-go1269-v1-{{ checksum "agent/go.sum" }}
       - run:
           name: Install verified Go and MSYS2 toolchains
           command: .\.circleci\setup-windows.ps1
@@ -99,7 +99,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Agent build failed: $LASTEXITCODE" }
           no_output_timeout: 20m
       - save_cache:
-          key: windows-agent-go1266-v1-{{ checksum "agent/go.sum" }}
+          key: windows-agent-go1269-v1-{{ checksum "agent/go.sum" }}
           paths:
             - C:\ci\gopath\pkg\mod
       - save_cache:
@@ -157,20 +157,21 @@ workflows:
       - lan-host:
           filters:
             branches:
-              only: [agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
+              only: [stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
       - web-client:
           filters:
             branches:
-              only: [agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
+              only: [stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
       - browser-lan:
           requires: [web-client]
           filters:
             branches:
-              only: [agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
+              only: [stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
       - windows-agent:
           filters:
             branches:
               only:
+                - stable-go1269-2026-10-10
                 - agent-capability-policy
                 - integrate-upstream-2026-10-09
                 - circleci-project-setup
@@ -178,8 +179,8 @@ workflows:
       - linux-agent:
           filters:
             branches:
-              only: [agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
+              only: [stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
       - macos-agent:
           filters:
             branches:
-              only: [agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
+              only: [stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
