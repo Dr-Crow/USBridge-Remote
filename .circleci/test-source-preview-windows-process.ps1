@@ -18,7 +18,13 @@ Report-Stage 'download_toolchain'
 Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -Uri 'https://go.dev/dl/go1.26.9.windows-amd64.zip' -OutFile $archive
 if ((Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant() -cne $archiveSHA) { throw 'Go archive checksum mismatch' }
 Report-Stage 'extract_toolchain'
-Expand-Archive -LiteralPath $archive -DestinationPath $work
+# Use the Windows image's existing extractor for the already verified official ZIP.
+# Expand-Archive's per-file PowerShell overhead dominates this small native gate.
+$tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+if (-not (Test-Path -LiteralPath $tar -PathType Leaf)) { throw 'Native Windows archive extractor is unavailable' }
+& $tar -xf $archive -C $work
+if ($LASTEXITCODE -ne 0) { throw 'Verified Go archive extraction failed' }
+Report-Stage 'toolchain_extracted'
 $go = Join-Path $work 'go\bin\go.exe'
 $env:GOROOT = Join-Path $work 'go'
 $env:GOENV = 'off'
@@ -50,7 +56,7 @@ function Report-TestFailure {
         'atomic_job_attribute_failed', 'suspended_launch_failed', 'atomic_job_membership_failed',
         'process_arguments_failed', 'process_environment_failed', 'process_handle_failed',
         'process_wait_handle_failed', 'child_resume_failed', 'child_nonzero_exit', 'safety_job_closed',
-        'natural_exit_timeout', 'protocol_ended_early', 'protocol_timeout',
+        'natural_exit_timeout', 'natural_job_retirement_failed', 'protocol_ended_early', 'protocol_timeout',
         'extra_child_output', 'protocol_eof_timeout', 'stderr_eof_timeout',
         'bounded_protocol_failed', 'unexpected_child_stderr')
     if ((Test-Path $log) -and (Get-Item $log).Length -le 8MB) {
@@ -92,6 +98,22 @@ function Report-TestFailure {
 }
 Push-Location (Join-Path $root '.circleci\source\windows-preview-acceptance')
 try {
+    Report-Stage 'natural_retirement_probe'
+    & $go test -json -count=500 -timeout=3m '-run=^TestWindowsSuspendedLaunchPrivatePipesNaturalEOF$' ./... 1> $log 2> $stderr
+    if ($LASTEXITCODE -ne 0) { Report-TestFailure; throw 'Natural retirement probe failed; see bounded receipt' }
+    $retirementPasses = 0
+    $retirementPackages = 0
+    foreach ($line in Get-Content $log) {
+        $row = $line | ConvertFrom-Json
+        if ($row.Action -in @('fail', 'skip', 'build-fail')) { Report-TestFailure; throw 'Unexpected natural retirement result' }
+        if ($row.Action -ceq 'pass') {
+            if ($null -ne $row.PSObject.Properties['Test']) {
+                if ($row.Test -cne 'TestWindowsSuspendedLaunchPrivatePipesNaturalEOF') { throw 'Unexpected retirement probe assertion' }
+                $retirementPasses++
+            } else { $retirementPackages++ }
+        }
+    }
+    if ($retirementPasses -ne 500 -or $retirementPackages -ne 1) { throw 'Incomplete natural retirement probe' }
     Report-Stage 'native_tests'
     & $go test -json -count=20 -timeout=5m ./... 1> $log 2> $stderr
     if ($LASTEXITCODE -ne 0) { Report-TestFailure; throw 'Native process containment tests failed; raw helper diagnostics remain private' }
@@ -101,10 +123,15 @@ try {
 } finally { Pop-Location }
 $required = @(
     'TestWindowsAPILayouts',
+    'TestWindowsInventoryIncompleteContract',
+    'TestWindowsPipeEndpointsBeginNoninheritable',
     'TestWindowsPipeOnlyLaunchDoesNotAllocateConsoleHost',
     'TestWindowsSuspendedLaunchPrivatePipesNaturalEOF',
     'TestWindowsJobCloseKillsInheritedDescendant',
-    'TestWindowsParentCrashRetiresSuspendedChild'
+    'TestWindowsParentCrashRetiresSuspendedChild',
+    'TestRetirementRetriesIncompleteWithoutAcceptingEmpty',
+    'TestRetirementIncompleteDeadlineCannotPass',
+    'TestRetirementIncompleteUnknownMembersFailImmediately'
 )
 $counts = [ordered]@{}
 foreach ($name in $required) { $counts[$name] = 0 }
@@ -134,6 +161,7 @@ $receipt = [ordered]@{
     go_archive_sha256 = $archiveSHA
     native_execution = $true
     tests = $counts
+    natural_retirement_probe_passes = $retirementPasses
     total_test_passes = $totalPass
     failures = 0
     skips = 0

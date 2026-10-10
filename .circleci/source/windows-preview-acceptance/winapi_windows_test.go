@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -84,6 +85,24 @@ func TestWindowsAPILayouts(t *testing.T) {
 		t.Fatal("Windows amd64 ABI layout changed")
 	}
 }
+func requireNoninheritable(t *testing.T, h syscall.Handle) {
+	t.Helper()
+	var flags uint32
+	ok, _, _ := kernel32.NewProc("GetHandleInformation").Call(uintptr(h), uintptr(unsafe.Pointer(&flags)))
+	if ok == 0 || flags&syscall.HANDLE_FLAG_INHERIT != 0 {
+		t.Fatal("owner handle is inheritable")
+	}
+}
+func TestWindowsPipeEndpointsBeginNoninheritable(t *testing.T) {
+	r, w, err := privatePipe()
+	if err != nil {
+		t.Fatal("private pipe creation failed")
+	}
+	defer r.Close()
+	defer w.Close()
+	requireNoninheritable(t, syscall.Handle(r.Fd()))
+	requireNoninheritable(t, syscall.Handle(w.Fd()))
+}
 func testChild(t *testing.T, j *job, mode string) *child {
 	t.Helper()
 	exe, e := os.Executable()
@@ -99,6 +118,9 @@ func testChild(t *testing.T, j *job, mode string) *child {
 	t.Cleanup(func() { j.close(); _ = p.wait(3 * time.Second); p.close() })
 	if !j.contains(p.handle) {
 		t.Fatal("child not in exact job")
+	}
+	for _, h := range []syscall.Handle{j.handle, p.handle, p.waitHandle, syscall.Handle(p.stdin.Fd()), syscall.Handle(p.stdout.Fd()), syscall.Handle(p.stderr.Fd())} {
+		requireNoninheritable(t, h)
 	}
 	if _, e = p.stdin.Write([]byte("private-test-request\n")); e != nil {
 		t.Fatal("private pipe write failed")
@@ -125,9 +147,14 @@ func TestWindowsSuspendedLaunchPrivatePipesNaturalEOF(t *testing.T) {
 	if p.wait(3*time.Second) != nil || p.finishProtocol() != nil {
 		t.Fatal("natural child cleanup failed")
 	}
-	pids, e = j.pids()
-	if e != nil || len(pids) != 0 {
-		t.Fatal("job did not empty naturally")
+	e = waitRetiredInventory(func() ([]uint32, error) {
+		pids, snapshot, e = j.pidsSnapshot()
+		return pids, e
+	}, map[uint32]bool{p.pid: true}, 3*time.Second)
+	if e != nil {
+		// Preserve the exact failed query rather than sampling a second list.
+		logInventorySnapshot(t, j, snapshot, e, p.pid)
+		t.Fatal("natural_job_retirement_failed")
 	}
 }
 func TestWindowsJobCloseKillsInheritedDescendant(t *testing.T) {
@@ -289,5 +316,27 @@ func TestWindowsPipeOnlyLaunchDoesNotAllocateConsoleHost(t *testing.T) {
 	if err != nil || len(pids) != 0 {
 		logInventorySnapshot(t, j, snapshot, err)
 		t.Fatal("detached job did not empty naturally")
+	}
+}
+
+func TestWindowsInventoryIncompleteContract(t *testing.T) {
+	for _, list := range []jobProcessList{{Assigned: 1}, {Assigned: 2, Count: 1, PIDs: [128]uintptr{17}}} {
+		ids, exact, err := decodeInventory(list, true)
+		if !errors.Is(err, errIncompleteInventory) || exact != list || len(ids) != int(list.Count) {
+			t.Fatal("incomplete native inventory lost")
+		}
+	}
+	for _, list := range []jobProcessList{{Assigned: 129}, {Assigned: 1, Count: 2}, {Assigned: 1, Count: 1}, {Assigned: 1, Count: 1, PIDs: [128]uintptr{0x100000000}}} {
+		_, _, err := decodeInventory(list, true)
+		if err == nil || errors.Is(err, errIncompleteInventory) {
+			t.Fatal("malformed inventory retried")
+		}
+	}
+	if _, _, err := decodeInventory(jobProcessList{Assigned: 1}, false); err == nil || errors.Is(err, errIncompleteInventory) {
+		t.Fatal("native API failure retried")
+	}
+	ids, _, err := decodeInventory(jobProcessList{}, true)
+	if err != nil || len(ids) != 0 {
+		t.Fatal("complete empty proof rejected")
 	}
 }
