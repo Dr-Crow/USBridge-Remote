@@ -5,6 +5,7 @@ ROOT="$PWD"; OUT="$ROOT/artifacts/source-preview"; WORK="$ROOT/.source-preview-c
 export PATH="$HOME/ci-toolchain/go/bin:$PATH" GOTOOLCHAIN=local CGO_ENABLED=1
 [[ "$(go version)" == 'go version go1.26.9 linux/amd64' ]]
 mkdir -p "$OUT" "$WORK"
+python3 -m unittest discover -s .circleci/source -p test_preview_viewer_test_invocation.py
 python3 -m unittest discover -s .circleci/source -p test_windows_preview_build_receipt.py
 python3 -m unittest discover -s .circleci/source -p test_windows_preview_preflight.py
 python3 -m unittest discover -s .circleci/source -p test_prepare_windows_preview_media.py
@@ -19,7 +20,7 @@ git submodule update --init --recursive client/moonlight-common-c
 (cd client && bash scripts/build_source_preview_viewer.sh) 2>&1 | tee "$OUT/viewer-build.txt"
 git -C client/moonlight-common-c diff > "$OUT/moonlight-build-patch.diff"
 (cd client && cc -std=c11 -D_DEFAULT_SOURCE -I moonlight-common-c/src -I moonlight-common-c/enet/include $(pkg-config --cflags opus openssl) tests/source_preview_native_audio.c moonlight-common-c/build/libmoonlight-common-c.a moonlight-common-c/build/enet/libenet.a $(pkg-config --libs opus openssl) -lpthread -lm -o dist/source-preview-native-audio-test && ./dist/source-preview-native-audio-test) 2>&1 | tee "$OUT/native-silent-audio.txt"
-(cd client && go test -race -timeout 5m ./internal/sourcepreview ./internal/api/moonlight && go test -race -timeout 5m -run '^Test(SourcePreview|Disconnect)' ./internal/service && go test -race ./cmd/source-preview-viewer/environment.go ./cmd/source-preview-viewer/environment_other.go ./cmd/source-preview-viewer/environment_test.go ./cmd/source-preview-viewer/events.go ./cmd/source-preview-viewer/events_test.go) 2>&1 | tee "$OUT/viewer-tests.txt"
+(cd client && go test -race -timeout 5m ./internal/sourcepreview ./internal/api/moonlight && go test -race -timeout 5m -run '^Test(SourcePreview|Disconnect)' ./internal/service && go test -race ./cmd/source-preview-viewer) 2>&1 | tee "$OUT/viewer-tests.txt"
 cp -a "$ROOT/artifacts/source-components/package" "$OUT/package"
 cp "$ROOT/client/dist/source-preview-viewer" "$OUT/package/components/bin/source-preview-viewer"
 cp "$ROOT/client/LICENSE" "$OUT/package/source/VIEWER-LICENSE"
@@ -57,3 +58,4 @@ with tarfile.open(archive,'w:gz') as t:
   if p.is_file():t.add(p,arcname=p.relative_to(pkg),recursive=False)
 (out/'SHA256SUMS.txt').write_text(hashlib.sha256(archive.read_bytes()).hexdigest()+'  '+archive.name+'\n')
 PY
+

@@ -162,13 +162,21 @@ class CacheSeedTest(unittest.TestCase):
 
     def test_reparse_points_rejected_without_windows(self):
         original = pathlib.Path.lstat
+        wanted = original(self.data)
+        injected = []
         def reparse(path, *args, **kwargs):
             info = original(path, *args, **kwargs)
-            if path == self.data:
+            # Directory enumeration and Path.absolute can spell the same
+            # Windows file differently. Bind this fixture to the real file
+            # identity, without changing the production path/type checks.
+            if os.path.samestat(info, wanted):
+                injected.append(True)
                 return types.SimpleNamespace(st_mode=info.st_mode, st_file_attributes=0x400)
             return info
         with mock.patch.object(pathlib.Path, 'lstat', reparse):
-            self.reject()
+            with self.assertRaisesRegex(seed.SeedError, 'links and reparse points are forbidden'):
+                self.run_seed()
+        self.assertTrue(injected, 'reparse metadata fixture was not observed')
         self.assertFalse(self.target.exists())
 
     def test_hardlink_rejected(self):
