@@ -60,6 +60,9 @@ type caseReceipt struct {
 	Orange           bool   `json:"owned_window_orange"`
 	ColorTransitions int    `json:"owned_window_color_transitions"`
 	PixelSamples     int    `json:"owned_window_samples"`
+	OwnedWindows     int    `json:"owned_top_level_windows_max"`
+	VisibleWindows   int    `json:"owned_visible_windows_max"`
+	TitleMatches     int    `json:"owned_title_matches_max"`
 	VideoFrames      uint64 `json:"source_video_frames"`
 	AudioPackets     uint64 `json:"source_audio_packets"`
 	FixtureProcesses int    `json:"max_fixture_processes"`

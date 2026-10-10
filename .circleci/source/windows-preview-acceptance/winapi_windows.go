@@ -422,16 +422,39 @@ func verifyWindow(hwnd uintptr, pid uint32) bool {
 	return n > 0 && n < uintptr(len(title)-1) && syscall.UTF16ToString(title[:n]) == viewerTitle
 }
 func ownedWindow(pid uint32) (uintptr, error) {
+	hwnd, _, err := ownedWindowSnapshot(pid)
+	return hwnd, err
+}
+
+// Counts are limited to the exact owned process. Never retain or publish a
+// window title, HWND, PID, or any property of another process's windows.
+type windowSnapshot struct{ Owned, Visible, TitleMatches int }
+
+func ownedWindowSnapshot(pid uint32) (uintptr, windowSnapshot, error) {
 	var found uintptr
+	var snapshot windowSnapshot
 	ambiguous := false
+	overflow := false
 	callback := syscall.NewCallback(func(hwnd, lparam uintptr) uintptr {
 		var owner uint32
 		windowPID.Call(hwnd, uintptr(unsafe.Pointer(&owner)))
 		if owner != pid {
 			return 1
 		}
+		snapshot.Owned++
+		if snapshot.Owned > 128 {
+			overflow = true
+			return 0
+		}
 		visible, _, _ := windowVisible.Call(hwnd)
-		if visible == 0 || !verifyWindow(hwnd, pid) {
+		if visible != 0 {
+			snapshot.Visible++
+		}
+		titleMatches := verifyWindow(hwnd, pid)
+		if titleMatches {
+			snapshot.TitleMatches++
+		}
+		if visible == 0 || !titleMatches {
 			return 1
 		}
 		if found != 0 {
@@ -442,10 +465,10 @@ func ownedWindow(pid uint32) (uintptr, error) {
 		return 1
 	})
 	ok, _, _ := enumWindows.Call(callback, 0)
-	if ok == 0 || ambiguous {
-		return 0, failure("owned_window_ambiguous")
+	if ok == 0 || ambiguous || overflow {
+		return 0, snapshot, failure("owned_window_ambiguous")
 	}
-	return found, nil
+	return found, snapshot, nil
 }
 func closeWindow(hwnd uintptr, pid uint32) error {
 	if !verifyWindow(hwnd, pid) {

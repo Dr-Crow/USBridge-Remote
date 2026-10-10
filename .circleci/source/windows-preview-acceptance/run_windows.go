@@ -388,10 +388,13 @@ func runCase(c config, root, sourceEntry string, cr *caseReceipt) (result error)
 		if counts["fixture"] > cr.FixtureProcesses {
 			cr.FixtureProcesses = counts["fixture"]
 		}
-		current, e := ownedWindow(viewer.pid)
+		current, snapshot, e := ownedWindowSnapshot(viewer.pid)
 		if e != nil {
 			return e
 		}
+		cr.OwnedWindows = max(cr.OwnedWindows, snapshot.Owned)
+		cr.VisibleWindows = max(cr.VisibleWindows, snapshot.Visible)
+		cr.TitleMatches = max(cr.TitleMatches, snapshot.TitleMatches)
 		if current != 0 {
 			if hwnd != 0 && hwnd != current {
 				return failure("owned_window_identity_changed")

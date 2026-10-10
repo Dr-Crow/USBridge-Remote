@@ -144,9 +144,6 @@ jobs:
       GOTOOLCHAIN: local
     steps:
       - checkout
-      - restore_cache:
-          keys:
-            - windows-preview-go1269-v1-{{ checksum "client/go.sum" }}
       - run:
           name: Install verified Go and MSYS2 toolchains
           command: .\.circleci\setup-windows.ps1
@@ -172,6 +169,19 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "Windows source inventory preflight failed: $LASTEXITCODE" }
           no_output_timeout: 15m
       - run:
+          name: Resolve public viewer dependencies and exact isolated cache key
+          command: |
+            $ErrorActionPreference = 'Stop'
+            $env:CHERE_INVOKING = 'yes'
+            $env:MSYSTEM = 'UCRT64'
+            $env:USBRIDGE_CI_ROOT = (Get-Location).Path
+            & 'C:\ci\msys64\usr\bin\bash.exe' --login .circleci/test-source-preview-windows-dependencies.sh
+            if ($LASTEXITCODE -ne 0) { throw "Public viewer cache preparation failed: $LASTEXITCODE" }
+          no_output_timeout: 15m
+      - restore_cache:
+          keys:
+            - windows-public-viewer-v1-{{ checksum ".source-preview-windows-build/public-cache-key.txt" }}
+      - run:
           name: Build native Windows viewer and verify private protocol boundaries
           command: |
             $ErrorActionPreference = 'Stop'
@@ -181,6 +191,13 @@ jobs:
             & 'C:\ci\msys64\usr\bin\bash.exe' --login .circleci/test-source-preview-windows-build.sh
             if ($LASTEXITCODE -ne 0) { throw "Windows preview build/privacy gate failed: $LASTEXITCODE" }
           no_output_timeout: 30m
+      # Save only public client compilation/module directories before the media
+      # phase. Frozen source and agent builds never use either cache directory.
+      - save_cache:
+          key: windows-public-viewer-v1-{{ checksum ".source-preview-windows-build/public-cache-key.txt" }}
+          paths:
+            - C:\ci\public-viewer-go-build
+            - C:\ci\public-viewer-modules
       - run:
           name: Verify generated-media Windows viewer pixels and natural cleanup
           command: |
@@ -191,10 +208,6 @@ jobs:
             & 'C:\ci\msys64\usr\bin\bash.exe' --login .circleci/test-source-preview-windows-media.sh
             if ($LASTEXITCODE -ne 0) { throw "Windows generated-media preview gate failed: $LASTEXITCODE" }
           no_output_timeout: 30m
-      - save_cache:
-          key: windows-preview-go1269-v1-{{ checksum "client/go.sum" }}
-          paths:
-            - C:\ci\gopath\pkg\mod
       # Separate from windows-agent's broad artifact step. The audience hold
       # permits only these source-free receipts, no source/binary archives.
       - store_artifacts:
