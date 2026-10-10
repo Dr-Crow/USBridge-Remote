@@ -492,9 +492,12 @@ func runCase(c config, root, sourceEntry string, cr *caseReceipt) (result error)
 	if e = inv.allExited(3 * time.Second); e != nil {
 		return e
 	}
-	pids, e := j.pids()
-	if e != nil || len(pids) != 0 {
-		return failure("owned_job_not_empty")
+	retired := make(map[uint32]bool, len(inv.known))
+	for pid := range inv.known {
+		retired[pid] = true
+	}
+	if e = waitRetiredInventory(j.pids, retired, 3*time.Second); e != nil {
+		return e
 	}
 	cr.JobEmpty = true
 	// EnumWindows still binds exact PID and title. Never close any other HWND.

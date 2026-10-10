@@ -146,8 +146,11 @@ func TestWindowsSuspendedLaunchPrivatePipesNaturalEOF(t *testing.T) {
 	if p.wait(3*time.Second) != nil || p.finishProtocol() != nil {
 		t.Fatal("natural child cleanup failed")
 	}
-	pids, snapshot, e = j.pidsSnapshot()
-	if e != nil || len(pids) != 0 {
+	e = waitRetiredInventory(func() ([]uint32, error) {
+		pids, snapshot, e = j.pidsSnapshot()
+		return pids, e
+	}, map[uint32]bool{p.pid: true}, 3*time.Second)
+	if e != nil {
 		// Preserve the exact failed query rather than sampling a second list.
 		logInventorySnapshot(t, j, snapshot, e, p.pid)
 		t.Fatal("natural_job_retirement_failed")
