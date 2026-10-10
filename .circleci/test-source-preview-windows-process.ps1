@@ -37,11 +37,56 @@ $version = (& $go version).Trim()
 if ($LASTEXITCODE -ne 0 -or $version -cne 'go version go1.26.9 windows/amd64') { throw 'Unexpected native Go toolchain' }
 $log = Join-Path $work 'tests.jsonl'
 $stderr = Join-Path $work 'test-stderr.txt'
+function Report-TestFailure {
+    # Raw test output can contain private paths or helper data. Publish only
+    # Go identifiers, exact local test locations and enumerated fixed categories.
+    $tests = @{}
+    $locations = @{}
+    $categories = @{}
+    $codes = @('job_create_failed', 'job_limits_failed', 'job_inventory_failed',
+        'pipe_create_failed', 'pipe_inheritance_failed', 'handle_list_failed',
+        'atomic_job_attribute_failed', 'suspended_launch_failed', 'atomic_job_membership_failed',
+        'process_arguments_failed', 'process_environment_failed', 'process_handle_failed',
+        'process_wait_handle_failed', 'child_resume_failed', 'child_nonzero_exit',
+        'natural_exit_timeout', 'protocol_ended_early', 'protocol_timeout',
+        'extra_child_output', 'protocol_eof_timeout', 'stderr_eof_timeout',
+        'bounded_protocol_failed', 'unexpected_child_stderr')
+    if ((Test-Path $log) -and (Get-Item $log).Length -le 8MB) {
+        foreach ($line in Get-Content $log) {
+            try { $row = $line | ConvertFrom-Json } catch { $categories['invalid_test_json'] = $true; continue }
+            if ($row.Action -ceq 'build-fail') { $categories['build_failed'] = $true }
+            if ($row.Action -ceq 'fail' -and $null -ne $row.PSObject.Properties['Test'] -and $row.Test -cmatch '^Test[A-Za-z0-9_]{1,128}$') { $tests[$row.Test] = $true }
+            if ($null -ne $row.PSObject.Properties['Output']) {
+                $message = [string]$row.Output
+                foreach ($code in $codes) { if ($message.Contains($code)) { $categories[$code] = $true } }
+                if ($message.Contains('panic: test timed out')) { $categories['test_timeout'] = $true }
+                foreach ($match in [regex]::Matches($message, '(?m)^\s*(main_test\.go|safety_test\.go|winapi_windows_test\.go):([1-9][0-9]{0,4}):')) {
+                    $locations[($match.Groups[1].Value + ':' + $match.Groups[2].Value)] = $true
+                }
+            }
+        }
+    } else { $categories['test_log_missing_or_oversize'] = $true }
+    $failure = [ordered]@{
+        schema_version = 1
+        source_commit = $commit
+        passed = $false
+        stage = 'native_process_tests'
+        test_names = @($tests.Keys | Sort-Object)
+        test_locations = @($locations.Keys | Sort-Object)
+        failure_categories = @($categories.Keys | Sort-Object)
+        raw_output_published = $false
+        media_session_started = $false
+        source_or_binary_artifacts_published = $false
+    }
+    $json = $failure | ConvertTo-Json -Depth 6
+    [IO.File]::WriteAllText((Join-Path $out 'process-failure.json'), ($json + [Environment]::NewLine), (New-Object Text.UTF8Encoding($false)))
+    Write-Host $json
+}
 Push-Location (Join-Path $root '.circleci\source\windows-preview-acceptance')
 try {
     Report-Stage 'native_tests'
     & $go test -json -count=20 -timeout=5m ./... 1> $log 2> $stderr
-    if ($LASTEXITCODE -ne 0) { throw 'Native process containment tests failed; raw helper diagnostics remain private' }
+    if ($LASTEXITCODE -ne 0) { Report-TestFailure; throw 'Native process containment tests failed; raw helper diagnostics remain private' }
     Report-Stage 'native_vet'
     & $go vet ./... 1> (Join-Path $work 'vet-stdout.txt') 2> (Join-Path $work 'vet-stderr.txt')
     if ($LASTEXITCODE -ne 0) { throw 'Native process containment vet failed' }
