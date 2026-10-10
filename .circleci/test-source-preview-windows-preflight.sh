@@ -11,6 +11,7 @@ export GOENV=off GOWORK=off GOFLAGS='-trimpath -mod=readonly' GOCACHEPROG= GOEXP
 [[ "$(go version)" == 'go version go1.26.9 windows/amd64' ]]
 [[ "$(git rev-parse HEAD)" == "${CIRCLE_SHA1:?exact source commit required}" ]]
 START="$(date +%s)"
+python3 -c "import compression.zstd, tarfile"
 python3 .circleci/source/windows-graphics-probe/test_probe_source.py
 gcc -std=c11 -Wall -Wextra -Werror -fsyntax-only .circleci/source/windows-graphics-probe/probe.c
 python3 .circleci/source/windows_preview_preflight.py --extract --root "$(cygpath -m "$ROOT")" --work "$(cygpath -m "$WORK")"

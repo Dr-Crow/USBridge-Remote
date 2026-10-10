@@ -253,3 +253,15 @@ Sources: https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-mesa and
 https://docs.mesa3d.org/drivers/llvmpipe.html . Only source-free JSON receipts
 are published. This software-rendered CI profile is not GPU acceleration or
 physical monitor presentation validation.
+
+The first software-staging run at `c37d773` failed before WGL execution because
+Windows selected BSD tar, which does not support GNU `--force-local`. The
+correction uses Python 3.14's native zstd/tar reader, checks each exact regular
+member and payload hash, and never extracts archive paths or invokes tar.
+The same run showed the rolling registry had advanced to LLVM23. Mesa's pinned
+build imports LLVM22, so the correction stages only `libLLVM-22.dll` from the
+official LLVM22.1.8-3 archive (SHA256
+`b22437a27246bf17447061d5c7faea5f0e457aa9a65b89dad692fe767afb1d6a`), rather than
+installing or aliasing a different ABI. Its exact DLL hash is
+`ecef91d79184533faa2d74d1965c0737843f4c2e02c7cb8dd3309a6c97ddec9b`.
+These staging repairs do not establish a WGL or visible-pixel pass.

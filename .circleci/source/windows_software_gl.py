@@ -7,6 +7,7 @@ import os
 import pathlib
 import re
 import subprocess
+import tarfile
 import urllib.request
 
 from windows_preview_build_receipt import sha, stage_dependencies
@@ -16,6 +17,12 @@ VERSION = '26.2.4-1'
 ARCHIVE = PACKAGE + '-' + VERSION + '-any.pkg.tar.zst'
 URL = 'https://mirror.msys2.org/mingw/ucrt64/' + ARCHIVE
 ARCHIVE_SHA = '82a30042848b6393f2a21cdee66b164e4cf4fe15a9721a5f1d1c7280e004ebdc'
+LLVM_PACKAGE = 'mingw-w64-ucrt-x86_64-llvm-libs'
+LLVM_VERSION = '22.1.8-3'
+LLVM_ARCHIVE = LLVM_PACKAGE + '-' + LLVM_VERSION + '-any.pkg.tar.zst'
+LLVM_URL = 'https://repo.msys2.org/mingw/ucrt64/' + LLVM_ARCHIVE
+LLVM_ARCHIVE_SHA = 'b22437a27246bf17447061d5c7faea5f0e457aa9a65b89dad692fe767afb1d6a'
+LLVM_DLLS = {'libLLVM-22.dll': 'ecef91d79184533faa2d74d1965c0737843f4c2e02c7cb8dd3309a6c97ddec9b'}
 DLLS = {
     'opengl32.dll': 'f73078a77b51c634faa36f616a8eb9f7f1b30f82b21d689267b9146dbbc8b943',
     'libgallium_wgl.dll': '42362a4b7063591ad1f2bf5d1dbf26fb808ac49cb419ac237d63c8f1cb49bc75',
@@ -50,10 +57,11 @@ def verified_viewer_dependencies(build, output, viewer):
         assert value['commit'] == build['commit'] and value['viewer_sha256'] == build['viewer_sha256']
         assert value['mesa_package'] == PACKAGE and value['mesa_version'] == VERSION
         assert value['mesa_archive_sha256'] == ARCHIVE_SHA
+        assert value['llvm_version'] == LLVM_VERSION and value['llvm_archive_sha256'] == LLVM_ARCHIVE_SHA
         assert value['fixed_driver'] == 'llvmpipe' and value['fixed_software'] is True
         merged = value['runtime_dlls_sha256']
         assert all(merged.get(name) == digest for name, digest in files.items())
-        assert all(merged.get(name) == digest for name, digest in DLLS.items())
+        assert all(merged.get(name) == digest for name, digest in (DLLS | LLVM_DLLS).items())
         checked_files(viewer.parent, merged)
         files = merged
     return files
@@ -74,18 +82,37 @@ def unchanged_existing_packages(before, after):
     return [{'name': k, 'version': v} for k, v in sorted(new.items()) if k not in old]
 
 
-def extract_pinned(archive, directory):
-    assert archive.is_file() and not archive.is_symlink() and archive.stat().st_size <= 20 << 20
-    assert sha(archive) == ARCHIVE_SHA
-    for name, digest in DLLS.items():
-        target = directory / name
-        assert not target.exists() and not target.is_symlink()
-        # Read only two exact regular-file payloads from a pinned official
-        # archive; never extract paths, package hooks, executables or settings.
-        with target.open('xb') as out:
-            subprocess.run(['tar', '--force-local', '-xOf', str(archive), 'ucrt64/bin/' + name],
-                           stdout=out, check=True, timeout=30)
-        checked_files(directory, {name: digest})
+def extract_pinned(archive, directory, archive_sha=ARCHIVE_SHA, dlls=None):
+    dlls = DLLS if dlls is None else dlls
+    assert archive.is_file() and not archive.is_symlink() and archive.stat().st_size <= 40 << 20
+    assert sha(archive) == archive_sha
+    # Python 3.14 reads zstd natively. No external tar executable, shell,
+    # drive-letter option handling or archive paths are used for writes.
+    with tarfile.open(archive, 'r:*') as package:
+        members = package.getmembers()
+        assert len(members) <= 256 and sum(m.size for m in members) <= 512 << 20
+        for name, digest in dlls.items():
+            assert re.fullmatch(r'[A-Za-z0-9_.+-]{1,100}\.dll', name, re.I)
+            matching = [m for m in members if m.name == 'ucrt64/bin/' + name]
+            assert len(matching) == 1
+            member = matching[0]
+            assert member.isfile() and not member.sparse and 0 < member.size <= 256 << 20
+            source = package.extractfile(member)
+            assert source is not None
+            with source:
+                raw = source.read(member.size + 1)
+            assert len(raw) == member.size and hashlib.sha256(raw).hexdigest() == digest
+            target = directory / name
+            assert not target.exists() and not target.is_symlink()
+            with target.open('xb') as out: out.write(raw)
+            checked_files(directory, {name: digest})
+
+
+def download_pinned(url, archive, digest):
+    with urllib.request.urlopen(url, timeout=60) as response:
+        raw = response.read((40 << 20) + 1)
+    assert len(raw) <= 40 << 20 and hashlib.sha256(raw).hexdigest() == digest
+    with archive.open('xb') as out: out.write(raw)
 
 
 def main():
@@ -102,12 +129,12 @@ def main():
     installed = subprocess.check_output(['pacman', '-Q'], text=True, timeout=30)
     additions = unchanged_existing_packages((a.work / 'packages.txt').read_text(), installed)
     archive = a.work / ARCHIVE
-    with urllib.request.urlopen(URL, timeout=60) as response:
-        raw = response.read((20 << 20) + 1)
-    assert len(raw) <= 20 << 20 and hashlib.sha256(raw).hexdigest() == ARCHIVE_SHA
-    with archive.open('xb') as out: out.write(raw)
+    download_pinned(URL, archive, ARCHIVE_SHA)
     extract_pinned(archive, viewer.parent)
-    extras = {name: viewer.parent / name for name in DLLS}
+    llvm = a.work / LLVM_ARCHIVE
+    download_pinned(LLVM_URL, llvm, LLVM_ARCHIVE_SHA)
+    extract_pinned(llvm, viewer.parent, LLVM_ARCHIVE_SHA, LLVM_DLLS)
+    extras = {name: viewer.parent / name for name in DLLS | LLVM_DLLS}
     dependencies, system = stage_dependencies(extras['opengl32.dll'], a.ucrt_bin,
                                              pathlib.Path(os.environ['SystemRoot']) / 'System32', extras)
     dependencies['opengl32.dll'] = DLLS['opengl32.dll']
@@ -119,6 +146,8 @@ def main():
     result = {'schema_version': 1, 'passed': True, 'commit': a.commit,
               'viewer_sha256': build['viewer_sha256'], 'mesa_package': PACKAGE, 'mesa_version': VERSION,
               'mesa_archive_sha256': ARCHIVE_SHA, 'mesa_archive_url': URL,
+              'llvm_package': LLVM_PACKAGE, 'llvm_version': LLVM_VERSION,
+              'llvm_archive_sha256': LLVM_ARCHIVE_SHA, 'llvm_archive_url': LLVM_URL,
               'fixed_driver': 'llvmpipe', 'fixed_software': True,
               'runtime_dlls_sha256': dict(sorted(merged.items())),
               'system_dll_imports': system, 'additional_job_local_packages': additions,

@@ -5,7 +5,8 @@ set -euo pipefail
 ROOT="$PWD"; WORK="$ROOT/.source-preview-windows-build"; OUT="$ROOT/artifacts/windows-preview-evidence"
 [[ "${GOCACHE:?}" == 'C:\ci\go-build' ]]
 [[ -s "$OUT/public-cache-seed.json" ]]
-pacman --noconfirm -S --needed mingw-w64-ucrt-x86_64-llvm-libs \
+pacman --noconfirm -S --needed mingw-w64-ucrt-x86_64-libffi mingw-w64-ucrt-x86_64-libxml2 \
+ mingw-w64-ucrt-x86_64-zlib mingw-w64-ucrt-x86_64-zstd \
  mingw-w64-ucrt-x86_64-spirv-tools mingw-w64-ucrt-x86_64-libsystre
 PYTHONPATH=.circleci/source python3 -m unittest discover -s .circleci/source -p 'test_windows_software_gl.py'
 python3 .circleci/source/windows_software_gl.py --work "$(cygpath -m "$WORK")" \

@@ -1,4 +1,7 @@
 import copy
+import io
+import tarfile
+import hashlib
 import json
 import pathlib
 import subprocess
@@ -29,21 +32,22 @@ class SoftwareGraphicsTests(unittest.TestCase):
 
     def test_software_receipt_binds_package_commit_and_all_files(self):
         fake_pins = {}
-        for name in gl.DLLS:
+        for name in gl.DLLS | gl.LLVM_DLLS:
             p = self.root/name; p.write_bytes(name.encode()); fake_pins[name] = gl.sha(p)
         value = {'schema_version': 1, 'passed': True, 'commit': self.base['commit'],
                  'viewer_sha256': self.base['viewer_sha256'], 'mesa_package': gl.PACKAGE,
                  'mesa_version': gl.VERSION, 'mesa_archive_sha256': gl.ARCHIVE_SHA,
+                 'llvm_version': gl.LLVM_VERSION, 'llvm_archive_sha256': gl.LLVM_ARCHIVE_SHA,
                  'fixed_driver': 'llvmpipe', 'fixed_software': True,
                  'runtime_dlls_sha256': self.base['runtime_dlls_sha256'] | fake_pins}
         receipt = self.root/'software-graphics-inputs.json'
         def check(v):
             receipt.write_text(json.dumps(v))
             return gl.verified_viewer_dependencies(self.base, self.root, self.viewer)
-        with mock.patch.object(gl, 'DLLS', fake_pins):
+        with mock.patch.object(gl, 'DLLS', fake_pins), mock.patch.object(gl, 'LLVM_DLLS', {}):
             self.assertEqual(check(value), value['runtime_dlls_sha256'])
             for key, bad in [('commit','b'*40), ('viewer_sha256','b'*64), ('mesa_version','other'),
-                             ('mesa_archive_sha256','b'*64), ('fixed_driver','zink'), ('fixed_software',False)]:
+                             ('mesa_archive_sha256','b'*64), ('llvm_version','23'), ('llvm_archive_sha256','b'*64), ('fixed_driver','zink'), ('fixed_software',False)]:
                 wrong = copy.deepcopy(value); wrong[key] = bad
                 with self.subTest(key=key), self.assertRaises(AssertionError): check(wrong)
             wrong = copy.deepcopy(value); del wrong['runtime_dlls_sha256']['runtime.dll']
@@ -81,6 +85,38 @@ class SoftwareGraphicsTests(unittest.TestCase):
             copied, systems = build.stage_dependencies(mesa,ucrt,system,{'libgallium_wgl.dll':gallium})
         self.assertEqual(copied,{'libgallium_wgl.dll':gl.sha(gallium)})
         self.assertEqual(systems,['KERNEL32.dll'])
+
+    def test_archive_reader_uses_only_exact_regular_payloads(self):
+        payload = b'owned synthetic DLL'
+        digest = hashlib.sha256(payload).hexdigest()
+        archive = self.root / 'with drive colon.tar'
+        def write(members):
+            with tarfile.open(archive, 'w') as package:
+                for kind, name in members:
+                    info = tarfile.TarInfo(name)
+                    if kind == 'file':
+                        info.size = len(payload)
+                        package.addfile(info, io.BytesIO(payload))
+                    else:
+                        info.type = tarfile.SYMTYPE
+                        info.linkname = 'outside'
+                        package.addfile(info)
+        name = 'ucrt64/bin/test.dll'
+        write([('file',name)])
+        target = self.root / 'staged'; target.mkdir()
+        with mock.patch.object(gl.subprocess, 'run') as command:
+            gl.extract_pinned(archive, target, gl.sha(archive), {'test.dll':digest})
+        command.assert_not_called()
+        self.assertEqual((target/'test.dll').read_bytes(),payload)
+        (target/'test.dll').unlink()
+        for members in [[('file',name),('file',name)], [('link',name)], [('file','other.dll')]]:
+            write(members)
+            with self.subTest(members=members), self.assertRaises(AssertionError):
+                gl.extract_pinned(archive,target,gl.sha(archive),{'test.dll':digest})
+            self.assertFalse((target/'test.dll').exists())
+        write([('file',name)])
+        with self.assertRaises(AssertionError):gl.extract_pinned(archive,target,gl.sha(archive),{'test.dll':'a'*64})
+        self.assertFalse((target/'test.dll').exists())
 
 
 if __name__ == '__main__':unittest.main()
