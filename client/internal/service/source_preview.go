@@ -46,7 +46,7 @@ func (m *MoonlightService) ConnectToSourcePreview(ctx context.Context, descripto
 		if descriptor != nil {
 			descriptor.Destroy()
 		}
-		return fmt.Errorf("source preview requires a native Linux client")
+		return fmt.Errorf("source preview requires a native Linux or Windows client")
 	}
 	if ctx == nil {
 		if descriptor != nil {

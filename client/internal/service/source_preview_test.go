@@ -68,7 +68,7 @@ func TestSourcePreviewRejectedLeaseReleasesOnce(t *testing.T) {
 }
 func TestSourcePreviewBusyDoesNotReplaceSession(t *testing.T) {
 	if !sourcePreviewSupported() {
-		t.Skip("native Linux source preview only")
+		t.Skip("native Linux or Windows source preview only")
 	}
 	m := NewSourcePreviewService()
 	m.isRunning = true

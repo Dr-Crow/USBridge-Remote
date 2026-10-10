@@ -151,6 +151,7 @@ Portable scrub/event tests do not need native libraries:
 
 ```sh
 go test -race ./cmd/source-preview-viewer/environment.go \
+  ./cmd/source-preview-viewer/environment_other.go \
   ./cmd/source-preview-viewer/environment_test.go \
   ./cmd/source-preview-viewer/events.go ./cmd/source-preview-viewer/events_test.go
 python3 -m py_compile tests/source_preview_no_dumps.py
@@ -182,3 +183,31 @@ closes while still decoding PCM. Stock policy must retain one open, write and
 close. The live PULSE_SERVER trap in the viewer fixture complements this callback
 test and checks the dedicated child integration. Neither test establishes
 presented video pixels.
+
+## Native Windows viewer build milestone
+
+The Windows implementation uses the same one-use private-stdin descriptor and
+Fyne renderer as Linux. Its private native profile preserves the encrypted RTSP
+URL, launch key ID, packet budget, local transport, and five-millisecond Opus
+profile. It uses software H264 decoding, discards decoded audio before WASAPI,
+and disables every input and uplink method. The ordinary client entrypoint keeps
+its previous native configuration.
+
+Before reading a descriptor, the child duplicates its event pipe without handle
+inheritance, isolates Go, Win32 and UCRT output, and removes inherited USBridge
+switches from the Go/Win32 and both native CRT environment copies. Native tests
+exercise those actual CRT functions in console and GUI-subsystem executables.
+
+The dedicated `windows-source-preview` CircleCI job builds the real Windows
+viewer, tests its native privacy/profile boundaries, resolves its recursive PE
+DLL dependencies, and publishes only a small source-free JSON receipt. A passing
+build receipt explicitly records `actual_media_tested:false` and
+`actual_window_pixels_tested:false`. It is not evidence of a displayed stream.
+The next acceptance gate uses a separately identified generated-media encoder
+and owned-window pixel checks; it must never select real desktop capture.
+
+The agent's normal Windows preview manager and settings action remain disabled
+until native rendering and lifecycle acceptance pass. No new source snapshot is
+part of this implementation, and no source or binary artifacts are published
+by this Windows build job. The existing frozen public source runtime still has
+the documented cadence and RTSP listener-retirement limitations.

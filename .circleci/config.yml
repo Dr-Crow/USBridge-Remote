@@ -120,6 +120,42 @@ jobs:
           path: artifacts
           destination: windows-agent
 
+  windows-source-preview:
+    resource_class: windows.medium
+    machine:
+      image: windows-server-2022-gui:2026.05.1
+      shell: powershell.exe -NoProfile -ExecutionPolicy Bypass
+    environment:
+      GOTOOLCHAIN: local
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - windows-preview-go1269-v1-{{ checksum "client/go.sum" }}
+      - run:
+          name: Install verified Go and MSYS2 toolchains
+          command: .\.circleci\setup-windows.ps1
+          no_output_timeout: 15m
+      - run:
+          name: Build native Windows viewer and verify private protocol boundaries
+          command: |
+            $ErrorActionPreference = 'Stop'
+            $env:CHERE_INVOKING = 'yes'
+            $env:MSYSTEM = 'UCRT64'
+            $env:USBRIDGE_CI_ROOT = (Get-Location).Path
+            & 'C:\ci\msys64\usr\bin\bash.exe' --login .circleci/test-source-preview-windows-build.sh
+            if ($LASTEXITCODE -ne 0) { throw "Windows preview build/privacy gate failed: $LASTEXITCODE" }
+          no_output_timeout: 30m
+      - save_cache:
+          key: windows-preview-go1269-v1-{{ checksum "client/go.sum" }}
+          paths:
+            - C:\ci\gopath\pkg\mod
+      # Separate from windows-agent's broad artifact step. The audience hold
+      # permits only these source-free receipts, no source/binary archives.
+      - store_artifacts:
+          path: artifacts/windows-preview-evidence
+          destination: windows-preview-evidence
+
   linux-agent:
     machine:
       image: ubuntu-2204:current
@@ -232,6 +268,10 @@ workflows:
           filters:
             branches:
               only: [agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main, source-preview-experiment]
+      - windows-source-preview:
+          filters:
+            branches:
+              only: [source-preview-experiment]
       - macos-agent:
           filters:
             branches:

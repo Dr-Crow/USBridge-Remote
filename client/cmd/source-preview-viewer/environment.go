@@ -9,12 +9,15 @@ import (
 // clearPreviewEnvironment removes every inherited USBridge diagnostic/config
 // switch, including future ones. This dedicated child has no environment-based
 // USBridge configuration. DISPLAY/XAUTHORITY and other ordinary runtime values
-// are retained. os.Unsetenv also updates the C environment in a cgo build, so
-// the decoder's getenv() frame-dump and skip-decode switches are cleared too.
+// are retained. The Windows UCRT keeps separate narrow/wide environment
+// copies, so the platform hook explicitly scrubs them after the Win32/Go copy.
 // Call before constructing Fyne or starting native decoding; the parent also
 // removes this prefix before exec, before imported packages can initialize.
 func clearPreviewEnvironment() error {
-	return clearPreviewEnvironmentWith(os.Environ(), os.Unsetenv)
+	if err := clearPreviewEnvironmentWith(os.Environ(), os.Unsetenv); err != nil {
+		return err
+	}
+	return clearPreviewNativeEnvironment()
 }
 
 func clearPreviewEnvironmentWith(environment []string, unset func(string) error) error {

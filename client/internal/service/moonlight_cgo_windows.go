@@ -83,10 +83,19 @@ extern int gl_video_try_submit(uint8_t *bgra, int width, int height, int stride)
 
 static volatile int    g_li_active          = 0;
 static volatile int    g_audio_muted        = 0;
+// Set only by the private start profile, under the serialized stream lifetime.
+// Preview decodes audio without constructing or touching an output endpoint.
+static int             g_source_preview     = 0;
+// Private native-callback test seam. The probe intercepts a backend entry
+// before COM/WASAPI can run; it is never configured by a stream or environment.
+static int g_audio_backend_probe = 0;
+static unsigned int g_audio_probe_init = 0, g_audio_probe_write = 0, g_audio_probe_teardown = 0;
+static int g_audio_probe_samples = 0;
 static OpusMSDecoder  *g_opus_ms_decoder    = NULL;
 static int             g_audio_channels     = 2;
 
 static void set_audio_pipe_fd(int fd) { (void)fd; }
+static void windows_clear_key(void *key) { SecureZeroMemory(key, 16); }
 static void set_audio_muted(int muted) { g_audio_muted = muted; }
 
 // ── Connection callbacks ──────────────────────────────────────────────────────
@@ -118,6 +127,7 @@ static int                 g_wa_fail_count = 0;
 static ULONGLONG           g_wa_last_write_ms = 0;
 
 static void wasapi_init(int channels, int sample_rate) {
+    if (g_audio_backend_probe) { ++g_audio_probe_init; return; }
     g_wa_rate = sample_rate;
     if (!g_wa_cs_init) { InitializeCriticalSection(&g_wa_cs); g_wa_cs_init = 1; }
     if (g_wa_client) return;
@@ -188,6 +198,7 @@ static void wasapi_init(int channels, int sample_rate) {
 }
 
 static void wasapi_teardown(void) {
+    if (g_audio_backend_probe) { ++g_audio_probe_teardown; return; }
     if (!g_wa_cs_init) return;
     EnterCriticalSection(&g_wa_cs);
     IAudioClient       *c = g_wa_client; g_wa_client = NULL;
@@ -212,6 +223,7 @@ static void wasapi_handle_failure(const char *where) {
 }
 
 static void wasapi_write(const opus_int16 *pcm, int samples) {
+    if (g_audio_backend_probe) { ++g_audio_probe_write; return; }
     EnterCriticalSection(&g_wa_cs);
     IAudioClient       *c = g_wa_client;
     IAudioRenderClient *r = g_wa_render;
@@ -257,13 +269,13 @@ static int ar_init(int audioConfig, const POPUS_MULTISTREAM_CONFIGURATION cfg, v
         cfg->sampleRate, cfg->channelCount,
         cfg->streams, cfg->coupledStreams, cfg->mapping, &error);
     if (error != OPUS_OK) return -1;
-    wasapi_init(cfg->channelCount, (int)cfg->sampleRate);
+    if (!g_source_preview) wasapi_init(cfg->channelCount, (int)cfg->sampleRate);
     return 0;
 }
 static void ar_start(void)   {}
 static void ar_stop(void)    {}
 static void ar_cleanup(void) {
-    wasapi_teardown();
+    if (!g_source_preview) wasapi_teardown();
     if (g_opus_ms_decoder) { opus_multistream_decoder_destroy(g_opus_ms_decoder); g_opus_ms_decoder = NULL; }
 }
 static void ar_decode(char *data, int len) {
@@ -272,8 +284,46 @@ static void ar_decode(char *data, int len) {
     int samples = opus_multistream_decode(g_opus_ms_decoder,
         (const unsigned char *)data, len, pcm, 5760, 0);
     if (samples <= 0) return;
+    if (g_audio_backend_probe) g_audio_probe_samples += samples;
+    if (g_source_preview) {
+        SecureZeroMemory(pcm, (size_t)samples * (size_t)g_audio_channels * sizeof(*pcm));
+        return;
+    }
     if (g_audio_muted) memset(pcm, 0, samples * g_audio_channels * 2);
     wasapi_write(pcm, samples);
+}
+
+// Returns [status, decoded samples, WASAPI init/write/teardown entries].
+static void windows_preview_audio_probe(int *result) {
+    memset(result, 0, 5 * sizeof(*result));
+    result[0] = -1;
+    if (g_li_active || g_opus_ms_decoder) return;
+    int previous_preview = g_source_preview;
+    g_source_preview = 1;
+    g_audio_backend_probe = 1;
+    g_audio_probe_init = g_audio_probe_write = g_audio_probe_teardown = 0;
+    g_audio_probe_samples = 0;
+    OPUS_MULTISTREAM_CONFIGURATION cfg = {0};
+    cfg.sampleRate = 48000; cfg.channelCount = 2;
+    cfg.streams = 1; cfg.coupledStreams = 1;
+    cfg.mapping[0] = 0; cfg.mapping[1] = 1;
+    int error = OPUS_OK;
+    OpusMSEncoder *encoder = opus_multistream_encoder_create(48000, 2, 1, 1,
+        cfg.mapping, OPUS_APPLICATION_RESTRICTED_LOWDELAY, &error);
+    if (encoder && error == OPUS_OK && ar_init(AUDIO_CONFIGURATION_STEREO, &cfg, NULL, 0) == 0) {
+        opus_int16 silence[240 * 2] = {0};
+        unsigned char packet[4096];
+        int bytes = opus_multistream_encode(encoder, silence, 240, packet, sizeof(packet));
+        if (bytes > 0) { ar_decode((char *)packet, bytes); result[0] = 0; }
+    }
+    ar_cleanup();
+    if (encoder) opus_multistream_encoder_destroy(encoder);
+    result[1] = g_audio_probe_samples;
+    result[2] = (int)g_audio_probe_init;
+    result[3] = (int)g_audio_probe_write;
+    result[4] = (int)g_audio_probe_teardown;
+    g_audio_backend_probe = 0;
+    g_source_preview = previous_preview;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -432,6 +482,18 @@ static void win_av_init(void) {
         char msg[96];
         snprintf(msg, sizeof(msg), "libavcodec/win: no decoder available for %s", codec_label);
         goVTLog(msg);
+        return;
+    }
+
+    // The one-use preview renders real pixels to a Fyne canvas and must not
+    // bootstrap native overlays, GPU readback workers, AI sampling or hooks.
+    // Use the in-process software decoder regardless of inherited switches.
+    if (g_source_preview) {
+        g_avctx = avcodec_alloc_context3(codec);
+        if (!g_avctx) return;
+        g_avctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+        g_avctx->thread_count = 1;
+        if (avcodec_open2(g_avctx, codec, NULL) < 0) avcodec_free_context(&g_avctx);
         return;
     }
 
@@ -860,7 +922,7 @@ static void win_deliver_frame(AVFrame *frame) {
     double t_readback = win_mono_ms();
     int w = frame->width, h = frame->height;
     // Vulkan and Fyne canvas both want RGBA; only GDI fallback needs BGRA.
-    enum AVPixelFormat dst_fmt = (!vk_video_is_active() && gl_video_is_active())
+    enum AVPixelFormat dst_fmt = (!g_source_preview && !vk_video_is_active() && gl_video_is_active())
                                  ? AV_PIX_FMT_BGRA : AV_PIX_FMT_RGBA;
     if (!g_sws || w != g_av_w || h != g_av_h || dst_fmt != g_av_dst_fmt) {
         if (g_sws) sws_freeContext(g_sws);
@@ -887,7 +949,7 @@ static void win_deliver_frame(AVFrame *frame) {
             // fallback path, where ApplyAIVisionOverlay's box colors and
             // downstream PNG-encode-as-RGBA would both come out wrong
             // (R/B channels swapped).
-            if (dst_fmt == AV_PIX_FMT_RGBA) {
+            if (!g_source_preview && dst_fmt == AV_PIX_FMT_RGBA) {
                 goAIVisionOverlay(pixels, w, h, w * 4);
             }
             // Net Graph HUD: unlike AI Vision above, this one handles BGRA
@@ -895,10 +957,10 @@ static void win_deliver_frame(AVFrame *frame) {
             // see net_graph_windows.go/net_graph.go) instead of skipping the
             // GDI/BGRA fallback path outright -- skipping it here meant the
             // HUD simply never appeared whenever Vulkan wasn't active.
-            goNetGraphOverlay(pixels, w, h, w * 4, dst_fmt == AV_PIX_FMT_BGRA ? 1 : 0);
+            if (!g_source_preview) goNetGraphOverlay(pixels, w, h, w * 4, dst_fmt == AV_PIX_FMT_BGRA ? 1 : 0);
             double t_aivision = win_mono_ms();
             // Submit to native overlay (Vulkan preferred, GDI fallback); no-op if inactive.
-            if (!vk_video_try_submit(pixels, w, h, w * 4))
+            if (!g_source_preview && !vk_video_try_submit(pixels, w, h, w * 4))
                 gl_video_try_submit(pixels, w, h, w * 4);
             double t_submit = win_mono_ms();
             goVTFrame(pixels, w, h, w * 4);
@@ -922,6 +984,7 @@ static void win_deliver_frame(AVFrame *frame) {
 
 static int  dr_setup(int fmt, int w, int h, int rate, void *ctx, int flags) {
     (void)ctx; (void)flags;
+    if (g_source_preview && fmt != VIDEO_FORMAT_H264) return -1;
     g_video_format = fmt ? fmt : 0x0001;
     g_stream_w = w; g_stream_h = h; g_stream_fps = rate;
     g_vk_session_frames = 0;
@@ -1320,14 +1383,61 @@ uint64_t do_get_total_video_bytes(void);
 
 // ── LiStartConnection entrypoint ─────────────────────────────────────────────
 
+static void windows_stream_configuration(STREAM_CONFIGURATION *cfg,
+    int videoFormat, int width, int height, int fps, int bitrate,
+    const unsigned char *rikey, uint32_t rikeyid, int packetSize, int encryptedPreview) {
+    LiInitializeStreamConfiguration(cfg);
+    cfg->width = width; cfg->height = height; cfg->fps = fps; cfg->bitrate = bitrate;
+    cfg->packetSize = packetSize; cfg->streamingRemotely = encryptedPreview ? STREAM_CFG_LOCAL : STREAM_CFG_AUTO;
+    cfg->audioConfiguration = AUDIO_CONFIGURATION_STEREO;
+    cfg->supportedVideoFormats = videoFormat ? videoFormat : VIDEO_FORMAT_H264;
+    // ENCFLG_AUDIO matches the official Moonlight clients' default.
+    cfg->clientRefreshRateX100 = fps * 100; cfg->encryptionFlags = encryptedPreview ? ENCFLG_ALL : ENCFLG_AUDIO;
+    if (rikey) {
+        memcpy(cfg->remoteInputAesKey, rikey, 16);
+        // remoteInputAesIv holds the rikeyid in BIG-endian (network) byte order —
+        // that is what we sent as "rikeyid" in /launch and what AudioStream.c
+        // reads back via BE32() to build the per-packet audio AES-CBC IV.
+        // Writing it little-endian corrupted the first 16 bytes (including the
+        // Opus TOC byte) of every decrypted audio packet, producing garbled
+        // audio while decode still reported success.
+        cfg->remoteInputAesIv[0] = (char)((rikeyid >> 24) & 0xff);
+        cfg->remoteInputAesIv[1] = (char)((rikeyid >> 16) & 0xff);
+        cfg->remoteInputAesIv[2] = (char)((rikeyid >>  8) & 0xff);
+        cfg->remoteInputAesIv[3] = (char)( rikeyid        & 0xff);
+    }
+
+}
+
+static int windows_audio_capabilities(int encryptedPreview) {
+    return encryptedPreview ? 0 : CAPABILITY_SLOW_OPUS_DECODER;
+}
+
+static void windows_preview_configuration_probe(uint32_t keyID, int preview, uint32_t *values) {
+    STREAM_CONFIGURATION cfg;
+    unsigned char key[16] = {0};
+    windows_stream_configuration(&cfg, VIDEO_FORMAT_H264, 128, 72, 30, 1000,
+        key, keyID, preview ? 1056 : 1200, preview);
+    values[0] = (uint32_t)cfg.packetSize;
+    values[1] = cfg.streamingRemotely == STREAM_CFG_LOCAL;
+    values[2] = cfg.streamingRemotely == STREAM_CFG_AUTO;
+    values[3] = cfg.encryptionFlags == ENCFLG_ALL;
+    values[4] = cfg.encryptionFlags == ENCFLG_AUDIO;
+    values[5] = (uint32_t)windows_audio_capabilities(preview);
+    values[6] = ((uint32_t)(unsigned char)cfg.remoteInputAesIv[0] << 24) |
+                ((uint32_t)(unsigned char)cfg.remoteInputAesIv[1] << 16) |
+                ((uint32_t)(unsigned char)cfg.remoteInputAesIv[2] << 8) |
+                (uint32_t)(unsigned char)cfg.remoteInputAesIv[3];
+}
+
 static int do_li_start(
     const char *address, const char *appVersion, const char *gfeVersion,
     const char *rtspSessionUrl, int serverCodecModeSupport,
     int videoFormat,
     int width, int height, int fps, int bitrate,
-    const unsigned char *rikey, int rikeyid, uintptr_t unused
+    const unsigned char *rikey, uint32_t rikeyid, int packetSize, int encryptedPreview
 ) {
-    (void)unused;
+    g_source_preview = encryptedPreview != 0;
     // Do NOT call win_av_init() here: g_video_format at this point is
     // whatever the *previous* session negotiated (there's nothing to reset
     // it in between -- dr_cleanup()/dr_stop() are no-ops), so creating the
@@ -1343,26 +1453,9 @@ static int do_li_start(
     srv.serverInfoGfeVersion = gfeVersion; srv.rtspSessionUrl = rtspSessionUrl;
     srv.serverCodecModeSupport = serverCodecModeSupport;
 
-    STREAM_CONFIGURATION cfg; LiInitializeStreamConfiguration(&cfg);
-    cfg.width = width; cfg.height = height; cfg.fps = fps; cfg.bitrate = bitrate;
-    cfg.packetSize = 1200; cfg.streamingRemotely = STREAM_CFG_AUTO;
-    cfg.audioConfiguration = AUDIO_CONFIGURATION_STEREO;
-    cfg.supportedVideoFormats = videoFormat ? videoFormat : VIDEO_FORMAT_H264;
-    // ENCFLG_AUDIO matches the official Moonlight clients' default.
-    cfg.clientRefreshRateX100 = fps * 100; cfg.encryptionFlags = ENCFLG_AUDIO;
-    if (rikey) {
-        memcpy(cfg.remoteInputAesKey, rikey, 16);
-        // remoteInputAesIv holds the rikeyid in BIG-endian (network) byte order —
-        // that is what we sent as "rikeyid" in /launch and what AudioStream.c
-        // reads back via BE32() to build the per-packet audio AES-CBC IV.
-        // Writing it little-endian corrupted the first 16 bytes (including the
-        // Opus TOC byte) of every decrypted audio packet, producing garbled
-        // audio while decode still reported success.
-        cfg.remoteInputAesIv[0] = (char)((rikeyid >> 24) & 0xff);
-        cfg.remoteInputAesIv[1] = (char)((rikeyid >> 16) & 0xff);
-        cfg.remoteInputAesIv[2] = (char)((rikeyid >>  8) & 0xff);
-        cfg.remoteInputAesIv[3] = (char)( rikeyid        & 0xff);
-    }
+    STREAM_CONFIGURATION cfg;
+    windows_stream_configuration(&cfg, videoFormat, width, height, fps, bitrate,
+        rikey, rikeyid, packetSize, encryptedPreview);
 
     DECODER_RENDERER_CALLBACKS dr; LiInitializeVideoCallbacks(&dr);
     dr.setup = dr_setup; dr.start = dr_start; dr.stop = dr_stop;
@@ -1372,7 +1465,7 @@ static int do_li_start(
     // capability bit) are required before moonlight-common-c actually uses
     // reference-frame-invalidation recovery instead of a full IDR request.
     dr.capabilities = CAPABILITY_REFERENCE_FRAME_INVALIDATION_AVC | CAPABILITY_REFERENCE_FRAME_INVALIDATION_HEVC | CAPABILITY_REFERENCE_FRAME_INVALIDATION_AV1;
-    g_decode_mode = win_decode_mode_from_env();
+    g_decode_mode = encryptedPreview ? WIN_DECODE_THREAD : win_decode_mode_from_env();
     if (g_decode_mode == WIN_DECODE_DIRECT) dr.capabilities |= CAPABILITY_DIRECT_SUBMIT;
     if (g_decode_mode == WIN_DECODE_PULL) {
         // LiStartConnection rejects a pull renderer that also has a
@@ -1386,7 +1479,7 @@ static int do_li_start(
     // clients never add. Driven by the video settings checkbox (off by
     // default, see service.SetPlayoutBufferEnabled); the fork re-reads the
     // variable at the start of every stream.
-    _putenv(g_playout_buffer_on ? "USBRIDGE_PLAYOUT_BUFFER=1" : "USBRIDGE_PLAYOUT_BUFFER=0");
+    _putenv(!encryptedPreview && g_playout_buffer_on ? "USBRIDGE_PLAYOUT_BUFFER=1" : "USBRIDGE_PLAYOUT_BUFFER=0");
     {
         static const char *mode_names[] = { "direct (RTP receive thread)", "thread (moonlight-common-c VideoDec)", "pull (own decode thread, moonlight-qt style)" };
         char msg[160];
@@ -1401,13 +1494,15 @@ static int do_li_start(
     // See moonlight_cgo_shared.h's identical assignment for why -- requests
     // AudioPacketDuration=10ms (protocol-native branch) so a host's Opus
     // inband FEC (5ms is CELT-only, can never carry it) actually works.
-    ar.capabilities = CAPABILITY_SLOW_OPUS_DECODER;
+    // The canonical source profile has 5ms CELT audio. Never request the
+    // stock slow-decoder capability, which negotiates 10ms packets instead.
+    ar.capabilities = windows_audio_capabilities(encryptedPreview);
 
     CONNECTION_LISTENER_CALLBACKS cl; LiInitializeConnectionCallbacks(&cl);
     cl.stageStarting = cl_stage_starting; cl.stageComplete = cl_stage_complete;
     cl.stageFailed = cl_stage_failed; cl.connectionStarted = cl_connected;
     cl.connectionTerminated = cl_terminated; cl.logMessage = cl_log;
-    cl.rumble = cl_rumble;
+    if (!encryptedPreview) cl.rumble = cl_rumble;
 
     int ret = LiStartConnection(&srv, &cfg, &cl, &dr, &ar, NULL, 0, NULL, 0);
     if (ret != 0) return ret;
@@ -1512,6 +1607,7 @@ import (
 
 	usbapi "usbridge-client/internal/api"
 	"usbridge-client/internal/models"
+	"usbridge-client/internal/sourcepreview"
 )
 
 var liStartConnectionActive atomic.Bool
@@ -1589,6 +1685,7 @@ func stopConnectionSafely() {
 type MoonlightCgoWrapper struct {
 	host       string
 	audioMuted bool
+	viewOnly   bool
 }
 
 func NewMoonlightCgoWrapper(host string) *MoonlightCgoWrapper {
@@ -1606,6 +1703,37 @@ func (w *MoonlightCgoWrapper) StartStream(
 	audioPipeWrite *os.File,
 	onStop func(error),
 ) error {
+	return w.startStream(rtspSessionUrl, rikey, appVersion, gfeVersion,
+		serverCodecModeSupport, videoFormat, width, height, fps, bitrate,
+		pipeWrite, audioPipeWrite, onStop,
+		moonlightNativeOptions{keyID: 1, packetSize: 1200})
+}
+
+// Only sourcePreviewStartStream may opt into the canonical private profile.
+// The public stock entrypoint retains its existing wire configuration.
+type moonlightNativeOptions struct {
+	keyID            uint32
+	packetSize       int
+	encryptedPreview bool
+}
+
+func (w *MoonlightCgoWrapper) startStream(
+	rtspSessionUrl string, rikey []byte, appVersion, gfeVersion string,
+	serverCodecModeSupport, videoFormat, width, height, fps, bitrate int,
+	pipeWrite, audioPipeWrite *os.File, onStop func(error), options moonlightNativeOptions,
+) error {
+	if w.viewOnly && !options.encryptedPreview {
+		return fmt.Errorf("source preview cannot start a stock stream")
+	}
+	if options.encryptedPreview {
+		if err := sourcepreview.ValidateRTSPURL(rtspSessionUrl); err != nil {
+			return err
+		}
+		if w.host != "127.0.0.1" || len(rikey) != 16 || options.packetSize != sourcepreview.PacketSize || videoFormat != sourcepreview.VideoFormat {
+			return fmt.Errorf("invalid source preview native profile")
+		}
+	}
+	w.viewOnly = options.encryptedPreview
 	// Hold the stream mutex while stopping any previous connection and resetting
 	// state.  This blocks until any in-progress LiStopConnection (from a prior
 	// goroutine or from StopStream) has fully returned, preventing concurrent
@@ -1622,7 +1750,11 @@ func (w *MoonlightCgoWrapper) StartStream(
 	host := C.CString(w.host)
 	appVer := C.CString(appVersion)
 	gfeVer := C.CString(gfeVersion)
-	rtsp := C.CString("rtsp://" + rtspSessionUrl)
+	rtspURL := "rtsp://" + rtspSessionUrl
+	if options.encryptedPreview {
+		rtspURL = rtspSessionUrl
+	}
+	rtsp := C.CString(rtspURL)
 
 	var cRikey *C.uchar
 	if len(rikey) == 16 {
@@ -1635,7 +1767,12 @@ func (w *MoonlightCgoWrapper) StartStream(
 		defer C.free(unsafe.Pointer(gfeVer))
 		defer C.free(unsafe.Pointer(rtsp))
 		if cRikey != nil {
-			defer C.free(unsafe.Pointer(cRikey))
+			defer func() {
+				// Erase our native copy after start; native transport owns its
+				// own bounded-lifetime copies once the handshake is running.
+				C.windows_clear_key(unsafe.Pointer(cRikey))
+				C.free(unsafe.Pointer(cRikey))
+			}()
 		}
 
 		liStartMu.Lock()
@@ -1650,15 +1787,19 @@ func (w *MoonlightCgoWrapper) StartStream(
 			w.host, width, height, fps, bitrate)
 
 		playoutOn := 0
-		if PlayoutBufferEnabled() {
+		if !options.encryptedPreview && PlayoutBufferEnabled() {
 			playoutOn = 1
 		}
 		C.set_playout_buffer_on(C.int(playoutOn))
+		encryptedPreview := C.int(0)
+		if options.encryptedPreview {
+			encryptedPreview = 1
+		}
 		ret := C.do_li_start(
 			host, appVer, gfeVer, rtsp,
 			C.int(serverCodecModeSupport), C.int(videoFormat),
 			C.int(width), C.int(height), C.int(fps), C.int(bitrate),
-			cRikey, C.int(1), C.uintptr_t(0),
+			cRikey, C.uint32_t(options.keyID), C.int(options.packetSize), encryptedPreview,
 		)
 		liStartMu.Unlock()
 
@@ -1733,31 +1874,31 @@ func (w *MoonlightCgoWrapper) SetAudioMuted(muted bool) {
 func (w *MoonlightCgoWrapper) GetAudioMuted() bool { return w.audioMuted }
 
 func (w *MoonlightCgoWrapper) SendMoonlightKey(vkCode int16, action int8, modifiers int8) {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return
 	}
 	C.do_send_key(C.short(vkCode), C.char(action), C.char(modifiers))
 }
 func (w *MoonlightCgoWrapper) SendMoonlightMouseMove(dx, dy int16) {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return
 	}
 	C.do_send_mouse_move(C.short(dx), C.short(dy))
 }
 func (w *MoonlightCgoWrapper) SendMoonlightMousePosition(x, y, refW, refH int16) {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return
 	}
 	C.do_send_mouse_position(C.short(x), C.short(y), C.short(refW), C.short(refH))
 }
 func (w *MoonlightCgoWrapper) SendMoonlightMouseButton(action int8, button int) {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return
 	}
 	C.do_send_mouse_button(C.char(action), C.int(button))
 }
 func (w *MoonlightCgoWrapper) SendMoonlightScroll(clicks int8) {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return
 	}
 	C.do_send_scroll(C.schar(clicks))
@@ -1768,7 +1909,7 @@ func (w *MoonlightCgoWrapper) SendMoonlightControllerEvent(
 	leftStickX int16, leftStickY int16,
 	rightStickX int16, rightStickY int16,
 ) {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return
 	}
 	C.do_send_multi_controller(
@@ -1782,7 +1923,7 @@ func (w *MoonlightCgoWrapper) SendMoonlightControllerArrival(
 	controllerNumber uint16, activeGamepadMask uint16, controllerType uint8,
 	supportedButtonFlags uint32, capabilities uint16,
 ) {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return
 	}
 	C.do_send_controller_arrival(
@@ -1795,7 +1936,7 @@ func (w *MoonlightCgoWrapper) SendMoonlightPenEvent(
 	x, y, pressureOrDistance float32,
 	rotation uint16, tilt uint8,
 ) {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return
 	}
 	C.do_send_pen(
@@ -1805,17 +1946,19 @@ func (w *MoonlightCgoWrapper) SendMoonlightPenEvent(
 	)
 }
 
-func (w *MoonlightCgoWrapper) IsInputActive() bool { return liStartConnectionActive.Load() }
+func (w *MoonlightCgoWrapper) IsInputActive() bool {
+	return !w.viewOnly && liStartConnectionActive.Load()
+}
 
 func (w *MoonlightCgoWrapper) RawHIDEpoch() uint64 {
-	if !liStartConnectionActive.Load() || C.do_host_supports_raw_hid() == 0 {
+	if w.viewOnly || !liStartConnectionActive.Load() || C.do_host_supports_raw_hid() == 0 {
 		return 0
 	}
 	return liRawHIDEpoch.Load()
 }
 
 func (w *MoonlightCgoWrapper) UplinkSupport() (midi, mic bool) {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return false, false
 	}
 	f := C.do_host_uplink_flags()
@@ -1823,25 +1966,25 @@ func (w *MoonlightCgoWrapper) UplinkSupport() (midi, mic bool) {
 }
 
 func (w *MoonlightCgoWrapper) SendMoonlightMIDI(data []byte) bool {
-	if !liStartConnectionActive.Load() || len(data) == 0 {
+	if w.viewOnly || !liStartConnectionActive.Load() || len(data) == 0 {
 		return false
 	}
 	return C.do_send_midi((*C.uchar)(unsafe.Pointer(&data[0])), C.ushort(len(data))) == 0
 }
 
 func (w *MoonlightCgoWrapper) SendMoonlightMic(sequence uint16, opus []byte) bool {
-	if !liStartConnectionActive.Load() || len(opus) == 0 {
+	if w.viewOnly || !liStartConnectionActive.Load() || len(opus) == 0 {
 		return false
 	}
 	return C.do_send_mic(C.ushort(sequence), (*C.uchar)(unsafe.Pointer(&opus[0])), C.ushort(len(opus))) == 0
 }
 
 func (w *MoonlightCgoWrapper) CameraUplinkSupported() bool {
-	return liStartConnectionActive.Load() && C.do_host_camera() != 0
+	return !w.viewOnly && liStartConnectionActive.Load() && C.do_host_camera() != 0
 }
 
 func (w *MoonlightCgoWrapper) SendMoonlightCamera(frame uint16, keyframe bool, au []byte) bool {
-	if !liStartConnectionActive.Load() || len(au) == 0 {
+	if w.viewOnly || !liStartConnectionActive.Load() || len(au) == 0 {
 		return false
 	}
 	flags := C.uchar(0)
@@ -1852,7 +1995,7 @@ func (w *MoonlightCgoWrapper) SendMoonlightCamera(frame uint16, keyframe bool, a
 }
 
 func (w *MoonlightCgoWrapper) SendMoonlightRawHID(kind, slot, endpoint uint8, total, offset uint16, data []byte, reliable bool) bool {
-	if !liStartConnectionActive.Load() {
+	if w.viewOnly || !liStartConnectionActive.Load() {
 		return false
 	}
 	var p *C.uchar
@@ -1897,7 +2040,7 @@ func goVideoFormatNegotiated(format C.int) {
 }
 
 func (w *MoonlightCgoWrapper) SendMoonlightUtf8Text(text string) {
-	if !liStartConnectionActive.Load() || len(text) == 0 {
+	if w.viewOnly || !liStartConnectionActive.Load() || len(text) == 0 {
 		return
 	}
 	cs := C.CString(text)
@@ -2084,4 +2227,30 @@ func goAIVisionSample(rgba *C.uint8_t, width, height, stride C.int) {
 	}
 	maybeKickIconDetection(buf, w, h, s)
 	maybeKickOCR(buf, w, h, s)
+}
+
+// Native regression helpers use the same C configuration and callback bodies
+// as the stream, without connecting, creating hooks, or opening audio devices.
+func windowsPreviewAudioProbe() [5]int {
+	var values [5]C.int
+	C.windows_preview_audio_probe(&values[0])
+	var result [5]int
+	for i, value := range values {
+		result[i] = int(value)
+	}
+	return result
+}
+
+func windowsPreviewConfigurationProbe(keyID uint32, preview bool) [7]uint32 {
+	var values [7]C.uint32_t
+	enabled := C.int(0)
+	if preview {
+		enabled = 1
+	}
+	C.windows_preview_configuration_probe(C.uint32_t(keyID), enabled, &values[0])
+	var result [7]uint32
+	for i, value := range values {
+		result[i] = uint32(value)
+	}
+	return result
 }
