@@ -1,0 +1,10 @@
+{
+  "repository": "Dr-Crow/rustshine-research",
+  "commit": "39633d37bb0cfdd989960d9dc4e938011776d420",
+  "tree": "caa603f428eb2b1b08b9ccd3eb750ba606dee96e",
+  "file_count": 119,
+  "archive_sha256": "78e73a21e86ad8535a03a68a952c4391c1dd496972727cc714c5403aa36853e2",
+  "verified_git_blob_hashes": true,
+  "license": "GPL-3.0-only; bundled ENet third-party notices retained",
+  "archive": "source-streamer-39633d37.tar.gz"
+}

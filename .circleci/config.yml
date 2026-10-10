@@ -123,6 +123,10 @@ jobs:
           name: Test and package Linux x86_64
           command: bash .circleci/build-unix.sh
           no_output_timeout: 20m
+      - run:
+          name: Build pinned source component and verify real agent media lifecycle
+          command: bash .circleci/test-source-components.sh
+          no_output_timeout: 15m
       - save_cache:
           key: audited-components-v03131-linux-v1-{{ checksum "agent/internal/localruntime/pinned.go" }}
           paths:
@@ -183,3 +187,4 @@ workflows:
           filters:
             branches:
               only: [agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
+

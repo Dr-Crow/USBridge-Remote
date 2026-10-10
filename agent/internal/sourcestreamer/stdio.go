@@ -42,25 +42,27 @@ func RunStdio(ctx context.Context, options localcomponents.Options, in io.Reader
 			inputDone <- errors.New("unexpected source-streamer control input")
 		}
 	}()
+	var runErr error
 	select {
 	case err := <-inputDone:
 		if err != nil {
-			return err
+			runErr = err
 		}
-		if err := session.Stop(); err != nil {
-			return err
+		if stopErr := session.Stop(); runErr == nil {
+			runErr = stopErr
 		}
 	case <-session.Done():
-		if err := session.Wait(); err != nil {
-			return err
-		}
+		runErr = session.Wait()
 	case <-ctx.Done():
 		session.Stop()
-		return ctx.Err()
+		runErr = ctx.Err()
 	}
-	return encoder.Encode(struct {
-		SchemaVersion int    `json:"schema_version"`
-		Event         string `json:"event"`
-		SessionID     string `json:"session_id"`
-	}{1, "stopped", request.SessionID})
+	terminal, ok := session.Terminal()
+	if !ok {
+		return errors.New("source-streamer terminal status missing")
+	}
+	if err := encoder.Encode(terminal); err != nil {
+		return err
+	}
+	return runErr
 }

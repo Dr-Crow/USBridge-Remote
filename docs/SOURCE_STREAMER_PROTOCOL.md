@@ -26,7 +26,7 @@ this pipe, never arguments or persistent configuration. Generate a fresh 16-byte
 session key for every launch; the peer must use the same key for encrypted RTSP.
 
 Fields: `schema_version:1`, `owner`, `session_id`, `key_b64`, `key_id`,
-`peer_ip:"127.0.0.1"`, distinct `video_port`/`audio_port`, `display` (local X11,
+`peer_ip:"127.0.0.1"`, `video_port`/`audio_port` (distinct fixed ports, or 0 for encrypted-SETUP token-bound loopback rendezvous), `display` (local X11,
 for example `:99`), `capture_consent:true`, absolute trusted `ffmpeg` path,
 `width`, `height`, `fps`, `pixel_format` (`yuv420p` or `yuv444p`), `packet_size`,
 `audio_mode:"silence"`, and `max_seconds` (1–300). Messages are capped at 64 KiB.
@@ -57,3 +57,10 @@ Real encrypted-RTSP/ENet/media acceptance must be recorded separately against a
 specific source commit. Native audio, non-Linux capture, hardware encoders, OS
 input, authenticated remote forwarding, and production desktop parity remain
 outside this experimental v1 boundary.
+
+An independent real-process lifecycle acceptance passed on October 10, 2026:
+agent binary SHA-256 `b77bdd989abdaba95fb6a5eab25b38ab9199d151d83d24c78397f83d2816f7e5`
+and source streamer SHA-256 `7a8dacba1876c4d1bc755a72c517ac20f07fd8dd7caa207cbeefe90b5210cb7e`.
+It covered manifest pinning, real readiness, encrypted OPTIONS and TEARDOWN,
+and clean exit. No capture, media or hardware was started in this check. Later
+source builds require their own acceptance and provenance records.

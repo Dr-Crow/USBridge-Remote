@@ -25,8 +25,9 @@ func main() {
 	// needs it -- see that file's doc comment for why the process-wide
 	// version broke clipboard sync, capture, and autostart on Linux.
 
+	sourceBrokerMode := flag.Bool("source-broker-mode", false, "EXPERIMENTAL: supervise source-broker-v1 TLS USB/IP importer-client; no OS device attachment")
 	sourceMode := flag.Bool("source-streamer-mode", false, "EXPERIMENTAL: supervise source-streamer-v1 using one JSON line on stdin; loopback X11 video and synthetic silence only")
-	sourceDirectory := flag.String("source-component-directory", "", "explicit source-streamer component directory")
+	sourceDirectory := flag.String("source-component-directory", "", "explicit source component directory")
 	sourceManifest := flag.String("source-manifest-sha256", "", "required trusted source component manifest SHA-256")
 	sourceState := flag.String("source-state-dir", "", "separate state directory for verified source components")
 	strictLAN := flag.Bool("strict-lan", false, "disable cloud services; components must come from configured local sources")
@@ -37,11 +38,17 @@ func main() {
 	tray := flag.Bool("tray", false, "start minimized to the system tray instead of showing the window -- used by the login-time tray helper that keeps a status icon visible while the engine runs headless")
 	attach := flag.String("attach", "", "dial this admin-socket path directly instead of the normal config-based discovery, and attach a thin-client GUI to it (Windows session-launch use: the LocalSystem service already knows its own socket path, which lives under a different profile than the interactive user's)")
 	flag.Parse()
-	if *sourceMode {
-		if *sourceDirectory == "" || *sourceManifest == "" || *sourceState == "" || *installService || *uninstallService || *tray || *attach != "" || *localRuntime {
-			log.Fatal("source-streamer mode requires explicit directory, manifest hash and state; it cannot use service, tray, attach, or vendor runtime modes")
+	if *sourceMode || *sourceBrokerMode {
+		if *sourceDirectory == "" || *sourceManifest == "" || *sourceState == "" || *installService || *uninstallService || *tray || *attach != "" || *localRuntime || (*sourceMode && *sourceBrokerMode) {
+			log.Fatal("source component mode requires explicit directory, manifest hash and state; it cannot use service, tray, attach, or vendor runtime modes")
 		}
-		if err := runSourceStreamer(*sourceState, *sourceDirectory, *sourceManifest); err != nil {
+		var err error
+		if *sourceBrokerMode {
+			err = runSourceBroker(*sourceState, *sourceDirectory, *sourceManifest)
+		} else {
+			err = runSourceStreamer(*sourceState, *sourceDirectory, *sourceManifest)
+		}
+		if err != nil {
 			log.Fatal(err)
 		}
 		return

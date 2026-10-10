@@ -55,7 +55,7 @@ func TestMain(m *testing.M) {
 		}
 		json.NewEncoder(os.Stdout).Encode(ready)
 		io.Copy(io.Discard, reader)
-		fmt.Println(`{"schema_version":1,"event":"stopped"}`)
+		json.NewEncoder(os.Stdout).Encode(Stopped{SchemaVersion: 1, Event: "stopped", SessionID: launch.SessionID, Reason: "completed", Stats: &Stats{}})
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
@@ -71,7 +71,7 @@ func TestLaunchValidation(t *testing.T) {
 		{"schema", func(r *Launch) { r.SchemaVersion = 2 }}, {"identity", func(r *Launch) { r.Owner = "" }},
 		{"key", func(r *Launch) { r.KeyB64 = "bad" }}, {"consent", func(r *Launch) { r.CaptureConsent = false }},
 		{"remote", func(r *Launch) { r.PeerIP = "192.168.1.2" }}, {"hostname", func(r *Launch) { r.PeerIP = "localhost" }},
-		{"port", func(r *Launch) { r.VideoPort = 0 }}, {"ports-same", func(r *Launch) { r.VideoPort = r.AudioPort }},
+		{"port", func(r *Launch) { r.VideoPort = -1 }}, {"ports-same", func(r *Launch) { r.VideoPort = r.AudioPort }},
 		{"display", func(r *Launch) { r.Display = "remote:0" }}, {"ffmpeg", func(r *Launch) { r.FFmpeg = "ffmpeg" }},
 		{"dimensions", func(r *Launch) { r.Width = 32768 }}, {"fps", func(r *Launch) { r.FPS = 1000 }},
 		{"pixel", func(r *Launch) { r.PixelFormat = "rgb" }}, {"packet", func(r *Launch) { r.PacketSize = 65535 }},
@@ -148,6 +148,9 @@ func TestSupervisorFailsClosed(t *testing.T) {
 	}
 }
 func TestSupervisorNeedsManifestPin(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("source-streamer v1 is Linux-only")
+	}
 	_, err := Start(context.Background(), localcomponents.Options{StateDir: t.TempDir()}, validLaunch())
 	if err == nil || !strings.Contains(err.Error(), "pinned") {
 		t.Fatal(err)
@@ -155,6 +158,9 @@ func TestSupervisorNeedsManifestPin(t *testing.T) {
 }
 
 func TestStartVerifiedManifest(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("source-streamer v1 is Linux-only")
+	}
 	t.Setenv("USBRIDGE_SOURCE_TEST_HELPER", "valid")
 	binary, err := os.Executable()
 	if err != nil {
@@ -200,5 +206,29 @@ func TestStartVerifiedManifest(t *testing.T) {
 	if session, err := Start(ctx, options, validLaunch()); err == nil {
 		session.Stop()
 		t.Fatal("vendor profile accepted as source protocol")
+	}
+}
+
+func TestDynamicMediaPorts(t *testing.T) {
+	r := validLaunch()
+	r.VideoPort = 0
+	r.AudioPort = 0
+	if err := r.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDecodeLaunchDuplicateKeys(t *testing.T) {
+	raw, _ := json.Marshal(validLaunch())
+	raw = bytes.Replace(raw, []byte(`"schema_version":1`), []byte(`"schema_version":1,"schema_version":1`), 1)
+	if _, err := DecodeLaunch(bytes.NewReader(raw)); err == nil {
+		t.Fatal("duplicate accepted")
+	}
+}
+func TestLaunchPacketAlignment(t *testing.T) {
+	r := validLaunch()
+	r.PacketSize = 1199
+	if r.Validate() == nil {
+		t.Fatal("unaligned packet size accepted")
 	}
 }
