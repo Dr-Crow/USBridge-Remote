@@ -62,3 +62,25 @@ func (e *events) stopped(reason string) {
 	}
 	e.write("stopped", reason)
 }
+
+// Optional closed failure code is emitted only before readiness. Older strict
+// supervisors reject this failed startup safely; successful lifecycle JSON is
+// unchanged. Never serialize a native error or descriptor here.
+func (e *events) startupFailed(code string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.terminal || e.ready {
+		return
+	}
+	if !validWindowFailure(code) {
+		code = "window_unavailable"
+	}
+	e.terminal = true
+	_ = e.out.Encode(struct {
+		SchemaVersion int    `json:"schema_version"`
+		Event         string `json:"event"`
+		SessionID     string `json:"session_id"`
+		Reason        string `json:"reason"`
+		FailureCode   string `json:"failure_code"`
+	}{sourcepreview.SchemaVersion, "stopped", e.sessionID, "failed", code})
+}

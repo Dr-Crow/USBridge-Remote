@@ -17,7 +17,9 @@ func waitRetiredInventory(query func() ([]uint32, error), retired map[uint32]boo
 	deadline := time.Now().Add(max(0, timeout))
 	for {
 		ids, err := query()
-		incomplete := errors.Is(err, errIncompleteInventory)
+		// Only the direct native-query sentinel is retryable. A wrapper/join
+		// may carry a substantive failure and must fail closed.
+		incomplete := err == errIncompleteInventory
 		if err != nil && !incomplete {
 			return err
 		}

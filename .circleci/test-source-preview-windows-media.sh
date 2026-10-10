@@ -15,6 +15,19 @@ work,out=map(pathlib.Path,sys.argv[1:]);r=json.loads((out/'build.json').read_tex
 assert r['passed'] and r['viewer_compiled']
 assert hashlib.sha256((work/'bin/source-preview-viewer.exe').read_bytes()).hexdigest()==r['viewer_sha256']
 PY
+# The saved public cache is read-only input to this unsaved job-local cache.
+PYTHONPATH=.circleci/source python3 -m unittest discover -s .circleci/source -p 'test_windows_seed_public_cache.py'
+python3 .circleci/source/windows_seed_public_cache.py --root "$(cygpath -m "$ROOT")"
+# Fail on the actual executable's window creation before source/agent builds.
+(
+ cd .circleci/source/windows-preview-acceptance
+ CGO_ENABLED=0 go test -count=1 -timeout=2m ./...
+ CGO_ENABLED=0 go build -trimpath -o "$WORK/windows-preview-acceptance.exe" .
+)
+PYTHONPATH=.circleci/source python3 -m unittest discover -s .circleci/source -p 'test_check_windows_viewer_startup.py'
+python3 .circleci/source/check_windows_viewer_startup.py \
+ --work "$(cygpath -m "$WORK")" --output "$(cygpath -m "$OUT")" \
+ --runner "$(cygpath -m "$WORK/windows-preview-acceptance.exe")" --commit "$CIRCLE_SHA1"
 (
  cd .circleci/source/windows-preview-fixture
  CGO_ENABLED=0 go test -json -count=1 -timeout=2m ./... | tee "$WORK/tests/fixture.jsonl"

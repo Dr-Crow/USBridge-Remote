@@ -130,12 +130,17 @@ func main() {
 		f.StringVar(p.v, p.n, "", p.n)
 	}
 	plan := f.Bool("plan", false, "print the bounded, non-executing test plan")
+	windowStartup := f.Bool("window-startup", false, "verify the actual viewer window before component builds")
 	if f.Parse(os.Args[1:]) != nil || f.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "invalid_arguments")
 		os.Exit(2)
 	}
 	if *plan {
 		_ = json.NewEncoder(os.Stdout).Encode(testPlan())
+		return
+	}
+	if *windowStartup {
+		runWindowStartup(c)
 		return
 	}
 	r := baseReceipt(c)

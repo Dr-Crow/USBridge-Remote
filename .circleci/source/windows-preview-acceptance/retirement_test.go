@@ -81,3 +81,13 @@ func TestRetirementIncompleteUnknownMembersFailImmediately(t *testing.T) {
 		}
 	}
 }
+
+func TestRetirementJoinedIncompletePreservesSubstantiveFailure(t *testing.T) {
+	substantive := errors.New("substantive query failure")
+	want := errors.Join(errIncompleteInventory, substantive)
+	queries := 0
+	got := waitRetiredInventory(func() ([]uint32, error) { queries++; return nil, want }, nil, time.Second)
+	if !errors.Is(got, substantive) || queries != 1 {
+		t.Fatal("joined query failure was retried or hidden")
+	}
+}

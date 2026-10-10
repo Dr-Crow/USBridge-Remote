@@ -66,3 +66,25 @@ func TestNoEventsAfterTerminal(t *testing.T) {
 		t.Fatalf("events after terminal: %s", out.String())
 	}
 }
+
+func TestWindowStartupFailureOnlyExportsClosedCode(t *testing.T) {
+	for _, code := range []string{"graphics_api_unavailable", "secret native error"} {
+		var out bytes.Buffer
+		e := &events{out: json.NewEncoder(&out), sessionID: "session_0123456789"}
+		e.startupFailed(code)
+		e.connected()
+		e.displayed()
+		e.stopped("closed")
+		var value map[string]any
+		if json.Unmarshal(out.Bytes(), &value) != nil || len(value) != 5 || value["reason"] != "failed" || value["event"] != "stopped" {
+			t.Fatal("invalid startup event")
+		}
+		want := code
+		if code == "secret native error" {
+			want = "window_unavailable"
+		}
+		if value["failure_code"] != want || strings.Contains(out.String(), "secret") {
+			t.Fatal("native text escaped")
+		}
+	}
+}

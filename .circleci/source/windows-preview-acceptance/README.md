@@ -185,3 +185,29 @@ regardless of the kernel exit value. The descendant test still requires both
 owned processes to terminate; portable tests explicitly prove that safety close
 plus exit zero cannot pass. A normal successful case must finish and empty its
 job before the safety handle is closed.
+
+## Early owned-window prerequisite
+
+`--window-startup` accepts only the verified viewer, its SHA256, exact commit,
+new work directory and new receipt path. It starts the same GUI executable with
+its normal `--source-preview-stdin` entry, a fresh private descriptor and an owned
+inert loopback listener. No agent, source, encoder, capture or input process is
+started. Exact PID, title and visibility must pass, followed by natural process
+exit and complete empty-Job proof. The listener supplies no media. This gate runs
+before expensive component compilation; full changing-pixel and cleanup cases
+remain mandatory afterward.
+
+The viewer now checks its Fyne NativeWindow HWND immediately after Show, before
+network/renderer startup. A failed prerequisite emits stopped/failed with an
+optional closed `failure_code`; successful events are byte-schema compatible.
+Older strict supervisors reject this early failed startup. Diagnostics retain
+only fixed graphics categories from at most 64 KiB of pre-network Go log writes;
+no native text, driver identity, paths or credentials are emitted. No window of
+another PID is queried through this viewer check. Native CI must establish the
+actual failure category; an earlier typed first_frame event is insufficient
+proof of native window creation or visible playback.
+
+The public Go build cache may be copied one-way into the unsaved job-local cache
+only after its exact key/toolchain/package/source and all content hashes match.
+There is no cache save or copy-back after component compilation. A source-free
+public-cache-seed.json records counts, hashes and unchanged public input.

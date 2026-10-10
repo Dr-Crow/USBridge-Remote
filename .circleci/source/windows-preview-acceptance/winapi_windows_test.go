@@ -312,9 +312,12 @@ func TestWindowsPipeOnlyLaunchDoesNotAllocateConsoleHost(t *testing.T) {
 	if p.wait(3*time.Second) != nil || p.finishProtocol() != nil {
 		t.Fatal("detached natural cleanup failed")
 	}
-	pids, snapshot, err = j.pidsSnapshot()
-	if err != nil || len(pids) != 0 {
-		logInventorySnapshot(t, j, snapshot, err)
+	err = waitRetiredInventory(func() ([]uint32, error) {
+		pids, snapshot, err = j.pidsSnapshot()
+		return pids, err
+	}, map[uint32]bool{p.pid: true}, 3*time.Second)
+	if err != nil {
+		logInventorySnapshot(t, j, snapshot, err, p.pid)
 		t.Fatal("detached job did not empty naturally")
 	}
 }

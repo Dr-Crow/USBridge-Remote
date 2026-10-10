@@ -93,6 +93,7 @@ func main() {
 		}
 	}()
 
+	diagnostic, finishDiagnostic := beginWindowDiagnostics()
 	a := app.New()
 	window := a.NewWindow("Source preview (experimental, this computer)")
 	picture := canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, sourcepreview.DefaultWidth, sourcepreview.DefaultHeight)))
@@ -102,6 +103,13 @@ func main() {
 	window.SetContent(container.NewBorder(label, widget.NewButton("Stop preview", func() { stop("closed") }), nil, nil, picture))
 	window.Resize(fyne.NewSize(680, 440))
 	window.SetCloseIntercept(func() { stop("closed") })
+	window.Show()
+	startupFailure := previewWindowFailure(window)
+	finishDiagnostic()
+	if startupFailure != "" {
+		e.startupFailed(diagnostic.failure(startupFailure))
+		return
+	}
 	renderer := service.NewSourcePreviewService()
 	renderer.SetOnFrameReceived(func(frame image.Image) {
 		if ctx.Err() != nil || frame == nil || frame.Bounds().Empty() {
@@ -135,7 +143,7 @@ func main() {
 			fyne.Do(func() { window.SetCloseIntercept(nil); window.Close() })
 		}()
 	})
-	window.ShowAndRun()
+	a.Run()
 	cancel()
 	_ = renderer.Disconnect()
 	reasonMu.Lock()

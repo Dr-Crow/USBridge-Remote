@@ -12,7 +12,7 @@ import (
 )
 
 func TestNoDesktopCaptureOrGlobalInputAPI(t *testing.T) {
-	for _, name := range []string{"winapi_windows.go", "run_windows.go", "main.go"} {
+	for _, name := range []string{"winapi_windows.go", "run_windows.go", "main.go", "window_startup.go", "window_startup_windows.go"} {
 		raw, e := os.ReadFile(name)
 		if e != nil {
 			t.Fatal(e)
