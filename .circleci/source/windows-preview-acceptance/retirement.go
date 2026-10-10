@@ -1,6 +1,13 @@
 package main
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// A successful native query can return fewer IDs than its assigned count.
+// This is never an empty-Job proof; only retirement may retry the bounded query.
+var errIncompleteInventory = errors.New("incomplete_job_inventory")
 
 // waitRetiredInventory is called only after the caller has waited on every
 // listed process handle and retained those handles. A signaled process can
@@ -10,10 +17,11 @@ func waitRetiredInventory(query func() ([]uint32, error), retired map[uint32]boo
 	deadline := time.Now().Add(max(0, timeout))
 	for {
 		ids, err := query()
-		if err != nil {
+		incomplete := errors.Is(err, errIncompleteInventory)
+		if err != nil && !incomplete {
 			return err
 		}
-		if len(ids) == 0 {
+		if len(ids) == 0 && !incomplete {
 			return nil
 		}
 		seen := make(map[uint32]bool, len(ids))

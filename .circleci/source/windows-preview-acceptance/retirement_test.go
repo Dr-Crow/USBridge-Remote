@@ -49,3 +49,35 @@ func TestRetirementDeadlineCannotPassOccupiedJob(t *testing.T) {
 		t.Fatal("already empty job rejected")
 	}
 }
+
+func TestRetirementRetriesIncompleteWithoutAcceptingEmpty(t *testing.T) {
+	for _, first := range [][]uint32{nil, {17}} {
+		queries := 0
+		err := waitRetiredInventory(func() ([]uint32, error) {
+			queries++
+			if queries == 1 {
+				return first, errIncompleteInventory
+			}
+			return nil, nil
+		}, map[uint32]bool{17: true}, time.Second)
+		if err != nil || queries != 2 {
+			t.Fatal("incomplete inventory accepted or not retried")
+		}
+	}
+}
+func TestRetirementIncompleteDeadlineCannotPass(t *testing.T) {
+	queries := 0
+	err := waitRetiredInventory(func() ([]uint32, error) { queries++; return nil, errIncompleteInventory }, map[uint32]bool{17: true}, 0)
+	if err == nil || queries != 1 {
+		t.Fatal("incomplete empty inventory counted as cleanup")
+	}
+}
+func TestRetirementIncompleteUnknownMembersFailImmediately(t *testing.T) {
+	for _, ids := range [][]uint32{{18}, {0}, {17, 17}} {
+		queries := 0
+		err := waitRetiredInventory(func() ([]uint32, error) { queries++; return ids, errIncompleteInventory }, map[uint32]bool{17: true}, time.Second)
+		if err == nil || queries != 1 {
+			t.Fatal("incomplete query concealed an unproved member")
+		}
+	}
+}

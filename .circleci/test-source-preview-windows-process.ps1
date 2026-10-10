@@ -123,11 +123,15 @@ try {
 } finally { Pop-Location }
 $required = @(
     'TestWindowsAPILayouts',
+    'TestWindowsInventoryIncompleteContract',
     'TestWindowsPipeEndpointsBeginNoninheritable',
     'TestWindowsPipeOnlyLaunchDoesNotAllocateConsoleHost',
     'TestWindowsSuspendedLaunchPrivatePipesNaturalEOF',
     'TestWindowsJobCloseKillsInheritedDescendant',
-    'TestWindowsParentCrashRetiresSuspendedChild'
+    'TestWindowsParentCrashRetiresSuspendedChild',
+    'TestRetirementRetriesIncompleteWithoutAcceptingEmpty',
+    'TestRetirementIncompleteDeadlineCannotPass',
+    'TestRetirementIncompleteUnknownMembersFailImmediately'
 )
 $counts = [ordered]@{}
 foreach ($name in $required) { $counts[$name] = 0 }

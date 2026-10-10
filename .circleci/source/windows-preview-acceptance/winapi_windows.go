@@ -101,7 +101,11 @@ func (j *job) pids() ([]uint32, error) {
 func (j *job) pidsSnapshot() ([]uint32, jobProcessList, error) {
 	var list jobProcessList
 	ok, _, _ := queryJob.Call(uintptr(j.handle), 3, uintptr(unsafe.Pointer(&list)), unsafe.Sizeof(list), 0)
-	if ok == 0 || list.Count > 128 || list.Assigned != list.Count {
+	return decodeInventory(list, ok != 0)
+}
+
+func decodeInventory(list jobProcessList, queried bool) ([]uint32, jobProcessList, error) {
+	if !queried || list.Count > 128 || list.Assigned > 128 || list.Count > list.Assigned {
 		return nil, list, failure("job_inventory_failed")
 	}
 	pids := make([]uint32, list.Count)
@@ -110,6 +114,9 @@ func (j *job) pidsSnapshot() ([]uint32, jobProcessList, error) {
 			return nil, list, failure("job_inventory_failed")
 		}
 		pids[i] = uint32(list.PIDs[i])
+	}
+	if list.Count < list.Assigned {
+		return pids, list, errIncompleteInventory
 	}
 	return pids, list, nil
 }

@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -315,5 +316,27 @@ func TestWindowsPipeOnlyLaunchDoesNotAllocateConsoleHost(t *testing.T) {
 	if err != nil || len(pids) != 0 {
 		logInventorySnapshot(t, j, snapshot, err)
 		t.Fatal("detached job did not empty naturally")
+	}
+}
+
+func TestWindowsInventoryIncompleteContract(t *testing.T) {
+	for _, list := range []jobProcessList{{Assigned: 1}, {Assigned: 2, Count: 1, PIDs: [128]uintptr{17}}} {
+		ids, exact, err := decodeInventory(list, true)
+		if !errors.Is(err, errIncompleteInventory) || exact != list || len(ids) != int(list.Count) {
+			t.Fatal("incomplete native inventory lost")
+		}
+	}
+	for _, list := range []jobProcessList{{Assigned: 129}, {Assigned: 1, Count: 2}, {Assigned: 1, Count: 1}, {Assigned: 1, Count: 1, PIDs: [128]uintptr{0x100000000}}} {
+		_, _, err := decodeInventory(list, true)
+		if err == nil || errors.Is(err, errIncompleteInventory) {
+			t.Fatal("malformed inventory retried")
+		}
+	}
+	if _, _, err := decodeInventory(jobProcessList{Assigned: 1}, false); err == nil || errors.Is(err, errIncompleteInventory) {
+		t.Fatal("native API failure retried")
+	}
+	ids, _, err := decodeInventory(jobProcessList{}, true)
+	if err != nil || len(ids) != 0 {
+		t.Fatal("complete empty proof rejected")
 	}
 }
