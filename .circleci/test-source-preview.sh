@@ -6,6 +6,9 @@ export PATH="$HOME/ci-toolchain/go/bin:$PATH" GOTOOLCHAIN=local CGO_ENABLED=1
 [[ "$(go version)" == 'go version go1.26.9 linux/amd64' ]]
 mkdir -p "$OUT" "$WORK"
 python3 -m unittest discover -s .circleci/source -p test_windows_preview_build_receipt.py
+python3 -m unittest discover -s .circleci/source -p test_prepare_windows_preview_media.py
+(cd .circleci/source/windows-preview-fixture && go test -race -count=3 ./... && go vet ./...)
+(cd .circleci/source/windows-preview-acceptance && go test -race -count=3 ./... && go vet ./...)
 sudo apt-get update
 sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y build-essential cmake pkg-config binutils libopus-dev libssl-dev libavcodec-dev libavutil-dev libswscale-dev libpulse-dev libva-dev libvulkan-dev libgl1-mesa-dev xorg-dev libxtst6 xauth x11-xserver-utils xdotool
 # The inherited repository gitlink, not a moving upstream branch.

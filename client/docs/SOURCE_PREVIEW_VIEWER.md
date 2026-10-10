@@ -211,3 +211,28 @@ until native rendering and lifecycle acceptance pass. No new source snapshot is
 part of this implementation, and no source or binary artifacts are published
 by this Windows build job. The existing frozen public source runtime still has
 the documented cadence and RTSP listener-retirement limitations.
+
+### Generated-input Windows runtime gate
+
+A subsequent native CI step runs the actual agent CLI supervisor, unchanged
+frozen source transport, strict generated-media encoder fixture, and real viewer.
+The encoder's adjacent H264/Opus assets are generated and strictly decoded during
+CI, hashed into the fixture executable, and paced without any capture API or
+encoder subprocess at runtime. It recognizes only the frozen source's two exact
+argument vectors. It is never a selectable production encoder.
+
+Each case creates fresh private-pipe credentials and a non-breakaway Windows
+Job Object. Direct children start suspended and join that job before resuming.
+The test checks changing blue/orange pixels using PrintWindow on the exact
+owned viewer PID/title, then exercises window close, stdin EOF, and rejection of
+an extra stdin byte with fresh restarts. Missing/black PrintWindow content fails
+this gate; there is no screen-capture fallback. Passing this test establishes
+owned-window rendered content, not physical monitor presentation.
+
+The source-free receipts distinguish actual CLI supervision from App.New and
+normal Windows settings interaction. Real desktop capture, remote input, OS
+sound playback, startup cancellation and descriptor-expiry runtime acceptance
+are outside these three cases. A forced safety cleanup cannot count as a natural
+shutdown. See `.circleci/source/windows-preview-acceptance/README.md` for exact
+checks. Native execution and receipt verification are required before reporting
+any of these runtime checks as passed.

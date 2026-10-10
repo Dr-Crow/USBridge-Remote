@@ -1,0 +1,7 @@
+/.validation/
+/fixture-assets.json
+/fixture-ldflags.txt
+/fixture-*.h264
+/fixture-*.ogg
+/ffmpeg-fixture*
+/__pycache__/
