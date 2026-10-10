@@ -1489,7 +1489,7 @@ func showConnectionEditorDialog(parent fyne.Window, window fyne.Window, spec con
 		// Over USB (desktop): a KVM not set up yet hands its key over its
 		// USB cable (connection_usb_setup.go) -- no screen, QR or
 		// provisioning file needed. Fills the fields; Save/Connect as usual.
-		if !view.IsMobile() {
+		if usbSetupSupported && !view.IsMobile() {
 			var usbBtn *connectionDialogSecondaryButton
 			usbBtn = newConnectionDialogWideActionButton(i18n.Current.AddOverUSB, assets.USBTabIconActive, design.ColorConnectionAddFill, func() {
 				usbBtn.SetDisabled(true)
