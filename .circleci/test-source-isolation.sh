@@ -2,6 +2,7 @@
 # Run only after the source package's ordinary acceptance is green.
 set -euo pipefail
 ROOT="$(pwd)"; OUT="$ROOT/artifacts/source-components"; WORK="$ROOT/.source-components-ci"
+/usr/bin/python3 "$ROOT/.circleci/source/test_isolation_commands.py"
 NET="usbridge-source-proof-${CIRCLE_SHA1:0:12}"
 IMAGE=usbridge-source-acceptance
 mkdir -p "$OUT/internal-network" "$WORK/isolation/lib"

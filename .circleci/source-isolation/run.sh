@@ -18,8 +18,7 @@ export BROKER_SESSION_BINARY=/package/components/bin/broker-session AGENT_SOURCE
 /usr/bin/python3 /acceptance/test_agent_source_media.py --agent /package/agent/usbridge-agent --components /package/components --enet-helper /acceptance/enet-control-test-client --output /results/media
 /usr/bin/python3 /acceptance/test_agent_source_full_client.py --agent /package/agent/usbridge-agent --streamer /package/components/bin/source-streamer --client /acceptance/full-client --output /results/full-public-client
 /usr/bin/python3 /acceptance/test_agent_source_full_client.py --agent /package/agent/usbridge-agent --streamer /package/components/bin/source-streamer --client /acceptance/full-client --output /results/full-public-client-444 --pixel-format yuv444p
-/usr/bin/python3 /acceptance/test_agent_source_full_client.py --agent /package/agent/usbridge-agent --streamer /package/components/bin/source-streamer --client /acceptance/full-client --output /results/full-public-client
-/usr/bin/python3 /acceptance/test_agent_source_full_client.py --agent /package/agent/usbridge-agent --streamer /package/components/bin/source-streamer --client /acceptance/full-client --output /results/full-public-client-444 --pixel-format yuv444p-input --input-consent
+/usr/bin/python3 /acceptance/test_agent_source_full_client.py --agent /package/agent/usbridge-agent --streamer /package/components/bin/source-streamer --client /acceptance/full-client --output /results/full-public-client-input --input-consent
 /usr/bin/python3 - <<'PY'
 import json,pathlib
 out=pathlib.Path('/results');network=json.loads((out/'network.json').read_text());media=json.loads((out/'media/result.json').read_text());lifecycle=json.loads((out/'lifecycle/result.json').read_text())
