@@ -98,6 +98,21 @@ function Report-TestFailure {
 }
 Push-Location (Join-Path $root '.circleci\source\windows-preview-acceptance')
 try {
+    Report-Stage 'native_powershell_literal'
+    $env:WINDOWS_POWERSHELL_LITERAL_RECEIPT = Join-Path $out 'powershell-literal.json'
+    # Read-only discovery of one existing official host. Never install software
+    # or modify execution/signature policy to make this prerequisite pass.
+    $core = Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'
+    if (Test-Path -LiteralPath $core -PathType Leaf) {
+        $coreSignature = Get-AuthenticodeSignature -LiteralPath $core
+        if ($coreSignature.Status -ceq 'Valid' -and $null -ne $coreSignature.SignerCertificate -and
+            $coreSignature.SignerCertificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) -ceq 'Microsoft Corporation') {
+            $env:WINDOWS_SIGNATURE_CORE_PATH = $core
+            $env:WINDOWS_SIGNATURE_CORE_SHA256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $core).Hash.ToLowerInvariant()
+        }
+    }
+    & $go test -json -tags signatureprobe '-run=^TestWindowsPowerShellDetachedLiteral$' -count=1 -timeout=20s ./... 1> $log 2> $stderr
+    if ($LASTEXITCODE -ne 0) { Report-TestFailure; throw 'No verified detached PowerShell literal output; see bounded receipt' }
     Report-Stage 'native_signature_verifier'
     $env:WINDOWS_SIGNATURE_PROBE_RECEIPT = Join-Path $out 'signature-probe.json'
     & $go test -json -tags signatureprobe '-run=^TestWindowsSignatureVerifierSystemFile$' -count=1 -timeout=20s ./... 1> $log 2> $stderr
