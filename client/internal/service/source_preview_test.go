@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -129,5 +130,204 @@ func TestSourcePreviewStaleDisconnectDoesNotClearReadyHandler(t *testing.T) {
 	notifyMoonlightStreamReady()
 	if ready.Load() != 1 {
 		t.Fatal("stale disconnect cleared newer ready handler")
+	}
+}
+
+// The one-shot guard makes a regression fail with a bounded wait instead of
+// overflowing the stack if a terminal callback recursively emits another event.
+func TestSourcePreviewDisconnectCallbackCanReenterSynchronously(t *testing.T) {
+	m := NewSourcePreviewService()
+	m.isRunning = true
+	stop := make(chan struct{})
+	m.stopPlayerCh = stop
+	var calls atomic.Int32
+	var reentered atomic.Bool
+	callbackFailure := make(chan string, 4)
+	m.SetOnStateChanged(func(state string) {
+		if state != "disconnected" {
+			callbackFailure <- "unexpected state"
+			return
+		}
+		calls.Add(1)
+		m.mu.Lock()
+		incomplete := !m.disconnecting || !m.disconnectTeardownComplete || m.disconnectDone == nil
+		m.mu.Unlock()
+		if incomplete {
+			callbackFailure <- "notification preceded teardown completion"
+		}
+		select {
+		case <-stop:
+		default:
+			callbackFailure <- "notification preceded decoder teardown"
+		}
+		if reentered.CompareAndSwap(false, true) {
+			if err := m.Disconnect(); err != nil {
+				callbackFailure <- "reentrant disconnect failed"
+			}
+		}
+	})
+	done := make(chan struct{})
+	go func() { defer close(done); _ = m.Disconnect() }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("terminal callback deadlocked while re-entering Disconnect")
+	}
+	select {
+	case message := <-callbackFailure:
+		t.Fatal(message)
+	default:
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("reentrant callback emitted %d terminal notifications, want 1", calls.Load())
+	}
+}
+
+func TestSourcePreviewCompletedDisconnectIsQuiet(t *testing.T) {
+	m := NewSourcePreviewService()
+	m.isRunning = true
+	var calls atomic.Int32
+	m.SetOnStateChanged(func(state string) {
+		if state == "disconnected" {
+			calls.Add(1)
+		}
+	})
+	if err := m.Disconnect(); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for range 32 {
+		wg.Go(func() { _ = m.Disconnect() })
+	}
+	wg.Wait()
+	if calls.Load() != 1 {
+		t.Fatalf("completed disconnect emitted %d terminal notifications, want 1", calls.Load())
+	}
+}
+
+func TestDisconnectPublishesCompletionAfterStockCancel(t *testing.T) {
+	host := &fakeSunshine{cancelDelay: 25 * time.Millisecond}
+	server := httptest.NewTLSServer(host.handler())
+	defer server.Close()
+	client := newTestMoonlightClient(t, server)
+	if _, _, err := client.Launch(1, "h264", 128, 72, 30, 1000); err != nil {
+		t.Fatal(err)
+	}
+	m := &MoonlightService{client: client, lastAppId: 1}
+	var calls atomic.Int32
+	var reentered atomic.Bool
+	callbackFailure := make(chan string, 4)
+	m.SetOnStateChanged(func(state string) {
+		if state != "disconnected" {
+			return
+		}
+		calls.Add(1)
+		running, _, _, _, cancels := host.snapshot()
+		if running || cancels != 1 {
+			callbackFailure <- "terminal notification preceded stock cancel"
+		}
+		m.mu.Lock()
+		incomplete := !m.disconnecting || !m.disconnectTeardownComplete || m.disconnectDone == nil
+		m.mu.Unlock()
+		if incomplete {
+			callbackFailure <- "terminal notification preceded completion publication"
+		}
+		if reentered.CompareAndSwap(false, true) {
+			_ = m.Disconnect()
+		}
+	})
+	done := make(chan struct{})
+	go func() { defer close(done); _ = m.Disconnect() }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stock terminal callback deadlocked")
+	}
+	select {
+	case message := <-callbackFailure:
+		t.Fatal(message)
+	default:
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("stock disconnect emitted %d terminal notifications, want 1", calls.Load())
+	}
+}
+
+// Hold the old notification at a deterministic boundary. A second Disconnect
+// must return quietly, but must not admit a new connection before that old
+// notification returns. The nil HTTP client ensures a broken admission guard
+// cannot accidentally contact a real host; reaching it is a caught test failure.
+func TestDisconnectBlocksNewConnectionUntilTerminalNotificationReturns(t *testing.T) {
+	m := &MoonlightService{isRunning: true, serverHost: "127.0.0.1"}
+	entered := make(chan struct{})
+	resume := make(chan struct{})
+	done := make(chan struct{})
+	var allowOnce sync.Once
+	allowNotification := func() { allowOnce.Do(func() { close(resume) }) }
+	defer allowNotification()
+	m.SetOnStateChanged(func(state string) {
+		if state == "disconnected" {
+			close(entered)
+			<-resume
+		}
+	})
+	go func() { defer close(done); _ = m.Disconnect() }()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("terminal callback was not reached")
+	}
+	m.mu.Lock()
+	join := m.disconnectDone
+	gated := m.disconnecting && m.disconnectTeardownComplete && join != nil
+	m.mu.Unlock()
+	if !gated {
+		t.Error("connection admission released before terminal notification returned")
+	}
+	select {
+	case <-join:
+		t.Error("earlier disconnect waiters released before terminal notification")
+	default:
+	}
+
+	type result struct {
+		err      error
+		admitted bool
+	}
+	attempt := make(chan result, 1)
+	go func() {
+		defer func() {
+			if recover() != nil {
+				attempt <- result{admitted: true}
+			}
+		}()
+		_ = m.Disconnect() // Quiet re-entry after resource teardown.
+		err := m.ConnectToMoonlight()
+		attempt <- result{err: err, admitted: m.connGen.Load() != 0}
+	}()
+	select {
+	case result := <-attempt:
+		if result.admitted || result.err == nil {
+			t.Fatal("new connection admitted during old terminal notification")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reentrant disconnect waited on its own terminal notification")
+	}
+	allowNotification()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("disconnect did not finish after notification returned")
+	}
+	select {
+	case <-join:
+	default:
+		t.Fatal("disconnect join channel remained open")
+	}
+	m.mu.Lock()
+	stillGated := m.disconnecting || m.disconnectTeardownComplete || m.disconnectDone != nil
+	m.mu.Unlock()
+	if stillGated {
+		t.Fatal("connection admission was not released after notification")
 	}
 }

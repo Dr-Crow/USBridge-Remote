@@ -34,12 +34,13 @@ type MoonlightService struct {
 	onPairingPINRequired func(pin string) // fired when the usbridge auto-pair endpoint isn't available (e.g. a stock Sunshine/GameStream host) and the user must enter the PIN on the host themselves
 	onPairingPINResolved func()           // fired once Pair() returns (success or failure), so the UI can dismiss the PIN dialog raised via onPairingPINRequired
 
-	mu             sync.Mutex    // protects isRunning, connecting, stopPlayerCh, activeWrapper, abort
-	abort          chan struct{} // closed by Disconnect to cancel an in-progress ConnectToMoonlight
-	isRunning      bool
-	disconnectDone chan struct{}
-	disconnecting  bool
-	connecting     bool // true for the duration of an in-flight ConnectToMoonlight call; see its doc comment
+	mu                         sync.Mutex    // protects isRunning, connecting, stopPlayerCh, activeWrapper, abort
+	abort                      chan struct{} // closed by Disconnect to cancel an in-progress ConnectToMoonlight
+	isRunning                  bool
+	disconnectDone             chan struct{}
+	disconnecting              bool
+	disconnectTeardownComplete bool // resources gone; notification/admission gate still held
+	connecting                 bool // true for the duration of an in-flight ConnectToMoonlight call; see its doc comment
 	// connGen identifies the "current" ConnectToMoonlight attempt. A fast
 	// reconnect (e.g. right after a capture-device switch) can have a new
 	// ConnectToMoonlight call start before a previous, failing one's
@@ -728,6 +729,13 @@ func (m *MoonlightService) disconnect(expectedSourceGeneration uint64) error {
 		return nil
 	}
 	if m.disconnecting {
+		// A terminal callback may synchronously re-enter after resource
+		// teardown. Return quietly, while retaining the admission gate until
+		// that callback finishes. Earlier waiters still join disconnectDone.
+		if m.disconnectTeardownComplete {
+			m.mu.Unlock()
+			return nil
+		}
 		done := m.disconnectDone
 		m.mu.Unlock()
 		if done != nil {
@@ -735,17 +743,35 @@ func (m *MoonlightService) disconnect(expectedSourceGeneration uint64) error {
 		}
 		return nil
 	}
+	// Once teardown has consumed every owned resource, repeated calls are a
+	// no-op. In particular, a synchronous terminal-state callback may call
+	// Disconnect again without emitting another terminal event recursively.
+	// Do not include connecting here: an aborted attempt can still be unwinding
+	// after all of its current resources have already been torn down.
+	if !m.isRunning && m.activeWrapper == nil && m.stopPlayerCh == nil &&
+		m.abort == nil && m.pairCancel == nil && m.sourcePreview == nil &&
+		m.stopMoonlightProxy == nil && m.lastAppId == 0 {
+		m.mu.Unlock()
+		return nil
+	}
 	clearMoonlightStreamReadyHandler()
 	m.disconnecting = true
+	m.disconnectTeardownComplete = false
 	disconnectDone := make(chan struct{})
 	m.disconnectDone = disconnectDone
-	defer func() {
+	completeDisconnect := func() {
 		m.mu.Lock()
-		m.disconnecting = false
-		m.disconnectDone = nil
-		close(disconnectDone)
+		// Phase two runs after notification. Retain the channel identity
+		// guard defensively so this closure cannot release another lifecycle.
+		if m.disconnectDone == disconnectDone {
+			m.disconnecting = false
+			m.disconnectTeardownComplete = false
+			m.disconnectDone = nil
+			close(disconnectDone)
+		}
 		m.mu.Unlock()
-	}()
+	}
+	defer completeDisconnect()
 	m.isRunning = false
 
 	// Signal any in-progress ConnectToMoonlight to abort.
@@ -798,10 +824,6 @@ func (m *MoonlightService) disconnect(expectedSourceGeneration uint64) error {
 	if stopCh != nil {
 		close(stopCh)
 	}
-	if m.onStateChanged != nil {
-		m.onStateChanged("disconnected")
-	}
-
 	// Tell Sunshine to end the app session on every disconnect, not just before
 	// a Reconnect(). Without this, Sunshine keeps reporting "an app is already
 	// running" on the *next* connect (even a clean one, e.g. a plain
@@ -849,6 +871,20 @@ func (m *MoonlightService) disconnect(expectedSourceGeneration uint64) error {
 		logrus.Infof("🎯 [CODEC-TRACE] Disconnect: m.lastAppId == 0, no /cancel sent (no prior session to end)")
 	}
 
+	// Phase one: native/proxy/player cleanup and the bounded stock /cancel wait
+	// are complete. Reentrant Disconnect can now return without waiting on its
+	// own notification. Keep disconnecting and disconnectDone until the deferred
+	// phase two, after application notification returns: releasing admission or
+	// waking earlier waiters here could start a new stock connection before the
+	// old terminal event is delivered, clearing that new connection's UI state.
+	m.mu.Lock()
+	if m.disconnectDone == disconnectDone {
+		m.disconnectTeardownComplete = true
+	}
+	m.mu.Unlock()
+	if m.onStateChanged != nil {
+		m.onStateChanged("disconnected")
+	}
 	return nil
 }
 
