@@ -8,10 +8,13 @@ import pathlib
 import re
 
 FILES = ('main_windows.go', 'environment.go', 'environment_windows.go',
-         'environment_test.go', 'main_windows_test.go')
+         'environment_test.go', 'main_windows_test.go', 'graphics_environment.go',
+         'graphics_environment_windows.go', 'graphics_environment_test.go', 'graphics_environment_windows_test.go')
 REQUIRED = {'TestPrivateEventWriterIsolatesWindowsAndCRTOutput',
             'TestClearPreviewEnvironmentScrubsActualCRT',
-            'TestClearPreviewEnvironmentReacquiresCRTArrays'}
+            'TestClearPreviewEnvironmentReacquiresCRTArrays',
+            'TestGraphicsEnvironmentOnlyFixedSoftwarePolicy', 'TestGraphicsEnvironmentFailureStopsConfiguration',
+            'TestWindowsSoftwareGraphicsOverridesAreFixed'}
 
 
 def extract(source):

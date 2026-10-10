@@ -31,6 +31,9 @@ func main() {
 	if clearPreviewEnvironment() != nil {
 		os.Exit(2)
 	}
+	if configurePreviewGraphics() != nil {
+		os.Exit(2)
+	}
 	if len(os.Args) != 2 || os.Args[1] != "--source-preview-stdin" {
 		os.Exit(2)
 	}

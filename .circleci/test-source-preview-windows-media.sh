@@ -18,6 +18,7 @@ PY
 # The saved public cache is read-only input to this unsaved job-local cache.
 PYTHONPATH=.circleci/source python3 -m unittest discover -s .circleci/source -p 'test_windows_seed_public_cache.py'
 python3 .circleci/source/windows_seed_public_cache.py --root "$(cygpath -m "$ROOT")"
+bash .circleci/test-source-preview-windows-software-gl.sh
 # Fail on the actual executable's window creation before source/agent builds.
 (
  cd .circleci/source/windows-preview-acceptance

@@ -18,6 +18,7 @@ import (
 type pins struct {
 	files       []*os.File
 	sourceEntry string
+	graphics    map[string]string
 }
 
 func (p *pins) close() {
@@ -64,6 +65,13 @@ func preflight(c config) (*pins, error) {
 	for _, v := range []struct{ path, pin string }{{c.Agent, c.AgentSHA}, {c.Viewer, c.ViewerSHA}, {c.Fixture, c.FixtureSHA}} {
 		if _, e := p.check(v.path, v.pin, 512<<20); e != nil {
 			return nil, e
+		}
+	}
+	if c.GraphicsStaging != "" {
+		var err error
+		p.graphics, err = pinGraphicsStaging(p, c.Viewer, c.GraphicsStaging, c.GraphicsStagingSHA)
+		if err != nil {
+			return nil, err
 		}
 	}
 	f, e := p.check(filepath.Join(c.Components, "manifest.json"), c.ManifestSHA, 1<<20)
@@ -189,7 +197,7 @@ func execute(c config, r *receipt) error {
 	}
 	for _, mode := range []string{"window_close", "stdin_eof", "stdin_extra"} {
 		cr := caseReceipt{Name: mode}
-		e = runCase(c, root, p.sourceEntry, &cr)
+		e = runCase(c, root, p.sourceEntry, p.graphics, &cr)
 		r.Cases = append(r.Cases, cr)
 		if e != nil {
 			return e
@@ -278,7 +286,7 @@ func (i *inventory) allExited(timeout time.Duration) error {
 	}
 	return nil
 }
-func runCase(c config, root, sourceEntry string, cr *caseReceipt) (result error) {
+func runCase(c config, root, sourceEntry string, graphics map[string]string, cr *caseReceipt) (result error) {
 	caseStarted := time.Now()
 	work := filepath.Join(c.Work, cr.Name)
 	for _, dir := range []string{work, filepath.Join(work, "roaming"), filepath.Join(work, "local")} {
@@ -396,6 +404,12 @@ func runCase(c config, root, sourceEntry string, cr *caseReceipt) (result error)
 		cr.VisibleWindows = max(cr.VisibleWindows, snapshot.Visible)
 		cr.TitleMatches = max(cr.TitleMatches, snapshot.TitleMatches)
 		if current != 0 {
+			if graphics != nil && cr.GraphicsModules == nil {
+				cr.GraphicsModules, e = graphicsModules(viewer.pid, c.Viewer, root, graphics)
+				if e != nil {
+					return e
+				}
+			}
 			if hwnd != 0 && hwnd != current {
 				return failure("owned_window_identity_changed")
 			}

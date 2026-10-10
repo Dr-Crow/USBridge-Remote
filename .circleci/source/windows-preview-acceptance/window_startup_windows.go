@@ -31,6 +31,14 @@ func executeWindowStartup(c config, r *windowStartupReceipt) (result error) {
 	if _, err := pins.check(c.Viewer, c.ViewerSHA, 512<<20); err != nil {
 		return err
 	}
+	var graphics map[string]string
+	if c.GraphicsStaging != "" {
+		var err error
+		graphics, err = pinGraphicsStaging(pins, c.Viewer, c.GraphicsStaging, c.GraphicsStagingSHA)
+		if err != nil {
+			return err
+		}
+	}
 	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		return failure("owned_listener_failed")
@@ -120,6 +128,12 @@ func executeWindowStartup(c config, r *windowStartupReceipt) (result error) {
 				return failure("owned_window_identity_failed")
 			}
 			r.WindowVerified = true
+			if graphics != nil {
+				r.GraphicsModules, err = graphicsModules(p.pid, c.Viewer, root, graphics)
+				if err != nil {
+					return err
+				}
+			}
 			break
 		}
 		time.Sleep(25 * time.Millisecond)

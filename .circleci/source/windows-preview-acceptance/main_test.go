@@ -39,6 +39,29 @@ func TestConfigRequiresPinnedLocalPaths(t *testing.T) {
 		t.Fatal("roles share a path")
 	}
 }
+
+func TestGraphicsConfigRequiresBothPinnedLocalFields(t *testing.T) {
+	c := validConfig()
+	c.GraphicsStaging = `C:\owned\probe-staging.json`
+	c.GraphicsStagingSHA = strings.Repeat("a", 64)
+	if validateConfig(c) != nil {
+		t.Fatal("valid graphics pin rejected")
+	}
+	for _, path := range []string{"", `C:relative`, `\\server\share\staging`, `C:\owned\a:stream`, "C:\\owned\\a\n"} {
+		bad := c
+		bad.GraphicsStaging = path
+		if validateConfig(bad) == nil {
+			t.Fatal("untrusted graphics path accepted")
+		}
+	}
+	for _, hash := range []string{"", "bad", strings.Repeat("A", 64)} {
+		bad := c
+		bad.GraphicsStagingSHA = hash
+		if validateConfig(bad) == nil {
+			t.Fatal("untrusted graphics hash accepted")
+		}
+	}
+}
 func TestExactJSONRejectsAmbiguity(t *testing.T) {
 	var out struct {
 		Event string `json:"event"`

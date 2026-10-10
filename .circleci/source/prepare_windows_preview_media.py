@@ -10,6 +10,7 @@ import subprocess
 
 from windows_preview_build_receipt import stage_dependencies, sha, summarize_tests
 from windows_component_inventory import component_files
+from windows_software_gl import verified_viewer_dependencies
 
 SOURCE = '2e07af3484369bc68bc8091d5a04969867eff0f9'
 ARCHIVE = '7a8ec9b04f0b3f090de55dc6fc7194e7bd7caf93a08a11182c7c03dcfce1ab2b'
@@ -69,7 +70,7 @@ def main():
     build = json.loads((out / 'build.json').read_text())
     assert build['commit'] == args.commit and build['passed']
     assert build['viewer_sha256'] == sha(viewer)
-    for name, digest in build['runtime_dlls_sha256'].items():
+    for name, digest in verified_viewer_dependencies(build, out, viewer).items():
         assert sha(viewer.parent / name) == digest
     generated = json.loads((out / 'generated-encoder.json').read_text())
     assert generated['fixture_sha256'] == sha(fixture)
@@ -101,6 +102,12 @@ def main():
                '--source-sha256', pins['source'], '--fixture-manifest-sha256', pins['fixture_manifest'],
                '--work', str(work / 'native-media-state'), '--output', str(out / 'media.json'),
                '--commit', args.commit]
+    if (out / 'software-graphics-inputs.json').exists():
+        staging = work / 'probe-staging.json'
+        assert staging.is_file() and not staging.is_symlink() and staging.stat().st_size <= 65536
+        value = json.loads(staging.read_text())
+        assert value == {'schema_version': 1, 'runtime_dlls_sha256': verified_viewer_dependencies(build, out, viewer)}
+        command += ['--graphics-staging', str(staging), '--graphics-staging-sha256', sha(staging)]
     subprocess.run(command, check=True, timeout=150)
 
 

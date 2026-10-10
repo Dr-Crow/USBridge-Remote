@@ -11,6 +11,8 @@ export GOENV=off GOWORK=off GOFLAGS='-trimpath -mod=readonly' GOCACHEPROG= GOEXP
 [[ "$(go version)" == 'go version go1.26.9 windows/amd64' ]]
 [[ "$(git rev-parse HEAD)" == "${CIRCLE_SHA1:?exact source commit required}" ]]
 START="$(date +%s)"
+python3 .circleci/source/windows-graphics-probe/test_probe_source.py
+gcc -std=c11 -Wall -Wextra -Werror -fsyntax-only .circleci/source/windows-graphics-probe/probe.c
 python3 .circleci/source/windows_preview_preflight.py --extract --root "$(cygpath -m "$ROOT")" --work "$(cygpath -m "$WORK")"
 for unit in "$WORK"/*.c; do
  gcc -std=c11 -Werror=implicit-function-declaration -fsyntax-only -x c "$unit"
@@ -18,7 +20,7 @@ done
 (
  cd client/cmd/source-preview-viewer
  # Explicit source files exclude Fyne, decoder/service and media initialization.
- files=(main_windows.go environment.go environment_windows.go environment_test.go main_windows_test.go)
+ files=(main_windows.go environment.go environment_windows.go environment_test.go main_windows_test.go graphics_environment.go graphics_environment_windows.go graphics_environment_test.go graphics_environment_windows_test.go)
  go test -json -count=5 -timeout=2m "${files[@]}" > "$WORK/console.jsonl"
  go test -json -count=5 -timeout=2m -ldflags='-H=windowsgui' "${files[@]}" > "$WORK/gui.jsonl"
 )

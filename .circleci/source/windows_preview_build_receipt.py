@@ -20,12 +20,16 @@ REQUIRED = {
                 'TestWindowStartupRejectsMissingNativeWindow',
                 'TestWindowStartupFailureOnlyExportsClosedCode',
                 'TestWindowDiagnosticsOnlyFixedCategories', 'TestWindowDiagnosticsBounded',
+                'TestGraphicsEnvironmentOnlyFixedSoftwarePolicy', 'TestGraphicsEnvironmentFailureStopsConfiguration',
+                'TestWindowsSoftwareGraphicsOverridesAreFixed',
                 'TestClearPreviewEnvironmentScrubsActualCRT',
                 'TestClearPreviewEnvironmentReacquiresCRTArrays'},
     'command-gui': {'TestPrivateEventWriterIsolatesWindowsAndCRTOutput',
                     'TestWindowStartupRejectsMissingNativeWindow',
                     'TestWindowStartupFailureOnlyExportsClosedCode',
                     'TestWindowDiagnosticsOnlyFixedCategories', 'TestWindowDiagnosticsBounded',
+                    'TestGraphicsEnvironmentOnlyFixedSoftwarePolicy', 'TestGraphicsEnvironmentFailureStopsConfiguration',
+                    'TestWindowsSoftwareGraphicsOverridesAreFixed',
                     'TestClearPreviewEnvironmentScrubsActualCRT',
                     'TestClearPreviewEnvironmentReacquiresCRTArrays'},
 }
@@ -57,7 +61,11 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def stage_dependencies(binary, ucrt_bin, system32):
+def stage_dependencies(binary, ucrt_bin, system32, extra_sources=None):
+    extra_sources = extra_sources or {}
+    for name, path in extra_sources.items():
+        assert re.fullmatch(r'[A-Za-z0-9_.+-]{1,100}\.dll', name, re.I)
+        assert path.name == name and path.is_file() and not path.is_symlink()
     queue, seen, copied, system = [binary], set(), {}, set()
     while queue:
         item = queue.pop()
@@ -71,7 +79,7 @@ def stage_dependencies(binary, ucrt_bin, system32):
         for name in names:
             name = name.strip()
             assert re.fullmatch(r'[A-Za-z0-9_.+-]{1,100}\.dll', name, re.I)
-            source = ucrt_bin / name
+            source = extra_sources.get(name, ucrt_bin / name)
             if source.is_file() and not source.is_symlink():
                 target = binary.parent / name
                 if target.exists() or target.is_symlink():

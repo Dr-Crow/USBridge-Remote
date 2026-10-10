@@ -211,3 +211,45 @@ The public Go build cache may be copied one-way into the unsaved job-local cache
 only after its exact key/toolchain/package/source and all content hashes match.
 There is no cache save or copy-back after component compilation. A source-free
 public-cache-seed.json records counts, hashes and unchanged public input.
+
+### Software-OpenGL acceptance after the native window diagnosis
+
+At public agent commit `20dd9cd4fbe767a57e67151f98bdb7c3225cfb65`, the
+same-executable startup gate reported `graphics_api_unavailable`, zero visible
+owned windows, and a natural exit with an empty Job. This is a real graphics
+prerequisite failure, not a successful viewer/pixel result. The exact-key public
+cache reduced the native viewer/privacy stage from 17m44s cold to 1m51s warm.
+The one-way cache seed separately verified that its public source was unchanged.
+
+The next gate stages the official MSYS2 UCRT64 Mesa 26.2.4-1 archive, pinned to
+SHA256 `82a30042848b6393f2a21cdee66b164e4cf4fe15a9721a5f1d1c7280e004ebdc`.
+Only its two exact hash-pinned WGL DLLs and recursively verified UCRT dependency
+closure are placed beside the disposable viewer. Runtime dependencies come from
+the official MSYS2 registry; their installed versions and each staged DLL hash
+are recorded. Existing compiler/package versions must remain unchanged. This
+happens after the public cache has been saved and copied one-way into the
+unsaved job-local cache. No OS/GPU driver, registry entry, machine environment,
+security setting or host device is changed.
+
+The Windows viewer removes inherited Mesa/Gallium/driver diagnostics and sets
+only the fixed process-local `GALLIUM_DRIVER=llvmpipe` and
+`LIBGL_ALWAYS_SOFTWARE=true` policy before constructing Fyne. Mesa 26.2.4 reads
+these through the Win32 environment. Linux keeps its existing graphics policy.
+There is no new arbitrary environment or viewer protocol input.
+
+A separate, explicitly tagged `graphicsprobe` test launches a small C WGL probe
+inside the existing owned Job. It creates only its own hidden window/context,
+reads bounded ASCII GL vendor/renderer/version strings, requires llvmpipe,
+verifies its PID-scoped loaded modules against the pinned app-local closure,
+then requires EOF, natural process retirement and a complete empty Job. Its
+receipt says `actual_viewer_tested:false`; it is never counted as pixel proof.
+The actual normal viewer entry then independently passes the same owned-title,
+visible-window, changing-pixel and natural-cleanup gates. Both actual startup
+and media cases verify the viewer PID's loaded Mesa module paths and report
+only basenames and hashes. Unknown locations, hash changes, missing Mesa roots,
+API failures and safety termination remain failures.
+
+Sources: https://packages.msys2.org/packages/mingw-w64-ucrt-x86_64-mesa and
+https://docs.mesa3d.org/drivers/llvmpipe.html . Only source-free JSON receipts
+are published. This software-rendered CI profile is not GPU acceleration or
+physical monitor presentation validation.

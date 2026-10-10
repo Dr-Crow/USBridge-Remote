@@ -7,22 +7,23 @@ import (
 )
 
 type windowStartupReceipt struct {
-	Schema         int    `json:"schema_version"`
-	Commit         string `json:"commit"`
-	ViewerSHA      string `json:"viewer_sha256"`
-	Passed         bool   `json:"passed"`
-	Failure        string `json:"failure_code,omitempty"`
-	ViewerFailure  string `json:"viewer_startup_failure_code,omitempty"`
-	OwnedWindows   int    `json:"owned_top_level_windows_max"`
-	VisibleWindows int    `json:"owned_visible_windows_max"`
-	TitleMatches   int    `json:"owned_title_matches_max"`
-	WindowVerified bool   `json:"actual_owned_viewer_window_verified"`
-	NaturalCleanup bool   `json:"natural_cleanup"`
-	JobEmpty       bool   `json:"job_empty_before_safety_close"`
-	SafetyKill     bool   `json:"safety_job_kill_used"`
-	ActualMedia    bool   `json:"actual_media_tested"`
-	Pixels         bool   `json:"actual_window_pixels_tested"`
-	DesktopCapture bool   `json:"desktop_capture_tested"`
+	Schema          int               `json:"schema_version"`
+	Commit          string            `json:"commit"`
+	ViewerSHA       string            `json:"viewer_sha256"`
+	Passed          bool              `json:"passed"`
+	Failure         string            `json:"failure_code,omitempty"`
+	ViewerFailure   string            `json:"viewer_startup_failure_code,omitempty"`
+	OwnedWindows    int               `json:"owned_top_level_windows_max"`
+	VisibleWindows  int               `json:"owned_visible_windows_max"`
+	TitleMatches    int               `json:"owned_title_matches_max"`
+	WindowVerified  bool              `json:"actual_owned_viewer_window_verified"`
+	NaturalCleanup  bool              `json:"natural_cleanup"`
+	JobEmpty        bool              `json:"job_empty_before_safety_close"`
+	SafetyKill      bool              `json:"safety_job_kill_used"`
+	ActualMedia     bool              `json:"actual_media_tested"`
+	Pixels          bool              `json:"actual_window_pixels_tested"`
+	DesktopCapture  bool              `json:"desktop_capture_tested"`
+	GraphicsModules map[string]string `json:"viewer_graphics_modules_sha256,omitempty"`
 }
 
 func runWindowStartup(c config) {
@@ -52,6 +53,9 @@ func runWindowStartup(c config) {
 }
 
 func validateWindowStartup(c config) error {
+	if err := validateGraphicsConfig(c); err != nil {
+		return err
+	}
 	if !commitPattern.MatchString(c.Commit) || !hashPattern.MatchString(c.ViewerSHA) {
 		return failure("invalid_startup_identity")
 	}

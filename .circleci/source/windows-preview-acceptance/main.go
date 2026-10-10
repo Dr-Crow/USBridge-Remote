@@ -51,26 +51,28 @@ type config struct {
 	Agent, AgentSHA, Viewer, ViewerSHA, Fixture, FixtureSHA string
 	Components, ManifestSHA, SourceSHA, FixtureManifestSHA  string
 	Work, Output, Commit                                    string
+	GraphicsStaging, GraphicsStagingSHA                     string
 }
 type caseReceipt struct {
-	Name             string `json:"name"`
-	Passed           bool   `json:"passed"`
-	FirstFrame       bool   `json:"typed_first_frame"`
-	Blue             bool   `json:"owned_window_blue"`
-	Orange           bool   `json:"owned_window_orange"`
-	ColorTransitions int    `json:"owned_window_color_transitions"`
-	PixelSamples     int    `json:"owned_window_samples"`
-	OwnedWindows     int    `json:"owned_top_level_windows_max"`
-	VisibleWindows   int    `json:"owned_visible_windows_max"`
-	TitleMatches     int    `json:"owned_title_matches_max"`
-	VideoFrames      uint64 `json:"source_video_frames"`
-	AudioPackets     uint64 `json:"source_audio_packets"`
-	FixtureProcesses int    `json:"max_fixture_processes"`
-	NaturalCleanup   bool   `json:"natural_cleanup"`
-	SafetyKillUsed   bool   `json:"safety_job_kill_used"`
-	JobEmpty         bool   `json:"job_empty_before_safety_close"`
-	WindowGone       bool   `json:"owned_window_removed"`
-	ListenersClosed  bool   `json:"advertised_listeners_closed"`
+	Name             string            `json:"name"`
+	Passed           bool              `json:"passed"`
+	FirstFrame       bool              `json:"typed_first_frame"`
+	Blue             bool              `json:"owned_window_blue"`
+	Orange           bool              `json:"owned_window_orange"`
+	ColorTransitions int               `json:"owned_window_color_transitions"`
+	PixelSamples     int               `json:"owned_window_samples"`
+	OwnedWindows     int               `json:"owned_top_level_windows_max"`
+	VisibleWindows   int               `json:"owned_visible_windows_max"`
+	TitleMatches     int               `json:"owned_title_matches_max"`
+	VideoFrames      uint64            `json:"source_video_frames"`
+	AudioPackets     uint64            `json:"source_audio_packets"`
+	FixtureProcesses int               `json:"max_fixture_processes"`
+	NaturalCleanup   bool              `json:"natural_cleanup"`
+	SafetyKillUsed   bool              `json:"safety_job_kill_used"`
+	JobEmpty         bool              `json:"job_empty_before_safety_close"`
+	WindowGone       bool              `json:"owned_window_removed"`
+	ListenersClosed  bool              `json:"advertised_listeners_closed"`
+	GraphicsModules  map[string]string `json:"viewer_graphics_modules_sha256,omitempty"`
 }
 type receipt struct {
 	Schema               int           `json:"schema_version"`
@@ -126,7 +128,7 @@ func main() {
 	for _, p := range []struct {
 		n string
 		v *string
-	}{{"agent", &c.Agent}, {"agent-sha256", &c.AgentSHA}, {"viewer", &c.Viewer}, {"viewer-sha256", &c.ViewerSHA}, {"fixture", &c.Fixture}, {"fixture-sha256", &c.FixtureSHA}, {"components", &c.Components}, {"manifest-sha256", &c.ManifestSHA}, {"source-sha256", &c.SourceSHA}, {"fixture-manifest-sha256", &c.FixtureManifestSHA}, {"work", &c.Work}, {"output", &c.Output}, {"commit", &c.Commit}} {
+	}{{"agent", &c.Agent}, {"agent-sha256", &c.AgentSHA}, {"viewer", &c.Viewer}, {"viewer-sha256", &c.ViewerSHA}, {"fixture", &c.Fixture}, {"fixture-sha256", &c.FixtureSHA}, {"components", &c.Components}, {"manifest-sha256", &c.ManifestSHA}, {"source-sha256", &c.SourceSHA}, {"fixture-manifest-sha256", &c.FixtureManifestSHA}, {"work", &c.Work}, {"output", &c.Output}, {"commit", &c.Commit}, {"graphics-staging", &c.GraphicsStaging}, {"graphics-staging-sha256", &c.GraphicsStagingSHA}} {
 		f.StringVar(p.v, p.n, "", p.n)
 	}
 	plan := f.Bool("plan", false, "print the bounded, non-executing test plan")
@@ -170,6 +172,9 @@ func testPlan() any {
 	return map[string]any{"schema_version": 1, "native_required": "windows/amd64", "cases": []string{"window_close", "stdin_eof", "stdin_extra"}, "encoder_role": "synthetic-substitution-only", "pixel_probe": "PrintWindow into owned memory DIB only", "child_launch": "atomically create in kill-on-close job, verify, then resume", "source_supervision": "actual agent --source-streamer-mode", "desktop_capture_tested": false, "windows_agent_preview_manager_enabled": false}
 }
 func validateConfig(c config) error {
+	if err := validateGraphicsConfig(c); err != nil {
+		return err
+	}
 	for _, h := range []string{c.AgentSHA, c.ViewerSHA, c.FixtureSHA, c.SourceSHA, c.ManifestSHA, c.FixtureManifestSHA} {
 		if !hashPattern.MatchString(h) {
 			return failure("invalid_hash_pin")
@@ -195,6 +200,15 @@ func validateConfig(c config) error {
 	}
 	if strings.EqualFold(c.Agent, c.Viewer) || strings.EqualFold(c.Agent, c.Fixture) || strings.EqualFold(c.Viewer, c.Fixture) {
 		return failure("component_identity_collision")
+	}
+	return nil
+}
+func validateGraphicsConfig(c config) error {
+	if c.GraphicsStaging == "" && c.GraphicsStagingSHA == "" {
+		return nil
+	}
+	if !hashPattern.MatchString(c.GraphicsStagingSHA) || !drivePath.MatchString(c.GraphicsStaging) || strings.ContainsAny(c.GraphicsStaging, "\x00\r\n") || strings.Contains(c.GraphicsStaging[2:], ":") {
+		return failure("invalid_graphics_identity")
 	}
 	return nil
 }
