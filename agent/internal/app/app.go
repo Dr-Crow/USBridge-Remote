@@ -40,6 +40,7 @@ import (
 	"usbridge_agent/internal/forkrelease"
 	"usbridge_agent/internal/hwid"
 	"usbridge_agent/internal/input"
+	"usbridge_agent/internal/logcap"
 	"usbridge_agent/internal/netutil"
 	"usbridge_agent/internal/permissions"
 	"usbridge_agent/internal/sasinput"
@@ -588,6 +589,8 @@ func New() (*App, error) {
 	// display connection (see Run).
 	instance.exeDir = resolveExeDir()
 	instance.logPath = filepath.Join(cfg.StateDir, "logs", "sunshine-stdout.log")
+	// The streamer's output: a ring too (see logcap).
+	logcap.Watch(instance.logPath)
 	instance.setStreamKind("sunshine")
 
 	// If this install was already switched to RustShine last run, pick it
