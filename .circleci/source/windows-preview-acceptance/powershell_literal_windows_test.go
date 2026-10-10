@@ -78,7 +78,7 @@ func powershellLiteral(path, pin, root string, r *powershellLiteralResult) (resu
 	defer j.close()
 	watchdog := time.AfterFunc(7*time.Second, j.close)
 	defer watchdog.Stop()
-	j.noWindowDiagnostic = r.LaunchMode == "no_window"
+	j.signatureConsole = r.LaunchMode == "no_window"
 	env := childEnvironment(root, work)
 	if r.Environment == "os_expanded" {
 		for _, key := range []string{"ComSpec", "SystemDrive", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432", "PROCESSOR_ARCHITECTURE", "PROCESSOR_IDENTIFIER", "PROCESSOR_LEVEL", "PROCESSOR_REVISION", "NUMBER_OF_PROCESSORS", "OS"} {
@@ -238,14 +238,19 @@ func TestWindowsPowerShellDetachedLiteral(t *testing.T) {
 			}
 		}
 	}
-	passed := false
+	passed := len(results) == 16
 	for _, r := range results {
-		passed = passed || (r.Matched && r.Sentinel && r.Natural && !r.Safety && r.Failure == "")
+		common := r.Present && r.Natural && !r.Safety && r.ExitCode != nil && *r.ExitCode == 0 && r.OtherMembers == 0 && r.InventoryFailures == 0 && r.MemberInspectionFailures == 0
+		if r.LaunchMode == "detached" {
+			passed = passed && common && !r.Matched && !r.Sentinel && r.ConsoleHosts == 0 && r.MaxOwned == 1 && r.Failure == "protocol_ended_early"
+		} else {
+			passed = passed && common && r.Matched && r.Sentinel && r.ConsoleHosts == 1 && r.MaxOwned == 2 && r.Failure == "literal_owned_inventory_not_root_only"
+		}
 	}
 	r := struct {
 		Schema  int                       `json:"schema_version"`
 		Commit  string                    `json:"commit"`
-		Passed  bool                      `json:"passed"`
+		Passed  bool                      `json:"matrix_expectations_passed"`
 		Results []powershellLiteralResult `json:"results"`
 	}{1, commit, passed, results}
 	raw, e := json.MarshalIndent(r, "", "  ")
@@ -253,6 +258,6 @@ func TestWindowsPowerShellDetachedLiteral(t *testing.T) {
 		t.Fatal("literal_receipt_failed")
 	}
 	if !passed {
-		t.Fatal("no_strict_powershell_literal_result")
+		t.Fatal("powershell_matrix_expectation_failed")
 	}
 }

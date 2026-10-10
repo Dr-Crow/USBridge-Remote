@@ -343,3 +343,29 @@ func TestWindowsInventoryIncompleteContract(t *testing.T) {
 		t.Fatal("complete empty proof rejected")
 	}
 }
+
+func TestWindowsSuspendedValidationAbortsBeforeResume(t *testing.T) {
+	exe, e := os.Executable()
+	if e != nil {
+		t.Fatal(e)
+	}
+	j, e := newJob()
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer j.close()
+	var held syscall.Handle
+	j.beforeResume = func(pid uint32) { _, held, e = processPath(pid); j.close() }
+	env := append(childEnvironment(os.Getenv("SystemRoot"), os.Getenv("TEMP")), "WINDOWS_PREVIEW_TEST_CHILD=leaf")
+	p, err := j.start(exe, []string{"-test.run=^TestWindowsPrivatePipeHelper$"}, env, os.Getenv("TEMP"))
+	if held != 0 {
+		defer syscall.CloseHandle(held)
+	}
+	if e != nil || p != nil || err == nil || err.Error() != "suspended_validation_failed" || held == 0 {
+		t.Fatal("suspended validation did not abort")
+	}
+	state, e := syscall.WaitForSingleObject(held, 3000)
+	if e != nil || state != syscall.WAIT_OBJECT_0 {
+		t.Fatal("rejected suspended root not joined")
+	}
+}

@@ -8,11 +8,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unsafe"
 )
 
 // Run once in the fast source-free native job, before any Fyne build. This uses
 // an existing OS file only; it does not load GDI+, open windows or accept modules.
 func TestWindowsSignatureVerifierSystemFile(t *testing.T) {
+	if unsafe.Sizeof(signatureJobAccounting{}) != 48 || unsafe.Offsetof(signatureJobAccounting{}.Total) != 36 {
+		t.Fatal("signature_accounting_layout")
+	}
 	out, root := os.Getenv("WINDOWS_SIGNATURE_PROBE_RECEIPT"), os.Getenv("SystemRoot")
 	if !drivePath.MatchString(out) || !drivePath.MatchString(root) {
 		t.Fatal("os_signature_probe_configuration_missing")
@@ -45,7 +49,7 @@ func TestWindowsSignatureVerifierSystemFile(t *testing.T) {
 	if err := inspect(); err != nil {
 		r.Failure = err.Error()
 	}
-	passed := r.Failure == "" && r.NaturalCleanup && r.Signature != nil && r.Signature.Status == 0 && r.Signature.OSBinary
+	passed := r.Failure == "" && r.CleanupJoined && r.SuspendedGraphVerified && !r.SafetyJobClosed && r.ConsoleHostVerified && r.TotalOwnedProcesses == 2 && r.NaturalCleanup && r.Signature != nil && r.Signature.Status == 0 && r.Signature.OSBinary
 	receipt := struct {
 		Schema     int                  `json:"schema_version"`
 		Commit     string               `json:"commit"`

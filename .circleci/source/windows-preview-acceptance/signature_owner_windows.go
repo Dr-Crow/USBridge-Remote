@@ -1,0 +1,263 @@
+//go:build windows
+
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+	"unsafe"
+)
+
+type signatureJobAccounting struct {
+	UserTime, KernelTime, PeriodUserTime, PeriodKernelTime int64
+	PageFaults, Total, Active, Terminated                  uint32
+}
+
+func signatureAccounting(j *job) (signatureJobAccounting, error) {
+	var a signatureJobAccounting
+	ok, _, _ := queryJob.Call(uintptr(j.handle), 1, uintptr(unsafe.Pointer(&a)), unsafe.Sizeof(a), 0)
+	if ok == 0 || a.Total > 2 || a.Active > a.Total || a.Terminated != 0 {
+		return a, failure("signature_job_accounting_failed")
+	}
+	return a, nil
+}
+
+type signatureConsoleOwner struct {
+	file                                   *os.File
+	path, hash                             string
+	handle                                 syscall.Handle
+	rootHandle                             syscall.Handle
+	policy                                 signatureOwnerPolicy
+	beforeTotal, beforeActive, beforeCount uint32
+}
+
+func signatureSystemDirectory(root string) (string, error) {
+	var buffer [32768]uint16
+	n, _, _ := kernel32.NewProc("GetSystemDirectoryW").Call(uintptr(unsafe.Pointer(&buffer[0])), uintptr(len(buffer)))
+	if n == 0 || n >= uintptr(len(buffer)) {
+		return "", failure("signature_system_directory_failed")
+	}
+	path := graphicsPath(syscall.UTF16ToString(buffer[:n]))
+	if !strings.EqualFold(path, graphicsPath(filepath.Join(root, "System32"))) {
+		return "", failure("signature_system_directory_mismatch")
+	}
+	return path, nil
+}
+func prepareSignatureConsole(root string) (*signatureConsoleOwner, error) {
+	system, err := signatureSystemDirectory(root)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(system, "conhost.exe")
+	f, err := lockFile(path)
+	if err != nil {
+		return nil, failure("signature_host_lock_failed")
+	}
+	final, err := finalGraphicsPath(f)
+	if err != nil || !strings.EqualFold(final, graphicsPath(path)) {
+		f.Close()
+		return nil, failure("signature_host_final_path_failed")
+	}
+	hash, err := fileSHA(f, 64<<20)
+	if err != nil {
+		f.Close()
+		return nil, failure("signature_host_hash_failed")
+	}
+	return &signatureConsoleOwner{file: f, path: final, hash: hash}, nil
+}
+func (o *signatureConsoleOwner) close() {
+	if o.rootHandle != 0 {
+		syscall.CloseHandle(o.rootHandle)
+	}
+	if o.handle != 0 {
+		syscall.CloseHandle(o.handle)
+	}
+	o.file.Close()
+}
+func (o *signatureConsoleOwner) observe(j *job, p *child, ids []uint32) error {
+	if err := signatureUniqueInventory(ids); err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if id == p.pid {
+			if !j.contains(p.handle) {
+				return failure("signature_root_membership_failed")
+			}
+			continue
+		}
+		if id == o.policy.host {
+			if !j.contains(o.handle) {
+				return failure("signature_host_membership_failed")
+			}
+			continue
+		}
+		path, h, err := processPath(id)
+		if err != nil {
+			return failure("signature_member_inspection_failed")
+		}
+		owned := j.contains(h)
+		samePath := strings.EqualFold(graphicsPath(path), o.path)
+		sameHash := false
+		if samePath {
+			info, e := os.Stat(path)
+			held, he := o.file.Stat()
+			if e == nil && he == nil && os.SameFile(info, held) {
+				got, e := fileSHA(o.file, 64<<20)
+				sameHash = e == nil && got == o.hash
+			}
+		}
+		err = o.policy.admit(id, samePath, sameHash, owned)
+		if err != nil {
+			syscall.CloseHandle(h)
+			return err
+		}
+		o.handle = h
+	}
+	return nil
+}
+func signatureProcessZero(h syscall.Handle) (bool, error) {
+	state, err := syscall.WaitForSingleObject(h, 0)
+	if err != nil {
+		return false, failure("signature_process_wait_failed")
+	}
+	if state == syscall.WAIT_TIMEOUT {
+		return false, nil
+	}
+	if state != syscall.WAIT_OBJECT_0 {
+		return false, failure("signature_process_wait_failed")
+	}
+	var code uint32
+	if syscall.GetExitCodeProcess(h, &code) != nil || code != 0 {
+		return false, failure("signature_process_nonzero_exit")
+	}
+	return true, nil
+}
+
+// Observe and retain both identities before accepting the single protocol line.
+// Lifetime accounting also rejects an unknown descendant too short-lived to
+// appear in a snapshot. No member is ever killed on a successful return.
+func (o *signatureConsoleOwner) collect(j *job, p *child, r *graphicsOSInspection) ([]byte, error) {
+	o.policy.root = p.pid
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	timeout := time.NewTimer(6 * time.Second)
+	defer timeout.Stop()
+	packets := p.packets
+	var raw []byte
+	var protocolErr error
+	for {
+		rootZero, e := signatureProcessZero(p.handle)
+		if e != nil {
+			return raw, e
+		}
+		o.policy.rootExited = rootZero
+		ids, invErr := j.pids()
+		// Incomplete enumeration is never empty. It may retire only after both
+		// retained identities have signaled, using the existing strict deadline.
+		if invErr != nil {
+			if invErr != errIncompleteInventory || !rootZero || o.handle == 0 {
+				return raw, failure("signature_inventory_failed")
+			}
+			if e = o.observe(j, p, ids); e != nil {
+				return raw, e
+			}
+			hostZero, e := signatureProcessZero(o.handle)
+			if e != nil || !hostZero {
+				return raw, failure("signature_inventory_failed")
+			}
+			if e = waitRetiredInventory(j.pids, map[uint32]bool{p.pid: true, o.policy.host: true}, time.Second); e != nil {
+				return raw, e
+			}
+			ids = nil
+		}
+		if e = o.observe(j, p, ids); e != nil {
+			return raw, e
+		}
+		a, e := signatureAccounting(j)
+		if e != nil {
+			return raw, e
+		}
+		hostZero := false
+		if o.handle != 0 {
+			hostZero, e = signatureProcessZero(o.handle)
+			if e != nil {
+				return raw, e
+			}
+		}
+		if rootZero && hostZero && len(ids) == 0 {
+			if e = o.policy.finish(a.Total, a.Active, true, rootZero, hostZero, j.closed.Load()); e != nil {
+				return raw, e
+			}
+			if e = p.wait(time.Second); e != nil {
+				return raw, e
+			}
+			if raw == nil && protocolErr == nil {
+				raw, protocolErr = p.next(time.Second)
+			}
+			if e = p.finishProtocol(); e != nil {
+				return raw, e
+			}
+			r.NaturalCleanup = true
+			r.ConsoleHostSHA = o.hash
+			r.ConsoleHostVerified = true
+			r.TotalOwnedProcesses = a.Total
+			if protocolErr != nil {
+				return raw, protocolErr
+			}
+			return raw, nil
+		}
+		select {
+		case v, ok := <-packets:
+			packets = nil
+			o.policy.frozen = true
+			if o.policy.host == 0 {
+				return raw, failure("signature_host_not_observed_before_result")
+			}
+			if !ok {
+				protocolErr = failure("protocol_ended_early")
+			} else {
+				raw = v.line
+				protocolErr = v.err
+			}
+		case <-ticker.C:
+		case <-timeout.C:
+			return raw, failure("signature_owner_timeout")
+		}
+	}
+}
+
+// Runs while the root primary thread remains suspended. No startup admission
+// after ResumeThread is permitted for this signature-only graph.
+func (o *signatureConsoleOwner) beforeResume(j *job, pid uint32) error {
+	path, h, err := processPath(pid)
+	if err != nil {
+		return err
+	}
+	o.rootHandle = h
+	if !strings.EqualFold(graphicsPath(path), filepath.Join(filepath.Dir(o.path), "WindowsPowerShell", "v1.0", "powershell.exe")) {
+		return failure("signature_root_identity_failed")
+	}
+	p := &child{pid: pid, handle: h}
+	o.policy.root = pid
+	ids, err := j.pids()
+	if err != nil {
+		return err
+	}
+	o.beforeCount = uint32(len(ids))
+	if err = o.observe(j, p, ids); err != nil {
+		return err
+	}
+	a, err := signatureAccounting(j)
+	if err != nil {
+		return err
+	}
+	o.beforeTotal, o.beforeActive = a.Total, a.Active
+	if !signatureExactInitialSet(ids, pid, o.policy.host) || a.Total != 2 || a.Active != 2 {
+		return failure("signature_suspended_graph_incomplete")
+	}
+	o.policy.frozen = true
+	return nil
+}

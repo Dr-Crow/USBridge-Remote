@@ -5,16 +5,27 @@ import (
 )
 
 type graphicsOSInspection struct {
-	Failure          string             `json:"failure_code,omitempty"`
-	FileSHA          string             `json:"file_sha256,omitempty"`
-	FinalPathMatches bool               `json:"final_path_matches_observed"`
-	Signature        *graphicsSignature `json:"signature,omitempty"`
-	NaturalCleanup   bool               `json:"verifier_natural_cleanup"`
-	Accepted         bool               `json:"module_accepted"`
-	ResultFailure    string             `json:"verifier_result_failure,omitempty"`
-	ExitCode         *uint32            `json:"verifier_exit_code,omitempty"`
-	ElapsedMillis    int64              `json:"verifier_elapsed_ms,omitempty"`
-	ScriptSHA        string             `json:"verifier_script_sha256,omitempty"`
+	SuspendedTotal         uint32             `json:"suspended_total_processes"`
+	SuspendedActive        uint32             `json:"suspended_active_processes"`
+	SuspendedMembers       uint32             `json:"suspended_members"`
+	CleanupJoined          bool               `json:"cleanup_joined"`
+	CleanupFailure         string             `json:"cleanup_failure,omitempty"`
+	VerifierSHA            string             `json:"verifier_sha256,omitempty"`
+	SuspendedGraphVerified bool               `json:"suspended_graph_verified"`
+	SafetyJobClosed        bool               `json:"safety_job_closed"`
+	ConsoleHostSHA         string             `json:"console_host_sha256,omitempty"`
+	ConsoleHostVerified    bool               `json:"console_host_identity_verified"`
+	TotalOwnedProcesses    uint32             `json:"total_owned_processes"`
+	Failure                string             `json:"failure_code,omitempty"`
+	FileSHA                string             `json:"file_sha256,omitempty"`
+	FinalPathMatches       bool               `json:"final_path_matches_observed"`
+	Signature              *graphicsSignature `json:"signature,omitempty"`
+	NaturalCleanup         bool               `json:"verifier_natural_cleanup"`
+	Accepted               bool               `json:"module_accepted"`
+	ResultFailure          string             `json:"verifier_result_failure,omitempty"`
+	ExitCode               *uint32            `json:"verifier_exit_code,omitempty"`
+	ElapsedMillis          int64              `json:"verifier_elapsed_ms,omitempty"`
+	ScriptSHA              string             `json:"verifier_script_sha256,omitempty"`
 }
 
 type graphicsSignature struct {
@@ -61,7 +72,7 @@ func parseGraphicsSignature(raw []byte, digest string) (*graphicsSignature, erro
 // installs certificates nor suppresses trust/revocation/signature failures.
 const graphicsSignatureScript = `$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; $stage='read_request';
 try {
- $request = ($input | Out-String) | ConvertFrom-Json
+ $request = [Console]::In.ReadLine() | ConvertFrom-Json
  $stage='query_signature'
  $signature = Get-AuthenticodeSignature -LiteralPath $request.path
  $stage='read_certificate'
@@ -76,9 +87,9 @@ try {
  $digest=(Get-FileHash -Algorithm SHA256 -LiteralPath $request.path).Hash.ToLowerInvariant()
  $stage='write_result'
  $result=[ordered]@{schema_version=1;status_code=[int]$signature.Status;is_os_binary=[bool]$signature.IsOSBinary;signature_type=[string]$signature.SignatureType;publisher_name=$publisher;issuer_name=$issuer;signer_thumbprint=$thumbprint;file_sha256=$digest}
- $result | ConvertTo-Json -Compress | Write-Output
+ [Console]::Out.WriteLine(($result | ConvertTo-Json -Compress))
  exit 0
-} catch { [ordered]@{schema_version=1;failure_stage=$stage} | ConvertTo-Json -Compress | Write-Output; exit 0 }`
+} catch { [Console]::Out.WriteLine(([ordered]@{schema_version=1;failure_stage=$stage} | ConvertTo-Json -Compress)); exit 0 }`
 
 func graphicsSignatureArguments(script string) []string {
 	return []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-File", script}

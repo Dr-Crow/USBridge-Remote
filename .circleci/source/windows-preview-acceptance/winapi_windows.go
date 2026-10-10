@@ -63,8 +63,8 @@ type job struct {
 	closed atomic.Bool
 	// CI test seam only; never set by runtime flags or descriptors.
 	beforeResume func(uint32)
-	// CI literal compatibility matrix only; no runtime argument sets this.
-	noWindowDiagnostic bool
+	// Signature-only owner and its CI matrix; never set for viewers or sources.
+	signatureConsole bool
 }
 
 func newJob() (*job, error) {
@@ -133,16 +133,17 @@ type protocolPacket struct {
 	err  error
 }
 type child struct {
-	owner                 *job
-	waitHandle            syscall.Handle
-	handle                syscall.Handle
-	pid                   uint32
-	stdin, stdout, stderr *os.File
-	packets               chan protocolPacket
-	drained               chan error
-	done                  chan struct{}
-	exitCode              uint32
-	closeOnce             sync.Once
+	owner                      *job
+	waitHandle                 syscall.Handle
+	handle                     syscall.Handle
+	pid                        uint32
+	stdin, stdout, stderr      *os.File
+	packets                    chan protocolPacket
+	drained                    chan error
+	done                       chan struct{}
+	outputDone, diagnosticDone chan struct{}
+	exitCode                   uint32
+	closeOnce                  sync.Once
 }
 
 func (p *child) close() {
@@ -201,6 +202,7 @@ func (p *child) finishProtocol() error {
 // Pipes are read by goroutines. Windows anonymous pipes cannot use Python selectors.
 func (p *child) read() {
 	go func() {
+		defer close(p.outputDone)
 		defer close(p.packets)
 		r := bufio.NewReaderSize(p.stdout, maxProtocolLine+1)
 		for n := 0; ; n++ {
@@ -216,6 +218,7 @@ func (p *child) read() {
 		}
 	}()
 	go func() { // Discard diagnostics; neither errors nor secret-looking output is persisted.
+		defer close(p.diagnosticDone)
 		n, e := io.Copy(io.Discard, io.LimitReader(p.stderr, 65537))
 		if n != 0 || e != nil {
 			p.drained <- failure("unexpected_child_stderr")
@@ -224,12 +227,12 @@ func (p *child) read() {
 		}
 	}()
 	go func() {
+		defer close(p.done)
 		defer syscall.CloseHandle(p.waitHandle)
 		_, e := syscall.WaitForSingleObject(p.waitHandle, syscall.INFINITE)
 		if e != nil || syscall.GetExitCodeProcess(p.waitHandle, &p.exitCode) != nil {
 			p.exitCode = 0xffffffff
 		}
-		close(p.done)
 	}()
 }
 
@@ -356,8 +359,8 @@ func (j *job) start(path string, args, env []string, dir string) (*child, error)
 	// regression; do not hide or allow-list that extra process. The GUI viewer
 	// still creates its own normal Fyne HWND.
 	flags := uint32(0x4 | 0x400 | 0x80000 | 0x8)
-	if j.noWindowDiagnostic {
-		flags = (flags &^ 0x8) | 0x08000000 // test-only CREATE_NO_WINDOW comparison
+	if j.signatureConsole {
+		flags = (flags &^ 0x8) | 0x08000000 // signature-only CREATE_NO_WINDOW
 	}
 	e = syscall.CreateProcess(exe, cmd, nil, nil, true, flags, &block[0], cwd, &si.Startup, &pi)
 	runtime.KeepAlive(storage)
@@ -379,6 +382,9 @@ func (j *job) start(path string, args, env []string, dir string) (*child, error)
 	if j.beforeResume != nil {
 		j.beforeResume(pi.ProcessId)
 	}
+	if j.closed.Load() {
+		return failed("suspended_validation_failed")
+	}
 	current, e := syscall.GetCurrentProcess()
 	if e != nil {
 		return failed("process_handle_failed")
@@ -392,7 +398,7 @@ func (j *job) start(path string, args, env []string, dir string) (*child, error)
 		syscall.CloseHandle(waitHandle)
 		return failed("child_resume_failed")
 	}
-	p := &child{owner: j, handle: pi.Process, waitHandle: waitHandle, pid: pi.ProcessId, stdin: inW, stdout: outR, stderr: errR, packets: make(chan protocolPacket, 4), drained: make(chan error, 1), done: make(chan struct{})}
+	p := &child{owner: j, handle: pi.Process, waitHandle: waitHandle, pid: pi.ProcessId, stdin: inW, stdout: outR, stderr: errR, packets: make(chan protocolPacket, 4), drained: make(chan error, 1), done: make(chan struct{}), outputDone: make(chan struct{}), diagnosticDone: make(chan struct{})}
 	success = true
 	p.read()
 	return p, nil

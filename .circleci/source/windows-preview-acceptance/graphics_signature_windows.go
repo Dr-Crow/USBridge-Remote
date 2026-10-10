@@ -5,6 +5,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,22 +83,82 @@ func runGraphicsSignature(final, systemRoot string, r *graphicsOSInspection) (re
 	if got, e := fileSHA(script, 65536); e != nil || got != r.ScriptSHA {
 		return failure("os_verifier_script_hash_failed")
 	}
+	console, err := prepareSignatureConsole(systemRoot)
+	if err != nil {
+		return err
+	}
+	defer console.close()
+	powerPath := filepath.Join(filepath.Dir(console.path), "WindowsPowerShell", "v1.0", "powershell.exe")
+	powerFile, err := lockFile(powerPath)
+	if err != nil {
+		return failure("signature_root_lock_failed")
+	}
+	defer powerFile.Close()
+	powerFinal, err := finalGraphicsPath(powerFile)
+	if err != nil || !strings.EqualFold(powerFinal, graphicsPath(powerPath)) {
+		return failure("signature_root_final_path_failed")
+	}
+	r.VerifierSHA, err = fileSHA(powerFile, 64<<20)
+	if err != nil {
+		return failure("signature_root_hash_failed")
+	}
 	j, err := newJob()
 	if err != nil {
 		return err
 	}
 	defer j.close()
-	watchdog := time.AfterFunc(7*time.Second, j.close)
-	defer watchdog.Stop()
-	p, err := j.start(filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), graphicsSignatureArguments(scriptPath), childEnvironment(systemRoot, work), work)
-	if err != nil {
-		return failure("os_verifier_start_failed")
+	j.signatureConsole = true
+	var suspendedErr error
+	j.beforeResume = func(pid uint32) {
+		suspendedErr = console.beforeResume(j, pid)
+		r.SuspendedTotal, r.SuspendedActive, r.SuspendedMembers = console.beforeTotal, console.beforeActive, console.beforeCount
+		if suspendedErr != nil {
+			j.close()
+		} else {
+			r.SuspendedGraphVerified = true
+		}
 	}
+	watchStop, watchDone := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		timer := time.NewTimer(7 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-watchStop:
+		case <-timer.C:
+			j.close()
+		}
+	}()
+	var p *child
+	inputDone := make(chan struct{})
+	close(inputDone)
 	defer func() {
+		close(watchStop)
+		<-watchDone // the safety callback cannot race success
+		if p == nil {
+			j.close()
+			r.SafetyJobClosed = true
+			joined := console.rootHandle != 0
+			for _, h := range []syscall.Handle{console.rootHandle, console.handle} {
+				if h != 0 {
+					state, e := syscall.WaitForSingleObject(h, 1000)
+					joined = joined && e == nil && state == syscall.WAIT_OBJECT_0
+				}
+			}
+			r.CleanupJoined = joined
+			if !joined {
+				r.CleanupFailure = "signature_cleanup_join_failed"
+			}
+			return
+		}
 		if ids, e := j.pids(); j.closed.Load() || e != nil || len(ids) != 0 || p.alive() {
 			r.NaturalCleanup = false
+			r.SafetyJobClosed = true
 			j.close()
 			_ = p.wait(time.Second)
+			if console.handle != 0 {
+				_, _ = syscall.WaitForSingleObject(console.handle, 1000)
+			}
 			if result == nil {
 				result = failure("os_verifier_cleanup_failed")
 			}
@@ -109,37 +170,63 @@ func runGraphicsSignature(final, systemRoot string, r *graphicsOSInspection) (re
 		default:
 		}
 		p.close()
+		joined := true
+		if console.handle != 0 {
+			state, e := syscall.WaitForSingleObject(console.handle, 1000)
+			joined = e == nil && state == syscall.WAIT_OBJECT_0
+		}
+		deadline := time.NewTimer(time.Second)
+		defer deadline.Stop()
+	joinLoop:
+		for _, done := range []<-chan struct{}{inputDone, p.done, p.outputDone, p.diagnosticDone} {
+			select {
+			case <-done:
+			case <-deadline.C:
+				joined = false
+				break joinLoop
+			}
+		}
+		r.CleanupJoined = joined
+		if !joined {
+			r.NaturalCleanup = false
+			r.CleanupFailure = "signature_cleanup_join_failed"
+			if result == nil {
+				result = failure(r.CleanupFailure)
+			}
+		}
 	}()
-	if err := writePrivate(p.stdin, map[string]string{"path": final}); err != nil {
+	p, err = j.start(powerPath, graphicsSignatureArguments(scriptPath), childEnvironment(systemRoot, work), work)
+	if suspendedErr != nil {
+		return suspendedErr
+	}
+	if err != nil {
+		return failure("os_verifier_start_failed")
+	}
+	input, err := json.Marshal(map[string]string{"path": final})
+	if err != nil {
 		return failure("os_verifier_input_failed")
 	}
+	input = append(input, '\n')
+	inputDone = make(chan struct{})
+	inputResult := make(chan error, 1)
+	go func() { defer close(inputDone); defer clear(input); _, e := p.stdin.Write(input); inputResult <- e }()
+	select {
+	case e := <-inputResult:
+		if e != nil {
+			return failure("os_verifier_input_failed")
+		}
+	case <-time.After(3 * time.Second):
+		_ = p.stdin.Close()
+		return failure("os_verifier_input_timeout")
+	}
+
 	_ = p.stdin.Close()
-	raw, err := p.next(5 * time.Second)
+	raw, err := console.collect(j, p, r)
+	defer clear(raw)
 	if err != nil {
-		switch err.Error() {
-		case "protocol_timeout", "protocol_ended_early", "bounded_protocol_failed":
-			r.ResultFailure = err.Error()
-		default:
-			r.ResultFailure = "other_protocol_failure"
-		}
-		// Observe a natural startup failure before safety retirement; never turn
-		// missing output into a successful signature result.
-		if p.wait(time.Second) == nil && p.finishProtocol() == nil && waitRetiredInventory(j.pids, map[uint32]bool{p.pid: true}, time.Second) == nil {
-			r.NaturalCleanup = true
-		}
+		r.ResultFailure = err.Error()
 		return failure("os_verifier_result_failed")
 	}
-	defer clear(raw)
-	if err = p.wait(time.Second); err != nil {
-		return failure("os_verifier_exit_failed")
-	}
-	if err = p.finishProtocol(); err != nil {
-		return failure("os_verifier_protocol_failed")
-	}
-	if err = waitRetiredInventory(j.pids, map[uint32]bool{p.pid: true}, time.Second); err != nil {
-		return failure("os_verifier_inventory_failed")
-	}
-	r.NaturalCleanup = true
 	r.Signature, err = parseGraphicsSignature(raw, r.FileSHA)
 	return err
 }
