@@ -18,7 +18,13 @@ Report-Stage 'download_toolchain'
 Invoke-WebRequest -UseBasicParsing -TimeoutSec 120 -Uri 'https://go.dev/dl/go1.26.9.windows-amd64.zip' -OutFile $archive
 if ((Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant() -cne $archiveSHA) { throw 'Go archive checksum mismatch' }
 Report-Stage 'extract_toolchain'
-Expand-Archive -LiteralPath $archive -DestinationPath $work
+# Use the Windows image's existing extractor for the already verified official ZIP.
+# Expand-Archive's per-file PowerShell overhead dominates this small native gate.
+$tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+if (-not (Test-Path -LiteralPath $tar -PathType Leaf)) { throw 'Native Windows archive extractor is unavailable' }
+& $tar -xf $archive -C $work
+if ($LASTEXITCODE -ne 0) { throw 'Verified Go archive extraction failed' }
+Report-Stage 'toolchain_extracted'
 $go = Join-Path $work 'go\bin\go.exe'
 $env:GOROOT = Join-Path $work 'go'
 $env:GOENV = 'off'
