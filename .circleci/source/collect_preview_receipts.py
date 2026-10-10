@@ -5,8 +5,10 @@ import hashlib
 import json
 import pathlib
 import re
+from engine_preview_contract import validate_receipt
 
 PATTERNS = {
+    'source-preview-engine': re.compile(r'result\.json'),
     'source-preview': re.compile(r'(?:result|pixels-[a-z0-9-]+|[a-z0-9-]+-pixels|viewer-[a-z0-9-]+|[a-z0-9-]+-gone|stop|expiry)\.json'),
     'source-preview-dialog': re.compile(r'(?:result|steps|last-ui|(?:dialog-stop|dialog-close|parent-close)-pixels-[0-9]+|(?:dialog-stop|dialog-close|parent-close)-viewer-gone)\.json'),
 }
@@ -44,6 +46,8 @@ def collect(root):
             assert path.is_file() and not path.is_symlink() and path.stat().st_size <= 1 << 20
             value = json.loads(path.read_text())
             check_metadata(value)
+            if directory == 'source-preview-engine':
+                validate_receipt(value)
             content = (json.dumps(value, indent=2, allow_nan=False) + '\n').encode()
             output = target / path.name
             assert not output.exists(), 'refuse receipt overwrite'

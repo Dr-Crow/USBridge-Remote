@@ -1026,6 +1026,8 @@ func (w *Window) ShowAndRun(onClose func()) {
 	}
 	win := w.app.NewWindow(loc().AppTitle)
 	w.guiWin = win
+	stopEngineObserver := observeSourcePreviewEngine(w)
+	defer stopEngineObserver()
 	raise := func() {
 		fyne.Do(func() {
 			win.Show()

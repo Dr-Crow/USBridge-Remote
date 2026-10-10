@@ -153,6 +153,10 @@ jobs:
                 name: Exercise shipped agent settings and Source preview dialog on isolated displays
                 command: bash .circleci/test-source-preview-dialog.sh
                 no_output_timeout: 15m
+            - run:
+                name: Verify real CLI engine and native preview in a disposable unprivileged container
+                command: bash .circleci/test-source-preview-engine.sh
+                no_output_timeout: 15m
       - save_cache:
           key: audited-components-v03131-linux-v1-{{ checksum "agent/internal/localruntime/pinned.go" }}
           paths:
