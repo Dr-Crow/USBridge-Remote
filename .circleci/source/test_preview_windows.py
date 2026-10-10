@@ -1,4 +1,6 @@
 import subprocess
+import ast
+import pathlib
 import unittest
 from preview_windows import parent_window
 
@@ -29,6 +31,25 @@ class WindowSelectionTests(unittest.TestCase):
             raise subprocess.CalledProcessError(2, args, output='')
         with self.assertRaises(subprocess.CalledProcessError):
             parent_window(failed, 17, 'Agent', required=False)
+
+
+class NativeEntryPollingTests(unittest.TestCase):
+    def test_empty_omitted_text_waits_for_native_update(self):
+        for file in ('preview_dialog.py', 'preview_engine.py'):
+            with self.subTest(driver=file):
+                tree = ast.parse((pathlib.Path(__file__).parent / file).read_text())
+                enter = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'enter')
+                states = iter([None, {'id': 'components'}, {'id': 'components', 'text': '/fixture/components'}])
+                calls = []
+                def wait_for(predicate):
+                    self.assertFalse(predicate())
+                    self.assertFalse(predicate())
+                    self.assertTrue(predicate())
+                scope = {'click': lambda name: calls.append(name), 'command': lambda *args: None,
+                         'hit': lambda name: next(states), 'wait_for': wait_for}
+                exec(compile(ast.Module(body=[enter], type_ignores=[]), '<pure-entry-function>', 'exec'), scope)
+                scope['enter']('components', '/fixture/components')
+                self.assertEqual(calls, ['components'])
 
 
 if __name__ == '__main__':

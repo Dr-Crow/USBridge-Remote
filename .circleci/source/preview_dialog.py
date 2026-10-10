@@ -101,7 +101,12 @@ def enter(name, text):
     click(name)
     command('xdotool', 'key', '--clearmodifiers', 'ctrl+a')
     command('xdotool', 'type', '--clearmodifiers', '--delay', '1', '--', text)
-    wait_for(lambda: hit(name) and hit(name)['text'] == text)
+    def updated():
+        control = hit(name)
+        # Empty Go metadata strings are omitted, and the native UI update is
+        # asynchronous. Keep polling instead of indexing an absent field.
+        return control is not None and control.get('text', '') == text
+    wait_for(updated)
 
 
 def status(prefix):
