@@ -127,7 +127,9 @@ func runGraphicsSignatureScript(final, systemRoot string, r *graphicsOSInspectio
 	watchStop, watchDone := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		timer := time.NewTimer(7 * time.Second)
+		// Actual catalog lookup took 6.946s in native job380. Keep the full
+		// startup+query bounded while avoiding a 54ms scheduling margin.
+		timer := time.NewTimer(12 * time.Second)
 		defer timer.Stop()
 		select {
 		case <-watchStop:

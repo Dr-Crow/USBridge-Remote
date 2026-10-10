@@ -119,7 +119,7 @@ func executeGraphicsProbe(probe, probeSHA, staging, stagingSHA, work string, r *
 	if err != nil || len(ids) != 1 || ids[0] != p.pid || !p.alive() || !j.contains(p.handle) {
 		return failure("graphics_owned_process_unverified")
 	}
-	modules, err := graphicsModules(p.pid, probe, root, expected)
+	modules, err := graphicsModules(p.pid, probe, root, expected, nil, nil)
 	if err != nil {
 		return err
 	}

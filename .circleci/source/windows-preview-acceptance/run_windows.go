@@ -17,6 +17,7 @@ import (
 
 type pins struct {
 	files       []*os.File
+	osGraphics  map[string]heldOSGraphics
 	sourceEntry string
 	graphics    map[string]string
 }
@@ -197,7 +198,7 @@ func execute(c config, r *receipt) error {
 	}
 	for _, mode := range []string{"window_close", "stdin_eof", "stdin_extra"} {
 		cr := caseReceipt{Name: mode}
-		e = runCase(c, root, p.sourceEntry, p.graphics, &cr)
+		e = runCase(c, root, p.sourceEntry, p.graphics, p, &cr)
 		r.Cases = append(r.Cases, cr)
 		if e != nil {
 			return e
@@ -286,7 +287,7 @@ func (i *inventory) allExited(timeout time.Duration) error {
 	}
 	return nil
 }
-func runCase(c config, root, sourceEntry string, graphics map[string]string, cr *caseReceipt) (result error) {
+func runCase(c config, root, sourceEntry string, graphics map[string]string, lifetimePins *pins, cr *caseReceipt) (result error) {
 	caseStarted := time.Now()
 	work := filepath.Join(c.Work, cr.Name)
 	for _, dir := range []string{work, filepath.Join(work, "roaming"), filepath.Join(work, "local")} {
@@ -405,10 +406,13 @@ func runCase(c config, root, sourceEntry string, graphics map[string]string, cr 
 		cr.TitleMatches = max(cr.TitleMatches, snapshot.TitleMatches)
 		if current != 0 {
 			if graphics != nil && cr.GraphicsModules == nil {
-				cr.GraphicsModules, e = graphicsModules(viewer.pid, c.Viewer, root, graphics)
+				cr.VerifiedOSModules = map[string]graphicsOSInspection{}
+				cr.GraphicsModules, e = graphicsModules(viewer.pid, c.Viewer, root, graphics, lifetimePins, cr.VerifiedOSModules)
 				if e != nil {
 					return e
 				}
+				// The pixel observation window starts after the separate identity prerequisite.
+				deadline = time.Now().Add(7 * time.Second)
 			}
 			if hwnd != 0 && hwnd != current {
 				return failure("owned_window_identity_changed")

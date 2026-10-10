@@ -54,25 +54,26 @@ type config struct {
 	GraphicsStaging, GraphicsStagingSHA                     string
 }
 type caseReceipt struct {
-	Name             string            `json:"name"`
-	Passed           bool              `json:"passed"`
-	FirstFrame       bool              `json:"typed_first_frame"`
-	Blue             bool              `json:"owned_window_blue"`
-	Orange           bool              `json:"owned_window_orange"`
-	ColorTransitions int               `json:"owned_window_color_transitions"`
-	PixelSamples     int               `json:"owned_window_samples"`
-	OwnedWindows     int               `json:"owned_top_level_windows_max"`
-	VisibleWindows   int               `json:"owned_visible_windows_max"`
-	TitleMatches     int               `json:"owned_title_matches_max"`
-	VideoFrames      uint64            `json:"source_video_frames"`
-	AudioPackets     uint64            `json:"source_audio_packets"`
-	FixtureProcesses int               `json:"max_fixture_processes"`
-	NaturalCleanup   bool              `json:"natural_cleanup"`
-	SafetyKillUsed   bool              `json:"safety_job_kill_used"`
-	JobEmpty         bool              `json:"job_empty_before_safety_close"`
-	WindowGone       bool              `json:"owned_window_removed"`
-	ListenersClosed  bool              `json:"advertised_listeners_closed"`
-	GraphicsModules  map[string]string `json:"viewer_graphics_modules_sha256,omitempty"`
+	VerifiedOSModules map[string]graphicsOSInspection `json:"verified_os_graphics_modules,omitempty"`
+	Name              string                          `json:"name"`
+	Passed            bool                            `json:"passed"`
+	FirstFrame        bool                            `json:"typed_first_frame"`
+	Blue              bool                            `json:"owned_window_blue"`
+	Orange            bool                            `json:"owned_window_orange"`
+	ColorTransitions  int                             `json:"owned_window_color_transitions"`
+	PixelSamples      int                             `json:"owned_window_samples"`
+	OwnedWindows      int                             `json:"owned_top_level_windows_max"`
+	VisibleWindows    int                             `json:"owned_visible_windows_max"`
+	TitleMatches      int                             `json:"owned_title_matches_max"`
+	VideoFrames       uint64                          `json:"source_video_frames"`
+	AudioPackets      uint64                          `json:"source_audio_packets"`
+	FixtureProcesses  int                             `json:"max_fixture_processes"`
+	NaturalCleanup    bool                            `json:"natural_cleanup"`
+	SafetyKillUsed    bool                            `json:"safety_job_kill_used"`
+	JobEmpty          bool                            `json:"job_empty_before_safety_close"`
+	WindowGone        bool                            `json:"owned_window_removed"`
+	ListenersClosed   bool                            `json:"advertised_listeners_closed"`
+	GraphicsModules   map[string]string               `json:"viewer_graphics_modules_sha256,omitempty"`
 }
 type receipt struct {
 	Schema               int                      `json:"schema_version"`

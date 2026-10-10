@@ -129,7 +129,8 @@ func executeWindowStartup(c config, r *windowStartupReceipt) (result error) {
 			}
 			r.WindowVerified = true
 			if graphics != nil {
-				r.GraphicsModules, err = graphicsModules(p.pid, c.Viewer, root, graphics)
+				r.VerifiedOSModules = map[string]graphicsOSInspection{}
+				r.GraphicsModules, err = graphicsModules(p.pid, c.Viewer, root, graphics, pins, r.VerifiedOSModules)
 				if err != nil {
 					return err
 				}

@@ -67,7 +67,7 @@ func graphicsPath(path string) string {
 	return filepath.Clean(strings.TrimPrefix(path, `\\?\`))
 }
 
-func graphicsModules(pid uint32, executable, systemRoot string, expected map[string]string) (map[string]string, error) {
+func graphicsModules(pid uint32, executable, systemRoot string, expected map[string]string, lifetimePins *pins, proofs map[string]graphicsOSInspection) (map[string]string, error) {
 	if pid == 0 || !drivePath.MatchString(executable) || !drivePath.MatchString(systemRoot) {
 		return nil, failure("graphics_owned_process_identity_invalid")
 	}
@@ -119,7 +119,21 @@ func graphicsModules(pid uint32, executable, systemRoot string, expected map[str
 			}
 			loaded[declared] = expected[declared]
 		} else if !strings.EqualFold(path, graphicsPath(executable)) && !strings.HasPrefix(strings.ToLower(path), system) {
-			return nil, inspectedGraphicsRejection("graphics_module_not_in_verified_closure", name, path, directory, systemRoot, false)
+			rejection := rejectedGraphicsModule("graphics_module_not_in_verified_closure", name, path, directory, systemRoot, false).(*graphicsModuleFailure)
+			if lower != "gdiplus.dll" || rejection.rejection.Location != "windows_side_by_side" {
+				return nil, rejection
+			}
+			proof, e := admitObservedGdiplus(lower, path, systemRoot, lifetimePins)
+			if e != nil {
+				if proof != nil {
+					proof.Failure = e.Error()
+				}
+				rejection.rejection.Inspection = proof
+				return nil, rejection
+			}
+			if proofs != nil {
+				proofs[lower] = *proof
+			}
 		}
 		entry = graphicsModuleEntry{Size: uint32(unsafe.Sizeof(graphicsModuleEntry{}))}
 		ok, _, err = next.Call(snapshot, uintptr(unsafe.Pointer(&entry)))
