@@ -54,6 +54,7 @@ type Launch struct {
 	PacketSize     int    `json:"packet_size"`
 	AudioMode      string `json:"audio_mode"`
 	MaxSeconds     int    `json:"max_seconds"`
+	InputConsent   bool   `json:"input_consent,omitempty"`
 }
 
 func (r Launch) Validate() error {
@@ -130,7 +131,7 @@ type Ready struct {
 	Capabilities   []string `json:"capabilities"`
 }
 
-func (r Ready) validate(session string) error {
+func (r Ready) validate(session string, inputConsent bool) error {
 	if r.SchemaVersion != 1 || r.Event != "ready" || r.SessionID != session {
 		return errors.New("source-streamer readiness identity mismatch")
 	}
@@ -145,11 +146,22 @@ func (r Ready) validate(session string) error {
 		return errors.New("source-streamer returned invalid capabilities")
 	}
 	required := map[string]bool{"rtsp-encrypted": false, "video-x11-h264": false, "audio-silence": false, "control-enet": false}
+	inputAvailable := false
 	for _, c := range r.Capabilities {
+		if c == "input-x11-keyboard-mouse" {
+			if !inputConsent || inputAvailable {
+				return errors.New("source-streamer input lacks consent or is duplicated")
+			}
+			inputAvailable = true
+			continue
+		}
 		if _, known := required[c]; !known || required[c] {
 			return errors.New("source-streamer returned unsupported or duplicate capability")
 		}
 		required[c] = true
+	}
+	if inputConsent && !inputAvailable {
+		return errors.New("source-streamer lacks consented input support")
 	}
 	for _, present := range required {
 		if !present {
@@ -210,6 +222,7 @@ func startBinary(ctx context.Context, binary string, request Launch) (*Session, 
 		cancel()
 		return nil, err
 	}
+	cmd.Cancel = func() error { _ = stdin.Close(); return nil }
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		stdin.Close()
@@ -222,6 +235,8 @@ func startBinary(ctx context.Context, binary string, request Launch) (*Session, 
 		return nil, errors.New("start source-streamer process")
 	}
 	s := &Session{stdin: stdin, cmd: cmd, cancel: cancel, done: make(chan struct{})}
+	startupDeadline := time.AfterFunc(10*time.Second, cancel)
+	defer startupDeadline.Stop()
 	ready := make(chan Ready, 1)
 	protocolError := make(chan error, 1)
 	go func() {
@@ -238,7 +253,7 @@ func startBinary(ctx context.Context, binary string, request Launch) (*Session, 
 					cancel()
 					break
 				}
-				if err := event.validate(request.SessionID); err != nil {
+				if err := event.validate(request.SessionID, request.InputConsent); err != nil {
 					protocolError <- err
 					cancel()
 					break
@@ -321,6 +336,7 @@ func (s *Session) Stop() error {
 	select {
 	case <-s.done:
 	case <-timer.C:
+		_ = s.cmd.Process.Kill()
 		s.cancel()
 		<-s.done
 	}

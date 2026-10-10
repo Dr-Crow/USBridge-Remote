@@ -1,0 +1,11 @@
+{
+  "repository": "Dr-Crow/usbridge-usb-broker-research",
+  "commit": "a35981e8d0eb4d173cb08892f919ac94cc1811d7",
+  "tree": "1221336c2f36fcc5230233f3b8abab112bc2ba7a",
+  "file_count": 46,
+  "archive_sha256": "bd797166498e604483322148202e97944ed2b111bd74e643a710ec31856ef69b",
+  "verified_git_blob_hashes": true,
+  "provenance": "Independently authored USB/IP wire implementation and TLS session client, not recovered proprietary source. This client does not attach USB devices to an OS.",
+  "license": "GPL-3.0-only",
+  "archive": "source-broker-a35981e.tar.gz"
+}

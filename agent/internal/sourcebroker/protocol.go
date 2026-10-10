@@ -168,7 +168,7 @@ func (e Event) validateStatus() error {
 			return errors.New("invalid source-broker cancellation ID")
 		}
 	case "error":
-		allowed := map[string]bool{"unknown_transfer": true, "invalid_command": true, "invalid_transfer": true, "invalid_operation": true, "duplicate_transfer": true, "capacity_exhausted": true}
+		allowed := map[string]bool{"unknown_transfer": true, "invalid_command": true, "invalid_transfer": true, "invalid_operation": true, "duplicate_transfer": true, "capacity_exhausted": true, "session_closed": true}
 		if !allowed[e.Error] {
 			return errors.New("unrecognized source-broker protocol error")
 		}

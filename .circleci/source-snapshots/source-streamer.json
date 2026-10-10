@@ -1,10 +1,11 @@
 {
   "repository": "Dr-Crow/rustshine-research",
-  "commit": "39633d37bb0cfdd989960d9dc4e938011776d420",
-  "tree": "caa603f428eb2b1b08b9ccd3eb750ba606dee96e",
-  "file_count": 119,
-  "archive_sha256": "78e73a21e86ad8535a03a68a952c4391c1dd496972727cc714c5403aa36853e2",
+  "commit": "d0512f8dbbd1e771e5ad1373cdab8997012c2fc6",
+  "tree": "ce1aaf7984c219a8ac9c1747d2ad30e2e61a3a39",
+  "file_count": 120,
+  "archive_sha256": "20027b99e753593b38cd43d3ea0929a38963414ca07bf9876e66ae45e8bf6bc6",
   "verified_git_blob_hashes": true,
+  "provenance": "Independently authored reconstruction of publicly observable protocols, incorporating explicitly licensed public ENet source; not recovered proprietary source.",
   "license": "GPL-3.0-only; bundled ENet third-party notices retained",
-  "archive": "source-streamer-39633d37.tar.gz"
+  "archive": "source-streamer-d0512f8.tar.gz"
 }

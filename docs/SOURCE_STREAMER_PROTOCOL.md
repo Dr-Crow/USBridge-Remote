@@ -64,3 +64,10 @@ and source streamer SHA-256 `7a8dacba1876c4d1bc755a72c517ac20f07fd8dd7caa207cbee
 It covered manifest pinning, real readiness, encrypted OPTIONS and TEARDOWN,
 and clean exit. No capture, media or hardware was started in this check. Later
 source builds require their own acceptance and provenance records.
+
+Protocol evolution remains fail-closed: optional `input_consent` defaults false.
+The agent requires `input-x11-keyboard-mouse` readiness when it is requested and
+rejects that input capability without the separate consent. The currently
+packaged d0512f8 source does not provide this capability, so input is unavailable
+in that package. Cancellation closes the private child pipe first, permitting
+cleanup before a bounded forced stop; blocked parent output is bounded as well.

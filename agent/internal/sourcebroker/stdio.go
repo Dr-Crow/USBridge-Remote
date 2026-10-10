@@ -59,6 +59,7 @@ func runBinary(ctx context.Context, binary string, launch Launch, in io.Reader, 
 		return err
 	}
 	defer childIn.Close()
+	cmd.Cancel = func() error { _ = childIn.Close(); return nil }
 	childOut, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -66,6 +67,8 @@ func runBinary(ctx context.Context, binary string, launch Launch, in io.Reader, 
 	if err := cmd.Start(); err != nil {
 		return errors.New("start source-broker process")
 	}
+	startupDeadline := time.AfterFunc(10*time.Second, cancel)
+	defer startupDeadline.Stop()
 	events := make(chan Event, 1)
 	readErrors := make(chan error, 1)
 	processDone := make(chan error, 1)
@@ -109,6 +112,7 @@ func runBinary(ctx context.Context, binary string, launch Launch, in io.Reader, 
 			select {
 			case exitErr = <-processDone:
 			case <-timer.C:
+				_ = cmd.Process.Kill()
 				cancel()
 				exitErr = <-processDone
 			}
@@ -138,6 +142,7 @@ func runBinary(ctx context.Context, binary string, launch Launch, in io.Reader, 
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	startupDeadline.Stop()
 	encoder := json.NewEncoder(out)
 	if err := encoder.Encode(ready); err != nil {
 		return errors.New("write source-broker readiness")
@@ -183,6 +188,9 @@ func runBinary(ctx context.Context, binary string, launch Launch, in io.Reader, 
 			}
 			if err := encoder.Encode(event); err != nil {
 				return errors.New("write source-broker status")
+			}
+			if event.Event == "error" && event.Error == "session_closed" {
+				return errors.New("source-broker remote session closed")
 			}
 			if event.Event == "stopped" {
 				stop()

@@ -34,6 +34,9 @@ func TestMain(m *testing.M) {
 			}
 		}
 		ready := Ready{1, "ready", launch.SessionID, "127.0.0.1:12341", "127.0.0.1:12342", []string{"rtsp-encrypted", "video-x11-h264", "audio-silence", "control-enet"}}
+		if launch.InputConsent {
+			ready.Capabilities = append(ready.Capabilities, "input-x11-keyboard-mouse")
+		}
 		switch mode {
 		case "bad-peer":
 			ready.ControlAddress = "0.0.0.0:12342"
@@ -61,7 +64,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 func validLaunch() Launch {
-	return Launch{1, "local-owner", "test-session", base64.StdEncoding.EncodeToString([]byte("freshkey-16-byte")), 17, "127.0.0.1", 50001, 50002, ":99", true, filepath.Join(os.TempDir(), "ffmpeg"), 1280, 720, 60, "yuv420p", 1200, "silence", 30}
+	return Launch{1, "local-owner", "test-session", base64.StdEncoding.EncodeToString([]byte("freshkey-16-byte")), 17, "127.0.0.1", 50001, 50002, ":99", true, filepath.Join(os.TempDir(), "ffmpeg"), 1280, 720, 60, "yuv420p", 1200, "silence", 30, false}
 }
 func TestLaunchValidation(t *testing.T) {
 	cases := []struct {
@@ -230,5 +233,19 @@ func TestLaunchPacketAlignment(t *testing.T) {
 	r.PacketSize = 1199
 	if r.Validate() == nil {
 		t.Fatal("unaligned packet size accepted")
+	}
+}
+
+func TestInputCapabilityRequiresSeparateConsent(t *testing.T) {
+	ready := Ready{1, "ready", "session", "127.0.0.1:1000", "127.0.0.1:1001", []string{"rtsp-encrypted", "video-x11-h264", "audio-silence", "control-enet"}}
+	if ready.validate("session", true) == nil {
+		t.Fatal("missing input capability accepted")
+	}
+	ready.Capabilities = append(ready.Capabilities, "input-x11-keyboard-mouse")
+	if ready.validate("session", false) == nil {
+		t.Fatal("input capability accepted without consent")
+	}
+	if err := ready.validate("session", true); err != nil {
+		t.Fatal(err)
 	}
 }
