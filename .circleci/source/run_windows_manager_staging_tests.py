@@ -33,6 +33,19 @@ def test_name(test):
     return match.group(1) if match else 'unclassified_test'
 
 
+def metadata_comparison(path_info, handle_info):
+    # Compare only observations already captured by the failing operation.
+    # Never issue a second stat query or publish identifiers/timestamps.
+    fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns', 'st_birthtime_ns')
+    return {name[3:] + '_equal': getattr(path_info, name, None) == getattr(handle_info, name, None)
+            for name in fields} | {
+        'path_birthtime_available': hasattr(path_info, 'st_birthtime_ns'),
+        'handle_birthtime_available': hasattr(handle_info, 'st_birthtime_ns'),
+        'path_ctime_equals_birthtime': getattr(path_info, 'st_ctime_ns', None) == getattr(path_info, 'st_birthtime_ns', -1),
+        'handle_ctime_equals_birthtime': getattr(handle_info, 'st_ctime_ns', None) == getattr(handle_info, 'st_birthtime_ns', -1),
+    }
+
+
 def diagnostic(test, error, kind):
     cls, exception, tb = error
     value = {'test': test_name(test), 'kind': kind,
@@ -52,6 +65,13 @@ def diagnostic(test, error, kind):
         if name in {'test_windows_manager_components.py','windows_manager_components.py'} and 0 < entry.lineno < 10000:
             locations.append({'file': name, 'line': entry.lineno})
     value['locations'] = locations[-8:]
+    frame = tb
+    while frame is not None:
+        if frame.tb_frame.f_code.co_name == '_hash_file' and pathlib.Path(frame.tb_frame.f_code.co_filename).name == 'windows_manager_components.py':
+            observed = frame.tb_frame.f_locals
+            if 'opened' in observed and 'info' in observed:
+                value['path_handle_metadata'] = metadata_comparison(observed['info'], observed['opened'])
+        frame = frame.tb_next
     return value
 
 

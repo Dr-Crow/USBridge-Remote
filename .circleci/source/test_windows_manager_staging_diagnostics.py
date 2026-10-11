@@ -2,6 +2,7 @@ import json
 import pathlib
 import sys
 import unittest
+import types
 import run_windows_manager_staging_tests as runner
 from windows_manager_components import ComponentStagingError
 
@@ -11,6 +12,18 @@ class DiagnosticTests(unittest.TestCase):
     def check_error(self, exception):
         try: raise exception
         except Exception: return runner.diagnostic(self, sys.exc_info(), 'error')
+
+    def test_metadata_diagnostics_are_fixed_booleans_from_captured_values(self):
+        left = types.SimpleNamespace(st_dev=771, st_ino=991, st_size=301, st_mtime_ns=101, st_ctime_ns=19, st_birthtime_ns=19)
+        right = types.SimpleNamespace(**(vars(left) | {'st_ctime_ns': 20}))
+        value = runner.metadata_comparison(left, right)
+        self.assertIs(value['ctime_ns_equal'], False)
+        self.assertIs(value['birthtime_ns_equal'], True)
+        self.assertIs(value['path_ctime_equals_birthtime'], True)
+        self.assertIs(value['handle_ctime_equals_birthtime'], False)
+        self.assertTrue(all(type(v) is bool for v in value.values()))
+        self.assertNotIn('771', json.dumps(value))
+        self.assertNotIn('991', json.dumps(value))
 
     def test_paths_and_unrecognized_values_do_not_escape(self):
         for exception in (OSError('C:/private/user/secret'), ValueError('private content'), AssertionError("'secret' != 'payload'")):
