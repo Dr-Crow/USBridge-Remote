@@ -17,3 +17,12 @@ func TestStrictLANRejectsDNSAndCertificateBeforeNetwork(t *testing.T) {
 		t.Fatalf("DNS: %v", err)
 	}
 }
+
+func TestRuntimeLocalRejectsAuthenticatedCertificateBeforeNetwork(t *testing.T) {
+	netpolicy.ConfigureRuntimeLocal(true)
+	defer netpolicy.ConfigureRuntimeLocal(false)
+	server(t, func(http.ResponseWriter, *http.Request) { t.Error("runtime-local certificate request reached network") })
+	if cert, err := RequestCert(context.Background(), "local-hardware-id", []byte("test-csr"), "test-account-token"); cert != nil || !errors.Is(err, netpolicy.ErrRuntimeLocal) {
+		t.Fatalf("certificate=%v error=%v", cert, err)
+	}
+}

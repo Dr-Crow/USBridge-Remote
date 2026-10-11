@@ -4,12 +4,14 @@ import (
 	"fmt"
 
 	"fyne.io/fyne/v2"
+	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
 	"github.com/sirupsen/logrus"
 
 	"usbridge_agent/internal/config"
 	"usbridge_agent/internal/entitlement"
+	"usbridge_agent/internal/ui/design"
 )
 
 const generalSettingsDialogWidth float32 = 380
@@ -58,6 +60,7 @@ func (w *Window) generalSettingsPanel(parent fyne.Window, closeDialog func()) fy
 			check.SetChecked(!on)
 		}
 	})
+
 	st := entitlement.Status{}
 	if w.token != nil {
 		st = w.token.EntitlementStatus()
@@ -110,9 +113,28 @@ func (w *Window) generalSettingsPanel(parent fyne.Window, closeDialog func()) fy
 		}
 		webEntry.SetText(w.cfg.LocalWebClientURL)
 	})
+
+	labels, selected, pinOf := w.chromeThemeOptions()
+	themePick := newDialogDropdown(labels, selected, func(label string) {
+		w.saveChromePin(pinOf[label])
+	})
+	themeLabel := canvas.NewText(loc().Theme, design.ColorSectionTitle)
+	themeLabel.TextSize = 11
+	themeRow := container.New(&flushEndsLayout{}, themeLabel, themePick)
+	scaleLabels, scaleSelected := w.uiScaleOptions()
+	scalePick := newDialogDropdown(scaleLabels, scaleSelected, func(label string) {
+		if v, ok := uiScaleFromLabel(label); ok {
+			w.saveUIScale(v)
+		}
+	})
+	scaleLabel := canvas.NewText(loc().InterfaceScale, design.ColorSectionTitle)
+	scaleLabel.TextSize = 11
+	scaleRow := container.New(&flushEndsLayout{}, scaleLabel, scalePick)
 	body := container.New(&tightVBoxLayout{gap: 10},
 		newExactInset(newPermToggleRow(loc().AgentAutoUpdate, check), generalSettingsRowInset, generalSettingsRowInset, 0, 0),
 		newExactInset(newPermToggleRow("Local runtime (advanced override)", runtimeCheck), generalSettingsRowInset, generalSettingsRowInset, 0, 0),
+		newExactInset(themeRow, generalSettingsRowInset, generalSettingsRowInset, 0, 0),
+		newExactInset(scaleRow, generalSettingsRowInset, generalSettingsRowInset, 0, 0),
 		instructions, diagnostics, refresh, webHelp, webEntry,
 	)
 

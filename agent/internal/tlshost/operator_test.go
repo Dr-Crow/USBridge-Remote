@@ -130,3 +130,23 @@ func TestOperatorCertificateRejectsInvalidPurposeAndValidity(t *testing.T) {
 		}
 	}
 }
+
+func TestOperatorCertificateDoesNotTriggerVendorDemand(t *testing.T) {
+	c, k := operatorFixture(t)
+	m := NewManager(t.TempDir())
+	if err := m.LoadOperatorCertificate(c, k); err != nil {
+		t.Fatal(err)
+	}
+	m.SetRegisteredHostname("agent.test")
+	if _, err := m.GetCertificate(&tls.ClientHelloInfo{ServerName: "agent.test"}); err != nil {
+		t.Fatal(err)
+	}
+	if m.DeviceCertDemanded(time.Hour) {
+		t.Fatal("operator-managed handshake requested vendor certificate")
+	}
+	select {
+	case <-m.DemandC():
+		t.Fatal("operator-managed handshake signaled vendor renewal")
+	default:
+	}
+}

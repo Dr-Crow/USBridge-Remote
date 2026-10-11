@@ -338,7 +338,6 @@ type Window struct {
 	supportBtn *supportButton
 
 	loginAvatar *loginAvatarButton
-	themeBtn    *footerTextButton
 
 	permPanel        *themedPanel
 	statusPanel      *themedPanel
@@ -870,7 +869,9 @@ func (w *Window) finishStreamerUpdateCheck(before entitlement.Status, checkErr e
 // "self-signed" with the same warning badge httpRow/sunStreamRow use for a
 // LAN-exposed address otherwise -- the two states an agent can be in are
 // "client/web will work" and "client/web can't reach this device yet".
-func (w *Window) refreshCertStatusUI(st tlshost.CertStatus) {
+// Signed out with no trusted cert, it says to sign in instead: the backend
+// issues a desktop's certificate only to a signed-in account.
+func (w *Window) refreshCertStatusUI(st tlshost.CertStatus, loggedIn bool) {
 	if w.certRow == nil || w.certVal == nil || w.certWarn == nil {
 		return
 	}
@@ -888,6 +889,13 @@ func (w *Window) refreshCertStatusUI(st tlshost.CertStatus) {
 		if w.certVal.Text != st.Hostname || w.certVal.Color != design.ColorAddress {
 			w.certVal.Text = st.Hostname
 			w.certVal.Color = design.ColorAddress
+			w.certVal.Refresh()
+		}
+	} else if !w.localWebPolicy() && !loggedIn {
+		w.certWarn.Hide()
+		if w.certVal.Text != loc().CertSignInRequired || w.certVal.Color != design.ColorAlert {
+			w.certVal.Text = loc().CertSignInRequired
+			w.certVal.Color = design.ColorAlert
 			w.certVal.Refresh()
 		}
 	} else {
@@ -1711,25 +1719,15 @@ func (w *Window) ShowAndRun(onClose func()) {
 
 	content := cards
 
-	// Initial refresh
-	w.performRefresh()
+	// Permission ticks are local and this call is still on the UI goroutine,
+	// before the Fyne loop starts. The status poll is not: it runs off this
+	// goroutine, and a widget touch from there before app.Run is pumping
+	// events makes Fyne wait on the UI thread (the window then never appears).
 	w.refreshScreenCaptureUI()
-
-	go func() {
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			if win.Canvas() == nil {
-				return
-			}
-			w.performRefresh()
-		}
-	}()
 
 	bg := canvas.NewRectangle(design.ColorPanel)
 	w.protocolBusy = newFooterBusyHint(loc().ChangingProtocol)
-	w.themeBtn = newFooterTextButton(loc().Theme, func() { w.showThemeMenu(w.themeBtn) })
-	footer := newAppFooter(appVersion, w.protocolBusy, w.themeBtn, func() {
+	footer := newAppFooter(appVersion, w.protocolBusy, nil, func() {
 		showWhatsNewDialog(win)
 	})
 	body := container.NewBorder(header, footer, nil, nil,
@@ -1779,6 +1777,22 @@ func (w *Window) ShowAndRun(onClose func()) {
 		w.scheduleWindowPlacementRestore()
 	}
 	w.startWindowPlacementAutosave()
+	// OnStarted runs once the event loop is actually pumping, so the first
+	// status pass and the 2s ticker cannot race window startup.
+	w.app.Lifecycle().SetOnStarted(func() {
+		w.pinLinuxDPIScale()
+		w.performRefresh()
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				if win.Canvas() == nil {
+					return
+				}
+				w.performRefresh()
+			}
+		}()
+	})
 	w.app.Run()
 	w.stopWindowPlacementAutosave()
 }
@@ -1935,6 +1949,32 @@ func (w *Window) showThemeMenu(anchor fyne.CanvasObject) {
 	})
 }
 
+func (w *Window) chromeThemeOptions() (labels []string, selected string, pinOf map[string]string) {
+	type choice struct {
+		label string
+		pin   string
+	}
+	choices := []choice{
+		{loc().ThemeDefault, ""},
+		{"White", protocolOpensource},
+		{"Blue", protocolFree},
+	}
+	// Cosmetic theme selection remains independent of account or license.
+	choices = append(choices, choice{"Pro", protocolPro})
+	pin := chromePinned()
+	pinOf = make(map[string]string, len(choices))
+	selected = loc().ThemeDefault
+	for _, c := range choices {
+		labels = append(labels, c.label)
+		pinOf[c.label] = c.pin
+		if c.pin == pin {
+			selected = c.label
+		}
+	}
+	return labels, selected, pinOf
+
+}
+
 func (w *Window) showSettingsMenu(win fyne.Window, anchor fyne.CanvasObject) {
 	if win == nil || anchor == nil {
 		return
@@ -2047,9 +2087,6 @@ func (w *Window) applyLanguage() {
 	if w.tsEmpty != nil {
 		w.tsEmpty.Text = c.NoRemoteControllers
 		w.tsEmpty.Refresh()
-	}
-	if w.themeBtn != nil {
-		w.themeBtn.SetText(c.Theme)
 	}
 	if w.protocolChange != nil {
 		w.protocolChange.SetContent(c.Change, headerChangeIcon)
@@ -2676,6 +2713,7 @@ func (w *Window) performRefresh() {
 		}
 		var entStatus entitlement.Status
 		var certStatus tlshost.CertStatus
+		var certLoggedIn bool
 		if w.token != nil {
 			if clients, err := w.token.ListSunshineClients(); err == nil {
 				status.moonlightCount = len(clients)
@@ -2685,6 +2723,7 @@ func (w *Window) performRefresh() {
 			status.streamerRunning = w.token.StreamerRunning()
 			status.sessionActive = w.token.SessionActive()
 			certStatus = w.token.CertStatus()
+			certLoggedIn = w.token.AccountStatus().LoggedIn
 		}
 		fyne.Do(func() {
 			w.maybeFinishPendingTierSwitch(entStatus)
@@ -2694,7 +2733,7 @@ func (w *Window) performRefresh() {
 			w.refreshAccountAvatar()
 			w.refreshRustShineUI(entStatus)
 			w.refreshUSBPassthroughUI(entStatus, status.usbStatus)
-			w.refreshCertStatusUI(certStatus)
+			w.refreshCertStatusUI(certStatus, certLoggedIn)
 			setStatusDot(w.streamerStatusDot, status.streamerRunning)
 			if w.token != nil {
 				w.setStreamerDisplay(w.token.StreamerName())
