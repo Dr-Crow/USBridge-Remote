@@ -55,3 +55,11 @@ canvas: a deliberately hidden AI overlay. It timed out before its policy asserti
 or screenshots, so the job still failed. The locator now targets the separate app
 canvas and records canvas state plus a screenshot on future startup failures.
 No production security policy was relaxed for this test-harness correction.
+
+## Functional equivalence and completion estimates
+
+See [Functional replacement evidence](FUNCTIONAL_PARITY_EVIDENCE.md) for the
+feature/platform matrix, exact evidence boundaries, intentional security
+changes and the distinction between planning estimates and measured parity.
+Green builds, available source and synthetic protocol tests are not a complete
+original-binary differential comparison.

@@ -115,13 +115,15 @@ type App struct {
 	// tlsWatchdogOnce guards deviceCertWatchdog against starting twice --
 	// once at Run() startup if HTTPS starts enabled, or once from
 	// restartTLS if the user turns it on later; whichever happens first.
-	tlsWatchdogOnce sync.Once
-	handler         http.Handler
-	apiServer       *api.Server
-	fyneApp         fyne.App
-	clipboard       *clipboard.Manager
-	usbBroker       *usbpass.Service
-	adminSrv        *adminapi.Server
+	tlsWatchdogOnce     sync.Once
+	handler             http.Handler
+	apiServer           *api.Server
+	fyneApp             fyne.App
+	clipboard           *clipboard.Manager
+	usbBroker           *usbpass.Service
+	engineWorkers       *engineWorkerOwner
+	workersShutdownOnce sync.Once
+	workersShutdownErr  error
 
 	// usbPassBridgeAddr is StartUSBPassBridge's localhost address (see
 	// api.Server.StartUSBPassBridge's doc comment) -- rustshine dials this
@@ -806,6 +808,8 @@ func (a *App) Run(headless, startHidden bool) (runErr error) {
 	defer cancel()
 	a.runCtx = ctx
 	a.httpServers = newHTTPServerOwner(ctx, cancel)
+	a.engineWorkers = newEngineWorkerOwner(ctx)
+	defer func() { runErr = errors.Join(runErr, a.stopEngineWorkers()) }()
 	defer func() { runErr = errors.Join(runErr, a.stopHTTPServers()) }()
 
 	return withUSBPassBridge(ctx, func(ctx context.Context) (ownedUSBBridge, error) {
@@ -841,12 +845,13 @@ func (a *App) runEngine(ctx context.Context, cancel context.CancelFunc, headless
 	// reached via the GUI window's own close-intercept path (see
 	// ui/window.go's SetCloseIntercept, which also logs now) with no OS
 	// signal involved at all.
-	diagSigCh := make(chan os.Signal, 2)
-	signal.Notify(diagSigCh, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		sig := <-diagSigCh
+	if err := a.engineWorkers.startSignal(func(ch chan<- os.Signal) {
+		signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	}, signal.Stop, func(sig os.Signal) {
 		log.Printf("[app] DIAG: OS signal received: %v (os.Interrupt=CTRL_C/CTRL_BREAK; SIGTERM=CTRL_CLOSE/CTRL_LOGOFF/CTRL_SHUTDOWN) -- this will trigger shutdownEngine via ctx cancellation", sig)
-	}()
+	}); err != nil {
+		return err
+	}
 
 	// See NotifySessionChange's doc comment for why this needs to be
 	// reachable from outside the normal Start()->New()->Run() call chain.
@@ -858,15 +863,18 @@ func (a *App) runEngine(ctx context.Context, cancel context.CancelFunc, headless
 	// can attach as soon as AdminSocketPath is known. This used to run
 	// after initTailscale(), which can block for tens of seconds; the
 	// helper then dialed a path that wasn't listening yet and exited.
-	if srv, err := adminapi.NewServer(adminapi.SocketPath(a.cfg.StateDir), a, a.perms, a.ts, func() config.Config { return a.cfg }); err != nil {
+	if err := a.engineWorkers.startAdmin(func() (engineAdminServer, error) {
+		srv, err := adminapi.NewServer(adminapi.SocketPath(a.cfg.StateDir), a, a.perms, a.ts, func() config.Config { return a.cfg })
+		// Avoid a typed-nil interface on a normal failed listen.
+		if srv == nil {
+			return nil, err
+		}
+		return srv, err
+	}); err != nil {
+		if errors.Is(err, errAdminPartialStart) || errors.Is(err, errEngineWorkersSealed) {
+			return err
+		}
 		log.Printf("[app] warning: admin socket unavailable: %v", err)
-	} else {
-		a.adminSrv = srv
-		go func() {
-			if err := srv.Serve(); err != nil {
-				log.Printf("[app] admin socket server error: %v", err)
-			}
-		}()
 	}
 
 	keepDisplayAwake(ctx)
@@ -1347,10 +1355,22 @@ func (a *App) shutdownEngine() {
 		if a.usbBroker != nil {
 			a.usbBroker.Stop()
 		}
-		if a.adminSrv != nil {
-			_ = a.adminSrv.Close()
-		}
+		_ = a.stopEngineWorkers()
 	})
+}
+
+// Only these two workers are covered; the remaining watchdogs and admin
+// request callbacks still need their own retirement proofs.
+func (a *App) stopEngineWorkers() error {
+	a.workersShutdownOnce.Do(func() {
+		if a.engineWorkers == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		a.workersShutdownErr = a.engineWorkers.close(ctx)
+	})
+	return a.workersShutdownErr
 }
 
 // One shared deadline covers all engine HTTP generations, HTTPS and tsHTTP.

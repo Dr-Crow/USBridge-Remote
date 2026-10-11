@@ -48,7 +48,7 @@ func TestOwnedAgentBranchesKeepAllSixNativeAndWebGates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, branch := range []string{"agent-capability-policy", "agent-owned-http-servers", "agent-owned-websocket-workers"} {
+	for _, branch := range []string{"agent-capability-policy", "agent-owned-http-servers", "agent-owned-websocket-workers", "agent-owned-engine-workers"} {
 		if err := checkSixBranchGates(raw, branch); err != nil {
 			t.Fatalf("%s: %v", branch, err)
 		}
