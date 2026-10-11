@@ -17,7 +17,7 @@ func fixture(t *testing.T) (string, string) {
 	t.Helper()
 	web := t.TempDir()
 	mirror := t.TempDir()
-	for _, p := range []string{"index.html", "gui.html", "app.wasm", "wasm_exec.js", "runtime-policy.js", "bootstrap.js", "ai_vision.js", "transport/player.mjs", "transport/worker.mjs", "transport/wire.mjs", "transport/lifetime.mjs", "transport/policy.mjs", "transport/session.mjs", "transport/h264.mjs", "transport/video.mjs", "models/a.onnx", "vendor/ort/ort.mjs"} {
+	for _, p := range []string{"index.html", "gui.html", "app.wasm", "wasm_exec.js", "runtime-policy.js", "bootstrap.js", "ai_vision.js", "transport/player.mjs", "transport/worker.mjs", "transport/wire.mjs", "transport/lifetime.mjs", "transport/policy.mjs", "transport/session.mjs", "transport/h264.mjs", "transport/video.mjs", "transport/streams.mjs", "models/a.onnx", "vendor/ort/ort.mjs"} {
 		os.MkdirAll(filepath.Dir(filepath.Join(web, p)), 0755)
 		if err := os.WriteFile(filepath.Join(web, p), []byte("asset"), 0644); err != nil {
 			t.Fatal(err)

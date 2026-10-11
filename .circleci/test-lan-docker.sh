@@ -45,7 +45,7 @@ docker run --rm --network "$NET" -v "$VOL:/fixtures:ro" "$BUILD" bash -euo pipef
   curl --cacert /fixtures/server.crt -fsS https://lan-host:8443/runtime-config.js | grep -q '\''"strictLAN":true'\''
   curl --cacert /fixtures/server.crt -fsSI https://lan-host:8443/app.wasm | grep -qi "content-type: application/wasm"
   curl --cacert /fixtures/server.crt -fsS https://lan-host:8443/bootstrap.js >/dev/null
-  for asset in player.mjs worker.mjs wire.mjs lifetime.mjs policy.mjs session.mjs h264.mjs video.mjs; do
+  for asset in player.mjs worker.mjs wire.mjs lifetime.mjs policy.mjs session.mjs h264.mjs video.mjs streams.mjs; do
     curl --cacert /fixtures/server.crt -fsS "https://lan-host:8443/transport/$asset" >/dev/null
   done
   test "$(curl --cacert /fixtures/server.crt -sS -o /dev/null -w "%{http_code}" https://lan-host:8443/transport/transport.test.mjs)" = 404

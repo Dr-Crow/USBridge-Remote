@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {negotiateControl} from './session.mjs';
+import {negotiateControl,negotiateVideo} from './session.mjs';
 import {PROTOCOL,ControlParser,encodeMessage,validateHello} from './wire.mjs';
 import {Lifetime} from './lifetime.mjs';
 const json=value=>new TextEncoder().encode(JSON.stringify(value));
@@ -16,7 +16,7 @@ function fixture(options={}) {
   const writable=new WritableStream({start(c){output=c;},write(frame){state.writes++;state.frame=frame;const p=new ControlParser([1]);const [message]=p.feed(frame);state.hello=validateHello(message.payload);if(options.writeStuck)return write.promise;if(!options.noWelcome)input.enqueue(encodeMessage(1,json(options.welcome||welcome)));},abort(){state.aborts++;if(options.abortReject)throw Error('private browser error');}});
   const stream={readable,writable};
   class Transport {
-    constructor(endpoint,opts){state.starts++;assert.equal(endpoint,url);assert.deepEqual(opts,{congestionControl:'low-latency'});this.closed=ended.promise;this.ready=options.readyStuck?ready.promise:Promise.resolve();}
+    constructor(endpoint,opts){state.starts++;assert.equal(endpoint,url);assert.deepEqual(opts,{congestionControl:'low-latency'});this.closed=ended.promise;if(options.videoIncoming)Object.defineProperty(this,'incomingUnidirectionalStreams',{get(){state.videoReads=(state.videoReads||0)+1;return options.videoIncoming;}});this.ready=options.readyStuck?ready.promise:Promise.resolve();}
     createBidirectionalStream(){state.acquires++;if(options.acquirePending)return acquired.promise;return Promise.resolve(stream);}
     close(){state.closes++;if(!options.closedStuck)ended.resolve();if(options.readyStuck&&!options.readyNeverSettles)ready.reject(Error('closed'));if(options.acquirePending&&!options.acquireNeverSettles)acquired.resolve(stream);if(options.writeStuck&&!options.writeNeverSettles)write.reject(Error('closed'));}
   }
@@ -122,3 +122,27 @@ test('established session outlives redemption expiry but closes at authorization
 test('ticket and session expiries are separate exact bounded fields',async()=>{
   for(const patch of [{ticket_expires_at_ms:Date.now()+31000},{ticket_expires_at_ms:Date.now()+20000},{ticket_expires_at_ms:0},{session_expires_at_ms:Date.now()+301000},{expires_at_ms:Date.now()+1000}]){const f=fixture(),p=params();Object.assign(p.grant,patch);await assert.rejects(negotiateControl(p,f.options));assert.equal(f.state.starts,0);}
 });
+
+function videoFixture(options={}) {
+  let videoInput,stopped=false;const incoming=new ReadableStream({start(c){videoInput=c;}}),f=fixture({...options,videoIncoming:incoming});
+  const chunks=[];const sink={accept(packet){chunks.push(packet);},close(){stopped=true;},stats(){return {pending:0,decoderClosed:stopped,cleanupFailures:[],presented:chunks.length};}};
+  return {...f,incoming,videoInput,sink,chunks,options:{...f.options,createDecoder:async({lifetime})=>{lifetime.check();return sink;}}};
+}
+test('video lane opens only after matching WELCOME, parent cancel joins its readers and decoder',async()=>{
+ const f=videoFixture({noWelcome:true}),parent=new AbortController(),p=negotiateVideo(params({canvas:{},signal:parent.signal}),f.options);await tick();assert.equal(f.state.videoReads,undefined);f.input.enqueue(encodeMessage(1,json(welcome)));const owner=await p;assert.equal(owner.mediaStarted,true);assert.equal(f.state.videoReads,1);const frame=new ReadableStream();f.videoInput.enqueue(frame);await tick();parent.abort();const closed=await owner.closed;assert.equal(closed.reason,'cancelled');assert.equal(closed.video.decoder.decoderClosed,true);assert.equal(closed.video.active,0);assert.equal(frame.locked,false);assert.equal(f.incoming.locked,false);assert.equal(f.state.closes,1);
+});
+test('video stream flood closes the entire authenticated owner with original cause',async()=>{
+ const f=videoFixture(),owner=await negotiateVideo(params({canvas:{}}),f.options);for(let i=0;i<5;i++)f.videoInput.enqueue(new ReadableStream());const result=await owner.closed;assert.equal(result.reason,'video_stream_budget');assert.equal(result.joined,true);assert.equal(f.state.closes,1);
+});
+test('late codec initialization is joined and closed on setup cancellation',async()=>{
+ const f=videoFixture(),gate=deferred(),parent=new AbortController();let started=false;
+ const attempt=negotiateVideo(params({canvas:{},signal:parent.signal}),{...f.options,createDecoder:()=>{started=true;return gate.promise;}});await tick();assert.equal(started,true);parent.abort();gate.resolve(f.sink);await assert.rejects(attempt,{code:'cancelled'});assert.equal(f.sink.stats().decoderClosed,true);assert.equal(f.state.videoReads,undefined);assert.equal(f.state.closes,1);
+});
+test('unjoined video cancellation consumes only the fixed established retirement budget',async()=>{
+ const f=videoFixture(),gate=deferred(),owner=await negotiateVideo(params({canvas:{}}),f.options);f.videoInput.enqueue(new ReadableStream({cancel(){return gate.promise;}}));await tick();const start=performance.now();await assert.rejects(owner.close(),{code:'session_cleanup_incomplete'});assert.ok(performance.now()-start<150);gate.resolve();await tick();assert.equal(f.incoming.locked,false);
+});
+test('missing incoming video support retires configured decoder and transport',async()=>{
+ const f=fixture(),sink={close(){this.stopped=true;},stats(){return {decoderClosed:this.stopped,cleanupFailures:[]};}};await assert.rejects(negotiateVideo(params({canvas:{}}),{...f.options,createDecoder:async()=>sink}),{code:'video_streams_unavailable'});assert.equal(sink.stopped,true);assert.equal(f.state.closes,1);
+});
+
+test('throwing codec close cannot skip transport, control and media cancellation',async()=>{const f=videoFixture(),owner=await negotiateVideo(params({canvas:{}}),f.options);f.sink.close=()=>{throw Error('private');};await assert.rejects(owner.close(),{code:'session_cleanup_incomplete'});assert.equal(f.state.closes,1);assert.equal(f.incoming.locked,false);assert.equal(f.stream.readable.locked,false);assert.equal(f.stream.writable.locked,false);});

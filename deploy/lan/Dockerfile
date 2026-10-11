@@ -19,7 +19,7 @@ RUN mkdir -p /out/web && \
     cp /source/client/web/index.html /source/client/web/gui.html /source/client/web/app.wasm /source/client/web/wasm_exec.js /source/client/web/runtime-config.js /source/client/web/runtime-policy.js /source/client/web/bootstrap.js /source/client/web/ai_vision.js /out/web/ && \
     cp -r /source/client/web/vendor /source/client/web/models /out/web/ && \
     mkdir -p /out/web/transport && \
-    for asset in player.mjs worker.mjs wire.mjs lifetime.mjs policy.mjs session.mjs h264.mjs video.mjs; do \
+    for asset in player.mjs worker.mjs wire.mjs lifetime.mjs policy.mjs session.mjs h264.mjs video.mjs streams.mjs; do \
       test -s "/source/client/web/transport/$asset" && cp "/source/client/web/transport/$asset" /out/web/transport/; \
     done
 FROM scratch

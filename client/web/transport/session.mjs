@@ -1,12 +1,16 @@
 import {ProtocolError,ControlParser,encodeMessage,validateHello,validateWelcome,exactObject} from './wire.mjs';
 import {discovery,endpoint} from './policy.mjs';
 import {Lifetime} from './lifetime.mjs';
+import {createCanvasDecoder} from './video.mjs';
+import {receiveVideo} from './streams.mjs';
 const enc=new TextEncoder();
 const fail=code=>new ProtocolError(code);
 // Control-only owner; not exposed by the page's disabled API. The supplied
 // grant must already be authorized. Server-side redemption must be atomic.
-export async function negotiateControl({grant,authorizedEndpoint,capabilityStatus,capabilityBody,signal,lifetime},
-  {Transport=globalThis.WebTransport,now=()=>Date.now(),monotonic=()=>performance.now(),pageOrigin=globalThis.location?.origin,cleanupTimeoutMs=5000}={}) {
+export async function negotiateControl(options,dependencies={}) {return negotiate(options,dependencies);}
+export async function negotiateVideo({canvas,...options},dependencies={}) {return negotiate(options,dependencies,{canvas});}
+async function negotiate({grant,authorizedEndpoint,capabilityStatus,capabilityBody,signal,lifetime},
+  {Transport=globalThis.WebTransport,now=()=>Date.now(),monotonic=()=>performance.now(),pageOrigin=globalThis.location?.origin,cleanupTimeoutMs=5000,createDecoder=createCanvasDecoder}={},video) {
   if(!Number.isInteger(cleanupTimeoutMs)||cleanupTimeoutMs<1||cleanupTimeoutMs>5000)throw fail('cleanup_budget');
   if(lifetime!==undefined&&!(lifetime instanceof Lifetime))throw fail('setup_lifetime');
   exactObject(grant,['protocol','session_id','ticket','endpoint','origin','ticket_expires_at_ms','session_expires_at_ms','width','height','fps']);
@@ -23,7 +27,7 @@ export async function negotiateControl({grant,authorizedEndpoint,capabilityStatu
   try{validateHello(hello);}catch(error){hello.fill(0);throw error;}
   const ownsLifetime=lifetime===undefined,setup=lifetime||new Lifetime({signal});
   const parentSignals=[...new Set([signal,setup.parentSignal].filter(Boolean))];
-  let transport,reader,writer,leaseTimer,closing=false,established=false,retirement,helloWrite,lateReleaseFailed=false;
+  let transport,reader,writer,leaseTimer,videoSink,videoReceiver,closing=false,established=false,retirement,helloWrite,lateReleaseFailed=false;
   const active=new Set();
   const track=p=>{const task=Promise.resolve(p);active.add(task);void task.then(()=>active.delete(task),()=>active.delete(task));return task;};
   const parser=new ControlParser([1,7]);let welcome;
@@ -42,6 +46,8 @@ export async function negotiateControl({grant,authorizedEndpoint,capabilityStatu
       let uncertain=false;
       try{transport?.close({closeCode:0,reason:'closed'});}catch{uncertain=true;}
       const releases=[];
+      if(videoSink){try{videoSink.close();const stats=videoSink.stats();if(stats.cleanupFailures.length||!stats.decoderClosed)uncertain=true;}catch{uncertain=true;}}
+      if(videoReceiver)releases.push(videoReceiver.stop());
       if(reader)releases.push(Promise.resolve().then(()=>reader.cancel()));
       if(writer)releases.push(Promise.resolve().then(()=>writer.abort()));
       // Setup failure retains the original absolute deadline. Once established,
@@ -62,7 +68,7 @@ export async function negotiateControl({grant,authorizedEndpoint,capabilityStatu
       if(!helloWrite||!active.has(helloWrite))hello.fill(0);
       if(lateReleaseFailed)uncertain=true;
       if(uncertain){const error=fail('session_cleanup_incomplete');error.primaryCode=reason;throw error;}
-      return Object.freeze({closed:true,joined:true,reason});
+      return Object.freeze({closed:true,joined:true,reason,...(videoReceiver?{video:videoReceiver.stats()}: {})});
     })();
     void retirement.then(resolveClosed,rejectClosed);
     return retirement;
@@ -96,6 +102,16 @@ export async function negotiateControl({grant,authorizedEndpoint,capabilityStatu
         if(welcome.width!==expected.width||welcome.height!==expected.height||welcome.fps!==expected.fps)throw fail('welcome_grant_mismatch');
       }
     }
+    if(video) {
+      const initialize=track(Promise.resolve().then(()=>{checkLive();return createDecoder({canvas:video.canvas,width:expected.width,height:expected.height,lifetime:setup,onFailure:e=>backgroundClose(e.code)});}).then(sink=>{
+        if(closing){try{sink.close();const stats=sink.stats();if(stats.cleanupFailures.length||!stats.decoderClosed)lateReleaseFailed=true;}catch{lateReleaseFailed=true;}throw fail('cancelled');}
+        videoSink=sink;
+      }));
+      await setup.run(()=>initialize);checkLive();
+      videoReceiver=receiveVideo(transport,videoSink,{onFailure:e=>backgroundClose(e.code)});
+      const videoClosed=track(videoReceiver.closed);
+      void videoClosed.catch(()=>backgroundClose('video_cleanup_incomplete'));
+    }
     setup.check();if(closing||parentSignals.some(s=>s.aborted))throw fail('cancelled');
     const leaseRemaining=Math.min(expiresAt-now(),expiresAt-time-(monotonic()-started));
     if(leaseRemaining<=0)throw fail('grant_expired');
@@ -112,7 +128,7 @@ export async function negotiateControl({grant,authorizedEndpoint,capabilityStatu
     })());
     void monitor;
     leaseTimer=setTimeout(()=>backgroundClose('expired'),leaseRemaining);
-    return Object.freeze({welcome,close:()=>retire('closed'),closed,mediaStarted:false});
+    return Object.freeze({welcome,close:()=>retire('closed'),closed,mediaStarted:Boolean(videoReceiver),...(videoReceiver?{videoStats:()=>videoReceiver.stats()}: {})});
   } catch(error) {
     const primary=error instanceof ProtocolError?error:fail('transport_failed');
     try{await retire(primary.code);}catch(cleanup){cleanup.primaryCode=primary.code;throw cleanup;}

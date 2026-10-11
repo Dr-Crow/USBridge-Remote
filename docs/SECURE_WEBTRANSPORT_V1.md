@@ -178,3 +178,28 @@ setup deadline. The new Chromium CI gate requires decoding twelve independent bl
 closed decoder. The fixture does not use QUIC, audio, input or capture. Runtime
 transport selection stays disabled until the private browser/server composition
 passes its own authenticated media and natural-close checks.
+
+## Authenticated incoming-video composition
+
+`negotiateVideo` composes the existing control owner with the canvas sink. It
+uses the same setup lifetime through WELCOME and decoder initialization, and
+opens incoming media streams only after WELCOME validation. A late initialized
+decoder is closed and joined during cancellation. The enclosing session retains
+parent cancellation, the issuer's session expiry and one fixed stop budget.
+
+`streams.mjs` admits at most four concurrently owned unidirectional frame
+streams. Each carries one14-byte header plus at most1MiB of access-unit data,
+at most1024 chunks and a fixed one-second read timeout. At most18,000 streams
+are admitted. Excess concurrent work, malformed data and stalled frames close
+the whole owner. The native decoder still has a separate two-frame bound.
+No audio or named-channel reader is started; the first agreed private fixture
+sends no audio datagrams. An audio-capable profile needs its own bounded owner
+before use.
+
+Close first stops presentation, then cancels incoming/frame readers and waits
+for their workers and lock release. Throwing decoder cleanup, cancel failures
+and late releases remain uncertain and cannot return a clean receipt. A caller
+must inspect the enclosing `closed` promise; timing out a promise is not proof
+that its browser operation joined. Chromium CI now composes this lane with
+native WebCodecs and genuine browser stream primitives behind a fake transport;
+actual private QUIC/server interoperability remains a separate mandatory gate.
