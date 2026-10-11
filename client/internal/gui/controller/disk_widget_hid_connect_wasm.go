@@ -6,6 +6,7 @@ import (
 	"syscall/js"
 	"time"
 
+	"usbridge-client/internal/browserapi"
 	"usbridge-client/internal/gui/view"
 
 	"fyne.io/fyne/v2"
@@ -71,13 +72,10 @@ func syncHIDConnectOverlay(dw *DiskWidget) {
 	}
 	abs := fyne.CurrentApp().Driver().AbsolutePositionForObject(btn)
 	size := btn.Size()
-	js.Global().Call("usbridgeSetHIDButtonRect",
+	browserapi.Call(js.Global(), "usbridgeSetHIDButtonRect",
 		float64(abs.X), float64(abs.Y), float64(size.Width), float64(size.Height))
 }
 
 func setHIDButtonVisible(visible bool) {
-	fn := js.Global().Get("usbridgeSetHIDButtonVisible")
-	if fn.Truthy() {
-		fn.Invoke(visible)
-	}
+	browserapi.Call(js.Global(), "usbridgeSetHIDButtonVisible", visible)
 }

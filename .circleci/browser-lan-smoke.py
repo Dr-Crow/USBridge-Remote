@@ -88,6 +88,30 @@ with tempfile.TemporaryDirectory(prefix='usbridge-browser-') as tmp:
             page.set_viewport_size({'width': 390, 'height': 844})
             page.wait_for_timeout(1500)
             page.screenshot(path=str(out / 'mobile.png'), full_page=True)
+            report['optional_api_cases'] = []
+            # Fresh pages exercise secure-context APIs that may be absent or
+            # denied. These fixtures request no permission and open no device.
+            for mode in ('missing', 'denied'):
+                fixture = browser.new_page(viewport={'width': 1280, 'height': 800})
+                fixture.on('request', lambda r: report['requests'].append(r.url))
+                fixture.on('pageerror', lambda e: report['page_errors'].append(str(e)))
+                fixture.add_init_script("""(() => {
+                  Object.defineProperty(navigator, 'hid', {value: undefined, configurable: true});
+                  Object.defineProperty(navigator, 'getGamepads', {value: MODE === 'missing'
+                    ? undefined : function() { throw new DOMException('fixture denied', 'SecurityError'); }, configurable: true});
+                })();""".replace('MODE', json.dumps(mode)))
+                fixture.goto('http://127.0.0.1:%d/' % server.server_port, wait_until='networkidle', timeout=90000)
+                wait_for_app(fixture)
+                fixture.wait_for_timeout(1500)
+                observed = fixture.evaluate("""() => ({
+                  hidAbsent: navigator.hid === undefined,
+                  gamepadsMissing: typeof navigator.getGamepads !== 'function',
+                  overlayAbsent: typeof globalThis.usbridgeSetHIDButtonRect !== 'function'
+                })""")
+                assert observed['hidAbsent'] and observed['overlayAbsent'], observed
+                assert observed['gamepadsMissing'] == (mode == 'missing'), observed
+                report['optional_api_cases'].append({'mode': mode, 'canvas_visible': True, 'observed': observed})
+                fixture.close()
             assert not report['page_errors'], report['page_errors']
             external = [url for url in report['requests'] if urllib.parse.urlparse(url).hostname != '127.0.0.1']
             assert not external, external

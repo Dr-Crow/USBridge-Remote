@@ -18,6 +18,8 @@ import (
 	"encoding/binary"
 	"syscall/js"
 	"time"
+
+	"usbridge-client/internal/browserapi"
 )
 
 // browserGamepadFrameLen must match agent/internal/api/usb_passthrough_browser.go's
@@ -89,7 +91,10 @@ func StartBrowserGamepadCapture(onFrame func([]byte)) *BrowserGamepadCapture {
 func (c *BrowserGamepadCapture) Stop() { close(c.stop) }
 
 func pollGamepad() ([]byte, bool) {
-	pads := js.Global().Get("navigator").Call("getGamepads")
+	pads := browserapi.Gamepads()
+	if pads.IsUndefined() {
+		return nil, false
+	}
 	length := pads.Get("length").Int()
 	for i := 0; i < length; i++ {
 		pad := pads.Index(i)

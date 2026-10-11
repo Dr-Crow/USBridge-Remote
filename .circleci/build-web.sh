@@ -49,9 +49,9 @@ go mod verify | tee "$OUT/module-verification.txt"
 go list -m all > "$OUT/modules.txt"
 go test ./internal/webrtcweb ./pkg/capabilities ./internal/models | tee "$OUT/tests-native.txt"
 CGO_ENABLED=0 GOOS=js GOARCH=wasm go test \
-  -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./internal/webrtcweb ./pkg/capabilities ./internal/models \
+  -exec "$(go env GOROOT)/lib/wasm/go_js_wasm_exec" ./internal/browserapi ./internal/webrtcweb ./pkg/capabilities ./internal/models \
   | tee "$OUT/tests-wasm.txt"
-CGO_ENABLED=0 GOOS=js GOARCH=wasm go vet ./cmd/wasm ./internal/webrtcweb \
+CGO_ENABLED=0 GOOS=js GOARCH=wasm go vet ./cmd/wasm ./internal/browserapi ./internal/webrtcweb \
   2>&1 | tee "$OUT/vet-wasm.txt"
 bash scripts/build_web.sh 2>&1 | tee "$OUT/build.txt"
 node --test web/runtime-policy.test.cjs
