@@ -13,7 +13,7 @@ func verifiedGdiplusProof(name, location string, r *graphicsOSInspection) bool {
 	}
 	s := r.Signature
 	return r.FileSHA == verifiedGdiplusSHA && r.FinalPathMatches && r.Failure == "" && r.ResultFailure == "" && r.CleanupFailure == "" &&
-		r.NaturalCleanup && r.CleanupJoined && !r.SafetyJobClosed && r.SuspendedRootVerified && r.StartupHandshakeVerified &&
+		r.NaturalCleanup && r.CleanupJoined && !r.SafetyJobClosed && !r.TimedOut && r.SuspendedRootVerified && r.StartupHandshakeVerified &&
 		r.ConsoleHostVerified && r.TotalOwnedProcesses == 2 && r.ExitCode != nil && *r.ExitCode == 0 &&
 		s.Schema == 1 && s.Status == 0 && s.OSBinary && s.Type == "Catalog" && s.Publisher == "Microsoft Windows" &&
 		s.Issuer == "Microsoft Windows Production PCA 2011" && s.Thumbprint == verifiedWindowsSigner && s.FileSHA == verifiedGdiplusSHA

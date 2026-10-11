@@ -5,6 +5,13 @@ import (
 )
 
 type graphicsOSInspection struct {
+	StartupElapsedMillis     int64              `json:"verifier_startup_elapsed_ms"`
+	InputElapsedMillis       int64              `json:"verifier_input_elapsed_ms"`
+	QueryElapsedMillis       int64              `json:"verifier_query_elapsed_ms"`
+	TimedOut                 bool               `json:"verifier_timed_out"`
+	ResultObservedAtTimeout  bool               `json:"verifier_result_observed_at_timeout"`
+	RootZeroAtTimeout        bool               `json:"verifier_root_zero_at_timeout"`
+	HostZeroAtTimeout        bool               `json:"verifier_host_zero_at_timeout"`
 	StartupHandshakeVerified bool               `json:"startup_handshake_verified"`
 	SuspendedTotal           uint32             `json:"suspended_total_processes"`
 	SuspendedActive          uint32             `json:"suspended_active_processes"`

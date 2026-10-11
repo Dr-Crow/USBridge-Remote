@@ -79,3 +79,87 @@ func TestWindowsSignatureVerifierSystemFile(t *testing.T) {
 		t.Fatalf("os_signature_probe_failed: %s", r.Failure)
 	}
 }
+
+// Query only the installed GDI+ bytes already observed in the owned viewer.
+// This fast prerequisite does not load the DLL or admit a viewer module. The
+// later viewer gate still verifies its actual loaded path and retained lock.
+func TestWindowsSignatureVerifierExactGDIPlus(t *testing.T) {
+	out, root := os.Getenv("WINDOWS_SIGNATURE_GDIPLUS_RECEIPT"), os.Getenv("SystemRoot")
+	if !drivePath.MatchString(out) || !drivePath.MatchString(root) {
+		t.Fatal("gdiplus_probe_configuration_missing")
+	}
+	if _, err := os.Lstat(out); !os.IsNotExist(err) {
+		t.Fatal("gdiplus_receipt_must_be_new")
+	}
+	proofs := []graphicsOSInspection{}
+	probe := func() (result error) {
+		paths, err := filepath.Glob(filepath.Join(root, "WinSxS", "amd64_microsoft.windows.gdiplus_*", "gdiplus.dll"))
+		if err != nil || len(paths) == 0 || len(paths) > 128 {
+			return failure("gdiplus_discovery_bounds")
+		}
+		var chosen string
+		var held *os.File
+		for _, path := range paths {
+			info, err := os.Lstat(path)
+			if err != nil || !info.Mode().IsRegular() {
+				return failure("gdiplus_candidate_not_regular")
+			}
+			f, err := lockFile(path)
+			if err != nil {
+				return failure("gdiplus_candidate_lock_failed")
+			}
+			got, hashErr := fileSHA(f, 64<<20)
+			final, finalErr := finalGraphicsPath(f)
+			if hashErr == nil && finalErr == nil && got == verifiedGdiplusSHA && strings.EqualFold(final, graphicsPath(path)) {
+				chosen, held = final, f
+				break
+			}
+			if err := f.Close(); err != nil {
+				return failure("gdiplus_candidate_close_failed")
+			}
+		}
+		if held == nil {
+			return failure("gdiplus_exact_bytes_not_found")
+		}
+		defer func() {
+			if closeErr := held.Close(); closeErr != nil && result == nil {
+				result = failure("gdiplus_hold_close_failed")
+			}
+		}()
+		for i := 0; i < 3; i++ {
+			r := graphicsOSInspection{FileSHA: verifiedGdiplusSHA, FinalPathMatches: true}
+			if err := runGraphicsSignature(chosen, root, &r); err != nil {
+				r.Failure = err.Error()
+			}
+			proofs = append(proofs, r)
+			if !verifiedGdiplusProof("gdiplus.dll", "windows_side_by_side", &r) || r.Accepted {
+				return failure("gdiplus_exact_query_failed")
+			}
+		}
+		return nil
+	}
+	err := probe()
+	code := ""
+	if err != nil {
+		code = err.Error()
+	}
+	receipt := struct {
+		Schema         int                    `json:"schema_version"`
+		Commit         string                 `json:"commit"`
+		Passed         bool                   `json:"passed"`
+		Failure        string                 `json:"failure_code,omitempty"`
+		ExpectedSHA    string                 `json:"expected_file_sha256"`
+		Inspections    []graphicsOSInspection `json:"inspections"`
+		ModuleAccepted bool                   `json:"viewer_module_accepted"`
+	}{1, os.Getenv("CIRCLE_SHA1"), err == nil && len(proofs) == 3, code, verifiedGdiplusSHA, proofs, false}
+	if !commitPattern.MatchString(receipt.Commit) {
+		t.Fatal("gdiplus_probe_commit_missing")
+	}
+	raw, marshalErr := json.MarshalIndent(receipt, "", "  ")
+	if marshalErr != nil || writeReceipt(out, append(raw, '\n')) != nil {
+		t.Fatal("gdiplus_receipt_failed")
+	}
+	if !receipt.Passed {
+		t.Fatalf("gdiplus_probe_failed: %s", code)
+	}
+}

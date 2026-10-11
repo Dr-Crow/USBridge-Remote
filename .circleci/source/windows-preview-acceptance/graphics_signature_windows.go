@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -68,7 +69,27 @@ func runGraphicsSignature(final, systemRoot string, r *graphicsOSInspection) err
 // The native prerequisite supplies source-owned negative scripts through tests.
 func runGraphicsSignatureScript(final, systemRoot string, r *graphicsOSInspection, scriptText string) (result error) {
 	started := time.Now()
-	defer func() { r.ElapsedMillis = time.Since(started).Milliseconds() }()
+	ctx, cancel := context.WithDeadline(context.Background(), started.Add(signatureOwnerBudget))
+	defer cancel()
+	var console *signatureConsoleOwner
+	startupRecorded := false
+	defer func() {
+		if !startupRecorded {
+			r.StartupElapsedMillis = time.Since(started).Milliseconds()
+		}
+		r.ElapsedMillis = time.Since(started).Milliseconds()
+		if signatureBudgetErr(ctx) != nil {
+			if console != nil {
+				console.recordTimeout(r)
+			} else {
+				r.TimedOut = true
+			}
+			r.NaturalCleanup = false
+			if result == nil {
+				result = failure("signature_owner_timeout")
+			}
+		}
+	}()
 	work, err := os.MkdirTemp("", "owned-signature-")
 	if err != nil {
 		return failure("os_verifier_work_failed")
@@ -89,7 +110,7 @@ func runGraphicsSignatureScript(final, systemRoot string, r *graphicsOSInspectio
 	if got, e := fileSHA(script, 65536); e != nil || got != r.ScriptSHA {
 		return failure("os_verifier_script_hash_failed")
 	}
-	console, err := prepareSignatureConsole(systemRoot)
+	console, err = prepareSignatureConsole(systemRoot)
 	if err != nil {
 		return err
 	}
@@ -108,6 +129,10 @@ func runGraphicsSignatureScript(final, systemRoot string, r *graphicsOSInspectio
 	if err != nil {
 		return failure("signature_root_hash_failed")
 	}
+	// Prelaunch file/hash preparation consumes the same absolute run budget.
+	if signatureBudgetErr(ctx) != nil {
+		return failure("signature_owner_timeout")
+	}
 	j, err := newJob()
 	if err != nil {
 		return err
@@ -116,7 +141,15 @@ func runGraphicsSignatureScript(final, systemRoot string, r *graphicsOSInspectio
 	j.signatureConsole = true
 	var suspendedErr error
 	j.beforeResume = func(pid uint32) {
+		if signatureBudgetErr(ctx) != nil {
+			suspendedErr = failure("signature_owner_timeout")
+			j.close()
+			return
+		}
 		suspendedErr = console.beforeResume(j, pid)
+		if signatureBudgetErr(ctx) != nil {
+			suspendedErr = failure("signature_owner_timeout")
+		}
 		r.SuspendedTotal, r.SuspendedActive, r.SuspendedMembers = console.beforeTotal, console.beforeActive, console.beforeCount
 		if suspendedErr != nil {
 			j.close()
@@ -127,13 +160,10 @@ func runGraphicsSignatureScript(final, systemRoot string, r *graphicsOSInspectio
 	watchStop, watchDone := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(watchDone)
-		// Actual catalog lookup took 6.946s in native job380. Keep the full
-		// startup+query bounded while avoiding a 54ms scheduling margin.
-		timer := time.NewTimer(12 * time.Second)
-		defer timer.Stop()
+		// This watchdog shares the function-entry deadline with every stage.
 		select {
 		case <-watchStop:
-		case <-timer.C:
+		case <-ctx.Done():
 			j.close()
 		}
 	}()
@@ -143,6 +173,13 @@ func runGraphicsSignatureScript(final, systemRoot string, r *graphicsOSInspectio
 	defer func() {
 		close(watchStop)
 		<-watchDone // the safety callback cannot race success
+		if signatureBudgetErr(ctx) != nil {
+			console.recordTimeout(r)
+			r.NaturalCleanup = false
+			if result == nil {
+				result = failure("signature_owner_timeout")
+			}
+		}
 		if p == nil {
 			j.close()
 			r.SafetyJobClosed = true
@@ -180,20 +217,31 @@ func runGraphicsSignatureScript(final, systemRoot string, r *graphicsOSInspectio
 		p.close()
 		joined := true
 		if console.handle != 0 {
-			state, e := syscall.WaitForSingleObject(console.handle, 1000)
+			waitMillis := uint32(0)
+			if result != nil {
+				waitMillis = 1000 // failure-only cleanup grace
+			}
+			state, e := syscall.WaitForSingleObject(console.handle, waitMillis)
 			joined = e == nil && state == syscall.WAIT_OBJECT_0
 		}
-		deadline := time.NewTimer(time.Second)
-		defer deadline.Stop()
-	joinLoop:
-		for _, done := range []<-chan struct{}{inputDone, p.done, p.outputDone, p.diagnosticDone} {
-			select {
-			case <-done:
-			case <-deadline.C:
-				joined = false
-				break joinLoop
-			}
+		joinCtx := ctx
+		if result != nil {
+			var stopCleanup context.CancelFunc
+			joinCtx, stopCleanup = context.WithTimeout(context.Background(), time.Second)
+			defer stopCleanup()
 		}
+		workersJoined := signatureJoinWorkers(joinCtx, inputDone, p.done, p.outputDone, p.diagnosticDone)
+		if !workersJoined && result == nil && signatureBudgetErr(ctx) != nil {
+			// Once success misses its deadline, only bounded failure cleanup may
+			// continue. It cannot turn the result back into success.
+			result = failure("signature_owner_timeout")
+			console.recordTimeout(r)
+			r.NaturalCleanup = false
+			cleanupCtx, stopCleanup := context.WithTimeout(context.Background(), time.Second)
+			workersJoined = signatureJoinWorkers(cleanupCtx, inputDone, p.done, p.outputDone, p.diagnosticDone)
+			stopCleanup()
+		}
+		joined = joined && workersJoined
 		r.CleanupJoined = joined
 		if !joined {
 			r.NaturalCleanup = false
@@ -203,36 +251,58 @@ func runGraphicsSignatureScript(final, systemRoot string, r *graphicsOSInspectio
 			}
 		}
 	}()
-	p, err = j.start(powerPath, graphicsSignatureArguments(scriptPath), childEnvironment(systemRoot, work), work)
+	args, env := graphicsSignatureArguments(scriptPath), childEnvironment(systemRoot, work)
+	if signatureBudgetErr(ctx) != nil {
+		return failure("signature_owner_timeout")
+	}
+	p, err = j.start(powerPath, args, env, work)
 	if suspendedErr != nil {
 		return suspendedErr
 	}
 	if err != nil {
 		return failure("os_verifier_start_failed")
 	}
-	if err = console.startup(j, p, r); err != nil {
+	err = console.startup(ctx, j, p, r)
+	r.StartupElapsedMillis = time.Since(started).Milliseconds()
+	startupRecorded = true
+	if err != nil {
 		return err
 	}
-	input, err := json.Marshal(map[string]string{"path": final})
-	if err != nil {
-		return failure("os_verifier_input_failed")
-	}
-	input = append(input, '\n')
-	inputDone = make(chan struct{})
-	inputResult := make(chan error, 1)
-	go func() { defer close(inputDone); defer clear(input); _, e := p.stdin.Write(input); inputResult <- e }()
-	select {
-	case e := <-inputResult:
+	inputStarted := time.Now()
+	err = func() error {
+		defer func() { r.InputElapsedMillis = time.Since(inputStarted).Milliseconds() }()
+		inputCtx, stopInput := context.WithTimeout(ctx, 3*time.Second)
+		defer stopInput()
+		input, e := json.Marshal(map[string]string{"path": final})
 		if e != nil {
 			return failure("os_verifier_input_failed")
 		}
-	case <-time.After(3 * time.Second):
+		input = append(input, '\n')
+		if signatureBudgetErr(inputCtx) != nil {
+			clear(input)
+			console.recordTimeout(r)
+			return failure("os_verifier_input_timeout")
+		}
+		inputDone = make(chan struct{})
+		inputResult := make(chan error, 1)
+		go func() { defer close(inputDone); defer clear(input); _, e := p.stdin.Write(input); inputResult <- e }()
+		writeErr, _, budgetErr := signatureReceive(inputCtx, inputResult)
 		_ = p.stdin.Close()
-		return failure("os_verifier_input_timeout")
+		if budgetErr != nil || signatureBudgetErr(inputCtx) != nil {
+			console.recordTimeout(r)
+			return failure("os_verifier_input_timeout")
+		}
+		if writeErr != nil {
+			return failure("os_verifier_input_failed")
+		}
+		return nil
+	}()
+	if err != nil {
+		return err
 	}
-
-	_ = p.stdin.Close()
-	raw, err := console.collect(j, p, r)
+	queryStarted := time.Now()
+	raw, err := console.collect(ctx, j, p, r)
+	r.QueryElapsedMillis = time.Since(queryStarted).Milliseconds()
 	defer clear(raw)
 	if err != nil {
 		r.ResultFailure = err.Error()

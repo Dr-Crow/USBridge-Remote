@@ -118,6 +118,11 @@ try {
     & $go test -json -tags signatureprobe '-run=^TestWindowsSignatureVerifierSystemFile$' -count=1 -timeout=45s ./... 1> $log 2> $stderr
     if ($LASTEXITCODE -ne 0) { Report-TestFailure; throw 'Native signature verifier failed; see bounded signature receipt' }
     Remove-Item Env:WINDOWS_SIGNATURE_PROBE_RECEIPT
+    Report-Stage 'native_exact_gdiplus_signature'
+    $env:WINDOWS_SIGNATURE_GDIPLUS_RECEIPT = Join-Path $out 'gdiplus-signature-probe.json'
+    & $go test -json -tags signatureprobe '-run=^TestWindowsSignatureVerifierExactGDIPlus$' -count=1 -timeout=60s ./... 1> $log 2> $stderr
+    if ($LASTEXITCODE -ne 0) { Report-TestFailure; throw 'Exact installed GDI+ signature prerequisite failed; see bounded receipt' }
+    Remove-Item Env:WINDOWS_SIGNATURE_GDIPLUS_RECEIPT
     Report-Stage 'natural_retirement_probe'
     & $go test -json -count=500 -timeout=3m '-run=^TestWindowsSuspendedLaunchPrivatePipesNaturalEOF$' ./... 1> $log 2> $stderr
     if ($LASTEXITCODE -ne 0) { Report-TestFailure; throw 'Natural retirement probe failed; see bounded receipt' }

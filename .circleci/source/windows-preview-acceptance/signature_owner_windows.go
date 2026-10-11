@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,6 +33,7 @@ type signatureConsoleOwner struct {
 	rootHandle                             syscall.Handle
 	policy                                 signatureOwnerPolicy
 	beforeTotal, beforeActive, beforeCount uint32
+	resultObserved, rootZero, hostZero     bool
 }
 
 func signatureSystemDirectory(root string) (string, error) {
@@ -136,23 +138,41 @@ func signatureProcessZero(h syscall.Handle) (bool, error) {
 	return true, nil
 }
 
+// Copy only observations made before the deadline, never forced-cleanup exits.
+func (o *signatureConsoleOwner) recordTimeout(r *graphicsOSInspection) {
+	r.TimedOut = true
+	r.ResultObservedAtTimeout = o.resultObserved
+	r.RootZeroAtTimeout = o.rootZero
+	r.HostZeroAtTimeout = o.hostZero
+}
+
 // Observe and retain both identities before accepting the single protocol line.
 // Lifetime accounting also rejects an unknown descendant too short-lived to
 // appear in a snapshot. No member is ever killed on a successful return.
-func (o *signatureConsoleOwner) collect(j *job, p *child, r *graphicsOSInspection) ([]byte, error) {
+func (o *signatureConsoleOwner) collect(ctx context.Context, j *job, p *child, r *graphicsOSInspection) (raw []byte, result error) {
+	defer func() {
+		if signatureBudgetErr(ctx) != nil {
+			o.recordTimeout(r)
+			result = failure("signature_owner_timeout")
+		}
+	}()
 	o.policy.root = p.pid
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
-	timeout := time.NewTimer(6 * time.Second)
-	defer timeout.Stop()
 	packets := p.packets
-	var raw []byte
 	var protocolErr error
 	for {
+		if signatureBudgetErr(ctx) != nil {
+			return raw, failure("signature_owner_timeout")
+		}
 		rootZero, e := signatureProcessZero(p.handle)
 		if e != nil {
 			return raw, e
 		}
+		if signatureBudgetErr(ctx) != nil {
+			return raw, failure("signature_owner_timeout")
+		}
+		o.rootZero = rootZero
 		o.policy.rootExited = rootZero
 		ids, invErr := j.pids()
 		// Incomplete enumeration is never empty. It may retire only after both
@@ -168,7 +188,11 @@ func (o *signatureConsoleOwner) collect(j *job, p *child, r *graphicsOSInspectio
 			if e != nil || !hostZero {
 				return raw, failure("signature_inventory_failed")
 			}
-			if e = waitRetiredInventory(j.pids, map[uint32]bool{p.pid: true, o.policy.host: true}, time.Second); e != nil {
+			if signatureBudgetErr(ctx) != nil {
+				return raw, failure("signature_owner_timeout")
+			}
+			o.rootZero, o.hostZero = rootZero, hostZero
+			if e = waitSignatureRetiredInventory(ctx, j.pids, map[uint32]bool{p.pid: true, o.policy.host: true}, time.Second); e != nil {
 				return raw, e
 			}
 			ids = nil
@@ -187,18 +211,26 @@ func (o *signatureConsoleOwner) collect(j *job, p *child, r *graphicsOSInspectio
 				return raw, e
 			}
 		}
+		if signatureBudgetErr(ctx) != nil {
+			return raw, failure("signature_owner_timeout")
+		}
+		o.rootZero, o.hostZero = rootZero, hostZero
 		if rootZero && hostZero && len(ids) == 0 {
 			if e = o.policy.finish(a.Total, a.Active, true, rootZero, hostZero, j.closed.Load()); e != nil {
 				return raw, e
 			}
-			if e = p.wait(time.Second); e != nil {
+			if e = p.signatureWaitContext(ctx); e != nil {
 				return raw, e
 			}
 			if raw == nil && protocolErr == nil {
-				raw, protocolErr = p.next(time.Second)
+				raw, protocolErr = p.signatureNextContext(ctx)
+				o.resultObserved = raw != nil
 			}
-			if e = p.finishProtocol(); e != nil {
+			if e = p.signatureFinishProtocolContext(ctx); e != nil {
 				return raw, e
+			}
+			if signatureBudgetErr(ctx) != nil {
+				return raw, failure("signature_owner_timeout")
 			}
 			r.NaturalCleanup = true
 			r.ConsoleHostSHA = o.hash
@@ -211,6 +243,11 @@ func (o *signatureConsoleOwner) collect(j *job, p *child, r *graphicsOSInspectio
 		}
 		select {
 		case v, ok := <-packets:
+			if signatureBudgetErr(ctx) != nil {
+				clear(v.line)
+				return raw, failure("signature_owner_timeout")
+			}
+			o.resultObserved = ok && v.err == nil
 			packets = nil
 			o.policy.frozen = true
 			if o.policy.host == 0 {
@@ -223,7 +260,7 @@ func (o *signatureConsoleOwner) collect(j *job, p *child, r *graphicsOSInspectio
 				protocolErr = v.err
 			}
 		case <-ticker.C:
-		case <-timeout.C:
+		case <-ctx.Done():
 			return raw, failure("signature_owner_timeout")
 		}
 	}
@@ -260,12 +297,21 @@ func (o *signatureConsoleOwner) beforeResume(j *job, pid uint32) error {
 	}
 	return nil
 }
-func (o *signatureConsoleOwner) startup(j *job, p *child, r *graphicsOSInspection) error {
-	timer := time.NewTimer(5 * time.Second)
-	defer timer.Stop()
+func (o *signatureConsoleOwner) startup(ctx context.Context, j *job, p *child, r *graphicsOSInspection) (result error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	defer func() {
+		if signatureBudgetErr(ctx) != nil {
+			o.recordTimeout(r)
+			result = failure("signature_startup_timeout")
+		}
+	}()
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
 	for {
+		if signatureBudgetErr(ctx) != nil {
+			return failure("signature_startup_timeout")
+		}
 		zero, err := signatureProcessZero(p.handle)
 		if err != nil {
 			return err
@@ -322,10 +368,13 @@ func (o *signatureConsoleOwner) startup(j *job, p *child, r *graphicsOSInspectio
 				return failure("signature_startup_early_output")
 			default:
 			}
+			if signatureBudgetErr(ctx) != nil {
+				return failure("signature_startup_timeout")
+			}
 			r.StartupHandshakeVerified = true
 			return nil
 		case <-ticker.C:
-		case <-timer.C:
+		case <-ctx.Done():
 			return failure("signature_startup_timeout")
 		}
 	}

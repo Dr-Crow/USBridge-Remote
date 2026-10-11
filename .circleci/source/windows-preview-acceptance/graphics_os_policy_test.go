@@ -24,6 +24,7 @@ func TestExactObservedGdiplusAdmission(t *testing.T) {
 		func(r *graphicsOSInspection) { r.Signature.Status = 1 }, func(r *graphicsOSInspection) { r.Signature.Status = 5 }, func(r *graphicsOSInspection) { r.Signature.Type = "Authenticode" },
 		func(r *graphicsOSInspection) { r.Failure = "failed" }, func(r *graphicsOSInspection) { r.ResultFailure = "failed" }, func(r *graphicsOSInspection) { r.CleanupFailure = "failed" },
 		func(r *graphicsOSInspection) { r.NaturalCleanup = false }, func(r *graphicsOSInspection) { r.CleanupJoined = false }, func(r *graphicsOSInspection) { r.SafetyJobClosed = true },
+		func(r *graphicsOSInspection) { r.TimedOut = true },
 		func(r *graphicsOSInspection) { r.ConsoleHostVerified = false }, func(r *graphicsOSInspection) { r.TotalOwnedProcesses = 3 },
 		func(r *graphicsOSInspection) { r.ExitCode = nil },
 		func(r *graphicsOSInspection) { nonzero := uint32(1); r.ExitCode = &nonzero }, func(r *graphicsOSInspection) { r.SuspendedRootVerified = false }, func(r *graphicsOSInspection) { r.StartupHandshakeVerified = false },
