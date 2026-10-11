@@ -38,13 +38,15 @@ func (f *fakeProcess) Stop() error {
 func (f *fakeProcess) FirstFrame() <-chan struct{} { return f.first }
 func (f *fakeProcess) Address() string             { return "127.0.0.1:40000" }
 func approval() Approval {
-	return Approval{Components: localcomponents.Options{Directory: "/components", StateDir: "/state", ManifestSHA256: strings.Repeat("a", 64)}, Display: ":99", FFmpeg: "/usr/bin/ffmpeg", CaptureConsent: true}
+	a := Approval{Components: localcomponents.Options{Directory: "/components", StateDir: "/state", ManifestSHA256: strings.Repeat("a", 64)}, Display: ":99", FFmpeg: "/usr/bin/ffmpeg", CaptureConsent: true}
+	if runtime.GOOS == "windows" {
+		a.Components.Directory, a.Components.StateDir = `C:\components`, `C:\state`
+		a.Display, a.FFmpeg = "desktop", `C:\tools\ffmpeg.exe`
+	}
+	return a
 }
 func fixture(t *testing.T) (*Manager, *fakeProcess, *fakeProcess) {
 	t.Helper()
-	if runtime.GOOS != "linux" {
-		t.Skip("Linux-only preview manager")
-	}
 	s, v := fake(), fake()
 	m := &Manager{deps: dependencies{random: bytes.NewReader(bytes.Repeat([]byte{1, 2, 3, 4, 5, 6, 7}, 100)), now: time.Now, permitted: func() bool { return true }, prepareViewer: func(context.Context, localcomponents.Options) (string, error) { return "/viewer", nil }, startStream: func(context.Context, localcomponents.Options, sourcestreamer.Launch) (stream, error) { return s, nil }, startViewer: func(context.Context, string, descriptor) (viewer, error) { return v, nil }}}
 	return m, s, v

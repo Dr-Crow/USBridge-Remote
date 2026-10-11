@@ -38,6 +38,11 @@ $files = @(
     'internal/netpolicy/policy.go',
     'internal/netpolicy/policy_test.go',
     'internal/netpolicy/provisioning_test.go',
+    'internal/previeweligibility/eligibility.go',
+    'internal/previeweligibility/eligibility_other.go',
+    'internal/previeweligibility/eligibility_windows.go',
+    'internal/previeweligibility/eligibility_test.go',
+    'internal/previeweligibility/eligibility_windows_test.go',
     'internal/previewchild/child.go',
     'internal/previewchild/child_other.go',
     'internal/previewchild/child_other_test.go',
@@ -55,6 +60,8 @@ $files = @(
     'internal/sourcepreview/manager.go',
     'internal/sourcepreview/manager_lease_test.go',
     'internal/sourcepreview/manager_test.go',
+    'internal/sourcepreview/manager_native_windows_test.go',
+    'internal/sourcepreview/manager_pixels_windows_test.go',
     'internal/sourcepreview/native_acceptance_test.go',
     'internal/sourcepreview/viewer.go',
     'internal/sourcepreview/viewer_lifecycle_test.go',
@@ -93,12 +100,16 @@ $required = @('TestWindowsSourceCooperativeEOFIsNatural', 'TestWindowsSourceCras
     'TestWindowsSourceStartupCancellationJoinsBlockedWrite', 'TestWindowsSourceTypedFrameFailure',
     'TestWindowsViewerCooperativeEOFIsNatural', 'TestWindowsViewerCrashRetiresInheritedOutput',
     'TestWindowsViewerZeroExitStillRecordsForcedCleanup', 'TestWindowsViewerBlockedStdinStopAndCancel',
-    'TestWindowsViewerStartupCancellationJoinsBlockedWrite', 'TestWindowsManagerRemainsDisabled',
+    'TestWindowsViewerStartupCancellationJoinsBlockedWrite', 'TestWindowsManagerRequiresReadOnlyEligibility',
     'TestWindowsExplicitEnvironmentDropsOnlyDrivePseudoVariables')
 $subtests = @('TestWindowsSourceBlockedStdinStopAndCancel/false', 'TestWindowsSourceBlockedStdinStopAndCancel/true',
     'TestWindowsViewerBlockedStdinStopAndCancel/false', 'TestWindowsViewerBlockedStdinStopAndCancel/true')
 $portable = @('TestJoinSharesOneDeadlineAndRetainsTimeout', 'TestLifecyclePreservesTypedOwnerFailures', 'TestViewerLifecyclePreservesTypedOwnerFailures')
 $packages = @('./internal/previewchild', './internal/sourcestreamer', './internal/sourcepreview')
+$manager = @('TestPreviewRequiresLocalConsentAndPackage', 'TestPreviewSingleReservationAndOrderedJoinedStop',
+    'TestPreviewFreshSecretAndNoDescriptorInStatus', 'TestPreviewRandomFailureDoesNotLaunchOrHoldReservation',
+    'TestPreviewViewerFailureJoinsSource', 'TestPreviewCancelDuringStartupReleasesReservation',
+    'TestPreviewParentCancelJoinsBoth', 'TestPreviewExposesOnlyTypedFrameLimit')
 $lease = @(
     'TestPreviewLeaseSourceStartupUncertainty/previewprocess:_cleanup_deadline_exceeded',
     'TestPreviewLeaseSourceStartupUncertainty/previewprocess:_containment_verification_failed',
@@ -160,7 +171,7 @@ function Write-WiringFailure {
     }
     $failure = [ordered]@{ schema_version = 1; passed = $false; source_commit = $commit; stage = $stage;
         test_names = @($names.Keys | Sort-Object); test_locations = @($locations.Keys | Sort-Object);
-        raw_output_published = $false; production_manager_enabled = $false;
+        raw_output_published = $false; production_manager_started = $false; production_windows_manager_guarded = $true;
         window_or_media_started = $false; source_or_binary_artifacts_published = $false }
     [IO.File]::WriteAllText((Join-Path $out 'wiring-failure.json'), (($failure | ConvertTo-Json -Depth 6) + "`n"), (New-Object Text.UTF8Encoding($false)))
 }
@@ -176,7 +187,7 @@ function Read-ExactPasses($expected, [int] $repetitions = 20, [int] $packageCoun
                 if (!($expected -ccontains $row.Test)) { throw 'Unexpected wiring assertion' }
                 $counts[$row.Test]++
             } else {
-                if ($row.Package -cnotmatch '^usbridge_agent/internal/(previewchild|sourcestreamer|sourcepreview)$' -or $packageNames.ContainsKey($row.Package)) { throw 'Unexpected wiring package' }
+                if ($row.Package -cnotmatch '^usbridge_agent/internal/(previewchild|sourcestreamer|sourcepreview|previeweligibility)$' -or $packageNames.ContainsKey($row.Package)) { throw 'Unexpected wiring package' }
                 $packageNames[$row.Package] = $true
             }
         }
@@ -202,6 +213,43 @@ try {
     & $go test -json -count=100 -timeout=3m '-run=^TestPreviewLease' ./internal/sourcepreview 1> $log 2> (Join-Path $work 'lease-stderr.txt')
     if ($LASTEXITCODE -ne 0) { throw 'Cleanup lease policy failed' }
     $leaseCounts = Read-ExactPasses $lease 100 1
+    $stage = 'portable_manager_policy'
+    $log = Join-Path $work 'manager.jsonl'
+    $selector = '^(' + ($manager -join '|') + ')$'
+    & $go test -json -count=20 -timeout=2m "-run=$selector" ./internal/sourcepreview 1> $log 2> (Join-Path $work 'manager-stderr.txt')
+    if ($LASTEXITCODE -ne 0) { throw 'Portable manager policy failed' }
+    $managerCounts = Read-ExactPasses $manager 20 1
+    $stage = 'manager_native_helper_contracts'
+    $log = Join-Path $work 'manager-helpers.jsonl'
+    $managerHelpers = @('TestWindowsManagerAcceptancePinsAndRoles', 'TestWindowsManagerAcceptancePixelAndPathDecisions', 'TestWindowsManagerAcceptanceCleanupAccounting')
+    $managerHelperCases = @('valid','source_version','viewer_version','source_profile','viewer_profile','wrong_platform','wrong_entry','missing_role','duplicate_role') | ForEach-Object { 'TestWindowsManagerAcceptancePinsAndRoles/' + $_ }
+    & $go test -json -count=20 -timeout=2m -tags=source_preview_manager_acceptance '-run=^TestWindowsManagerAcceptance' ./internal/sourcepreview 1> $log 2> (Join-Path $work 'manager-helpers-stderr.txt')
+    if ($LASTEXITCODE -ne 0) { throw 'Native Manager preparation contracts failed' }
+    $managerHelperCounts = Read-ExactPasses ($managerHelpers + $managerHelperCases) 20 1
+    $stage = 'read_only_windows_eligibility'
+    $log = Join-Path $work 'eligibility.jsonl'
+    & $go test -json -count=1 -timeout=1m ./internal/previeweligibility 1> $log 2> (Join-Path $work 'eligibility-stderr.txt')
+    $eligibilityExit = $LASTEXITCODE
+    $observations = @()
+    foreach ($line in Get-Content $log) {
+        $row = $line | ConvertFrom-Json
+        if ($null -ne $row.PSObject.Properties['Output'] -and [string]$row.Output -cmatch 'PREVIEW_ELIGIBILITY (\{[^\r\n]+\})') {
+            $observations += ($Matches[1] | ConvertFrom-Json)
+        }
+    }
+    if ($observations.Count -ne 1) { throw 'Missing unique eligibility observation' }
+    $eligibility = $observations[0]
+    $keys = @('token_queried','not_elevated','interactive_session','token_closed','window_station_queried','window_station_visible','eligible')
+    if (@($eligibility.PSObject.Properties).Count -ne $keys.Count) { throw 'Unexpected eligibility fields' }
+    foreach ($key in $keys) { if ($null -eq $eligibility.PSObject.Properties[$key] -or $eligibility.$key -isnot [bool]) { throw 'Invalid eligibility field' } }
+    $expectedEligibility = $eligibility.token_queried -and $eligibility.not_elevated -and $eligibility.interactive_session -and $eligibility.token_closed -and $eligibility.window_station_queried -and $eligibility.window_station_visible
+    if ($eligibility.eligible -ne $expectedEligibility) { throw 'Eligibility predicate mismatch' }
+    $eligibilityReceipt = [ordered]@{ schema_version = 1; source_commit = $commit; platform = 'windows/amd64';
+        read_only_probe_completed = ($eligibilityExit -eq 0); observation = $eligibility;
+        manager_started = $false; windows_manager_guarded = $true; capture_started = $false; child_launches = 0; security_changes = $false }
+    [IO.File]::WriteAllText((Join-Path $out 'eligibility.json'), (($eligibilityReceipt | ConvertTo-Json -Depth 5) + "`n"), (New-Object Text.UTF8Encoding($false)))
+    if ($eligibilityExit -ne 0) { throw 'Read-only eligibility query failed' }
+    $eligibilityCounts = Read-ExactPasses @('TestEligibilityRequiresEveryIndependentFact','TestWindowsReadOnlyEligibilityObservation') 1 1
     $stage = 'vet'
     & $go vet ./... 1> (Join-Path $work 'vet-stdout.txt') 2> (Join-Path $work 'vet-stderr.txt')
     if ($LASTEXITCODE -ne 0) { throw 'Native production adapter vet failed' }
@@ -210,8 +258,10 @@ $receipt = [ordered]@{ schema_version = 1; passed = $true; source_commit = $comm
     platform = 'windows/amd64'; go_version = 'go1.26.9'; source_files_sha256 = $hashes;
     native_execution = $true; native_assertions = $nativeCounts; portable_contracts = $contractCounts;
     required_native_top_level_passes = 260; required_native_leaf_cases = 300; portable_contract_passes = 60;
+    manager_policy_assertions = $managerCounts; manager_policy_passes = 160; eligibility_observed = $true;
+    manager_helper_assertions = $managerHelperCounts; manager_helper_top_level_passes = 60; manager_helper_cases = 240;
     lease_policy_assertions = $leaseCounts; lease_policy_top_level_passes = 900; lease_policy_leaf_cases = 3400;
     failures = 0; skips = 0; native_vet = $true; production_launch_adapters_exercised = $true;
-    production_manager_enabled = $false; window_or_media_started = $false; source_or_binary_artifacts_published = $false }
+    production_manager_started = $false; production_windows_manager_guarded = $true; window_or_media_started = $false; source_or_binary_artifacts_published = $false }
 [IO.File]::WriteAllText((Join-Path $out 'wiring.json'), (($receipt | ConvertTo-Json -Depth 6) + "`n"), (New-Object Text.UTF8Encoding($false)))
 Write-Host 'Native production launch adapters: 13 assertions and their subcases passed 20 times, plus contracts and vet.'

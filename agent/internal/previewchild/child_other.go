@@ -41,6 +41,13 @@ func Start(ctx context.Context, spec Spec) (*Process, error) {
 	return &Process{Stdin: stdin, Stdout: stdout, cmd: cmd}, nil
 }
 
+func (p *Process) PID() uint32 {
+	if p == nil || p.cmd == nil || p.cmd.Process == nil {
+		return 0
+	}
+	return uint32(p.cmd.Process.Pid)
+}
+
 func (p *Process) Wait() error {
 	if p.cmd.Wait() != nil {
 		return errors.New("preview child exited unsuccessfully")

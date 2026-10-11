@@ -9,6 +9,8 @@ python3 -m unittest discover -s .circleci/source -p test_preview_viewer_test_inv
 python3 -m unittest discover -s .circleci/source -p test_windows_preview_build_receipt.py
 python3 -m unittest discover -s .circleci/source -p test_windows_preview_preflight.py
 python3 -m unittest discover -s .circleci/source -p test_prepare_windows_preview_media.py
+python3 -m unittest discover -s .circleci/source -p test_windows_manager_components.py
+python3 -m unittest discover -s .circleci/source -p test_prepare_windows_preview_manager.py
 (cd .circleci/source/windows-preview-fixture && go test -race -count=3 ./... && go vet ./...)
 (cd .circleci/source/windows-preview-acceptance && go test -race -count=3 ./... && go vet ./...)
 sudo apt-get update

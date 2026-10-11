@@ -47,6 +47,14 @@ type viewerProcess struct {
 	err        error
 }
 
+// pid is internal read-only launch metadata for native acceptance observers.
+func (v *viewerProcess) pid() uint32 {
+	if v == nil || v.child == nil {
+		return 0
+	}
+	return v.child.PID()
+}
+
 func (v *viewerProcess) Done() <-chan struct{}       { return v.done }
 func (v *viewerProcess) FirstFrame() <-chan struct{} { return v.firstFrame }
 func (v *viewerProcess) Wait() error                 { <-v.done; v.mu.Lock(); defer v.mu.Unlock(); return v.err }

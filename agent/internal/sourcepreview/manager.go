@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"usbridge_agent/internal/localcomponents"
+	"usbridge_agent/internal/previeweligibility"
 	"usbridge_agent/internal/previewprocess"
 	"usbridge_agent/internal/sourcestreamer"
 )
@@ -94,9 +95,23 @@ type Manager struct {
 	deps             dependencies
 }
 
+// Windows preview runs only in the existing non-elevated interactive process.
+// This query never changes identity or permissions. The settings action stays
+// separately gated until its full Windows interaction acceptance is complete.
+func previewProcessPermitted() bool {
+	switch runtime.GOOS {
+	case "linux":
+		return os.Geteuid() != 0
+	case "windows":
+		return previeweligibility.Observe().Eligible()
+	default:
+		return false
+	}
+}
+
 func New() *Manager {
 	return &Manager{deps: dependencies{random: rand.Reader, now: time.Now,
-		permitted:     func() bool { return runtime.GOOS == "linux" && os.Geteuid() != 0 },
+		permitted:     previewProcessPermitted,
 		prepareViewer: prepareViewer,
 		startStream: func(ctx context.Context, o localcomponents.Options, l sourcestreamer.Launch) (stream, error) {
 			s, e := sourcestreamer.Start(ctx, o, l)
@@ -153,7 +168,7 @@ func (m *Manager) Start(ctx context.Context, a Approval) (*Session, error) {
 		return nil, ErrCleanupUncertain
 	}
 	if !m.deps.permitted() {
-		return nil, errors.New("source preview requires an unprivileged same-user Linux GUI")
+		return nil, errors.New("source preview requires a non-elevated interactive same-user GUI")
 	}
 	if !a.CaptureConsent {
 		return nil, errors.New("local capture approval is required")
@@ -165,6 +180,9 @@ func (m *Manager) Start(ctx context.Context, a Approval) (*Session, error) {
 	switch a.VideoProfile {
 	case "", "transport-128":
 	case "desktop-640":
+		if runtime.GOOS == "windows" {
+			return nil, errors.New("Windows preview currently requires the validated 128x72 profile")
+		}
 		width, height = 640, 360
 	default:
 		return nil, errors.New("unsupported preview profile")

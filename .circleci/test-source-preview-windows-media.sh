@@ -74,3 +74,30 @@ PY
 python3 .circleci/source/prepare_windows_preview_media.py \
  --work "$(cygpath -m "$WORK")" --output "$(cygpath -m "$OUT")" \
  --ucrt-bin "$(cygpath -m /ucrt64/bin)" --runner "$(cygpath -m "$WORK/windows-preview-acceptance.exe")" --commit "$CIRCLE_SHA1"
+# Prepare the production Manager's exact two-role package only after the full
+# CLI pixel/cleanup gate passed. This does not bypass an elevated CI token or
+# enable the still-gated Windows settings action.
+PYTHONPATH=.circleci/source python3 -m unittest discover -s .circleci/source -p 'test_prepare_windows_preview_manager.py'
+python3 .circleci/source/prepare_windows_preview_manager.py \
+ --work "$(cygpath -m "$WORK")" --output "$(cygpath -m "$OUT")" --commit "$CIRCLE_SHA1"
+(
+ cd agent
+ CGO_ENABLED=0 go test -json -count=1 -timeout=2m -tags=source_preview_manager_acceptance \
+  '-run=^TestWindowsManagerAcceptance' ./internal/sourcepreview > "$WORK/tests/manager-preparation.jsonl"
+ CGO_ENABLED=0 go vet -tags=source_preview_manager_acceptance ./internal/sourcepreview
+)
+PYTHONPATH=.circleci/source python3 - "$WORK" "$OUT" "$CIRCLE_SHA1" <<'PYMANAGER'
+import hashlib,json,pathlib,sys
+from windows_preview_build_receipt import summarize_tests
+work,out=map(pathlib.Path,sys.argv[1:3]);commit=sys.argv[3]
+required={'TestWindowsManagerAcceptancePinsAndRoles','TestWindowsManagerAcceptancePixelAndPathDecisions','TestWindowsManagerAcceptanceCleanupAccounting'}
+summary=summarize_tests(work/'tests/manager-preparation.jsonl',required)
+staging=json.loads((out/'manager-staging.json').read_bytes())
+if staging['commit']!=commit or not staging['passed'] or staging['production_manager_executed']:
+ raise SystemExit('Exact nonexecuting Manager staging proof required')
+receipt={'schema_version':1,'commit':commit,'passed':True,'native_helper_tests':summary,'native_vet':True,
+ 'manager_staging_receipt_sha256':hashlib.sha256((out/'manager-staging.json').read_bytes()).hexdigest(),
+ 'actual_manager_started':False,'actual_app_new':False,'desktop_capture_tested':False,
+ 'identity_or_security_changes':False,'source_or_binary_artifacts_published':False}
+(out/'manager-preparation.json').write_text(json.dumps(receipt,indent=2)+'\n')
+PYMANAGER

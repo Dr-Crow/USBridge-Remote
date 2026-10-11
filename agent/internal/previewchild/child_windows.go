@@ -39,6 +39,13 @@ func Start(ctx context.Context, spec Spec) (*Process, error) {
 	return p, nil
 }
 
+func (p *Process) PID() uint32 {
+	if p == nil || p.owner == nil {
+		return 0
+	}
+	return p.owner.PID()
+}
+
 func (p *Process) Wait() error {
 	_, err := p.owner.Wait()
 	return errors.Join(err, Join(p.stderrDone))

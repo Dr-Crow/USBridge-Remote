@@ -100,7 +100,7 @@ try {
             if ($null -ne $row.PSObject.Properties['Test']) { $contractPasses++ } else { $contractPackages++ }
         }
     }
-    if ($contractPackages -ne 1 -or $contractPasses -ne 31) { throw 'Missing owner contract assertions' }
+    if ($contractPackages -ne 1 -or $contractPasses -ne 32) { throw 'Missing owner contract assertions' }
     $stage = 'vet'
     & $go vet ./... 1> (Join-Path $work 'vet-stdout.txt') 2> (Join-Path $work 'vet-stderr.txt')
     if ($LASTEXITCODE -ne 0) { Write-OwnerFailure; throw 'Owner native vet failed' }

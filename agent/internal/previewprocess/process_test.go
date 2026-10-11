@@ -419,3 +419,14 @@ func TestWaiterHandleCloseFailureCannotClaimNatural(t *testing.T) {
 		t.Fatal("failed retained-handle close became natural success")
 	}
 }
+
+func TestPIDReturnsImmutableLaunchMetadata(t *testing.T) {
+	var missing *Process
+	if missing.PID() != 0 || (&Process{}).PID() != 0 {
+		t.Fatal("unlaunched process exposed a PID")
+	}
+	p := &Process{pid: 42}
+	if p.PID() != 42 || p.PID() != 42 || p.pid != 42 || p.owner != nil {
+		t.Fatal("PID observation changed launch ownership")
+	}
+}

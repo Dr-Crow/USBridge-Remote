@@ -157,6 +157,16 @@ func Start(ctx context.Context, spec Spec) (*Process, error) {
 	spec.Env = append([]string(nil), spec.Env...)
 	return start(ctx, spec)
 }
+
+// PID is immutable launch metadata. It does not grant a process handle or
+// change ownership; observers must continue to bind any window to this PID.
+func (p *Process) PID() uint32 {
+	if p == nil {
+		return 0
+	}
+	return p.pid
+}
+
 func (p *Process) Done() <-chan struct{} { return p.done }
 func (p *Process) Wait() (Result, error) { <-p.done; return p.result, resultError(p.result) }
 

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"usbridge_agent/internal/previeweligibility"
 	"usbridge_agent/internal/previewprocess"
 )
 
@@ -287,8 +288,18 @@ func TestWindowsViewerStartupCancellationJoinsBlockedWrite(t *testing.T) {
 	windowsViewerExited(t, handles)
 }
 
-func TestWindowsManagerRemainsDisabled(t *testing.T) {
-	if New().deps.permitted() {
-		t.Fatal("production Windows preview gate changed")
+func TestWindowsManagerRequiresReadOnlyEligibility(t *testing.T) {
+	expected := previeweligibility.Observe().Eligible()
+	if New().deps.permitted() != expected {
+		t.Fatal("production Windows eligibility differs from read-only facts")
+	}
+	m, _, _ := fixture(t)
+	a := approval()
+	a.VideoProfile = "desktop-640"
+	if session, err := m.Start(context.Background(), a); err == nil || session != nil {
+		if session != nil {
+			_ = session.Stop()
+		}
+		t.Fatal("unverified larger Windows profile accepted")
 	}
 }
