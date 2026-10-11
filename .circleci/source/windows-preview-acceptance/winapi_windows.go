@@ -143,6 +143,7 @@ type child struct {
 	done                       chan struct{}
 	outputDone, diagnosticDone chan struct{}
 	exitCode                   uint32
+	signatureDiagnostic        *signatureStartupDiagnostic
 	closeOnce                  sync.Once
 }
 
@@ -219,7 +220,7 @@ func (p *child) read() {
 	}()
 	go func() { // Discard diagnostics; neither errors nor secret-looking output is persisted.
 		defer close(p.diagnosticDone)
-		n, e := io.Copy(io.Discard, io.LimitReader(p.stderr, 65537))
+		n, e := p.drainDiagnostics()
 		if n != 0 || e != nil {
 			p.drained <- failure("unexpected_child_stderr")
 		} else {

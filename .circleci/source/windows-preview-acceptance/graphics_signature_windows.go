@@ -242,6 +242,11 @@ func runGraphicsSignatureScript(final, systemRoot string, r *graphicsOSInspectio
 			stopCleanup()
 		}
 		joined = joined && workersJoined
+		// Only the separately tagged VM diagnostic drain populates this. Read
+		// after its worker joins; no partial or racing diagnostic is recorded.
+		if workersJoined && !r.StartupHandshakeVerified {
+			r.StartupDiagnostic = p.signatureDiagnostic
+		}
 		r.CleanupJoined = joined
 		if !joined {
 			r.NaturalCleanup = false

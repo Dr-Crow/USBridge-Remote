@@ -25,3 +25,12 @@ absolute JSON path in an existing writable directory. Then run:
 The receipt must say passed=true, viewer_module_accepted=false and have three
 strict inspections with zero exits, natural cleanup and no safety closure.
 No account, token, certificate, execution-policy or machine setting is changed.
+
+## Closed startup diagnostic variant
+
+The VM tag also retains only a bounded stderr byte count and fixed pattern
+booleans after the reader joins. The normal build still discards stderr. Both
+variants keep any stderr fatal. A missing marker remains the primary failure;
+classification never admits a module or changes policy. Incomplete, invalid
+encoding, read-failed or mixed known errors are not classified as policy proof.
+Raw stderr is cleared and is never written into a receipt.
