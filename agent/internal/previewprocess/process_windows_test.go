@@ -499,7 +499,19 @@ func TestWindowsRepeatedLifecycleReleasesHandles(t *testing.T) {
 		if lineWithin(t, p.Stdout) != "private-reply\n" {
 			t.Fatal("repeat reply missing")
 		}
-		if _, e = p.Stop(time.Second); e != nil {
+		started := time.Now()
+		result, stopErr := p.Stop(time.Second)
+		if stopErr != nil {
+			cause := "unknown"
+			switch result.Cause {
+			case CauseNatural, CauseCanceled, CauseStopDeadline, CauseDescendants, CauseContainment, CauseCleanupTimeout:
+				cause = string(result.Cause)
+			}
+			// One original Stop result only. No second inventory query, native
+			// error strings, IDs, paths, arguments or child output are published.
+			t.Logf("owner_stop_observation cause=%s exit_zero=%t root_exited=%t tree_exited=%t forced=%t containment=%t timeout=%t forced_error=%t elapsed_ms=%d",
+				cause, result.ExitCode == 0, result.RootExited, result.TreeExited, result.Forced,
+				errors.Is(stopErr, ErrContainment), errors.Is(stopErr, ErrCleanupTimeout), errors.Is(stopErr, ErrForcedCleanup), min(int64(60000), time.Since(started).Milliseconds()))
 			t.Fatal("repeat stop failed")
 		}
 		_ = p.Stdin.Close()

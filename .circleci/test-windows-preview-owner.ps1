@@ -53,11 +53,16 @@ $stage = 'native_tests'
 function Write-OwnerFailure {
     $names = @{}
     $locations = @{}
+    $stopObservations = @()
     if ((Test-Path $log) -and (Get-Item $log).Length -le 8MB) {
         foreach ($line in Get-Content $log) {
             try { $row = $line | ConvertFrom-Json } catch { continue }
             if ($row.Action -ceq 'fail' -and $null -ne $row.PSObject.Properties['Test'] -and $row.Test -cmatch '^Test[A-Za-z0-9_]{1,128}$') { $names[$row.Test] = $true }
             if ($null -ne $row.PSObject.Properties['Output']) {
+                foreach ($match in [regex]::Matches([string]$row.Output, 'owner_stop_observation cause=(natural|context_canceled|stop_deadline|residual_descendants|containment_failure|cleanup_timeout|unknown) exit_zero=(true|false) root_exited=(true|false) tree_exited=(true|false) forced=(true|false) containment=(true|false) timeout=(true|false) forced_error=(true|false) elapsed_ms=([0-9]{1,5})(?:\r?\n|$)')) {
+                    if ($stopObservations.Count -ge 8) { throw 'Too many stop observations' }
+                    $stopObservations += [ordered]@{ cause=$match.Groups[1].Value; exit_zero=($match.Groups[2].Value -ceq 'true'); root_exited=($match.Groups[3].Value -ceq 'true'); tree_exited=($match.Groups[4].Value -ceq 'true'); forced=($match.Groups[5].Value -ceq 'true'); containment=($match.Groups[6].Value -ceq 'true'); timeout=($match.Groups[7].Value -ceq 'true'); forced_error=($match.Groups[8].Value -ceq 'true'); elapsed_ms=[uint32]$match.Groups[9].Value }
+                }
                 foreach ($match in [regex]::Matches([string]$row.Output, '(?m)^\s*(process_test\.go|process_windows_test\.go):([1-9][0-9]{0,4}):')) {
                     $locations[($match.Groups[1].Value + ':' + $match.Groups[2].Value)] = $true
                 }
@@ -66,6 +71,7 @@ function Write-OwnerFailure {
     }
     $receipt = [ordered]@{ schema_version = 1; passed = $false; source_commit = $commit; stage = $stage;
         test_names = @($names.Keys | Sort-Object); test_locations = @($locations.Keys | Sort-Object);
+        stop_observations = @($stopObservations);
         raw_output_published = $false; production_integration_enabled = $false;
         window_or_media_started = $false; source_or_binary_artifacts_published = $false }
     [IO.File]::WriteAllText((Join-Path $out 'owner-failure.json'), (($receipt | ConvertTo-Json -Depth 6) + "`n"), (New-Object Text.UTF8Encoding($false)))
