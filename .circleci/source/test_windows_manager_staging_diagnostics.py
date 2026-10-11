@@ -13,6 +13,12 @@ class DiagnosticTests(unittest.TestCase):
         try: raise exception
         except Exception: return runner.diagnostic(self, sys.exc_info(), 'error')
 
+    def test_reviewed_suite_identity_manifest_matches(self):
+        names = set(unittest.defaultTestLoader.getTestCaseNames(runner.test_windows_manager_components.ManagerComponentTests))
+        self.assertEqual(names, runner.EXPECTED_TESTS)
+        self.assertEqual(len(names), 41)
+        self.assertNotIn('unclassified_test', names)
+
     def test_metadata_diagnostics_are_fixed_booleans_from_captured_values(self):
         left = types.SimpleNamespace(st_dev=771, st_ino=991, st_size=301, st_mtime_ns=101, st_ctime_ns=19, st_birthtime_ns=19)
         right = types.SimpleNamespace(**(vars(left) | {'st_ctime_ns': 20}))

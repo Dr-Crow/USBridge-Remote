@@ -11,6 +11,50 @@ import unittest
 import test_windows_manager_components
 from windows_manager_components import ComponentStagingError
 
+EXPECTED_TESTS = frozenset({
+    'test_altered_dependency_hash_or_bytes_is_rejected',
+    'test_altered_executable_hash_is_rejected',
+    'test_case_collision_in_allowlist_is_rejected',
+    'test_case_collision_on_disk_is_rejected',
+    'test_case_only_mismatch_does_not_weaken_allowlist',
+    'test_changed_input_during_copy_is_rejected_and_temporary_tree_removed',
+    'test_combined_component_aggregate_is_bounded',
+    'test_corrupted_copied_file_is_rejected',
+    'test_cross_role_hardlink_is_rejected',
+    'test_dependency_count_is_bounded',
+    'test_destination_file_and_dangling_symlink_are_rejected',
+    'test_destination_parent_symlink_is_rejected',
+    'test_destination_reuse_preserves_existing_content',
+    'test_empty_and_huge_files_are_rejected_before_hashing',
+    'test_empty_dependency_closure_is_valid',
+    'test_exact_two_components_with_app_local_dlls_and_hashed_manifest',
+    'test_executable_size_is_bounded',
+    'test_handle_metadata_change_during_read_is_still_rejected',
+    'test_invalid_destination_basenames_are_rejected',
+    'test_invalid_hashes_versions_and_commit_are_rejected',
+    'test_manifest_is_rehashed_before_publication',
+    'test_missing_dependency_is_rejected',
+    'test_new_input_member_during_copy_is_rejected',
+    'test_no_destination_visible_until_complete_atomic_publication',
+    'test_os_error_is_sanitized_without_exception_chaining',
+    'test_publish_race_never_replaces_existing_empty_destination',
+    'test_relative_paths_are_rejected',
+    'test_reparse_file_and_ancestor_are_rejected_portably',
+    'test_separate_cross_role_identical_executables_are_rejected',
+    'test_size_diagnosis_clamps_only_output_not_acceptance',
+    'test_source_alias_accepts_samefile_without_lexical_equality',
+    'test_source_destination_aliasing_is_rejected',
+    'test_successful_destination_cannot_be_reused',
+    'test_symlink_executable_dependency_and_parent_are_rejected',
+    'test_unknown_dll_is_rejected_in_both_components',
+    'test_unknown_non_dll_or_subdirectory_is_rejected',
+    'test_untrusted_dependency_names_are_rejected',
+    'test_viewer_alias_accepts_samefile_without_lexical_equality',
+    'test_viewer_size_diagnosis_preserves_bound_and_privacy',
+    'test_windows_cross_api_birthtime_is_explicit_and_full_stamps_remain_distinct',
+    'test_windows_cross_api_identity_size_write_and_birth_changes_are_rejected',
+})
+
 ALLOWED_SKIPS = {
     'test_case_collision_on_disk_is_rejected': 'case-insensitive filesystem cannot represent both basenames',
     'test_destination_file_and_dangling_symlink_are_rejected': 'native unprivileged symlink creation unavailable',
@@ -98,11 +142,20 @@ def run(output, commit):
     if re.fullmatch('[0-9a-f]{40}', commit) is None or output.exists():
         raise SystemExit('Exact commit and fresh diagnostic output required')
     suite = unittest.defaultTestLoader.loadTestsFromModule(test_windows_manager_components)
+    def identities(group):
+        for item in group:
+            if isinstance(item, unittest.TestSuite):
+                yield from identities(item)
+            else:
+                yield test_name(item)
+    discovered = list(identities(suite))
+    manifest_matches = len(discovered) == len(EXPECTED_TESTS) and set(discovered) == EXPECTED_TESTS
     result = unittest.TextTestRunner(stream=io.StringIO(), resultclass=ClosedResult).run(suite)
     skips = [{'test': test_name(test), 'reason': reason if ALLOWED_SKIPS.get(test_name(test)) == reason else 'unclassified_skip'}
              for test, reason in result.skipped]
-    passed = result.wasSuccessful() and result.testsRun == 39 and all(x['reason'] != 'unclassified_skip' for x in skips)
+    passed = result.wasSuccessful() and manifest_matches and result.testsRun == len(EXPECTED_TESTS) and all(x['reason'] != 'unclassified_skip' for x in skips)
     receipt = {'schema_version': 1, 'commit': commit, 'passed': passed, 'tests_run': result.testsRun,
+               'reviewed_test_manifest_matches': manifest_matches, 'expected_tests': len(EXPECTED_TESTS),
                'tests_passed': result.testsRun-len(result.failures)-len(result.errors)-len(skips),
                'failures': len(result.failures), 'errors': len(result.errors), 'skips': skips,
                'diagnostics': result.diagnostics[:128], 'raw_tracebacks_or_paths_published': False,
