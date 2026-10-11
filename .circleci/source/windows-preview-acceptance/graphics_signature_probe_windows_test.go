@@ -112,7 +112,7 @@ func TestWindowsSignatureVerifierExactGDIPlus(t *testing.T) {
 				return failure("gdiplus_directory_count_bound")
 			}
 			for _, entry := range entries {
-				if !entry.IsDir() || !gdiplusAssemblyCandidate(entry.Name()) {
+				if !entry.IsDir() || !gdiplusAssemblyCandidate(entry.Name()) || !gdiplusProbeAssembly(entry.Name()) {
 					continue
 				}
 				assemblyCandidates++
@@ -161,7 +161,7 @@ func TestWindowsSignatureVerifierExactGDIPlus(t *testing.T) {
 			}
 			got, hashErr := fileSHA(f, 64<<20)
 			final, finalErr := finalGraphicsPath(f)
-			if hashErr == nil && finalErr == nil && got == verifiedGdiplusSHA && strings.EqualFold(final, graphicsPath(path)) {
+			if hashErr == nil && finalErr == nil && got == gdiplusProbeSHA && strings.EqualFold(final, graphicsPath(path)) {
 				chosen, held = final, f
 				break
 			}
@@ -178,12 +178,12 @@ func TestWindowsSignatureVerifierExactGDIPlus(t *testing.T) {
 			}
 		}()
 		for i := 0; i < 3; i++ {
-			r := graphicsOSInspection{FileSHA: verifiedGdiplusSHA, FinalPathMatches: true}
+			r := graphicsOSInspection{FileSHA: gdiplusProbeSHA, FinalPathMatches: true}
 			if err := runGraphicsSignature(chosen, root, &r); err != nil {
 				r.Failure = err.Error()
 			}
 			proofs = append(proofs, r)
-			if !verifiedGdiplusProof("gdiplus.dll", "windows_side_by_side", &r) || r.Accepted {
+			if !gdiplusProbeProof(&r) || r.Accepted {
 				return failure("gdiplus_exact_query_failed")
 			}
 		}
@@ -205,7 +205,7 @@ func TestWindowsSignatureVerifierExactGDIPlus(t *testing.T) {
 		DirectoryEntriesScanned int                    `json:"directory_entries_scanned"`
 		AssemblyCandidates      int                    `json:"assembly_candidates"`
 		AssemblyNames           []string               `json:"assembly_names"`
-	}{1, os.Getenv("CIRCLE_SHA1"), err == nil && len(proofs) == 3, code, verifiedGdiplusSHA, proofs, false, entriesScanned, assemblyCandidates, assemblyNames}
+	}{1, os.Getenv("CIRCLE_SHA1"), err == nil && len(proofs) == 3, code, gdiplusProbeSHA, proofs, false, entriesScanned, assemblyCandidates, assemblyNames}
 	if !commitPattern.MatchString(receipt.Commit) {
 		t.Fatal("gdiplus_probe_commit_missing")
 	}
