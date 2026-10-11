@@ -57,7 +57,9 @@ bash scripts/build_web.sh 2>&1 | tee "$OUT/build.txt"
 node --test web/runtime-policy.test.cjs
 node --check web/runtime-policy.js
 node --check web/runtime-config.js
-node --check web/bootstrap.js
+node --input-type=module --check < web/bootstrap.js
+node --test web/transport/transport.test.mjs
+for module in web/transport/*.mjs; do node --check "$module"; done
 node --input-type=module --check < web/ai_vision.js
 for module in web/vendor/ort/*.mjs; do node --check "$module"; done
 node -e 'const fs = require("fs"); WebAssembly.compile(fs.readFileSync("web/app.wasm")).then(() => console.log("app.wasm compiles in Node"), err => { console.error(err); process.exitCode = 1; });' \

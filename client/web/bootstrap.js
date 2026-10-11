@@ -1,3 +1,5 @@
+import './transport/player.mjs';
+
 // Keeps the Fyne canvas (and therefore the whole app's layout -- video,
   // the on-screen keyboard panel, everything) sized to the *visual*
   // viewport instead of the full page, so that when the browser's real IME

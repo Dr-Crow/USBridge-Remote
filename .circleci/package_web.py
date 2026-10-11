@@ -11,6 +11,8 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+TRANSPORT = ('player.mjs', 'worker.mjs', 'wire.mjs', 'lifetime.mjs', 'policy.mjs')
+
 MODELS = ("icon_detect", "dbnet", "svtr")
 ORT = (
     "ort.webgpu.min.mjs",
@@ -35,6 +37,7 @@ def digest(path):
 def validate(root, goroot):
     web = root / "client/web"
     names = ["index.html", "gui.html", "app.wasm", "wasm_exec.js", "ai_vision.js", "runtime-config.js", "runtime-policy.js", "bootstrap.js"]
+    names += ["transport/" + name for name in TRANSPORT]
     names += ["vendor/ort/" + name for name in ORT]
     names += ["models/" + name + ".onnx" for name in MODELS]
     names += ["vendor/ort/README.md"]

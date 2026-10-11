@@ -74,6 +74,14 @@ with tempfile.TemporaryDirectory(prefix='usbridge-browser-') as tmp:
             page.goto('http://127.0.0.1:%d/' % server.server_port, wait_until='networkidle', timeout=90000)
             wait_for_app(page)
             page.wait_for_timeout(3000)
+            report['static_transport'] = page.evaluate('''async () => {
+              const api=globalThis.__usbridgeSecureWT;
+              const proof=await api.probeWorker();
+              return {protocol:api.protocol,frozen:Object.isFrozen(api),enabled:api.transportEnabled,proof};
+            }''')
+            assert report['static_transport']['frozen'] is True and report['static_transport']['enabled'] is False
+            assert report['static_transport']['proof']['staticWorkerReady'] is True
+            assert report['static_transport']['proof']['mediaEnabled'] is False
             report['policy'] = page.evaluate('''async () => {
               let fetchBlocked=false,wsBlocked=false,iceBlocked=false;
               try { await fetch('https://example.com/'); } catch(e) { fetchBlocked=String(e).includes('Strict LAN'); }

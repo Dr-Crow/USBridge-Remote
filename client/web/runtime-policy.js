@@ -25,6 +25,23 @@
     const WS = globalThis.WebSocket;
     globalThis.WebSocket = class extends WS { constructor(url, protocols) { super(local(url), protocols); } };
   }
+  if (globalThis.WebTransport) {
+    const WT = globalThis.WebTransport;
+    globalThis.WebTransport = class extends WT {
+      constructor(url, options = {}) {
+        const checked = new URL(local(url));
+        if (checked.protocol !== 'https:' || checked.pathname !== '/webtransport' || checked.search)
+          throw new Error('Strict LAN: invalid WebTransport endpoint');
+        if (!options || typeof options !== 'object' || Array.isArray(options) ||
+            'serverCertificateHashes' in options || Object.keys(options).some(k => k !== 'congestionControl'))
+          throw new Error('Strict LAN: WebTransport requires browser-trusted TLS');
+        const preference = options.congestionControl;
+        if (preference !== undefined && !['default', 'throughput', 'low-latency'].includes(preference))
+          throw new Error('Strict LAN: invalid WebTransport preference');
+        super(checked.href, preference === undefined ? {} : {congestionControl: preference});
+      }
+    };
+  }
   if (globalThis.RTCPeerConnection) {
     const RTC = globalThis.RTCPeerConnection;
     const check = c => { if (c && c.iceServers && c.iceServers.length) throw new Error('Strict LAN: ICE servers forbidden'); };

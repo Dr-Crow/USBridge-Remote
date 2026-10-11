@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from package_web import MODELS, ORT, WASM_HEADER, validate
+from package_web import MODELS, ORT, TRANSPORT, WASM_HEADER, validate
 
 
 class BundleValidationTests(unittest.TestCase):
@@ -14,6 +14,7 @@ class BundleValidationTests(unittest.TestCase):
         self.web = self.root / "client/web"
         self.goroot = self.root / "go"
         names = ["index.html", "gui.html", "ai_vision.js", "runtime-config.js", "runtime-policy.js", "bootstrap.js", "wasm_exec.js", "app.wasm"]
+        names += ["transport/" + name for name in TRANSPORT]
         names += ["vendor/ort/" + name for name in ORT]
         names += ["vendor/ort/README.md"]
         for name in names:
@@ -39,6 +40,11 @@ class BundleValidationTests(unittest.TestCase):
         assets = validate(self.root, self.goroot)
         self.assertIn("models/svtr.onnx", assets)
         self.assertIn("vendor/ort/ort-wasm-simd-threaded.jsep.wasm", assets)
+
+    def test_missing_static_transport_worker_fails(self):
+        (self.web / "transport/worker.mjs").unlink()
+        with self.assertRaisesRegex(ValueError, "Missing"):
+            validate(self.root, self.goroot)
 
     def test_missing_runtime_fails(self):
         (self.web / "vendor/ort/ort-wasm-simd-threaded.wasm").unlink()
