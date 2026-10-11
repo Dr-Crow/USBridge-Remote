@@ -89,3 +89,31 @@ streamer parser acceptance, restart/expiry behavior, physical streaming/USB and
 packet capture with public egress blocked remain required before claiming a
 working offline system. Browser guards and CSP are request boundaries, not an
 OS firewall or evidence about proprietary child-process traffic.
+
+## Browser transport deployment status
+
+The client is a Go `js/wasm` application plus local static JavaScript modules.
+The source-built ZIP and Docker image explicitly include all declared transport
+modules, including the parser and bounded canvas decoder. Build tests reject
+missing assets, and the HTTPS host serves only the declared paths. No Node
+application server or third-party script CDN is needed at runtime.
+
+`deploy/lan/compose.yaml` builds the Linux/amd64 static HTTPS host;
+`compose.offline.yaml` runs an exact previously loaded image with
+`pull_policy: never`. These Compose files are suitable inputs for a Compose
+manager such as Komodo, but deployment on that user's host remains untested.
+Both use read-only TLS/component mounts, a read-only root, dropped capabilities,
+no-new-privileges and an internal Docker network. The explicit bind address and
+agent-origin allowlist are still operator inputs. Browser TLS trust must be
+valid for the chosen deployment; the ephemeral CI CA is never a production CA.
+
+The new WebTransport UI is currently disabled. Its eventual HTTP/3 service is a
+separate authenticated media backend, not part of the static HTTPS host. It
+needs browser-trusted TLS, an exact authorized origin/endpoint and a reachable
+UDP port for QUIC, in addition to the existing HTTPS frontend. A TCP-only reverse
+proxy does not provide that UDP service. The current Compose files do not expose
+or start it. Private server/browser interoperability is tested in the private
+component repository; no private implementation or delivery bundle is copied
+into this public image. A future service definition must preserve explicit
+network/origin/authentication boundaries rather than automatically opening a
+new listener or forwarding destination.

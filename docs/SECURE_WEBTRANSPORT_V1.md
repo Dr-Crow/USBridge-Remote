@@ -151,3 +151,30 @@ expiry. After WELCOME the owner preserves the session deadline, rather than
 ending a valid session when the redemption window closes. Monotonic elapsed
 limits prevent wall-clock rollback from extending either initial allowance.
 The UI remains disabled while actual HTTP/3 interoperability is being proved.
+
+## Bounded canvas decoding increment
+
+`video.mjs` is an explicitly invoked sink, separate from transport selection.
+It borrows the same absolute setup lifetime for WebCodecs support/configuration.
+The first profile is 8-bit 4:2:0 Constrained Baseline H.264, level3.0,
+`avc1.42C01E`. The parser bounds Annex-B units, SPS/PPS identifiers, progressive
+coded/cropped dimensions, reference count, slice count and ordering before
+submitting bytes to the browser decoder. This is structural admission, not a
+replacement for the browser's complete bitstream validation.
+
+At most two frames can be pending in the decoder, with at most18,000 frames
+received per invocation. Newer independent IDRs may replace late/dropped work.
+Every output must match an outstanding timestamp and the authorized dimensions;
+every VideoFrame is closed even after presentation failure or shutdown. Cleanup
+errors remain visible in the closed stats and cannot establish a clean receipt.
+The caller must connect sink failure to transport cancellation and verify both
+owners' retirement. Native decoder `state=closed` alone is not an OS process-tree
+join claim.
+
+Portable tests cover queue bounds, bad profiles/geometry, output identity,
+rendering errors, late callbacks, frame/decoder release errors and the shared
+setup deadline. The new Chromium CI gate requires decoding twelve independent blue/orange
+128x72 fixtures to an owned visible canvas and checks every pixel, sequence and
+closed decoder. The fixture does not use QUIC, audio, input or capture. Runtime
+transport selection stays disabled until the private browser/server composition
+passes its own authenticated media and natural-close checks.

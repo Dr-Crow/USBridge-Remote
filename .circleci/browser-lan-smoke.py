@@ -100,6 +100,9 @@ with tempfile.TemporaryDirectory(prefix='usbridge-browser-') as tmp:
             }''')
             assert all(report['control_owner_mock'][key] for key in ('helloVerified','parentCancelled','joined','closedOnce','locksReleased'))
             assert report['control_owner_mock']['mediaStarted'] is False and report['control_owner_mock']['realQUIC'] is False
+            report['synthetic_video'] = page.evaluate(pathlib.Path('.circleci/browser_video_fixture.js').read_text())
+            assert report['synthetic_video']['checked_pixels'] == 12 * 128 * 72
+            assert report['synthetic_video']['color_changes'] == 11
             report['policy'] = page.evaluate('''async () => {
               let fetchBlocked=false,wsBlocked=false,iceBlocked=false;
               try { await fetch('https://example.com/'); } catch(e) { fetchBlocked=String(e).includes('Strict LAN'); }

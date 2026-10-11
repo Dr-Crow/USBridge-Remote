@@ -54,6 +54,18 @@ class BundleValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Missing"):
             validate(self.root, self.goroot)
 
+    def test_every_declared_transport_asset_is_required(self):
+        for name in TRANSPORT:
+            with self.subTest(name=name):
+                path = self.web / ('transport/' + name)
+                original = path.read_bytes()
+                path.unlink()
+                try:
+                    with self.assertRaisesRegex(ValueError, "Missing"):
+                        validate(self.root, self.goroot)
+                finally:
+                    path.write_bytes(original)
+
     def test_missing_runtime_fails(self):
         (self.web / "vendor/ort/ort-wasm-simd-threaded.wasm").unlink()
         with self.assertRaisesRegex(ValueError, "Missing"):
