@@ -77,6 +77,9 @@ def _certificates(root: pathlib.Path) -> dict:
     # loopback fixture. Both key objects become unreachable on return.
     return {'ca_sha256': ca.fingerprint(hashes.SHA256()).hex(),
             'leaf_sha256': leaf.fingerprint(hashes.SHA256()).hex(),
+            'leaf_hash_kind': 'full-der-sha256', 'leaf_key_type': 'P-256',
+            'leaf_not_before_ms': int(start.timestamp() * 1000),
+            'leaf_not_after_ms': int(end.timestamp() * 1000),
             'validity_seconds': 3600, 'permitted_ip': '127.0.0.1',
             'ca_private_key_written': False}
 

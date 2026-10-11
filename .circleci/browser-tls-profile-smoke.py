@@ -81,6 +81,12 @@ async def main():
     profile=EphemeralBrowserTLS()
     try:
         with profile:
+            # Metadata is derived from the exact generated one-hour P-256 leaf,
+            # for separately labelled hash-auth fixtures. Ordinary TLS stays
+            # the trust route in this smoke test.
+            assert profile.receipt['leaf_hash_kind'] == 'full-der-sha256'
+            assert profile.receipt['leaf_key_type'] == 'P-256'
+            assert profile.receipt['leaf_not_after_ms'] - profile.receipt['leaf_not_before_ms'] == 3600000
             # Native TLS regression: accept a TCP peer that never sends a
             # ClientHello, then prove shutdown interrupts/joins that exact work.
             stalled=LoopbackTLS(profile.cert_file,profile.key_file)

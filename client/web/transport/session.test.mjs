@@ -146,3 +146,23 @@ test('missing incoming video support retires configured decoder and transport',a
 });
 
 test('throwing codec close cannot skip transport, control and media cancellation',async()=>{const f=videoFixture(),owner=await negotiateVideo(params({canvas:{}}),f.options);f.sink.close=()=>{throw Error('private');};await assert.rejects(owner.close(),{code:'session_cleanup_incomplete'});assert.equal(f.state.closes,1);assert.equal(f.incoming.locked,false);assert.equal(f.stream.readable.locked,false);assert.equal(f.stream.writable.locked,false);});
+
+test('shared authenticated owner preserves production lifecycle and exact grant',async()=>{
+  const {ownAuthenticatedControl}=await import('./session_owner.mjs');
+  const observed=[];
+  for(const start of [negotiateControl,ownAuthenticatedControl]) {
+    const f=fixture();const p=params();const session=await start(p,f.options);
+    assert.deepEqual(f.state.hello,{protocol:p.grant.protocol,session_id:p.grant.session_id,ticket:p.grant.ticket});
+    const result=await session.close();
+    observed.push({result,starts:f.state.starts,closes:f.state.closes,cancels:f.state.cancels,aborts:f.state.aborts,writes:f.state.writes});
+  }
+  assert.deepEqual(observed[0],observed[1]);
+});
+test('production entrypoint refuses fixture trust and unauthenticated capability before native construction',async()=>{
+  for(const mode of ['fixture-pinned-leaf','hash','untrusted']) {
+    const f=fixture();await assert.rejects(negotiateControl(params({capabilityBody:json({...capability,tls_mode:mode})}),f.options),e=>e.code==='capability_unsupported');assert.equal(f.state.starts,0);
+  }
+  for(const status of [401,403]) {
+    const f=fixture();await assert.rejects(negotiateControl(params({capabilityStatus:status}),f.options),e=>e.code==='authentication_failed');assert.equal(f.state.starts,0);
+  }
+});
