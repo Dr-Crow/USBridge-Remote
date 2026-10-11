@@ -708,29 +708,34 @@ func (s *Server) mouseWS(w http.ResponseWriter, r *http.Request) {
 		return conn.WriteJSON(v)
 	}
 
-	// Keepalive ping pusher
-	stopPush := make(chan struct{})
-	defer close(stopPush)
+	// Closing the transport precedes joining the ping worker, so a blocked
+	// writer cannot keep the handler alive after cancellation or peer EOF.
+	workers := newSocketWorkers(r.Context(), conn.Close)
+	defer func() {
+		if err := workers.closeAndJoin(); err != nil {
+			log.Printf("[api] mouse_ws socket retirement failed: %v", err)
+		}
+	}()
 
 	// Keepalive pings every wsPingInterval; while this connection holds a
 	// button, ping every mouseWSHeldPing instead and treat mouseWSHeldStale
 	// of total silence as a dead client: release and close, rather than
 	// leaving the host mouse held until wsReadTimeout (90s) expires.
-	go func() {
+	workers.goWorker(func() {
 		tick := time.NewTicker(mouseWSHeldPing)
 		defer tick.Stop()
 		lastPing := time.Now()
 
 		for {
 			select {
-			case <-stopPush:
+			case <-workers.ctx.Done():
 				return
 			case now := <-tick.C:
 				held := s.mouseHeldBy(owner)
 				if held && now.Sub(time.Unix(0, lastSeen.Load())) > mouseWSHeldStale {
 					log.Printf("[api] mouse_ws silent for >%s with buttons held, releasing and closing", mouseWSHeldStale)
 					s.releaseHeldMouse(owner, "mouse_ws went silent")
-					conn.Close()
+					workers.closeIO()
 					return
 				}
 				if !held && now.Sub(lastPing) < wsPingInterval {
@@ -739,12 +744,12 @@ func (s *Server) mouseWS(w http.ResponseWriter, r *http.Request) {
 				lastPing = now
 				if err := safePing(); err != nil {
 					log.Printf("[api] mouse_ws ping failed, closing: %v", err)
-					conn.Close()
+					workers.closeIO()
 					return
 				}
 			}
 		}
-	}()
+	})
 
 	for {
 		var req MouseRequest
