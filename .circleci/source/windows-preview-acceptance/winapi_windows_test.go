@@ -235,9 +235,18 @@ func TestWindowsParentCrashRetiresSuspendedChild(t *testing.T) {
 	if state, err := syscall.WaitForSingleObject(suspended, 3000); err != nil || state != syscall.WAIT_OBJECT_0 {
 		t.Fatal("pre-resume parent crash stranded a child")
 	}
-	pids, snapshot, err := outer.pidsSnapshot()
-	if err != nil || len(pids) != 0 {
-		logInventorySnapshot(t, outer, snapshot, err)
+	// Both retained handles have signaled above. Windows may still list those
+	// same retired PIDs briefly; neither an unknown member nor incomplete
+	// accounting is an empty Job. Use the existing bounded retirement rule.
+	var snapshot jobProcessList
+	var queryErr error
+	query := func() ([]uint32, error) {
+		var ids []uint32
+		ids, snapshot, queryErr = outer.pidsSnapshot()
+		return ids, queryErr
+	}
+	if err := waitRetiredInventory(query, map[uint32]bool{parent.pid: true, uint32(pid): true}, 3*time.Second); err != nil {
+		logInventorySnapshot(t, outer, snapshot, queryErr, parent.pid, uint32(pid))
 		t.Fatal("outer safety job was needed to clean up")
 	}
 }

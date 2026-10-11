@@ -139,6 +139,22 @@ try {
         }
     }
     if ($retirementPasses -ne 500 -or $retirementPackages -ne 1) { throw 'Incomplete natural retirement probe' }
+    Report-Stage 'parent_crash_retirement_regression'
+    & $go test -json -count=100 -timeout=3m '-run=^TestWindowsParentCrashRetiresSuspendedChild$' ./... 1> $log 2> $stderr
+    if ($LASTEXITCODE -ne 0) { Report-TestFailure; throw 'Parent crash retirement regression failed' }
+    $crashPasses = 0
+    $crashPackages = 0
+    foreach ($line in Get-Content $log) {
+        $row = $line | ConvertFrom-Json
+        if ($row.Action -in @('fail', 'skip', 'build-fail')) { Report-TestFailure; throw 'Unexpected parent crash regression result' }
+        if ($row.Action -ceq 'pass') {
+            if ($null -ne $row.PSObject.Properties['Test']) {
+                if ($row.Test -cne 'TestWindowsParentCrashRetiresSuspendedChild') { throw 'Unexpected parent crash regression assertion' }
+                $crashPasses++
+            } else { $crashPackages++ }
+        }
+    }
+    if ($crashPasses -ne 100 -or $crashPackages -ne 1) { throw 'Incomplete parent crash regression' }
     Report-Stage 'native_tests'
     & $go test -json -count=20 -timeout=5m ./... 1> $log 2> $stderr
     if ($LASTEXITCODE -ne 0) { Report-TestFailure; throw 'Native process containment tests failed; raw helper diagnostics remain private' }
@@ -187,6 +203,7 @@ $receipt = [ordered]@{
     native_execution = $true
     tests = $counts
     natural_retirement_probe_passes = $retirementPasses
+    parent_crash_retirement_regression_passes = $crashPasses
     total_test_passes = $totalPass
     failures = 0
     skips = 0
