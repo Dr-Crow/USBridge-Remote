@@ -11,7 +11,22 @@ if ((Get-FileHash -Algorithm SHA256 (Join-Path $tools 'go1.26.9.windows-amd64.zi
 $commit = (& git rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $commit -cnotmatch '^[0-9a-f]{40}$' -or $commit -cne $env:CIRCLE_SHA1) { throw 'Exact source commit required' }
 $owner = Get-Content -Raw (Join-Path $out 'owner.json') | ConvertFrom-Json
-if ($owner.passed -ne $true -or $owner.source_commit -cne $commit -or $owner.required_native_passes -ne 260 -or $owner.failures -ne 0 -or $owner.skips -ne 0 -or $owner.native_execution -ne $true -or $owner.platform -cne 'windows/amd64' -or $owner.go_version -cne 'go1.26.9') { throw 'Same-commit native owner prerequisite missing' }
+$contractPath = Join-Path $PSScriptRoot 'preview-owner-contract.json'
+$contract = Get-Content -Raw -LiteralPath $contractPath | ConvertFrom-Json
+$contractHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $contractPath).Hash.ToLowerInvariant()
+if ($contract.schema_version -ne 1 -or $contract.repetitions -ne 20) { throw 'Unexpected owner contract version or repetition budget' }
+$required = @($contract.native_tests)
+$contractRequired = $required + @($contract.additional_contract_tests)
+if ($required.Count -lt 1 -or $contractRequired.Count -gt 128 -or @($contractRequired | Sort-Object -Unique).Count -ne $contractRequired.Count) { throw 'Invalid owner test manifest' }
+foreach ($name in $contractRequired) { if ($name -cnotmatch '^Test[A-Za-z0-9_]{1,128}$') { throw 'Invalid owner manifest name' } }
+$repetitions = [int]$contract.repetitions
+$expectedNativePasses = $required.Count * $repetitions
+if ($owner.passed -ne $true -or $owner.source_commit -cne $commit -or $owner.contract_manifest_sha256 -cne $contractHash -or $owner.required_native_passes -ne $expectedNativePasses -or $owner.contract_test_passes -ne $contractRequired.Count -or $owner.failures -ne 0 -or $owner.skips -ne 0 -or $owner.native_vet -ne $true -or $owner.native_execution -ne $true -or $owner.platform -cne 'windows/amd64' -or $owner.go_version -cne 'go1.26.9') { throw 'Same-commit native owner prerequisite missing' }
+if (@($owner.native_assertions.PSObject.Properties).Count -ne $required.Count) { throw 'Unexpected owner assertion inventory' }
+foreach ($name in $required) {
+    $property = $owner.native_assertions.PSObject.Properties[$name]
+    if ($null -eq $property -or $property.Value -ne $repetitions) { throw 'Missing owner assertion repetitions' }
+}
 New-Item -ItemType Directory -Force $work, $out | Out-Null
 $env:GOROOT = Join-Path $tools 'go'
 $env:GOTOOLCHAIN = 'local'

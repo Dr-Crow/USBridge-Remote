@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "repetitions": 20,
+  "native_tests": [
+    "TestWindowsNativeLayoutsAndEmptyEnvironment",
+    "TestWindowsPrivatePipesExactOwnershipAndNaturalEOF",
+    "TestWindowsHandleListExcludesUnknownInheritableHandle",
+    "TestWindowsRootCrashRetiresOutputHoldingDescendant",
+    "TestWindowsZeroExitStillRecordsForcedDescendantCleanup",
+    "TestWindowsCancellationJoinsOwnedTree",
+    "TestWindowsBlockedStdinCannotDeadlockStop",
+    "TestWindowsBlockedStdinCannotDeadlockCancellation",
+    "TestWindowsStartupCanceledBeforeResume",
+    "TestWindowsStartupCanceledWithCleanupFailure",
+    "TestWindowsOwnerExitBeforeResumeRetiresSuspendedChild",
+    "TestWindowsRepeatedLifecycleReleasesHandles",
+    "TestWindowsBlockedOutputReadsJoinOnStop",
+    "TestWindowsStartupCloseFailuresRetireOwnedChild",
+    "TestWindowsStartupCloseSuccessPrecedesTransfer",
+    "TestWindowsStartupRollbackCloseFailureKeepsPrimaryCause"
+  ],
+  "additional_contract_tests": [
+    "TestWindowsSyntheticHelper",
+    "TestSpecContract",
+    "TestNaturalWaitPreservesUnreadOutput",
+    "TestZeroRootExitWithDescendantIsForced",
+    "TestRootAccountingLagIsNatural",
+    "TestContextCancellationCannotBlockOnStdinClose",
+    "TestConcurrentStopUsesEarliestDeadline",
+    "TestGracefulStopClosesInput",
+    "TestNonzeroNaturalExitIsNotSuccess",
+    "TestErrorsDoNotIncludeNativeContent",
+    "TestStartupCleanupErrorPreservesCauseAndSanitizesFailures",
+    "TestDoneWaitsForOwnedCloserAfterTreeExit",
+    "TestOwnedCloserTimeoutCannotClaimJoinedCleanup",
+    "TestStopCallerDeadlineSurvivesStalledNativeOperation",
+    "TestOwnedCloserFailureCannotClaimNaturalCleanup",
+    "TestAlreadyClosedInputIsNotCleanupFailure",
+    "TestWaiterReleaseFollowsTreeRetirement",
+    "TestWaiterHandleCloseFailureCannotClaimNatural",
+    "TestPIDReturnsImmutableLaunchMetadata"
+  ]
+}
