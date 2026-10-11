@@ -101,7 +101,7 @@ def run(output, commit):
     result = unittest.TextTestRunner(stream=io.StringIO(), resultclass=ClosedResult).run(suite)
     skips = [{'test': test_name(test), 'reason': reason if ALLOWED_SKIPS.get(test_name(test)) == reason else 'unclassified_skip'}
              for test, reason in result.skipped]
-    passed = result.wasSuccessful() and result.testsRun == 36 and all(x['reason'] != 'unclassified_skip' for x in skips)
+    passed = result.wasSuccessful() and result.testsRun == 39 and all(x['reason'] != 'unclassified_skip' for x in skips)
     receipt = {'schema_version': 1, 'commit': commit, 'passed': passed, 'tests_run': result.testsRun,
                'tests_passed': result.testsRun-len(result.failures)-len(result.errors)-len(skips),
                'failures': len(result.failures), 'errors': len(result.errors), 'skips': skips,

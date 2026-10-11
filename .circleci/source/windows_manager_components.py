@@ -92,6 +92,20 @@ def _stamp(info):
     return _identity(info), info.st_size, info.st_mtime_ns, info.st_ctime_ns
 
 
+def _cross_api_stamp(info):
+    # CPython on Windows exposes birth time through path st_ctime_ns, but
+    # metadata-change time through fstat st_ctime_ns (cpython issue #157671).
+    # Use the explicitly named birth field only for cross-API comparison.
+    # Full path and handle stamps are each still checked against their own
+    # original observation, so a handle-side metadata change remains fatal.
+    if os.name == 'nt':
+        _require(hasattr(info, 'st_birthtime_ns'), 'input_changed')
+        timestamp = info.st_birthtime_ns
+    else:
+        timestamp = info.st_ctime_ns
+    return _identity(info), info.st_size, info.st_mtime_ns, timestamp
+
+
 def _absent(path):
     try:
         path.lstat()
@@ -122,7 +136,7 @@ def _hash_file(path, expected, limit, snapshot=None, target=None):
     flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
     with os.fdopen(os.open(path, flags), 'rb') as source:
         opened = os.fstat(source.fileno())
-        _require(_plain(opened) and _stamp(opened) == _stamp(info), 'input_changed')
+        _require(_plain(opened) and _cross_api_stamp(opened) == _cross_api_stamp(info), 'input_changed')
         sink = target.open('xb') if target is not None else None
         try:
             size, digest = 0, hashlib.sha256()
@@ -138,7 +152,7 @@ def _hash_file(path, expected, limit, snapshot=None, target=None):
             if sink is not None:
                 sink.flush()
                 os.fsync(sink.fileno())
-            _require(size == info.st_size and _stamp(os.fstat(source.fileno())) == _stamp(info), 'input_changed')
+            _require(size == info.st_size and _stamp(os.fstat(source.fileno())) == _stamp(opened), 'input_changed')
         finally:
             if sink is not None:
                 sink.close()

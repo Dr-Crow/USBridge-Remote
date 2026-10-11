@@ -60,6 +60,41 @@ class ManagerComponentTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob('.manager-components-*')), [])
         return caught.exception
 
+    def test_windows_cross_api_birthtime_is_explicit_and_full_stamps_remain_distinct(self):
+        path = types.SimpleNamespace(st_dev=7, st_ino=8, st_size=9, st_mtime_ns=10, st_ctime_ns=11, st_birthtime_ns=11)
+        handle = types.SimpleNamespace(**(vars(path) | {'st_ctime_ns': 12}))
+        with mock.patch.object(manager, 'os', types.SimpleNamespace(name='nt')):
+            self.assertEqual(manager._cross_api_stamp(path), manager._cross_api_stamp(handle))
+        self.assertNotEqual(manager._stamp(path), manager._stamp(handle))
+
+    def test_windows_cross_api_identity_size_write_and_birth_changes_are_rejected(self):
+        info = types.SimpleNamespace(st_dev=7, st_ino=8, st_size=9, st_mtime_ns=10, st_ctime_ns=11, st_birthtime_ns=11)
+        with mock.patch.object(manager, 'os', types.SimpleNamespace(name='nt')):
+            for field in ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_birthtime_ns'):
+                changed = types.SimpleNamespace(**(vars(info) | {field: getattr(info, field) + 1}))
+                self.assertNotEqual(manager._cross_api_stamp(info), manager._cross_api_stamp(changed))
+            missing = types.SimpleNamespace(**{k:v for k,v in vars(info).items() if k != 'st_birthtime_ns'})
+            with self.assertRaises(manager.ComponentStagingError): manager._cross_api_stamp(missing)
+        with mock.patch.object(manager, 'os', types.SimpleNamespace(name='posix')):
+            changed = types.SimpleNamespace(**(vars(info) | {'st_ctime_ns': 12}))
+            self.assertNotEqual(manager._cross_api_stamp(info), manager._cross_api_stamp(changed))
+
+    def test_handle_metadata_change_during_read_is_still_rejected(self):
+        original = os.fstat
+        calls = 0
+        def changed(fd):
+            nonlocal calls
+            info = original(fd)
+            calls += 1
+            if calls == 2:
+                return types.SimpleNamespace(st_dev=info.st_dev, st_ino=info.st_ino, st_size=info.st_size,
+                    st_mtime_ns=info.st_mtime_ns, st_ctime_ns=info.st_ctime_ns + 1)
+            return info
+        with mock.patch.object(manager.os, 'fstat', changed):
+            self.rejected('input_changed')
+        self.assertEqual(calls, 2)
+        self.assertFalse(self.output.exists())
+
     def test_exact_two_components_with_app_local_dlls_and_hashed_manifest(self):
         receipt = self.stage()
         manifest_raw = (self.output / 'manifest.json').read_bytes()
