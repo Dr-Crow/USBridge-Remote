@@ -86,19 +86,20 @@ with tempfile.TemporaryDirectory(prefix='usbridge-browser-') as tmp:
               const {negotiateControl}=await import('/transport/session.mjs');
               const {PROTOCOL,ControlParser,encodeMessage,validateHello}=await import('/transport/wire.mjs');
               const json=v=>new TextEncoder().encode(JSON.stringify(v));
-              let input,ended,closes=0,helloVerified=false;
+              let input,output,ended,closes=0,helloVerified=false,terminalErrorInjected=false;
+              const terminalError=new Error('fixed terminal stream fixture');
               const closed=new Promise(resolve=>{ended=resolve;});
               const welcome={protocol:PROTOCOL,session_id:'browser_fixture',codec:'h264',width:128,height:72,fps:30,audio:{codec:'opus',sample_rate:48000,channels:2},input:false,channels:[]};
               const readable=new ReadableStream({start(c){input=c;}});
-              const writable=new WritableStream({write(frame){const [m]=new ControlParser([1]).feed(frame);const h=validateHello(m.payload);helloVerified=h.session_id===welcome.session_id;input.enqueue(encodeMessage(1,json(welcome)));}});
+              const writable=new WritableStream({start(c){output=c;},write(frame){const [m]=new ControlParser([1]).feed(frame);const h=validateHello(m.payload);helloVerified=h.session_id===welcome.session_id;input.enqueue(encodeMessage(1,json(welcome)));}});
               const endpoint='https://127.0.0.1:8444/webtransport';
-              class MockTransport {constructor(){this.ready=Promise.resolve();this.closed=closed;}createBidirectionalStream(){return Promise.resolve({readable,writable});}close(){closes++;ended();}}
+              class MockTransport {constructor(){this.ready=Promise.resolve();this.closed=closed;}createBidirectionalStream(){return Promise.resolve({readable,writable});}close(){closes++;input.error(terminalError);output.error(terminalError);terminalErrorInjected=true;ended();}}
               const signal=new AbortController();
               const owner=await negotiateControl({grant:{protocol:PROTOCOL,session_id:welcome.session_id,ticket:'A'.repeat(43),endpoint,origin:location.origin,ticket_expires_at_ms:Date.now()+10000,session_expires_at_ms:Date.now()+10000,width:128,height:72,fps:30},authorizedEndpoint:endpoint,capabilityStatus:200,capabilityBody:json({protocol:PROTOCOL,ready:true,endpoint,tls_mode:'trusted',codec:'h264',audio:'opus',input:false,channels:[]}),signal:signal.signal},{Transport:MockTransport});
               signal.abort();const result=await owner.closed;
-              return {helloVerified,parentCancelled:result.reason==='cancelled',joined:result.joined,closedOnce:closes===1,locksReleased:!readable.locked&&!writable.locked,mediaStarted:owner.mediaStarted,realQUIC:false};
+              return {helloVerified,terminalErrorInjected,parentCancelled:result.reason==='cancelled',joined:result.joined,closedOnce:closes===1,locksReleased:!readable.locked&&!writable.locked,mediaStarted:owner.mediaStarted,realQUIC:false};
             }''')
-            assert all(report['control_owner_mock'][key] for key in ('helloVerified','parentCancelled','joined','closedOnce','locksReleased'))
+            assert all(report['control_owner_mock'][key] for key in ('helloVerified','terminalErrorInjected','parentCancelled','joined','closedOnce','locksReleased'))
             assert report['control_owner_mock']['mediaStarted'] is False and report['control_owner_mock']['realQUIC'] is False
             report['synthetic_video'] = page.evaluate(pathlib.Path('.circleci/browser_video_fixture.js').read_text())
             assert report['synthetic_video']['checked_pixels'] == 12 * 128 * 72

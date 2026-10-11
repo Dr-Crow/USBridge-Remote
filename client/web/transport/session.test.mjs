@@ -18,7 +18,7 @@ function fixture(options={}) {
   class Transport {
     constructor(endpoint,opts){state.starts++;assert.equal(endpoint,url);assert.deepEqual(opts,{congestionControl:'low-latency'});this.closed=ended.promise;if(options.videoIncoming)Object.defineProperty(this,'incomingUnidirectionalStreams',{get(){state.videoReads=(state.videoReads||0)+1;return options.videoIncoming;}});this.ready=options.readyStuck?ready.promise:Promise.resolve();}
     createBidirectionalStream(){state.acquires++;if(options.acquirePending)return acquired.promise;return Promise.resolve(stream);}
-    close(){state.closes++;if(!options.closedStuck)ended.resolve();if(options.readyStuck&&!options.readyNeverSettles)ready.reject(Error('closed'));if(options.acquirePending&&!options.acquireNeverSettles)acquired.resolve(stream);if(options.writeStuck&&!options.writeNeverSettles)write.reject(Error('closed'));}
+    close(){state.closes++;if(options.terminalErrorOnClose){input.error(options.terminalErrorOnClose);output.error(options.terminalErrorOnClose);}if(!options.closedStuck)ended.resolve();if(options.readyStuck&&!options.readyNeverSettles)ready.reject(Error('closed'));if(options.acquirePending&&!options.acquireNeverSettles)acquired.resolve(stream);if(options.writeStuck&&!options.writeNeverSettles)write.reject(Error('closed'));}
   }
   return {state,stream,input,output,ready,ended,acquired,Transport,options:{Transport,pageOrigin:origin,cleanupTimeoutMs:30}};
 }
@@ -165,4 +165,19 @@ test('production entrypoint refuses fixture trust and unauthenticated capability
   for(const status of [401,403]) {
     const f=fixture();await assert.rejects(negotiateControl(params({capabilityStatus:status}),f.options),e=>e.code==='authentication_failed');assert.equal(f.state.starts,0);
   }
+});
+
+
+test('independently observed identical stored errors permit natural control retirement',async()=>{
+  const f=fixture({terminalErrorOnClose:Error('fixed terminal fixture')});const owner=await negotiateControl(params(),f.options);
+  const result=await owner.close();assert.equal(result.joined,true);assert.equal(result.reason,'closed');assert.equal(f.state.cancels,0);assert.equal(f.state.aborts,0);assert.equal(f.stream.readable.locked,false);assert.equal(f.stream.writable.locked,false);assert.equal(await owner.closed,result);
+});
+test('peer terminal stream errors retain failure cause without inventing cleanup failure',async()=>{
+  const f=fixture(),owner=await negotiateControl(params(),f.options),error=Error('fixed peer fixture');
+  f.input.error(error);f.output.error(error);f.ended.reject(error);const result=await owner.closed;
+  assert.equal(result.joined,true);assert.ok(['transport_failed','control_failed'].includes(result.reason));assert.equal(f.stream.readable.locked,false);assert.equal(f.stream.writable.locked,false);
+});
+test('late already-errored control acquisition retires both exact endpoints',async()=>{
+  const f=fixture({acquirePending:true,terminalErrorOnClose:Error('fixed terminal fixture')}),parent=new AbortController();
+  const attempt=negotiateControl(params({signal:parent.signal}),f.options);await tick();parent.abort();await assert.rejects(attempt,{code:'cancelled'});assert.equal(f.stream.readable.locked,false);assert.equal(f.stream.writable.locked,false);
 });

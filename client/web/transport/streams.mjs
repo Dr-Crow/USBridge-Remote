@@ -1,4 +1,32 @@
 import {ProtocolError,LIMITS} from './wire.mjs';
+// A stream cancellation can reject an already-stored terminal error. Observe
+// closed independently and before cancellation; only that
+// identical, already-observed rejection is terminal-state evidence. A failed
+// underlying cancel/abort, pending closed promise or releaseLock is not proof.
+export function observeStreamTerminal(endpoint) {
+  const closed=endpoint.closed;
+  if(!closed||typeof closed.then!=='function')throw new ProtocolError('stream_terminal_unavailable');
+  let status='pending',stored;
+  const done=Promise.resolve(closed).then(()=>{status='closed';},error=>{status='errored';stored=error;});
+  return Object.freeze({done,retire:async operation=>{
+    // Run after closed's already-queued observer without waiting for a future
+    // error or giving cleanup any fresh deadline.
+    await Promise.resolve();
+    const errored=status==='errored',previous=stored;
+    try{await operation();}catch(error){if(!errored||!Object.is(error,previous))throw error;}
+    await done;
+  }});
+}
+export async function retireUnclaimedReadable(stream) {
+  const reader=stream.getReader();
+  try{const terminal=observeStreamTerminal(reader);await terminal.retire(()=>reader.cancel());}
+  finally{reader.releaseLock();}
+}
+export async function retireUnclaimedWritable(stream) {
+  const writer=stream.getWriter();
+  try{const terminal=observeStreamTerminal(writer);await terminal.retire(()=>writer.abort());}
+  finally{writer.releaseLock();}
+}
 // Owned video-only receive lane. Invoked only after authenticated WELCOME.
 // Four active streams, two decoder frames and one fixed per-frame read bound.
 // The surrounding session owns the absolute authorization/retirement deadlines.
@@ -12,7 +40,9 @@ export function receiveVideo(transport,sink,{onFailure=()=>{},frameTimeoutMs=100
     const error=new ProtocolError(clean?'video_streams_unavailable':'video_cleanup_incomplete');
     if(!clean)error.primaryCode='video_streams_unavailable';throw error;
   }
-  const readers=new Set(),workers=new Set(),extraReleases=[];let stopping=false,failed=false,retirement,primary='closed',cleanupFailed=false,streamCount=0;
+  let incomingTerminal;
+  try{incomingTerminal=observeStreamTerminal(incoming);}catch{try{incoming.releaseLock();}catch{}try{sink.close();}catch{}throw new ProtocolError('video_cleanup_incomplete');}
+  const readers=new Map(),workers=new Set(),extraReleases=[];let stopping=false,failed=false,retirement,primary='closed',cleanupFailed=false,streamCount=0;
   let resolveClosed,rejectClosed;
   const closed=new Promise((resolve,reject)=>{resolveClosed=resolve;rejectClosed=reject;});void closed.catch(()=>{});
   function fail(code) {
@@ -21,9 +51,9 @@ export function receiveVideo(transport,sink,{onFailure=()=>{},frameTimeoutMs=100
     queueMicrotask(()=>{try{onFailure(new ProtocolError(code));}catch{cleanupFailed=true;}void stop().catch(()=>{});});
   }
   async function frame(stream) {
-    let reader,timer;
+    let reader,terminal,timer;
     try {
-      reader=stream.getReader();readers.add(reader);
+      reader=stream.getReader();terminal=observeStreamTerminal(reader);readers.set(reader,terminal);
       timer=setTimeout(()=>fail('video_frame_timeout'),frameTimeoutMs);
       const chunks=[];let count=0;
       while(!stopping) {
@@ -42,7 +72,7 @@ export function receiveVideo(transport,sink,{onFailure=()=>{},frameTimeoutMs=100
         // Cancellation is also awaited for a partially read rejected frame.
         // A browser that cannot settle this keeps closed pending and the
         // surrounding session reports its fixed cleanup deadline as uncertain.
-        try{await reader.cancel();}catch{cleanupFailed=true;}
+        try{if(!terminal)throw new ProtocolError('stream_terminal_unavailable');await terminal.retire(()=>reader.cancel());}catch{cleanupFailed=true;}
         try{reader.releaseLock();}catch{cleanupFailed=true;}
         readers.delete(reader);
       }
@@ -53,8 +83,8 @@ export function receiveVideo(transport,sink,{onFailure=()=>{},frameTimeoutMs=100
       while(!stopping) {
         const item=await incoming.read();
         if(item.done){if(!stopping)fail('video_streams_ended');break;}
-        if(stopping){try{await item.value.cancel();}catch{cleanupFailed=true;}break;}
-        if(++streamCount>18000||workers.size>=4){const release=Promise.resolve().then(()=>item.value.cancel());void release.catch(()=>{cleanupFailed=true;});extraReleases.push(release);fail('video_stream_budget');break;}
+        if(stopping){try{await retireUnclaimedReadable(item.value);}catch{cleanupFailed=true;}break;}
+        if(++streamCount>18000||workers.size>=4){const release=Promise.resolve().then(()=>retireUnclaimedReadable(item.value));void release.catch(()=>{cleanupFailed=true;});extraReleases.push(release);fail('video_stream_budget');break;}
         const work=frame(item.value);workers.add(work);void work.then(()=>workers.delete(work),()=>{workers.delete(work);cleanupFailed=true;});
       }
     } catch {if(!stopping)fail('video_streams_failed');}
@@ -63,7 +93,7 @@ export function receiveVideo(transport,sink,{onFailure=()=>{},frameTimeoutMs=100
     if(retirement)return retirement;
     stopping=true;try{sink.close();}catch{cleanupFailed=true;}
     retirement=(async()=>{
-      const cancel=[Promise.resolve().then(()=>incoming.cancel()),...Array.from(readers,r=>Promise.resolve().then(()=>readers.has(r)?r.cancel():undefined))];
+      const cancel=[incomingTerminal.retire(()=>incoming.cancel()),...Array.from(readers,([r,terminal])=>terminal.retire(()=>readers.has(r)?r.cancel():undefined))];
       const results=await Promise.allSettled(cancel);
       if(results.some(x=>x.status==='rejected'))cleanupFailed=true;
       await listener;await Promise.allSettled([...workers,...extraReleases]);

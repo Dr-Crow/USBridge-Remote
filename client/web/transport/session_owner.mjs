@@ -2,7 +2,7 @@ import {ProtocolError,ControlParser,encodeMessage,validateHello,validateWelcome,
 import {endpoint} from './policy.mjs';
 import {Lifetime} from './lifetime.mjs';
 import {createCanvasDecoder} from './video.mjs';
-import {receiveVideo} from './streams.mjs';
+import {receiveVideo,observeStreamTerminal,retireUnclaimedReadable,retireUnclaimedWritable} from './streams.mjs';
 const enc=new TextEncoder();
 const fail=code=>new ProtocolError(code);
 // Internal lifecycle primitive for a trusted caller that has already established
@@ -27,7 +27,7 @@ async function negotiate({grant,authorizedEndpoint,signal,lifetime},
   try{validateHello(hello);}catch(error){hello.fill(0);throw error;}
   const ownsLifetime=lifetime===undefined,setup=lifetime||new Lifetime({signal});
   const parentSignals=[...new Set([signal,setup.parentSignal].filter(Boolean))];
-  let transport,reader,writer,leaseTimer,videoSink,videoReceiver,closing=false,established=false,retirement,helloWrite,lateReleaseFailed=false;
+  let transport,reader,writer,readerTerminal,writerTerminal,leaseTimer,videoSink,videoReceiver,closing=false,established=false,retirement,helloWrite,lateReleaseFailed=false;
   const active=new Set();
   const track=p=>{const task=Promise.resolve(p);active.add(task);void task.then(()=>active.delete(task),()=>active.delete(task));return task;};
   const parser=new ControlParser([1,7]);let welcome;
@@ -48,8 +48,8 @@ async function negotiate({grant,authorizedEndpoint,signal,lifetime},
       const releases=[];
       if(videoSink){try{videoSink.close();const stats=videoSink.stats();if(stats.cleanupFailures.length||!stats.decoderClosed)uncertain=true;}catch{uncertain=true;}}
       if(videoReceiver)releases.push(videoReceiver.stop());
-      if(reader)releases.push(Promise.resolve().then(()=>reader.cancel()));
-      if(writer)releases.push(Promise.resolve().then(()=>writer.abort()));
+      if(reader)releases.push(readerTerminal?readerTerminal.retire(()=>reader.cancel()):Promise.resolve().then(()=>reader.cancel()));
+      if(writer)releases.push(writerTerminal?writerTerminal.retire(()=>writer.abort()):Promise.resolve().then(()=>writer.abort()));
       // Setup failure retains the original absolute deadline. Once established,
       // an independent, non-renewable stop budget bounds the session's cleanup.
       const stopBudget=established?new Lifetime({timeoutMs:cleanupTimeoutMs}):null;
@@ -85,8 +85,9 @@ async function negotiate({grant,authorizedEndpoint,signal,lifetime},
     void ended.then(()=>backgroundClose('peer_closed'),()=>backgroundClose('transport_failed'));
     await setup.run(()=>track(transport.ready));checkLive();
     const acquire=track(Promise.resolve().then(()=>{checkLive();return transport.createBidirectionalStream();}).then(async stream=>{
-      if(closing){const result=await Promise.allSettled([stream.readable.cancel(),stream.writable.abort()]);if(result.some(x=>x.status==='rejected')){lateReleaseFailed=true;throw fail('late_stream_release_failed');}throw fail('cancelled');}
-      reader=stream.readable.getReader();writer=stream.writable.getWriter();
+      if(closing){const result=await Promise.allSettled([retireUnclaimedReadable(stream.readable),retireUnclaimedWritable(stream.writable)]);if(result.some(x=>x.status==='rejected')){lateReleaseFailed=true;throw fail('late_stream_release_failed');}throw fail('cancelled');}
+      reader=stream.readable.getReader();readerTerminal=observeStreamTerminal(reader);track(readerTerminal.done);
+      writer=stream.writable.getWriter();writerTerminal=observeStreamTerminal(writer);track(writerTerminal.done);
     }));
     await setup.run(()=>acquire);checkLive();
     const frame=encodeMessage(1,hello);
