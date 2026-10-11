@@ -13,7 +13,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -24,10 +23,13 @@ import (
 
 	"usbridge_agent/internal/componentjson"
 	"usbridge_agent/internal/localcomponents"
+	"usbridge_agent/internal/previewchild"
 )
 
 const Profile = "source-streamer-v1"
 const MaxMessage = 64 << 10
+
+var ErrProtocol = errors.New("source-streamer protocol failed")
 
 var ErrFrameTooLarge = errors.New("source-streamer frame exceeds the bounded packetizer limit")
 
@@ -203,15 +205,13 @@ func (r Ready) validate(session string, inputConsent bool, videoCapability strin
 }
 
 type Session struct {
-	Ready    Ready
-	stdin    io.WriteCloser
-	cmd      *exec.Cmd
-	cancel   context.CancelFunc
-	stop     sync.Once
-	done     chan struct{}
-	mu       sync.Mutex
-	err      error
-	terminal *Stopped
+	Ready     Ready
+	child     *previewchild.Process
+	writeDone chan struct{}
+	done      chan struct{}
+	mu        sync.Mutex
+	err       error
+	terminal  *Stopped
 }
 
 // Start requires a hash-pinned manifest in addition to the administrator's
@@ -242,37 +242,19 @@ func Start(ctx context.Context, source localcomponents.Options, request Launch) 
 
 func startBinary(ctx context.Context, binary string, request Launch) (*Session, error) {
 	processCtx, cancel := context.WithTimeout(ctx, time.Duration(request.MaxSeconds+15)*time.Second)
-	cmd := exec.CommandContext(processCtx, binary, "--launch-stdin")
-	configurePipeProcess(cmd)
-	// stdout is a bounded protocol channel. Child stderr is deliberately not
-	// relayed because a malformed child could echo the session's secret request.
-	cmd.Stderr = io.Discard
-	cmd.Env = os.Environ()
-	cmd.WaitDelay = 2 * time.Second
-	stdin, err := cmd.StdinPipe()
+	child, err := previewchild.Start(processCtx, previewchild.Spec{Path: binary,
+		Args: []string{"--launch-stdin"}, Env: os.Environ(), CloseStdinOnCancel: true})
 	if err != nil {
 		cancel()
 		return nil, err
 	}
-	cmd.Cancel = func() error { _ = stdin.Close(); return nil }
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		stdin.Close()
-		cancel()
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		stdin.Close()
-		cancel()
-		return nil, errors.New("start source-streamer process")
-	}
-	s := &Session{stdin: stdin, cmd: cmd, cancel: cancel, done: make(chan struct{})}
+	s := &Session{child: child, done: make(chan struct{}), writeDone: make(chan struct{})}
 	startupDeadline := time.AfterFunc(10*time.Second, cancel)
 	defer startupDeadline.Stop()
 	ready := make(chan Ready, 1)
 	protocolError := make(chan error, 1)
 	go func() {
-		scanner := bufio.NewScanner(stdout)
+		scanner := bufio.NewScanner(child.Stdout)
 		scanner.Buffer(make([]byte, 4096), MaxMessage)
 		first := true
 		var protocolErr error
@@ -281,7 +263,8 @@ func startBinary(ctx context.Context, binary string, request Launch) (*Session, 
 				first = false
 				var event Ready
 				if err := strictJSON(scanner.Bytes(), &event); err != nil {
-					protocolError <- errors.New("invalid source-streamer readiness JSON")
+					protocolErr = errors.New("invalid source-streamer readiness JSON")
+					protocolError <- protocolErr
 					cancel()
 					break
 				}
@@ -290,6 +273,7 @@ func startBinary(ctx context.Context, binary string, request Launch) (*Session, 
 					videoCapability = "video-windows-gdi-h264"
 				}
 				if err := event.validate(request.SessionID, request.InputConsent, videoCapability); err != nil {
+					protocolErr = err
 					protocolError <- err
 					cancel()
 					break
@@ -317,68 +301,70 @@ func startBinary(ctx context.Context, binary string, request Launch) (*Session, 
 		if scanErr != nil {
 			cancel()
 		}
-		waitErr := cmd.Wait()
+		_ = child.Stdout.Close()
+		waitErr := child.Wait()
+		writeErr := previewchild.Join(s.writeDone)
 		s.mu.Lock()
-		if protocolErr != nil {
-			s.err = protocolErr
-		} else if scanErr != nil {
-			s.err = errors.New("source-streamer status exceeded protocol bounds")
-		} else if s.terminal != nil && s.terminal.FailureCode == "frame_too_large" {
-			s.err = ErrFrameTooLarge
-		} else if s.terminal == nil || s.terminal.Reason != "completed" {
-			s.err = errors.New("source-streamer did not report clean completion")
-		} else if waitErr != nil {
-			s.err = errors.New("source-streamer process failed")
-		}
+		s.err = lifecycleError(protocolErr, scanErr, s.terminal, waitErr, writeErr)
 		s.mu.Unlock()
 		cancel()
 		close(s.done)
 	}()
-	payload, err := json.Marshal(request)
-	if err == nil {
-		payload = append(payload, '\n')
-		_, err = stdin.Write(payload)
-	}
-	for i := range payload {
-		payload[i] = 0
-	}
-	if err != nil {
-		s.Stop()
-		return nil, errors.New("send source-streamer launch request")
-	}
+	write := make(chan error, 1)
+	go func() {
+		defer close(s.writeDone)
+		payload, err := json.Marshal(request)
+		if err == nil {
+			payload = append(payload, '\n')
+			_, err = child.Stdin.Write(payload)
+		}
+		for i := range payload {
+			payload[i] = 0
+		}
+		write <- err
+	}()
 	timer := time.NewTimer(10 * time.Second)
 	defer timer.Stop()
+	fail := func(err error) (*Session, error) {
+		// Startup failures/cancellation never spend the cooperative Stop grace
+		// with a child that may still be blocked on the request write.
+		cancel()
+		return nil, errors.Join(err, s.Stop())
+	}
+	select {
+	case err := <-write:
+		if err != nil {
+			return fail(errors.New("send source-streamer launch request"))
+		}
+	case <-timer.C:
+		return fail(errors.New("source-streamer readiness timed out"))
+	case <-processCtx.Done():
+		return fail(processCtx.Err())
+	}
 	select {
 	case event := <-ready:
 		s.Ready = event
 		return s, nil
 	case err := <-protocolError:
-		s.Stop()
-		return nil, err
+		return fail(err)
 	case <-s.done:
-		return nil, errors.New("source-streamer exited before readiness")
+		return nil, errors.Join(errors.New("source-streamer exited before readiness"), s.Wait())
 	case <-timer.C:
-		s.Stop()
-		return nil, errors.New("source-streamer readiness timed out")
-	case <-ctx.Done():
-		s.Stop()
-		return nil, ctx.Err()
+		return fail(errors.New("source-streamer readiness timed out"))
+	case <-processCtx.Done():
+		return fail(processCtx.Err())
 	}
 }
 func (s *Session) Done() <-chan struct{} { return s.done }
 func (s *Session) Wait() error           { <-s.done; s.mu.Lock(); defer s.mu.Unlock(); return s.err }
 func (s *Session) Stop() error {
-	s.stop.Do(func() { s.stdin.Close() })
-	timer := time.NewTimer(3 * time.Second)
-	defer timer.Stop()
+	err := s.child.Stop(s.done, previewchild.StopGrace)
 	select {
 	case <-s.done:
-	case <-timer.C:
-		_ = s.cmd.Process.Kill()
-		s.cancel()
-		<-s.done
+		return errors.Join(err, s.Wait())
+	default:
+		return err // A typed cleanup timeout must not become an unbounded Wait.
 	}
-	return s.Wait()
 }
 
 func (s *Session) Terminal() (Stopped, bool) {
@@ -388,4 +374,21 @@ func (s *Session) Terminal() (Stopped, bool) {
 		return Stopped{}, false
 	}
 	return *s.terminal, true
+}
+
+// A protocol terminal event and the OS lifecycle are independent evidence.
+// Preserve both typed failures, especially when exit0 still required job cleanup.
+func lifecycleError(protocolErr, scanErr error, terminal *Stopped, waitErr, writeErr error) error {
+	var err error
+	if protocolErr != nil {
+		err = errors.Join(ErrProtocol, protocolErr)
+	} else if scanErr != nil {
+		err = errors.Join(ErrProtocol, errors.New("source-streamer status exceeded protocol bounds"))
+	} else if terminal == nil || (terminal.Reason != "completed" && terminal.FailureCode != "frame_too_large") {
+		err = errors.Join(ErrProtocol, errors.New("source-streamer did not report clean completion"))
+	}
+	if terminal != nil && terminal.FailureCode == "frame_too_large" {
+		err = errors.Join(err, ErrFrameTooLarge)
+	}
+	return errors.Join(err, waitErr, writeErr)
 }

@@ -17,12 +17,18 @@ import (
 	"time"
 
 	"usbridge_agent/internal/localcomponents"
+	"usbridge_agent/internal/previewprocess"
 	"usbridge_agent/internal/sourcestreamer"
 )
 
 const Profile = "source-preview-v1"
 
 var ErrFrameTooLarge = errors.New("capture content exceeds this preview profile; select the smaller profile or a verified bounded encoder")
+
+// ErrCleanupUncertain permanently reserves this Manager. It contains no child
+// error details; retry requires restarting the application after independently
+// confirming that all preview children have stopped.
+var ErrCleanupUncertain = errors.New("source preview cleanup could not be confirmed; confirm all preview children have stopped before restarting the application")
 
 // Approval is constructed by the local consent dialog, never by a remote API.
 // Version one defaults to view-only 128x72/30fps with synthesized silence for up to 30 seconds.
@@ -77,13 +83,15 @@ type dependencies struct {
 	startViewer   func(context.Context, string, descriptor) (viewer, error)
 }
 
-// Manager does not persist grants, keys, launch descriptors, or previous sessions.
+// Manager does not persist grants, keys, or launch descriptors.
 // A single active reservation includes startup and teardown, preventing double-clicks
-// or delayed callbacks from starting overlapping capture children.
+// or delayed callbacks from starting overlapping capture children. Uncertain
+// cleanup retains that reservation for the lifetime of the Manager.
 type Manager struct {
-	mu     sync.Mutex
-	active *Session
-	deps   dependencies
+	mu               sync.Mutex
+	active           *Session
+	cleanupUncertain bool
+	deps             dependencies
 }
 
 func New() *Manager {
@@ -103,6 +111,7 @@ func New() *Manager {
 
 // Stop joins any startup or active preview owned by this manager. It is safe
 // when no preview exists and cannot cancel a subsequent session generation.
+// Repeated Stop cannot release a reservation retained after uncertain cleanup.
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	s := m.active
@@ -137,6 +146,12 @@ func (s *Session) set(phase string, err error) {
 }
 
 func (m *Manager) Start(ctx context.Context, a Approval) (*Session, error) {
+	m.mu.Lock()
+	blocked := m.cleanupUncertain
+	m.mu.Unlock()
+	if blocked {
+		return nil, ErrCleanupUncertain
+	}
 	if !m.deps.permitted() {
 		return nil, errors.New("source preview requires an unprivileged same-user Linux GUI")
 	}
@@ -174,11 +189,15 @@ func (m *Manager) Start(ctx context.Context, a Approval) (*Session, error) {
 	}()
 	s := &Session{cancel: cancel, done: make(chan struct{}), phase: "starting"}
 	m.mu.Lock()
-	if m.active != nil {
+	if m.cleanupUncertain || m.active != nil {
+		err := errors.New("a source preview is already active")
+		if m.cleanupUncertain {
+			err = ErrCleanupUncertain
+		}
 		m.mu.Unlock()
 		cancel()
 		cancelChildren()
-		return nil, errors.New("a source preview is already active")
+		return nil, err
 	}
 	m.active = s
 	m.mu.Unlock()
@@ -187,7 +206,9 @@ func (m *Manager) Start(ctx context.Context, a Approval) (*Session, error) {
 		cancel()
 		s.set("stopped", err)
 		m.mu.Lock()
-		if m.active == s {
+		if errors.Is(err, ErrCleanupUncertain) {
+			m.cleanupUncertain = true
+		} else if m.active == s {
 			m.active = nil
 		}
 		m.mu.Unlock()
@@ -211,15 +232,14 @@ func (m *Manager) Start(ctx context.Context, a Approval) (*Session, error) {
 	}
 	child, err := m.deps.startStream(childCtx, a.Components, launch)
 	if err != nil {
-		return fail(errors.New("source preview could not start"))
+		return fail(previewStatusError("source preview could not start", err))
 	}
 	// Source readiness is validated by the supervisor. The viewer independently
 	// validates its loopback URL and expiry before accepting the secret descriptor.
 	d := descriptor{SchemaVersion: 1, Profile: Profile, SessionID: s.id, RTSPURL: "rtspenc://" + child.Address(), KeyB64: launch.KeyB64, KeyID: launch.KeyID, Width: width, Height: height, FPS: 30, BitrateKbps: 10000, ExpiresAt: m.deps.now().Add(28 * time.Second)}
 	v, err := m.deps.startViewer(childCtx, binaryPath, d)
 	if err != nil {
-		_ = child.Stop()
-		return fail(errors.New("preview renderer could not start"))
+		return fail(previewStatusError("preview renderer could not start", err, child.Stop()))
 	}
 	close(startupDone)
 	s.set("connecting", nil)
@@ -251,18 +271,31 @@ func (m *Manager) Start(ctx context.Context, a Approval) (*Session, error) {
 		}
 		// Stop the renderer first so its native client can perform a normal encrypted
 		// teardown while the source sockets still exist, then join the capture child.
-		if err := v.Stop(); terminal == nil && err != nil {
-			terminal = errors.New("preview renderer did not stop cleanly")
-		}
-		if err := child.Stop(); errors.Is(err, sourcestreamer.ErrFrameTooLarge) {
-			terminal = ErrFrameTooLarge
-		} else if terminal == nil && err != nil {
-			terminal = errors.New("source preview did not stop cleanly")
-		}
-		if terminal != nil && !errors.Is(terminal, ErrFrameTooLarge) {
-			terminal = errors.New("source preview ended unsuccessfully")
-		}
-		finish(terminal)
+		viewerErr := v.Stop()
+		sourceErr := child.Stop()
+		finish(previewStatusError("source preview ended unsuccessfully", terminal, viewerErr, sourceErr))
 	}()
 	return s, nil
+}
+
+// Inspect every joined cause before reducing it to UI-safe status. Uncertainty
+// outranks frame limits and all other failures. ErrForcedCleanup alone means
+// the owner verified tree retirement, so it must not permanently block retry.
+func previewStatusError(message string, causes ...error) error {
+	for _, err := range causes {
+		if errors.Is(err, previewprocess.ErrCleanupTimeout) || errors.Is(err, previewprocess.ErrContainment) {
+			return ErrCleanupUncertain
+		}
+	}
+	for _, err := range causes {
+		if errors.Is(err, sourcestreamer.ErrFrameTooLarge) {
+			return ErrFrameTooLarge
+		}
+	}
+	for _, err := range causes {
+		if err != nil {
+			return errors.New(message)
+		}
+	}
+	return nil
 }

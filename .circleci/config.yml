@@ -131,6 +131,12 @@ jobs:
           name: Verify native atomic process containment without desktop or media
           command: .\.circleci\test-source-preview-windows-process.ps1
           no_output_timeout: 15m
+      - run:
+          name: Verify production preview owner and launch adapters
+          command: |
+            .\.circleci\test-windows-preview-owner.ps1
+            .\.circleci\test-windows-preview-wiring.ps1
+          no_output_timeout: 15m
       - store_artifacts:
           path: artifacts/windows-preview-process-evidence
           destination: windows-preview-process-evidence

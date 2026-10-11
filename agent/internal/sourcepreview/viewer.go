@@ -5,15 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
 	"usbridge_agent/internal/componentjson"
 	"usbridge_agent/internal/localcomponents"
+	"usbridge_agent/internal/previewchild"
 )
 
 func prepareViewer(ctx context.Context, o localcomponents.Options) (string, error) {
@@ -36,12 +35,14 @@ type viewerEvent struct {
 	SessionID     string `json:"session_id"`
 	Reason        string `json:"reason,omitempty"`
 }
+
+var errViewerProtocol = errors.New("preview viewer protocol failed")
+
 type viewerProcess struct {
-	cmd        *exec.Cmd
-	stdin      io.WriteCloser
+	child      *previewchild.Process
+	writeDone  chan struct{}
 	done       chan struct{}
 	firstFrame chan struct{}
-	stop       sync.Once
 	mu         sync.Mutex
 	err        error
 }
@@ -50,16 +51,13 @@ func (v *viewerProcess) Done() <-chan struct{}       { return v.done }
 func (v *viewerProcess) FirstFrame() <-chan struct{} { return v.firstFrame }
 func (v *viewerProcess) Wait() error                 { <-v.done; v.mu.Lock(); defer v.mu.Unlock(); return v.err }
 func (v *viewerProcess) Stop() error {
-	v.stop.Do(func() { _ = v.stdin.Close() })
-	timer := time.NewTimer(3 * time.Second)
-	defer timer.Stop()
+	err := v.child.Stop(v.done, previewchild.StopGrace)
 	select {
 	case <-v.done:
-	case <-timer.C:
-		_ = v.cmd.Process.Kill()
-		<-v.done
+		return errors.Join(err, v.Wait())
+	default:
+		return err
 	}
-	return v.Wait()
 }
 func startViewer(ctx context.Context, binaryPath string, d descriptor) (viewer, error) {
 	// Rehash immediately before exec, after source startup. Neither viewer path
@@ -67,27 +65,17 @@ func startViewer(ctx context.Context, binaryPath string, d descriptor) (viewer, 
 	if err := localcomponents.VerifyPrepared(binaryPath); err != nil {
 		return nil, err
 	}
-	cmd := exec.CommandContext(ctx, binaryPath, "--source-preview-stdin")
-	cmd.Env = previewEnvironment(os.Environ())
-	cmd.Stderr = io.Discard
-	cmd.WaitDelay = 2 * time.Second
-	stdin, err := cmd.StdinPipe()
+	processCtx, cancel := context.WithCancel(ctx)
+	child, err := previewchild.Start(processCtx, previewchild.Spec{Path: binaryPath,
+		Args: []string{"--source-preview-stdin"}, Env: previewEnvironment(os.Environ())})
 	if err != nil {
+		cancel()
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		stdin.Close()
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		stdin.Close()
-		return nil, err
-	}
-	v := &viewerProcess{cmd: cmd, stdin: stdin, done: make(chan struct{}), firstFrame: make(chan struct{})}
+	v := &viewerProcess{child: child, writeDone: make(chan struct{}), done: make(chan struct{}), firstFrame: make(chan struct{})}
 	ready := make(chan error, 1)
 	go func() {
-		scanner := bufio.NewScanner(stdout)
+		scanner := bufio.NewScanner(child.Stdout)
 		scanner.Buffer(make([]byte, 4096), 64<<10)
 		seenReady, seenFrame, seenStop := false, false, false
 		var protocolErr error
@@ -132,25 +120,40 @@ func startViewer(ctx context.Context, binaryPath string, d descriptor) (viewer, 
 			protocolErr = errors.New("incomplete viewer lifecycle")
 		}
 		if protocolErr != nil {
-			_ = cmd.Process.Kill()
+			child.Abort()
 		}
-		exitErr := cmd.Wait()
-		if protocolErr == nil && exitErr != nil {
-			protocolErr = errors.New("viewer exit failed")
-		}
+		_ = child.Stdout.Close()
+		exitErr := child.Wait()
+		writeErr := previewchild.Join(v.writeDone)
+		protocolErr = viewerLifecycleError(protocolErr, exitErr, writeErr)
 		if !seenReady {
 			ready <- errors.New("viewer did not become ready")
 		}
 		v.mu.Lock()
 		v.err = protocolErr
 		v.mu.Unlock()
+		cancel()
 		close(v.done)
 	}()
 	write := make(chan error, 1)
-	go func() { write <- json.NewEncoder(stdin).Encode(d) }()
+	go func() {
+		defer close(v.writeDone)
+		payload, err := json.Marshal(d)
+		if err == nil {
+			payload = append(payload, '\n')
+			_, err = child.Stdin.Write(payload)
+		}
+		for i := range payload {
+			payload[i] = 0
+		}
+		write <- err
+	}()
 	timer := time.NewTimer(10 * time.Second)
 	defer timer.Stop()
-	fail := func() (viewer, error) { _ = v.Stop(); return nil, errors.New("preview viewer startup failed") }
+	fail := func() (viewer, error) {
+		cancel()
+		return nil, errors.Join(errors.New("preview viewer startup failed"), v.Stop())
+	}
 	select {
 	case err := <-write:
 		if err != nil {
@@ -187,4 +190,11 @@ func previewEnvironment(env []string) []string {
 		filtered = append(filtered, entry)
 	}
 	return filtered
+}
+
+func viewerLifecycleError(protocolErr, exitErr, writeErr error) error {
+	if protocolErr != nil {
+		protocolErr = errors.Join(errViewerProtocol, protocolErr)
+	}
+	return errors.Join(protocolErr, exitErr, writeErr)
 }
