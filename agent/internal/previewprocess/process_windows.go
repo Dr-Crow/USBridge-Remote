@@ -73,7 +73,9 @@ func newJob() (*nativeJob, error) {
 	limits.Basic.Flags = 0x2000 // KILL_ON_JOB_CLOSE only; no breakaway or UI restrictions
 	ok, _, _ := setJob.Call(h, 9, uintptr(unsafe.Pointer(&limits)), unsafe.Sizeof(limits))
 	if ok == 0 {
-		_ = j.close()
+		if j.close() != nil {
+			return nil, errors.Join(ErrStart, ErrContainment)
+		}
 		return nil, ErrStart
 	}
 	return j, nil
@@ -167,7 +169,18 @@ func start(ctx context.Context, spec Spec) (*Process, error) { return startWithH
 
 // The per-call seam is used only by this package's synthetic native tests.
 // There is no global hook, runtime flag, environment switch, or exported bypass.
-func startWithHook(ctx context.Context, spec Spec, beforeResume func(uint32, *nativeJob)) (_ *Process, startErr error) {
+func startWithHook(ctx context.Context, spec Spec, beforeResume func(uint32, *nativeJob)) (*Process, error) {
+	return startWithHooks(ctx, spec, nativeStartupHooks{beforeResume: beforeResume})
+}
+
+type nativeStartupHooks struct {
+	beforeResume func(uint32, *nativeJob)
+	// Tests may add a fixed failure AFTER the real close. They cannot skip or
+	// replace a native close, clear its error, or change launch policy.
+	afterClose func(string) error
+}
+
+func startWithHooks(ctx context.Context, spec Spec, hooks nativeStartupHooks) (_ *Process, startErr error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -183,16 +196,34 @@ func startWithHook(ctx context.Context, spec Spec, beforeResume func(uint32, *na
 		return nil, e
 	}
 	success := false
+	observeClose := func(role string, err error) error {
+		if hooks.afterClose != nil {
+			err = errors.Join(err, hooks.afterClose(role))
+		}
+		return err
+	}
 	defer func() {
-		if !success {
-			_ = j.close()
+		if !success && j.close() != nil {
+			startErr = errors.Join(startErr, ErrContainment)
 		}
 	}()
 	var files []*os.File
+	closedFiles := make(map[*os.File]bool)
+	closeFile := func(role string, f *os.File) error {
+		if closedFiles[f] {
+			return nil
+		}
+		// Never retry a failed native close: the handle's state may be unknown
+		// or already recycled. Preserve uncertainty instead of closing an alias.
+		closedFiles[f] = true
+		return observeClose(role, f.Close())
+	}
 	defer func() {
 		if !success {
-			for _, f := range files {
-				_ = f.Close()
+			for i, f := range files {
+				if closeFile("rollback-pipe-"+string(rune('0'+i)), f) != nil {
+					startErr = errors.Join(startErr, ErrContainment)
+				}
 			}
 		}
 	}()
@@ -212,11 +243,6 @@ func startWithHook(ctx context.Context, spec Spec, beforeResume func(uint32, *na
 	}
 	files = append(files, errR, errW)
 	childEnds := []*os.File{inR, outW, errW}
-	defer func() {
-		for _, f := range childEnds {
-			_ = f.Close()
-		}
-	}()
 	handles := []syscall.Handle{syscall.Handle(inR.Fd()), syscall.Handle(outW.Fd()), syscall.Handle(errW.Fd())}
 	for _, h := range handles {
 		if syscall.SetHandleInformation(h, syscall.HANDLE_FLAG_INHERIT, syscall.HANDLE_FLAG_INHERIT) != nil {
@@ -292,26 +318,39 @@ func startWithHook(ctx context.Context, spec Spec, beforeResume func(uint32, *na
 		return nil, ErrStart
 	}
 	var waitHandle syscall.Handle
+	processClosed, threadClosed := false, false
+	closeOriginal := func(role string, h syscall.Handle, attempted *bool) error {
+		if *attempted {
+			return nil
+		}
+		*attempted = true
+		return observeClose(role, syscall.CloseHandle(h))
+	}
 	defer func() {
+		if success {
+			return
+		} // All original handles were checked before transfer.
 		cleanup := startupCleanupResult{}
-		if !success {
-			// Even a cancellation before resume must retire the atomically contained
-			// suspended child. Close is a second safety net if termination fails.
-			cleanup.terminateErr = j.terminate()
-			cleanup.jobCloseErr = j.close()
-			state, waitErr := syscall.WaitForSingleObject(pi.Process, uint32(CleanupTimeout.Milliseconds()))
+		// The child remains atomically owned even after Resume. No lifecycle
+		// goroutine starts until all startup-only releases have succeeded.
+		cleanup.terminateErr = j.terminate()
+		cleanup.jobCloseErr = j.close()
+		rootHandle := pi.Process
+		if processClosed {
+			rootHandle = waitHandle
+		}
+		if rootHandle != 0 {
+			state, waitErr := syscall.WaitForSingleObject(rootHandle, uint32(CleanupTimeout.Milliseconds()))
 			cleanup.waitErr = waitErr
 			cleanup.rootExited = waitErr == nil && state == syscall.WAIT_OBJECT_0
 			cleanup.timedOut = waitErr == nil && state == uint32(syscall.WAIT_TIMEOUT)
-			if waitHandle != 0 {
-				cleanup.waitHandleCloseErr = syscall.CloseHandle(waitHandle)
-			}
 		}
-		cleanup.processHandleCloseErr = syscall.CloseHandle(pi.Process)
-		cleanup.threadHandleCloseErr = syscall.CloseHandle(pi.Thread)
-		if !success {
-			startErr = startupCleanupError(startErr, cleanup)
+		if waitHandle != 0 {
+			cleanup.waitHandleCloseErr = observeClose("rollback-wait-handle", syscall.CloseHandle(waitHandle))
 		}
+		cleanup.processHandleCloseErr = closeOriginal("process-handle", pi.Process, &processClosed)
+		cleanup.threadHandleCloseErr = closeOriginal("thread-handle", pi.Thread, &threadClosed)
+		startErr = startupCleanupError(startErr, cleanup)
 	}()
 	if !j.contains(pi.Process) {
 		return nil, ErrContainment
@@ -327,8 +366,21 @@ func startWithHook(ctx context.Context, spec Spec, beforeResume func(uint32, *na
 	if syscall.DuplicateHandle(current, pi.Process, current, &waitHandle, 0, false, syscall.DUPLICATE_SAME_ACCESS) != nil {
 		return nil, ErrStart
 	}
-	if beforeResume != nil {
-		beforeResume(pi.ProcessId, j)
+	if hooks.beforeResume != nil {
+		hooks.beforeResume(pi.ProcessId, j)
+	}
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	// Release the parent's copies of the inherited child endpoints while the
+	// child is still suspended. An uncertain release never reaches Resume.
+	childRoles := []string{"child-stdin", "child-stdout", "child-stderr"}
+	var pipeCloseErr error
+	for i, f := range childEnds {
+		pipeCloseErr = errors.Join(pipeCloseErr, closeFile(childRoles[i], f))
+	}
+	if pipeCloseErr != nil {
+		return nil, errors.Join(ErrStart, ErrContainment)
 	}
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -337,6 +389,15 @@ func startWithHook(ctx context.Context, spec Spec, beforeResume func(uint32, *na
 	previous, _, _ := resumeThread.Call(uintptr(pi.Thread))
 	if previous != 1 {
 		return nil, ErrStart
+	}
+	// Keep the duplicated wait handle and Job owned locally until both original
+	// handles have been checked. Failure after Resume terminates and joins this
+	// exact child before returning an error; no usable Process is published.
+	if closeOriginal("thread-handle", pi.Thread, &threadClosed) != nil {
+		return nil, errors.Join(ErrStart, ErrContainment)
+	}
+	if closeOriginal("process-handle", pi.Process, &processClosed) != nil {
+		return nil, errors.Join(ErrStart, ErrContainment)
 	}
 	root := make(chan rootExit, 1)
 	waiterDone := make(chan error, 1)

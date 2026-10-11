@@ -557,3 +557,93 @@ func TestWindowsBlockedOutputReadsJoinOnStop(t *testing.T) {
 		}
 	}
 }
+
+func TestWindowsStartupCloseFailuresRetireOwnedChild(t *testing.T) {
+	for _, role := range []string{"child-stdin", "child-stdout", "child-stderr", "thread-handle", "process-handle"} {
+		{
+			var retained syscall.Handle
+			calls := map[string]int{}
+			p, err := startWithHooks(context.Background(), helperSpec(t, "leaf"), nativeStartupHooks{
+				beforeResume: func(pid uint32, j *nativeJob) {
+					retained = processHandle(t, pid)
+					if !j.contains(retained) {
+						t.Fatal("startup root not in owned Job")
+					}
+				},
+				afterClose: func(got string) error {
+					calls[got]++
+					if got == role {
+						return errors.New("synthetic startup close failure")
+					}
+					return nil
+				},
+			})
+			if p != nil || !errors.Is(err, ErrStart) || !errors.Is(err, ErrContainment) {
+				t.Fatal("startup close failure published usable process", err)
+			}
+			if strings.Contains(err.Error(), "synthetic") {
+				t.Fatal("native detail leaked")
+			}
+			if retained == 0 {
+				t.Fatal("child was not independently retained")
+			}
+			requireSignal(t, retained)
+			for _, expected := range []string{"child-stdin", "child-stdout", "child-stderr", "thread-handle", "process-handle"} {
+				if calls[expected] != 1 {
+					t.Fatalf("startup close role %s observed %d times", expected, calls[expected])
+				}
+			}
+			for _, n := range calls {
+				if n != 1 {
+					t.Fatal("native close was retried after an uncertain result")
+				}
+			}
+		}
+	}
+}
+
+func TestWindowsStartupCloseSuccessPrecedesTransfer(t *testing.T) {
+	calls := map[string]int{}
+	p, err := startWithHooks(context.Background(), helperSpec(t, "echo"), nativeStartupHooks{afterClose: func(role string) error { calls[role]++; return nil }})
+	if err != nil {
+		t.Fatal("startup failed", err)
+	}
+	defer func() { _, _ = p.Stop(0); _ = p.Stdout.Close(); _ = p.Stderr.Close() }()
+	for _, role := range []string{"child-stdin", "child-stdout", "child-stderr", "thread-handle", "process-handle"} {
+		if calls[role] != 1 {
+			t.Fatal("startup release not checked before Process publication")
+		}
+	}
+	if len(calls) != 5 {
+		t.Fatal("successful startup invoked rollback close")
+	}
+	writeRequest(t, p)
+	if lineWithin(t, p.Stdout) != "private-reply\n" || lineWithin(t, p.Stderr) != "private-stderr\n" {
+		t.Fatal("pipe exchange failed")
+	}
+	r, err := p.Stop(time.Second)
+	if err != nil || !r.Natural() {
+		t.Fatal("ordinary lifecycle changed", err)
+	}
+}
+
+func TestWindowsStartupRollbackCloseFailureKeepsPrimaryCause(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var retained syscall.Handle
+	var observed int
+	p, err := startWithHooks(ctx, helperSpec(t, "leaf"), nativeStartupHooks{
+		beforeResume: func(pid uint32, _ *nativeJob) { retained = processHandle(t, pid); cancel() },
+		afterClose: func(role string) error {
+			if role == "rollback-pipe-1" {
+				observed++
+				return errors.New("synthetic rollback close failure")
+			}
+			return nil
+		},
+	})
+	if p != nil || !errors.Is(err, context.Canceled) || !errors.Is(err, ErrContainment) || observed != 1 {
+		t.Fatal("rollback masked primary cause or close failure", err)
+	}
+	requireSignal(t, retained)
+}

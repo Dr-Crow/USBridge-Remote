@@ -1,7 +1,8 @@
 # Windows pipe-child ownership
 
-This standard-library package is a preparatory lifecycle primitive. It is not yet
-used by the preview Manager and does not enable the Windows preview UI.
+This standard-library package owns the private-pipe preview launch adapters.
+The Windows settings action remains separately gated on its native Manager and
+UI acceptance; this package does not enable that action.
 
 `Start(ctx, Spec{Path, Args, Env, Dir})` creates a suspended, detached process
 already assigned to a private kill-on-close Job Object, verifies ownership, then
@@ -29,3 +30,22 @@ covers private pipes, noninheritance, root/descendant retirement, cancellation,
 blocked I/O, parent exit before resume and repeated handle cleanup. No window,
 media, desktop capture, audio device or input API is used. Cross-compilation is
 not native runtime acceptance; CI must verify the exact package commit first.
+
+## Startup release accounting correction
+
+The earlier implementation discarded Close errors for the parent's three
+inherited-pipe copies and original process/thread handles on successful Start.
+Historical receipts still prove their independently observed pixels, root exit
+and Job inventory. They do not prove release of every startup-only handle.
+
+Startup now closes/checks each parent child-pipe copy before Resume, then checks
+the original thread/process handles before publishing Process or starting its
+wait/lifecycle workers. A failed release keeps the duplicated process handle and
+Job under the startup owner, terminates and waits for that exact child, and
+returns a typed containment uncertainty. It never retries an uncertain native
+close, which could otherwise close a recycled handle. Failed acquisition and
+rollback pipe/Job releases also preserve uncertainty alongside the primary error.
+The test-only per-call observer injects errors after real closes; it cannot skip
+or replace a native close. Spawn flags, private pipes, Job limits and ownership
+admission are unchanged. Native failure-injection acceptance is required before
+using this correction for new catalog evidence collection.

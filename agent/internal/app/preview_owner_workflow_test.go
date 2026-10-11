@@ -117,3 +117,41 @@ func previewOwnerCondition(t *testing.T, raw any, branch string) bool {
 	t.Fatal("unsupported branch condition")
 	return false
 }
+
+func TestPreviewCloseAccountingBranchRunsOnlyNativeOwnerGate(t *testing.T) {
+	raw, err := os.ReadFile("../../../.circleci/config.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	workflow := cfg["workflows"].(map[string]any)["agent-capability-build"].(map[string]any)
+	var selected []string
+	for _, raw := range workflow["jobs"].([]any) {
+		for name, v := range raw.(map[string]any) {
+			only := v.(map[string]any)["filters"].(map[string]any)["branches"].(map[string]any)["only"].([]any)
+			for _, b := range only {
+				if b == "preview-owner-close-accounting" {
+					selected = append(selected, name)
+				}
+			}
+		}
+	}
+	if !reflect.DeepEqual(selected, []string{"windows-preview-process"}) {
+		t.Fatal("unexpected fast ownership workflow", selected)
+	}
+	job := cfg["jobs"].(map[string]any)[selected[0]].(map[string]any)
+	var artifacts []string
+	for _, raw := range job["steps"].([]any) {
+		if step, ok := raw.(map[string]any); ok {
+			if a, ok := step["store_artifacts"]; ok {
+				artifacts = append(artifacts, a.(map[string]any)["path"].(string))
+			}
+		}
+	}
+	if !reflect.DeepEqual(artifacts, []string{"artifacts/windows-preview-process-evidence"}) {
+		t.Fatal("fast owner publication scope changed", artifacts)
+	}
+}

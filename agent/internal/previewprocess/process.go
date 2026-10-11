@@ -82,14 +82,14 @@ func resultError(r Result) error {
 // cause. Native errors are observations only: never include their text in the
 // caller-visible error. A successful wait must explicitly observe root exit.
 type startupCleanupResult struct {
-	terminateErr, jobCloseErr, waitErr, waitHandleCloseErr error
-	processHandleCloseErr, threadHandleCloseErr            error
-	rootExited, timedOut                                   bool
+	terminateErr, jobCloseErr, waitErr, waitHandleCloseErr    error
+	processHandleCloseErr, threadHandleCloseErr, pipeCloseErr error
+	rootExited, timedOut                                      bool
 }
 
 func startupCleanupError(cause error, r startupCleanupResult) error {
 	var uncertainty error
-	if r.terminateErr != nil || r.jobCloseErr != nil || r.waitErr != nil || r.waitHandleCloseErr != nil || r.processHandleCloseErr != nil || r.threadHandleCloseErr != nil || (!r.rootExited && !r.timedOut) {
+	if r.terminateErr != nil || r.jobCloseErr != nil || r.waitErr != nil || r.waitHandleCloseErr != nil || r.processHandleCloseErr != nil || r.threadHandleCloseErr != nil || r.pipeCloseErr != nil || (!r.rootExited && !r.timedOut) {
 		uncertainty = ErrContainment
 	}
 	if r.timedOut {

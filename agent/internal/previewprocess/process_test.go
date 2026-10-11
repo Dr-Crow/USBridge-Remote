@@ -244,6 +244,7 @@ func TestStartupCleanupErrorPreservesCauseAndSanitizesFailures(t *testing.T) {
 		{name: "unknown-wait", containment: true},
 		{name: "wait-handle-close", cleanup: startupCleanupResult{rootExited: true, waitHandleCloseErr: nativeErr}, containment: true},
 		{name: "process-handle-close", cleanup: startupCleanupResult{rootExited: true, processHandleCloseErr: nativeErr}, containment: true},
+		{name: "pipe-close", cleanup: startupCleanupResult{rootExited: true, pipeCloseErr: nativeErr}, containment: true},
 		{name: "thread-handle-close", cleanup: startupCleanupResult{rootExited: true, threadHandleCloseErr: nativeErr}, containment: true},
 		{name: "timeout", cleanup: startupCleanupResult{timedOut: true}, timeout: true},
 		{name: "failed-termination-and-timeout", cleanup: startupCleanupResult{terminateErr: nativeErr, timedOut: true}, containment: true, timeout: true},

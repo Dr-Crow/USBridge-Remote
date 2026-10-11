@@ -44,7 +44,30 @@ $required = @('TestWindowsNativeLayoutsAndEmptyEnvironment', 'TestWindowsPrivate
     'TestWindowsZeroExitStillRecordsForcedDescendantCleanup', 'TestWindowsCancellationJoinsOwnedTree',
     'TestWindowsBlockedStdinCannotDeadlockStop', 'TestWindowsBlockedStdinCannotDeadlockCancellation',
     'TestWindowsStartupCanceledBeforeResume', 'TestWindowsStartupCanceledWithCleanupFailure', 'TestWindowsOwnerExitBeforeResumeRetiresSuspendedChild',
-    'TestWindowsRepeatedLifecycleReleasesHandles', 'TestWindowsBlockedOutputReadsJoinOnStop')
+    'TestWindowsRepeatedLifecycleReleasesHandles', 'TestWindowsBlockedOutputReadsJoinOnStop',
+    'TestWindowsStartupCloseFailuresRetireOwnedChild', 'TestWindowsStartupCloseSuccessPrecedesTransfer',
+    'TestWindowsStartupRollbackCloseFailureKeepsPrimaryCause')
+$contractRequired = $required + @(
+    'TestWindowsSyntheticHelper',
+    'TestSpecContract',
+    'TestNaturalWaitPreservesUnreadOutput',
+    'TestZeroRootExitWithDescendantIsForced',
+    'TestRootAccountingLagIsNatural',
+    'TestContextCancellationCannotBlockOnStdinClose',
+    'TestConcurrentStopUsesEarliestDeadline',
+    'TestGracefulStopClosesInput',
+    'TestNonzeroNaturalExitIsNotSuccess',
+    'TestErrorsDoNotIncludeNativeContent',
+    'TestStartupCleanupErrorPreservesCauseAndSanitizesFailures',
+    'TestDoneWaitsForOwnedCloserAfterTreeExit',
+    'TestOwnedCloserTimeoutCannotClaimJoinedCleanup',
+    'TestStopCallerDeadlineSurvivesStalledNativeOperation',
+    'TestOwnedCloserFailureCannotClaimNaturalCleanup',
+    'TestAlreadyClosedInputIsNotCleanupFailure',
+    'TestWaiterReleaseFollowsTreeRetirement',
+    'TestWaiterHandleCloseFailureCannotClaimNatural',
+    'TestPIDReturnsImmutableLaunchMetadata'
+)
 $selector = '^(' + ($required -join '|') + ')$'
 $counts = [ordered]@{}
 foreach ($name in $required) { $counts[$name] = 0 }
@@ -78,6 +101,11 @@ function Write-OwnerFailure {
 }
 Push-Location $work
 try {
+    # Compare an explicit reviewed manifest before running the repeated suite.
+    $listed = @(& $go test -list '^Test' ./... | Where-Object { $_ -cmatch '^Test[A-Za-z0-9_]+$' })
+    if ($LASTEXITCODE -ne 0 -or $listed.Count -ne $contractRequired.Count) { throw 'Owner test manifest count mismatch' }
+    foreach ($name in $listed) { if ($name -cnotin $contractRequired) { throw 'Unexpected owner test manifest entry' } }
+    foreach ($name in $contractRequired) { if (@($listed | Where-Object { $_ -ceq $name }).Count -ne 1) { throw 'Missing or repeated owner test manifest entry' } }
     & $go test -json -count=20 -timeout=10m "-run=$selector" ./... 1> $log 2> (Join-Path $work 'native-stderr.txt')
     if ($LASTEXITCODE -ne 0) { Write-OwnerFailure; throw 'Native owner assertions failed; see bounded failure receipt' }
     $packages = 0
@@ -98,23 +126,28 @@ try {
     & $go test -json -count=1 -timeout=2m ./... 1> $log 2> (Join-Path $work 'contracts-stderr.txt')
     if ($LASTEXITCODE -ne 0) { Write-OwnerFailure; throw 'Owner contract checks failed' }
     $contractPasses = 0
+    $contractSeen = @{}
     $contractPackages = 0
     foreach ($line in Get-Content $log) {
         $row = $line | ConvertFrom-Json
         if ($row.Action -in @('fail', 'skip', 'build-fail')) { Write-OwnerFailure; throw 'Owner contract failure or skip' }
         if ($row.Action -ceq 'pass') {
-            if ($null -ne $row.PSObject.Properties['Test']) { $contractPasses++ } else { $contractPackages++ }
+            if ($null -ne $row.PSObject.Properties['Test']) {
+                if ($row.Test -cnotin $contractRequired -or $contractSeen.ContainsKey($row.Test)) { throw 'Unexpected or repeated owner contract assertion' }
+                $contractSeen[$row.Test] = $true
+                $contractPasses++
+            } else { $contractPackages++ }
         }
     }
-    if ($contractPackages -ne 1 -or $contractPasses -ne 32) { throw 'Missing owner contract assertions' }
+    if ($contractPackages -ne 1 -or $contractPasses -ne $contractRequired.Count) { throw 'Missing owner contract assertions' }
     $stage = 'vet'
     & $go vet ./... 1> (Join-Path $work 'vet-stdout.txt') 2> (Join-Path $work 'vet-stderr.txt')
     if ($LASTEXITCODE -ne 0) { Write-OwnerFailure; throw 'Owner native vet failed' }
 } catch { Write-OwnerFailure; throw } finally { Pop-Location }
 $receipt = [ordered]@{ schema_version = 1; passed = $true; source_commit = $commit;
     platform = 'windows/amd64'; go_version = 'go1.26.9'; source_files_sha256 = $hashes;
-    native_execution = $true; native_assertions = $counts; required_native_passes = 260;
+    native_execution = $true; native_assertions = $counts; required_native_passes = 320;
     failures = 0; skips = 0; native_vet = $true; contract_test_passes = $contractPasses; production_integration_enabled = $false;
     window_or_media_started = $false; source_or_binary_artifacts_published = $false }
 [IO.File]::WriteAllText((Join-Path $out 'owner.json'), (($receipt | ConvertTo-Json -Depth 6) + "`n"), (New-Object Text.UTF8Encoding($false)))
-Write-Host 'Native pipe owner: all 13 assertions passed 20 times, plus contract tests and vet.'
+Write-Host 'Native pipe owner: all 16 assertions passed 20 times, plus contract tests and vet.'
