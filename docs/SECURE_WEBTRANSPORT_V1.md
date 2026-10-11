@@ -8,7 +8,7 @@ compatibility with an unversioned stock endpoint.
 
 ## Current implementation and remaining gate
 
-The page loads static same-origin player, worker, policy, lifetime and wire
+The page loads static same-origin player, worker, policy, lifetime, session and wire
 modules before starting Go. Every asset is required and hash-covered by the web
 package and LAN host. There is no `Function`, `eval`, generated worker source or
 new CSP exception. The worker probe uses no decoder, network, device or capture
@@ -18,7 +18,9 @@ API. The frozen browser API explicitly advertises `transportEnabled:false` and
 The implemented foundation includes bounded control/media parsers, exact
 capability/session validation, browser-trusted TLS destination policy, a single
 absolute setup deadline, abort propagation, bounded reader cleanup and explicit
-cleanup uncertainty. Actual QUIC connection, server grant issuance, decoding,
+cleanup uncertainty. The control-only owner now opens the supplied transport, writes a canonical
+HELLO and validates WELCOME against the authorized grant. Its module is not
+exposed by the disabled page API. Actual QUIC interoperability, server grant issuance, decoding,
 playback and GUI selection remain disabled until the private server and real
 browser acceptance are integrated. A static-worker pass is not a streaming pass.
 
@@ -54,8 +56,8 @@ Duplicate fields, alternate case, noncanonical encodings and extra fields fail.
 WELCOME type 1 contains exactly `protocol`, `session_id`, `codec`, `width`,
 `height`, `fps`, `audio`, `input`, `channels`. Values must match the narrow profile;
 `audio` has exactly `codec:"opus"`, `sample_rate:48000`, `channels:2`.
-`input` is false and `channels` is empty. A later session owner must additionally
-match dimensions/rate to the authorized grant before starting decoders.
+`input` is false and `channels` is empty. The control owner additionally matches dimensions/rate to the authorized grant
+before returning readiness; no decoder starts in this slice.
 Type 7 is terminal takeover; it must never initiate automatic reconnection.
 
 Discovery has exactly `protocol`, `ready`, `endpoint`, `tls_mode:"trusted"`,
@@ -90,3 +92,29 @@ setup deadlines, cancellation, lock release and uncertain cleanup. Browser CI
 loads the static worker under the unchanged production CSP. Asset omission,
 symlink and package-hash checks remain mandatory. No latency/CPU advantage,
 hardware decoder, real QUIC interoperability or user-ready transport is claimed.
+
+## Control ownership increment
+
+`session.mjs` consumes an already-authorized grant; it does not discover a new
+peer, issue credentials, request devices or enable GUI selection. One shared
+setup `Lifetime` covers readiness, stream acquisition, HELLO write and WELCOME.
+A caller composing worker/codec initialization must pass that same lifetime and
+close the returned owner if a subsequent stage fails. Failed setup cleanup uses
+the original remaining deadline. Once established, shutdown has one separate
+bounded five-second retirement budget, never renewed per operation.
+
+Both an explicit parent abort signal and the borrowed setup lifetime's original
+parent remain active through session retirement. The setup timer itself ends at
+readiness. Close, expiry, peer loss and terminal takeover all retire the same
+owner without automatic reconnect. Its `closed` promise preserves typed cleanup
+uncertainty, including a late stream that cannot be released. Unknown controls,
+truncated EOF, malformed WELCOME and widened capabilities are terminal. Encoded
+HELLO scratch is cleared after its write settles; a browser write that cannot be
+joined is reported uncertain rather than mutating bytes still in use. JavaScript
+strings owned by the caller cannot be guaranteed zeroized; tickets must never be
+logged or persisted.
+
+Node tests and the strict-CSP Chromium gate exercise genuine stream primitives
+with a fake transport. They prove control ownership only. Actual HTTP/3/TLS,
+server-side one-use redemption, media decoding, stream-credit limits and the
+four-frame media owner remain required before enabling the transport.

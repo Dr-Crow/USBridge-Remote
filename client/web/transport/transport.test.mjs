@@ -96,3 +96,8 @@ test('worker probe consumes an existing absolute setup deadline without reset',a
   const {API}=await import('./player.mjs');let now=0;const lifetime=new Lifetime({timeoutMs:100,clock:()=>now});now=101;
   try{await assert.rejects(API.probeWorker({lifetime}),{code:'setup_timeout'});}finally{lifetime.dispose();}
 });
+
+test('cleanup checks the same absolute deadline before and after synchronous settlement',async()=>{
+  let now=0;const lifetime=new Lifetime({timeoutMs:100,clock:()=>now});now=90;
+  try{await assert.rejects(lifetime.retire(()=>{now=101;return 'joined';}),{code:'cleanup_deadline'});}finally{lifetime.dispose();}
+});

@@ -11,7 +11,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-TRANSPORT = ('player.mjs', 'worker.mjs', 'wire.mjs', 'lifetime.mjs', 'policy.mjs')
+TRANSPORT = ('player.mjs', 'worker.mjs', 'wire.mjs', 'lifetime.mjs', 'policy.mjs', 'session.mjs')
 
 MODELS = ("icon_detect", "dbnet", "svtr")
 ORT = (

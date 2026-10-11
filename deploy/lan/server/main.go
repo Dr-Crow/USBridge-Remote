@@ -118,7 +118,7 @@ func newHost(webDir, mirrorDir string, origins []string) (*host, error) {
 	}
 	h.web = root
 	fail := func(err error) (*host, error) { h.Close(); return nil, err }
-	for _, p := range []string{"index.html", "gui.html", "app.wasm", "wasm_exec.js", "runtime-policy.js", "bootstrap.js", "ai_vision.js", "transport/player.mjs", "transport/worker.mjs", "transport/wire.mjs", "transport/lifetime.mjs", "transport/policy.mjs"} {
+	for _, p := range []string{"index.html", "gui.html", "app.wasm", "wasm_exec.js", "runtime-policy.js", "bootstrap.js", "ai_vision.js", "transport/player.mjs", "transport/worker.mjs", "transport/wire.mjs", "transport/lifetime.mjs", "transport/policy.mjs", "transport/session.mjs"} {
 		f, e := regular(h.web, p)
 		if e != nil {
 			return fail(fmt.Errorf("required web asset %s: %w", p, e))
@@ -258,7 +258,7 @@ func (h *host) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		// Only runtime asset types/locations. No directory listing or test sources.
 		ext := path.Ext(p)
-		if !safePath(p) || !(p == "index.html" || p == "gui.html" || p == "app.wasm" || p == "wasm_exec.js" || p == "runtime-policy.js" || p == "bootstrap.js" || p == "ai_vision.js" || p == "transport/player.mjs" || p == "transport/worker.mjs" || p == "transport/wire.mjs" || p == "transport/lifetime.mjs" || p == "transport/policy.mjs" || (strings.HasPrefix(p, "models/") && ext == ".onnx") || (strings.HasPrefix(p, "vendor/ort/") && (ext == ".wasm" || ext == ".mjs"))) {
+		if !safePath(p) || !(p == "index.html" || p == "gui.html" || p == "app.wasm" || p == "wasm_exec.js" || p == "runtime-policy.js" || p == "bootstrap.js" || p == "ai_vision.js" || p == "transport/player.mjs" || p == "transport/worker.mjs" || p == "transport/wire.mjs" || p == "transport/lifetime.mjs" || p == "transport/policy.mjs" || p == "transport/session.mjs" || (strings.HasPrefix(p, "models/") && ext == ".onnx") || (strings.HasPrefix(p, "vendor/ort/") && (ext == ".wasm" || ext == ".mjs"))) {
 			http.NotFound(w, r)
 			return
 		}

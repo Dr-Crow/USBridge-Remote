@@ -58,7 +58,7 @@ node --test web/runtime-policy.test.cjs
 node --check web/runtime-policy.js
 node --check web/runtime-config.js
 node --input-type=module --check < web/bootstrap.js
-node --test web/transport/transport.test.mjs
+node --test web/transport/*.test.mjs
 for module in web/transport/*.mjs; do node --check "$module"; done
 node --input-type=module --check < web/ai_vision.js
 for module in web/vendor/ort/*.mjs; do node --check "$module"; done

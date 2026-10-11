@@ -82,6 +82,24 @@ with tempfile.TemporaryDirectory(prefix='usbridge-browser-') as tmp:
             assert report['static_transport']['frozen'] is True and report['static_transport']['enabled'] is False
             assert report['static_transport']['proof']['staticWorkerReady'] is True
             assert report['static_transport']['proof']['mediaEnabled'] is False
+            report['control_owner_mock'] = page.evaluate('''async () => {
+              const {negotiateControl}=await import('/transport/session.mjs');
+              const {PROTOCOL,ControlParser,encodeMessage,validateHello}=await import('/transport/wire.mjs');
+              const json=v=>new TextEncoder().encode(JSON.stringify(v));
+              let input,ended,closes=0,helloVerified=false;
+              const closed=new Promise(resolve=>{ended=resolve;});
+              const welcome={protocol:PROTOCOL,session_id:'browser_fixture',codec:'h264',width:128,height:72,fps:30,audio:{codec:'opus',sample_rate:48000,channels:2},input:false,channels:[]};
+              const readable=new ReadableStream({start(c){input=c;}});
+              const writable=new WritableStream({write(frame){const [m]=new ControlParser([1]).feed(frame);const h=validateHello(m.payload);helloVerified=h.session_id===welcome.session_id;input.enqueue(encodeMessage(1,json(welcome)));}});
+              const endpoint='https://127.0.0.1:8444/webtransport';
+              class MockTransport {constructor(){this.ready=Promise.resolve();this.closed=closed;}createBidirectionalStream(){return Promise.resolve({readable,writable});}close(){closes++;ended();}}
+              const signal=new AbortController();
+              const owner=await negotiateControl({grant:{protocol:PROTOCOL,session_id:welcome.session_id,ticket:'A'.repeat(43),endpoint,origin:location.origin,expires_at_ms:Date.now()+10000,width:128,height:72,fps:30},authorizedEndpoint:endpoint,capabilityStatus:200,capabilityBody:json({protocol:PROTOCOL,ready:true,endpoint,tls_mode:'trusted',codec:'h264',audio:'opus',input:false,channels:[]}),signal:signal.signal},{Transport:MockTransport});
+              signal.abort();const result=await owner.closed;
+              return {helloVerified,parentCancelled:result.reason==='cancelled',joined:result.joined,closedOnce:closes===1,locksReleased:!readable.locked&&!writable.locked,mediaStarted:owner.mediaStarted,realQUIC:false};
+            }''')
+            assert all(report['control_owner_mock'][key] for key in ('helloVerified','parentCancelled','joined','closedOnce','locksReleased'))
+            assert report['control_owner_mock']['mediaStarted'] is False and report['control_owner_mock']['realQUIC'] is False
             report['policy'] = page.evaluate('''async () => {
               let fetchBlocked=false,wsBlocked=false,iceBlocked=false;
               try { await fetch('https://example.com/'); } catch(e) { fetchBlocked=String(e).includes('Strict LAN'); }

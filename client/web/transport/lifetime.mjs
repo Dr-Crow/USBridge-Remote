@@ -10,6 +10,7 @@ export class Lifetime {
     this.#parent=signal;this.#onAbort=()=>this.cancel('cancelled');
     if(signal?.aborted) this.#onAbort();else signal?.addEventListener('abort',this.#onAbort,{once:true});
   }
+  get parentSignal(){return this.#parent;}
   get signal(){return this.#controller.signal;}
   check(){if(this.signal.aborted)throw this.signal.reason;if(this.#clock()>=this.#deadline){this.cancel('setup_timeout');throw this.signal.reason;}}
   cancel(code='cancelled'){if(!this.signal.aborted)this.#controller.abort(new ProtocolError(code));}
@@ -25,7 +26,11 @@ export class Lifetime {
     const remaining=this.#deadline-this.#clock();
     if(remaining<=0)throw new ProtocolError('cleanup_deadline');
     let timer;
-    try{return await Promise.race([Promise.resolve().then(operation),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new ProtocolError('cleanup_deadline')),remaining);})]);}
+    try{
+      const result=await Promise.race([Promise.resolve().then(()=>{if(this.#clock()>=this.#deadline)throw new ProtocolError('cleanup_deadline');return operation();}),new Promise((_,reject)=>{timer=setTimeout(()=>reject(new ProtocolError('cleanup_deadline')),remaining);})]);
+      if(this.#clock()>=this.#deadline)throw new ProtocolError('cleanup_deadline');
+      return result;
+    }
     finally{clearTimeout(timer);}
   }
   dispose(){clearTimeout(this.#timer);this.#parent?.removeEventListener('abort',this.#onAbort);}
