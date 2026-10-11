@@ -1,5 +1,10 @@
 version: 2.1
 
+parameters:
+  powershell-launch-diagnostic:
+    type: boolean
+    default: false
+
 # Branch builds produce testable agents and a source-built Go web client.
 # No release publishing, credential embedding or vendor archive modification.
 jobs:
@@ -119,6 +124,21 @@ jobs:
       - store_artifacts:
           path: artifacts
           destination: windows-agent
+
+  windows-powershell-launch-diagnostic:
+    resource_class: windows.medium
+    machine:
+      image: windows-server-2022-gui:2026.05.1
+      shell: powershell.exe -NoProfile -ExecutionPolicy Bypass
+    steps:
+      - checkout
+      - run:
+          name: Record historical detached and no-window PowerShell comparison
+          command: .\.circleci\test-source-preview-windows-process.ps1 -LiteralDiagnosticOnly
+          no_output_timeout: 15m
+      - store_artifacts:
+          path: artifacts/windows-preview-process-evidence
+          destination: windows-powershell-diagnostic-evidence
 
   windows-preview-process:
     resource_class: windows.medium
@@ -306,6 +326,8 @@ jobs:
 
 workflows:
   agent-capability-build:
+    when:
+      not: << pipeline.parameters.powershell-launch-diagnostic >>
     jobs:
       - lan-host:
           filters:
@@ -346,3 +368,7 @@ workflows:
             branches:
               only: [agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
 
+  powershell-launch-diagnostic:
+    when: << pipeline.parameters.powershell-launch-diagnostic >>
+    jobs:
+      - windows-powershell-launch-diagnostic
