@@ -235,7 +235,31 @@ class ManagerComponentTests(unittest.TestCase):
     def test_executable_size_is_bounded(self):
         with self.source.open('wb') as f:
             f.truncate(manager.MAX_EXECUTABLE_BYTES + 1)
-        self.rejected('file_size_limit')
+        error = self.rejected('file_size_limit')
+        self.assertEqual(error.receipt['observed_size_bytes'], manager.MAX_EXECUTABLE_BYTES + 1)
+        self.assertEqual(error.receipt['limit_bytes'], manager.MAX_EXECUTABLE_BYTES)
+        self.assertEqual(error.receipt['member_kind'], 'executable')
+        self.assertEqual(error.receipt['component_role'], 'source')
+        self.assertIs(error.receipt['size_observation_clamped'], False)
+
+    def test_viewer_size_diagnosis_preserves_bound_and_privacy(self):
+        with self.viewer.open('wb') as f:
+            f.truncate(manager.MAX_EXECUTABLE_BYTES + 1)
+        error = self.rejected('file_size_limit')
+        self.assertEqual(error.receipt['component_role'], 'viewer')
+        self.assertEqual(error.receipt['member_kind'], 'executable')
+        self.assertNotIn(self.viewer.name, json.dumps(error.receipt))
+        self.assertEqual(error.receipt['observed_size_bytes'], manager.MAX_EXECUTABLE_BYTES + 1)
+        self.assertFalse(self.output.exists())
+
+    def test_size_diagnosis_clamps_only_output_not_acceptance(self):
+        for value in (-1, 0, 1 << 63):
+            with self.subTest(value=value), self.assertRaises(manager.ComponentStagingError) as caught:
+                manager._require_file_size(value, 64)
+            self.assertIs(caught.exception.receipt['passed'], False)
+            self.assertEqual(caught.exception.receipt['limit_bytes'], 64)
+            self.assertGreaterEqual(caught.exception.receipt['observed_size_bytes'], 0)
+            self.assertLess(caught.exception.receipt['observed_size_bytes'], 1 << 63)
 
     def test_combined_component_aggregate_is_bounded(self):
         total = sum(p.stat().st_size for directory in (self.source.parent, self.viewer.parent) for p in directory.iterdir())

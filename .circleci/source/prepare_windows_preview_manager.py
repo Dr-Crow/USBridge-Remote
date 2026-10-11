@@ -123,7 +123,11 @@ def prepare(work, output, commit):
     viewer = work / 'bin/source-preview-viewer.exe'
     source = work / 'components/bin/source-streamer.exe'
     dependencies = verified_viewer_dependencies(build, output, viewer)
-    retired_probe = retire_verified_graphics_probe(work, output)
+    try:
+        retired_probe = retire_verified_graphics_probe(work, output)
+    except ComponentStagingError as error:
+        error.receipt['component_role'] = 'graphics_probe'
+        raise
     receipt = stage_manager_components(
         source=source, source_sha256=pins['source'],
         source_dependencies=inputs.get('source_runtime_dlls_sha256'), source_version=SOURCE,

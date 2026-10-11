@@ -46,6 +46,17 @@ def _require(condition, code):
         raise ComponentStagingError(code)
 
 
+
+def _require_file_size(size, limit):
+    if not 0 < size <= limit:
+        error = ComponentStagingError('file_size_limit')
+        # Integer-only diagnosis. No path, basename, contents, or OS error text.
+        error.receipt['observed_size_bytes'] = min(max(size, 0), (1 << 63) - 1)
+        error.receipt['size_observation_clamped'] = not 0 <= size < (1 << 63)
+        error.receipt['limit_bytes'] = limit
+        raise error
+
+
 def _safe_name(name, suffix):
     if not isinstance(name, str) or not re.fullmatch(
             r'[A-Za-z0-9_+-][A-Za-z0-9_.+-]{0,99}\.' + suffix, name, re.I):
@@ -130,7 +141,7 @@ def _validated_inputs(executable, digest, dependencies):
 
 def _hash_file(path, expected, limit, snapshot=None, target=None):
     info = _checked_path(path)
-    _require(0 < info.st_size <= limit, 'file_size_limit')
+    _require_file_size(info.st_size, limit)
     if snapshot is not None:
         _require(_stamp(info) == snapshot, 'input_changed')
     flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0)
@@ -145,7 +156,7 @@ def _hash_file(path, expected, limit, snapshot=None, target=None):
                 if not chunk:
                     break
                 size += len(chunk)
-                _require(size <= limit, 'file_size_limit')
+                _require_file_size(size, limit)
                 digest.update(chunk)
                 if sink is not None:
                     sink.write(chunk)
@@ -183,7 +194,11 @@ def _inventory(executable, expected):
         executable_member = name == executable.name
         limit = MAX_EXECUTABLE_BYTES if executable_member else MAX_DLL_BYTES
         info = _checked_path(path)
-        _require(0 < info.st_size <= limit, 'file_size_limit')
+        try:
+            _require_file_size(info.st_size, limit)
+        except ComponentStagingError as error:
+            error.receipt['member_kind'] = 'executable' if executable_member else 'dependency'
+            raise
         total += info.st_size
         _require(total <= MAX_TOTAL_BYTES, 'aggregate_size_limit')
         if executable_member:
@@ -245,8 +260,12 @@ def stage_manager_components(*, source, source_sha256, source_dependencies, sour
             _require(not resolved_output.is_relative_to(directory) and not directory.is_relative_to(resolved_output),
                      'source_destination_alias')
         inventories, total = [], 0
-        for executable, pins in zip((source, viewer), expected):
-            inventory, size = _inventory(executable, pins)
+        for role, executable, pins in zip(('source', 'viewer'), (source, viewer), expected):
+            try:
+                inventory, size = _inventory(executable, pins)
+            except ComponentStagingError as error:
+                error.receipt['component_role'] = role
+                raise
             inventories.append(inventory)
             total += size
             _require(total <= MAX_TOTAL_BYTES, 'aggregate_size_limit')

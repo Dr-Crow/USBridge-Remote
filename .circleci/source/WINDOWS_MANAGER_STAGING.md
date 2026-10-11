@@ -35,3 +35,13 @@ before and after. No file is deleted, no unknown member is ignored, and the
 unchanged component stager still requires exactly one EXE plus pinned DLLs.
 Wrong hashes, forced/unproven cleanup, symlinks and pre-existing destinations
 fail closed. Remaining unknown extras are tested to remain fatal.
+
+## Size-bound diagnosis after job 422
+
+The same-SHA rerun restored the early window gate and passed all three CLI media
+cases, then the unchanged stager rejected `file_size_limit`. The prior failure
+receipt does not identify which input reached its bound. The next diagnostic
+adds only a closed component role, member kind and integer observed/limit byte
+counts. It contains no path, basename or contents, and keeps every existing
+32 MiB probe, 64 MiB executable, 256 MiB DLL and 768 MiB aggregate bound unchanged.
+No larger input is admitted based on a successful viewer run alone.
