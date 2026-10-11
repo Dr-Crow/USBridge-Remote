@@ -9,7 +9,7 @@ import (
 )
 
 func TestStartupTerminalClosedCategories(t *testing.T) {
-	for _, code := range []string{"window_unavailable", "window_driver_unavailable", "window_identity_failed", "window_not_visible", "window_diagnostics_overflow", "graphics_api_unavailable", "graphics_version_unavailable", "graphics_platform_error", "graphics_format_unavailable"} {
+	for _, code := range []string{"startup_cancelled_app", "startup_cancelled_window", "startup_cancelled_content", "startup_cancelled_show", "startup_cancelled_identity", "window_unavailable", "window_driver_unavailable", "window_identity_failed", "window_not_visible", "window_diagnostics_overflow", "graphics_api_unavailable", "graphics_version_unavailable", "graphics_platform_error", "graphics_format_unavailable"} {
 		raw := []byte(fmt.Sprintf(`{"schema_version":1,"event":"stopped","session_id":"owned","reason":"failed","failure_code":%q}`, code))
 		if got, err := startupTerminal(raw, "owned"); err != nil || got != code {
 			t.Fatal("valid category rejected")
@@ -46,7 +46,7 @@ func TestStartupStoppedClosedCategories(t *testing.T) {
 			t.Fatal("valid uncoded stopped event rejected")
 		}
 	}
-	for _, code := range []string{"window_unavailable", "window_driver_unavailable", "window_identity_failed", "window_not_visible", "window_diagnostics_overflow", "graphics_api_unavailable", "graphics_version_unavailable", "graphics_platform_error", "graphics_format_unavailable"} {
+	for _, code := range []string{"startup_cancelled_app", "startup_cancelled_window", "startup_cancelled_content", "startup_cancelled_show", "startup_cancelled_identity", "window_unavailable", "window_driver_unavailable", "window_identity_failed", "window_not_visible", "window_diagnostics_overflow", "graphics_api_unavailable", "graphics_version_unavailable", "graphics_platform_error", "graphics_format_unavailable"} {
 		raw := []byte(fmt.Sprintf(`{"schema_version":1,"event":"stopped","session_id":"owned","reason":"failed","failure_code":%q}`, code))
 		gotReason, gotCode, err := startupStopped(raw, "owned")
 		if err != nil || gotReason != "failed" || gotCode != code {
@@ -128,6 +128,24 @@ func TestStartupDiagnosticsDistinguishMissingAndObservedZero(t *testing.T) {
 	} {
 		if string(fields[field]) != want {
 			t.Fatalf("observed diagnostic %s missing or incorrect", field)
+		}
+	}
+}
+
+func TestStartupCancellationIsExactAndNeverSuccess(t *testing.T) {
+	for _, stage := range []string{"app", "window", "content", "show", "identity"} {
+		code := "startup_cancelled_" + stage
+		if !startupCancellation(code) {
+			t.Fatal("known cancellation rejected")
+		}
+		raw := []byte(fmt.Sprintf(`{"schema_version":1,"event":"stopped","session_id":"owned","reason":"failed","failure_code":%q}`, code))
+		if parseViewer(raw, "owned", "stopped", "completed") == nil {
+			t.Fatal("cancellation counted as success")
+		}
+	}
+	for _, code := range []string{"", "startup_cancelled_", "startup_cancelled_unknown", "window_unavailable", "STARTUP_CANCELLED_SHOW"} {
+		if startupCancellation(code) {
+			t.Fatal("unknown cancellation accepted")
 		}
 	}
 }

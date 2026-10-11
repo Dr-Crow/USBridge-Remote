@@ -118,7 +118,8 @@ func startupTerminal(raw []byte, id string) (string, error) {
 		return "", failure("invalid_startup_terminal")
 	}
 	switch e.Failure {
-	case "window_unavailable", "window_driver_unavailable", "window_identity_failed", "window_not_visible", "window_diagnostics_overflow", "graphics_api_unavailable", "graphics_version_unavailable", "graphics_platform_error", "graphics_format_unavailable":
+	case "startup_cancelled_app", "startup_cancelled_window", "startup_cancelled_content", "startup_cancelled_show", "startup_cancelled_identity",
+		"window_unavailable", "window_driver_unavailable", "window_identity_failed", "window_not_visible", "window_diagnostics_overflow", "graphics_api_unavailable", "graphics_version_unavailable", "graphics_platform_error", "graphics_format_unavailable":
 		return e.Failure, nil
 	}
 	return "", failure("invalid_startup_terminal")
@@ -137,4 +138,12 @@ func startupStopped(raw []byte, id string) (reason, code string, err error) {
 		return "", "", err
 	}
 	return "failed", code, nil
+}
+
+func startupCancellation(code string) bool {
+	switch code {
+	case "startup_cancelled_app", "startup_cancelled_window", "startup_cancelled_content", "startup_cancelled_show", "startup_cancelled_identity":
+		return true
+	}
+	return false
 }

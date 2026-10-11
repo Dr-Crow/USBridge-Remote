@@ -97,17 +97,37 @@ func main() {
 	}()
 
 	diagnostic, finishDiagnostic := beginWindowDiagnostics()
-	a := app.New()
-	window := a.NewWindow("Source preview (experimental, this computer)")
-	picture := canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, sourcepreview.DefaultWidth, sourcepreview.DefaultHeight)))
-	picture.FillMode = canvas.ImageFillContain
-	picture.SetMinSize(fyne.NewSize(640, 360))
-	label := widget.NewLabel("Connecting · View only · Silent audio · Up to 30 seconds")
-	window.SetContent(container.NewBorder(label, widget.NewButton("Stop preview", func() { stop("closed") }), nil, nil, picture))
-	window.Resize(fyne.NewSize(680, 440))
-	window.SetCloseIntercept(func() { stop("closed") })
-	window.Show()
-	startupFailure := previewWindowFailure(window)
+	var a fyne.App
+	var window fyne.Window
+	var picture *canvas.Image
+	var label *widget.Label
+	startupFailure := runWindowStartup(ctx, []windowStartupStep{
+		{"app", func() string { a = app.New(); return "" }},
+		{"window", func() string {
+			window = a.NewWindow("Source preview (experimental, this computer)")
+			return ""
+		}},
+		{"content", func() string {
+			picture = canvas.NewImageFromImage(image.NewRGBA(image.Rect(0, 0, sourcepreview.DefaultWidth, sourcepreview.DefaultHeight)))
+			picture.FillMode = canvas.ImageFillContain
+			picture.SetMinSize(fyne.NewSize(640, 360))
+			label = widget.NewLabel("Connecting · View only · Silent audio · Up to 30 seconds")
+			window.SetContent(container.NewBorder(label, widget.NewButton("Stop preview", func() { stop("closed") }), nil, nil, picture))
+			window.Resize(fyne.NewSize(680, 440))
+			window.SetCloseIntercept(func() { stop("closed") })
+			return ""
+		}},
+		{"show", func() string { window.Show(); return "" }},
+		{"identity", func() string { return previewWindowFailure(window) }},
+	}, func() {
+		if a != nil {
+			// Fyne Quit before Run does not retire GLFW. Enter its main-thread
+			// loop with only a quit hook, so windows/GLFW and lifecycle workers
+			// retire without constructing or connecting a renderer.
+			a.Lifecycle().SetOnStarted(a.Quit)
+			a.Run()
+		}
+	})
 	finishDiagnostic()
 	if startupFailure != "" {
 		e.startupFailed(diagnostic.failure(startupFailure))
@@ -135,7 +155,14 @@ func main() {
 	})
 	renderer.SetOnError(func(error) { stop("renderer_error") })
 	a.Lifecycle().SetOnStarted(func() {
+		if ctx.Err() != nil {
+			a.Quit()
+			return
+		}
 		go func() {
+			if ctx.Err() != nil {
+				return
+			}
 			if err := renderer.ConnectToSourcePreview(ctx, descriptor, func() { stop("renderer_stopped") }); err != nil {
 				stop("renderer_error")
 			}

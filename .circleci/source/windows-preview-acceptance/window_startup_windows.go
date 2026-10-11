@@ -232,7 +232,7 @@ func executeWindowStartup(c config, r *windowStartupReceipt) (result error) {
 		}
 		d.TerminalReasonAfterEOF = reason
 		r.ViewerFailure = code
-		if code != "" {
+		if code != "" && !startupCancellation(code) {
 			return failure("invalid_startup_terminal")
 		}
 	}
@@ -251,6 +251,9 @@ func executeWindowStartup(c config, r *windowStartupReceipt) (result error) {
 	r.JobEmpty, r.NaturalCleanup = true, true
 	if !r.WindowVerified {
 		return failure("actual_viewer_window_unavailable")
+	}
+	if r.ViewerFailure != "" {
+		return failure("actual_viewer_startup_cancelled")
 	}
 	return nil
 }
