@@ -65,7 +65,10 @@ class OwnedChromium:
                 lines=active.read_text().splitlines()
                 if len(lines)!=2 or not lines[0].isdigit() or not 1024<=int(lines[0])<=65535 or not re.fullmatch(r'/devtools/browser/[a-f0-9-]{36}',lines[1]):raise ProfileError('browser_devtools_identity')
                 endpoint='ws://127.0.0.1:'+lines[0]+lines[1]
-                self.browser=await asyncio.wait_for(playwright.chromium.connect_over_cdp(endpoint),max(.001,deadline-time.monotonic()))
+                try:
+                    self.browser=await asyncio.wait_for(playwright.chromium.connect_over_cdp(endpoint),max(.001,deadline-time.monotonic()))
+                except Exception:
+                    raise ProfileError('browser_cdp_attach_failed') from None
                 self.receipt['initial_owned_processes']=len(group_members(self.process.pid))
                 return self.browser
             await asyncio.sleep(.025)

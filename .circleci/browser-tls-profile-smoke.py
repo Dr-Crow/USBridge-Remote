@@ -11,7 +11,7 @@ import threading
 import time
 import urllib.parse
 from playwright.async_api import async_playwright, Error as BrowserError
-from browser_tls_profile import EphemeralBrowserTLS, ProfileError
+from browser_tls_profile import EphemeralBrowserTLS, ProfileError, failure_code
 from browser_owned_process import OwnedChromium
 
 
@@ -129,11 +129,17 @@ async def main():
                 report['browser_processes_joined']=len(report['browsers'])==2 and all(x['natural_root_exit'] and x['owned_group_empty'] and x['stderr_reader_joined'] and not x['forced_cleanup'] for x in report['browsers'])
             finally:
                 server.close();report['https_server_joined']=server.joined
+                report['browser_processes_joined']=bool(report['browsers']) and all(x['natural_root_exit'] and x['owned_group_empty'] and x['stderr_reader_joined'] and not x['forced_cleanup'] for x in report['browsers'])
                 if report['https_server_joined'] and report['browser_processes_joined']:profile.confirm_joined()
             if not report['untrusted_rejected'] or not report['trusted_succeeded']:raise ProfileError('trust_comparison_failed')
         report['result']='passed'
+    except Exception as error:
+        report['failure_code']=failure_code(error)
+        raise ProfileError('browser_tls_fixture_failed') from None
     finally:
         report['profile']=profile.receipt;out.write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report,sort_keys=True))
 
-if __name__=='__main__':asyncio.run(main())
+if __name__=='__main__':
+    try:asyncio.run(main())
+    except Exception:raise SystemExit('Disposable browser TLS prerequisite failed; inspect closed receipt') from None

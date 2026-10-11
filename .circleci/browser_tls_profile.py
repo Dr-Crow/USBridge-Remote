@@ -21,6 +21,14 @@ class ProfileError(RuntimeError):
     pass
 
 
+CLOSED_FAILURE_CODES = frozenset(['browser_cdp_attach_failed', 'browser_devtools_identity', 'browser_executable_identity', 'browser_group_identity', 'browser_inventory_invalid', 'browser_inventory_unavailable', 'browser_retirement_unverified', 'browser_server_join_unverified', 'browser_startup_exit', 'browser_startup_timeout', 'browser_stop_budget', 'browser_tls_fixture_failed', 'browser_tls_probe_failed', 'browser_tls_version', 'certutil_identity', 'https_server_join_unverified', 'incomplete_tls_fixture_not_accepted', 'incomplete_tls_shutdown_budget', 'isolated_circleci_linux_required', 'nss_command_failed', 'official_certutil_path_required', 'profile_cleanup_failed', 'trust_comparison_failed'])
+
+
+def failure_code(error):
+    code = str(error) if isinstance(error, ProfileError) else None
+    return code if code in CLOSED_FAILURE_CODES else "unclassified_fixture_failure"
+
+
 def browser_environment(root: pathlib.Path) -> dict[str, str]:
     root = root.resolve(strict=True)
     return {'PATH': '/usr/bin:/bin', 'HOME': str(root / 'home'),
@@ -131,6 +139,8 @@ class EphemeralBrowserTLS:
         self.receipt['browser_server_joined'] = True
 
     def __exit__(self, kind, value, tb):
+        if kind is not None:
+            self.receipt['fixture_failure_code'] = failure_code(value)
         # Erase ephemeral credentials even on a failed fixture. A missing join
         # remains a fatal uncertainty, never a successful cleanup receipt.
         try:

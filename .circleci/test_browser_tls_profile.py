@@ -3,7 +3,7 @@ import pathlib
 import tempfile
 import unittest
 from unittest import mock
-from browser_tls_profile import EphemeralBrowserTLS, ProfileError, browser_environment, _write_private
+from browser_tls_profile import EphemeralBrowserTLS, ProfileError, browser_environment, _write_private, failure_code
 
 class ProfileTests(unittest.TestCase):
     def test_refuses_non_ci_before_generating_or_trusting(self):
@@ -29,6 +29,11 @@ class ProfileTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {'CIRCLECI':'true'}), mock.patch.object(EphemeralBrowserTLS,'_tool_identity'), mock.patch('browser_tls_profile._certificates', side_effect=fail):
             with self.assertRaisesRegex(ProfileError,'fixture failure'):EphemeralBrowserTLS().__enter__()
         self.assertEqual(len(roots),1);self.assertFalse(roots[0].exists())
+    def test_failure_category_does_not_publish_native_errors_or_unknown_codes(self):
+        self.assertEqual(failure_code(ProfileError('browser_cdp_attach_failed')),'browser_cdp_attach_failed')
+        for error in (OSError('ws://127.0.0.1/private'),ProfileError('privateword'),RuntimeError('private')):
+            self.assertEqual(failure_code(error),'unclassified_fixture_failure')
+
     def test_environment_contains_no_parent_secrets_or_trust_override(self):
         with tempfile.TemporaryDirectory() as p:
             root=pathlib.Path(p)
