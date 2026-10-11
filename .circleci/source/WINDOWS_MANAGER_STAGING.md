@@ -45,3 +45,14 @@ adds only a closed component role, member kind and integer observed/limit byte
 counts. It contains no path, basename or contents, and keeps every existing
 32 MiB probe, 64 MiB executable, 256 MiB DLL and 768 MiB aggregate bound unchanged.
 No larger input is admitted based on a successful viewer run alone.
+
+## Verified viewer-specific size correction
+
+Job439 at8b4619d recorded the pinned viewer EXE at87,555,125 bytes, above the
+64 MiB generic executable bound. The source executable was not implicated.
+The viewer-only executable cap is now96 MiB; source remains64 MiB, each DLL
+256 MiB and the combined closure768 MiB. Inventory, copying and complete final
+recheck use the same role-specific bound. The test retains a sparse limit+1
+rejection with exact role/limit diagnosis and verifies complete hashed copying
+at the exact viewer limit using scaled constants. This does not admit an extra
+EXE, unpinned file, changed hash or larger aggregate.

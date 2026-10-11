@@ -114,7 +114,7 @@ class RetiredGraphicsProbeTests(unittest.TestCase):
         viewer = self.work / 'bin/source-preview-viewer.exe'
         viewer.write_bytes(b'fixture viewer')
         with self.assertRaises(ComponentStagingError) as caught:
-            manager._inventory(viewer, {viewer.name: hashlib.sha256(viewer.read_bytes()).hexdigest()})
+            manager._inventory(viewer, {viewer.name: hashlib.sha256(viewer.read_bytes()).hexdigest()}, manager.MAX_VIEWER_EXECUTABLE_BYTES)
         self.assertEqual(caught.exception.receipt['failure_code'], 'unexpected_component_member')
 
     def test_changed_hash_missing_or_forced_cleanup_fail_closed(self):

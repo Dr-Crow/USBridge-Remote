@@ -20,6 +20,7 @@ import tempfile
 
 MAX_DEPENDENCIES = 100
 MAX_EXECUTABLE_BYTES = 64 << 20
+MAX_VIEWER_EXECUTABLE_BYTES = 96 << 20
 MAX_DLL_BYTES = 256 << 20
 MAX_TOTAL_BYTES = 768 << 20
 MAX_MANIFEST_BYTES = 1 << 20
@@ -172,7 +173,7 @@ def _hash_file(path, expected, limit, snapshot=None, target=None):
     return info
 
 
-def _inventory(executable, expected):
+def _inventory(executable, expected, executable_limit):
     directory = executable.parent
     parent = _checked_path(directory, directory=True)
     entry_info = _checked_path(executable)
@@ -192,7 +193,7 @@ def _inventory(executable, expected):
     result, total = {}, 0
     for name, path in sorted(paths.items()):
         executable_member = name == executable.name
-        limit = MAX_EXECUTABLE_BYTES if executable_member else MAX_DLL_BYTES
+        limit = executable_limit if executable_member else MAX_DLL_BYTES
         info = _checked_path(path)
         try:
             _require_file_size(info.st_size, limit)
@@ -262,7 +263,7 @@ def stage_manager_components(*, source, source_sha256, source_dependencies, sour
         inventories, total = [], 0
         for role, executable, pins in zip(('source', 'viewer'), (source, viewer), expected):
             try:
-                inventory, size = _inventory(executable, pins)
+                inventory, size = _inventory(executable, pins, MAX_VIEWER_EXECUTABLE_BYTES if role == 'viewer' else MAX_EXECUTABLE_BYTES)
             except ComponentStagingError as error:
                 error.receipt['component_role'] = role
                 raise
@@ -279,7 +280,7 @@ def stage_manager_components(*, source, source_sha256, source_dependencies, sour
             entry_dir.mkdir()
             files = []
             for basename, record in inventory.items():
-                limit = MAX_EXECUTABLE_BYTES if record['executable'] else MAX_DLL_BYTES
+                limit = (MAX_VIEWER_EXECUTABLE_BYTES if prefix == 'viewer' else MAX_EXECUTABLE_BYTES) if record['executable'] else MAX_DLL_BYTES
                 target = entry_dir / basename
                 _hash_file(record['path'], record['sha256'], limit, snapshot=record['stamp'], target=target)
                 copied = _hash_file(target, record['sha256'], limit)
@@ -290,8 +291,8 @@ def stage_manager_components(*, source, source_sha256, source_dependencies, sour
                                'profile': profile, 'entry': prefix + '/' + executable.name, 'files': files})
         # Recheck the complete closure, including member identities and bytes,
         # after copying so changed inputs cannot produce a success receipt.
-        for executable, pins, original in zip((source, viewer), expected, inventories):
-            current, _ = _inventory(executable, pins)
+        for role, executable, pins, original in zip(('source', 'viewer'), (source, viewer), expected, inventories):
+            current, _ = _inventory(executable, pins, MAX_VIEWER_EXECUTABLE_BYTES if role == 'viewer' else MAX_EXECUTABLE_BYTES)
             _require(current == original, 'input_changed')
         raw = (json.dumps({'schema': 1, 'components': components}, indent=2, sort_keys=True) + '\n').encode('utf-8')
         _require(len(raw) <= MAX_MANIFEST_BYTES, 'manifest_size_limit')
@@ -311,7 +312,7 @@ def stage_manager_components(*, source, source_sha256, source_dependencies, sour
                 root_members.add(entry.name)
         _require(root_members == {'source', 'viewer', 'manifest.json'}, 'unexpected_staged_member')
         for prefix, executable, pins in zip(('source', 'viewer'), (source, viewer), expected):
-            _inventory(staged / prefix / executable.name, pins)
+            _inventory(staged / prefix / executable.name, pins, MAX_VIEWER_EXECUTABLE_BYTES if prefix == 'viewer' else MAX_EXECUTABLE_BYTES)
         _require(_identity(_checked_path(output.parent, directory=True)) == _identity(output_parent), 'destination_changed')
         _require(_absent(output), 'destination_exists')
         _publish_directory(staged, output)

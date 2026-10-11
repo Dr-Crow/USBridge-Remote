@@ -243,14 +243,26 @@ class ManagerComponentTests(unittest.TestCase):
         self.assertIs(error.receipt['size_observation_clamped'], False)
 
     def test_viewer_size_diagnosis_preserves_bound_and_privacy(self):
+        self.assertEqual(manager.MAX_EXECUTABLE_BYTES, 64 << 20)
+        self.assertEqual(manager.MAX_VIEWER_EXECUTABLE_BYTES, 96 << 20)
+        self.assertEqual(manager.MAX_DLL_BYTES, 256 << 20)
+        self.assertEqual(manager.MAX_TOTAL_BYTES, 768 << 20)
         with self.viewer.open('wb') as f:
-            f.truncate(manager.MAX_EXECUTABLE_BYTES + 1)
+            f.truncate(manager.MAX_VIEWER_EXECUTABLE_BYTES + 1)
         error = self.rejected('file_size_limit')
         self.assertEqual(error.receipt['component_role'], 'viewer')
         self.assertEqual(error.receipt['member_kind'], 'executable')
         self.assertNotIn(self.viewer.name, json.dumps(error.receipt))
-        self.assertEqual(error.receipt['observed_size_bytes'], manager.MAX_EXECUTABLE_BYTES + 1)
+        self.assertEqual(error.receipt['observed_size_bytes'], manager.MAX_VIEWER_EXECUTABLE_BYTES + 1)
+        self.assertEqual(error.receipt['limit_bytes'], manager.MAX_VIEWER_EXECUTABLE_BYTES)
         self.assertFalse(self.output.exists())
+        # Scale only these two constants to exercise the same complete copy,
+        # hash and recheck path at the exact viewer limit without a large file.
+        self.viewer.write_bytes(b'v' * 96)
+        with mock.patch.object(manager, 'MAX_EXECUTABLE_BYTES', 64), mock.patch.object(manager, 'MAX_VIEWER_EXECUTABLE_BYTES', 96):
+            receipt = self.stage(viewer_sha256=sha(self.viewer))
+        self.assertTrue(receipt['passed'])
+        self.assertEqual((self.output / 'viewer' / self.viewer.name).read_bytes(), b'v' * 96)
 
     def test_size_diagnosis_clamps_only_output_not_acceptance(self):
         for value in (-1, 0, 1 << 63):
