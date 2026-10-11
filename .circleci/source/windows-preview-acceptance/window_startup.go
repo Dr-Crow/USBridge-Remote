@@ -4,9 +4,39 @@ import (
 	"encoding/json"
 	"os"
 	"strings"
+	"time"
 )
 
+// These are elapsed monotonic-clock measurements from the viewer launch request,
+// never wall-clock times. Missing milestones were not observed. Values saturate
+// at one minute so even an unexpectedly stalled run has bounded diagnostics.
+type windowStartupDiagnostics struct {
+	DescriptorWrittenMillis      *uint32 `json:"descriptor_written_ms,omitempty"`
+	FirstOwnedWindowMillis       *uint32 `json:"first_owned_window_ms,omitempty"`
+	FirstVisibleWindowMillis     *uint32 `json:"first_visible_window_ms,omitempty"`
+	FirstTitleMatchMillis        *uint32 `json:"first_title_match_ms,omitempty"`
+	WindowVerifiedMillis         *uint32 `json:"actual_owned_viewer_window_ms,omitempty"`
+	FirstChildExitObservedMillis *uint32 `json:"first_child_exit_observed_ms,omitempty"`
+	ObservationEndedMillis       *uint32 `json:"observation_ended_ms,omitempty"`
+	ObservationEnd               string  `json:"observation_end,omitempty"`
+	ObservationDeadlineReached   bool    `json:"observation_deadline_reached"`
+	EOFRequestedMillis           *uint32 `json:"eof_requested_ms,omitempty"`
+	ChildAliveBeforeEOF          *bool   `json:"child_alive_before_eof,omitempty"`
+	TerminalBeforeEOF            bool    `json:"terminal_observed_before_eof"`
+	TerminalReasonBeforeEOF      string  `json:"terminal_reason_before_eof,omitempty"`
+	TerminalReasonAfterEOF       string  `json:"terminal_reason_after_eof,omitempty"`
+	NaturalJoinMillis            *uint32 `json:"natural_join_ms,omitempty"`
+	ExitCode                     *uint32 `json:"viewer_exit_code_after_natural_join,omitempty"`
+	EmptyStderrVerified          bool    `json:"empty_stderr_verified"`
+}
+
+func startupMillis(elapsed time.Duration) *uint32 {
+	value := uint32(max(int64(0), min(elapsed.Milliseconds(), int64(60000))))
+	return &value
+}
+
 type windowStartupReceipt struct {
+	Diagnostics       *windowStartupDiagnostics       `json:"startup_diagnostics,omitempty"`
 	VerifiedOSModules map[string]graphicsOSInspection `json:"verified_os_graphics_modules,omitempty"`
 	Schema            int                             `json:"schema_version"`
 	Commit            string                          `json:"commit"`
@@ -92,4 +122,19 @@ func startupTerminal(raw []byte, id string) (string, error) {
 		return e.Failure, nil
 	}
 	return "", failure("invalid_startup_terminal")
+}
+
+// A stopped event has either the original exact schema or the existing closed
+// startup-failure schema. No child text is copied into the receipt.
+func startupStopped(raw []byte, id string) (reason, code string, err error) {
+	for _, reason := range []string{"completed", "failed"} {
+		if parseViewer(raw, id, "stopped", reason) == nil {
+			return reason, "", nil
+		}
+	}
+	code, err = startupTerminal(raw, id)
+	if err != nil {
+		return "", "", err
+	}
+	return "failed", code, nil
 }
