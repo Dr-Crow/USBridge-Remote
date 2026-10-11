@@ -1,4 +1,5 @@
 import hashlib
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,6 +36,13 @@ class BundleValidationTests(unittest.TestCase):
         source = self.root / "client/internal/localui/download.go"
         source.parent.mkdir(parents=True)
         source.write_text("\n".join(pins))
+
+    def test_docker_static_transport_copy_matches_package_manifest(self):
+        docker = (Path(__file__).resolve().parent.parent / 'deploy/lan/Dockerfile').read_text()
+        match = re.search(r'for asset in ([A-Za-z0-9_. ]+); do', docker)
+        self.assertIsNotNone(match)
+        self.assertEqual(match.group(1).split(), list(TRANSPORT))
+        self.assertIn('test -s "/source/client/web/transport/$asset"', docker)
 
     def test_complete_bundle(self):
         assets = validate(self.root, self.goroot)

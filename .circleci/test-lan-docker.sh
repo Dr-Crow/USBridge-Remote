@@ -9,6 +9,7 @@ NET=usbridge-lan-ci-net
 VOL=usbridge-lan-ci-fixtures
 TMP="$(mktemp -d)"
 cleanup() {
+  docker logs usbridge-lan-ci-host > "$OUT/server.txt" 2>&1 || true
   docker rm -f usbridge-lan-ci-host usbridge-lan-ci-fixtures >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
   docker volume rm "$VOL" >/dev/null 2>&1 || true
@@ -44,6 +45,10 @@ docker run --rm --network "$NET" -v "$VOL:/fixtures:ro" "$BUILD" bash -euo pipef
   curl --cacert /fixtures/server.crt -fsS https://lan-host:8443/runtime-config.js | grep -q '\''"strictLAN":true'\''
   curl --cacert /fixtures/server.crt -fsSI https://lan-host:8443/app.wasm | grep -qi "content-type: application/wasm"
   curl --cacert /fixtures/server.crt -fsS https://lan-host:8443/bootstrap.js >/dev/null
+  for asset in player.mjs worker.mjs wire.mjs lifetime.mjs policy.mjs; do
+    curl --cacert /fixtures/server.crt -fsS "https://lan-host:8443/transport/$asset" >/dev/null
+  done
+  test "$(curl --cacert /fixtures/server.crt -sS -o /dev/null -w "%{http_code}" https://lan-host:8443/transport/transport.test.mjs)" = 404
   curl --cacert /fixtures/server.crt -fsS https://lan-host:8443/models/icon_detect.onnx >/dev/null
   curl --cacert /fixtures/server.crt -fsS https://lan-host:8443/components/fixture.bin | grep -q verified
   test "$(curl --cacert /fixtures/server.crt -sS -o /dev/null -w "%{http_code}" https://lan-host:8443/components/private.key)" = 404
