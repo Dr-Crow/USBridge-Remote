@@ -23,3 +23,15 @@ input and copied bytes plus a second complete input inventory are still required
 Regression tests retain identity/size/write/birth mismatches, missing birth time,
 and a handle-side metadata change as failures. No tolerance, timestamp rounding,
 case-insensitive dependency allowlist, symlink normalization or retry is added.
+
+## Exact WGL probe retirement before Manager staging
+
+Job412 at b4df932 passed all three CLI viewer pixel/cleanup cases, then correctly
+rejected the second source-owned EXE (`windows-graphics-probe.exe`) sharing its
+viewer dependency directory. The preparer now requires the exact probe SHA and
+its successful software-only, natural-empty-Job receipt, then atomically moves
+that one file to a fresh sibling holding directory. Its identity/hash are checked
+before and after. No file is deleted, no unknown member is ignored, and the
+unchanged component stager still requires exactly one EXE plus pinned DLLs.
+Wrong hashes, forced/unproven cleanup, symlinks and pre-existing destinations
+fail closed. Remaining unknown extras are tested to remain fatal.

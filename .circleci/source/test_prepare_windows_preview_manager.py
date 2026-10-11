@@ -1,8 +1,10 @@
+import hashlib
 import json
 import pathlib
 import tempfile
 import unittest
-from prepare_windows_preview_manager import validate_media, read_receipt, ComponentStagingError, CASES, SOURCE
+import windows_manager_components as manager
+from prepare_windows_preview_manager import validate_media, read_receipt, ComponentStagingError, CASES, SOURCE, retire_verified_graphics_probe
 
 
 class ManagerPrerequisiteTests(unittest.TestCase):
@@ -76,6 +78,68 @@ class ManagerPrerequisiteTests(unittest.TestCase):
                 with self.assertRaises(ComponentStagingError): read_receipt(file)
             file.write_text(json.dumps(self.media))
             self.assertEqual(read_receipt(file), self.media)
+
+
+class RetiredGraphicsProbeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.work = pathlib.Path(self.temp.name).resolve()
+        (self.work / 'bin').mkdir()
+        self.probe = self.work / 'bin/windows-graphics-probe.exe'
+        self.probe.write_bytes(b'nonexecutable source-owned test fixture')
+        self.proof = {'schema_version': 1, 'role': 'owned-wgl-probe-only',
+            'probe_sha256': hashlib.sha256(self.probe.read_bytes()).hexdigest(),
+            'passed': True, 'fixed_software': True, 'fixed_driver': 'llvmpipe',
+            'natural_cleanup': True, 'job_empty_before_safety_close': True,
+            'safety_job_kill_used': False, 'actual_viewer_tested': False,
+            'actual_window_pixels_tested': False, 'desktop_capture_tested': False,
+            'input_injection_tested': False}
+
+    def run_retirement(self):
+        (self.work / 'software-graphics-probe.json').write_text(json.dumps(self.proof))
+        return retire_verified_graphics_probe(self.work, self.work)
+
+    def test_exact_retired_probe_moves_without_deletion_or_ignoring_unknown_files(self):
+        unknown = self.work / 'bin/unapproved.exe'
+        unknown.write_bytes(b'unknown')
+        identity = self.probe.stat().st_ino
+        receipt = self.run_retirement()
+        target = self.work / 'retired-graphics-probe/windows-graphics-probe.exe'
+        self.assertEqual(target.stat().st_ino, identity)
+        self.assertFalse(self.probe.exists())
+        self.assertTrue(unknown.exists())
+        self.assertTrue(receipt['identity_preserved'])
+        self.assertFalse(receipt['deleted'])
+        viewer = self.work / 'bin/source-preview-viewer.exe'
+        viewer.write_bytes(b'fixture viewer')
+        with self.assertRaises(ComponentStagingError) as caught:
+            manager._inventory(viewer, {viewer.name: hashlib.sha256(viewer.read_bytes()).hexdigest()})
+        self.assertEqual(caught.exception.receipt['failure_code'], 'unexpected_component_member')
+
+    def test_changed_hash_missing_or_forced_cleanup_fail_closed(self):
+        for key, value in [('probe_sha256', 'a' * 64), ('natural_cleanup', False),
+                ('job_empty_before_safety_close', False), ('safety_job_kill_used', True),
+                ('role', 'other'), ('passed', 1), ('desktop_capture_tested', True)]:
+            original = self.proof[key]
+            self.proof[key] = value
+            with self.subTest(key=key), self.assertRaises(ComponentStagingError): self.run_retirement()
+            self.assertTrue(self.probe.exists())
+            self.proof[key] = original
+
+    def test_existing_destination_is_not_replaced(self):
+        (self.work / 'retired-graphics-probe').mkdir()
+        with self.assertRaises(ComponentStagingError): self.run_retirement()
+        self.assertTrue(self.probe.exists())
+
+    def test_symlinked_probe_is_rejected(self):
+        other = self.work / 'other.exe'
+        self.probe.rename(other)
+        try: self.probe.symlink_to(other)
+        except (OSError, NotImplementedError): self.skipTest('native symlink creation unavailable')
+        if not self.probe.is_symlink(): self.skipTest('filesystem emulates symlinks as copies')
+        with self.assertRaises(ComponentStagingError): self.run_retirement()
+
 
 
 if __name__ == '__main__':
