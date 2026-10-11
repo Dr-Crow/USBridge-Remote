@@ -157,20 +157,21 @@ workflows:
       - lan-host:
           filters:
             branches:
-              only: [integrate-upstream-3.0.114, stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
+              only: [agent-owned-usb-bridge, integrate-upstream-3.0.114, stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
       - web-client:
           filters:
             branches:
-              only: [integrate-upstream-3.0.114, stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
+              only: [agent-owned-usb-bridge, integrate-upstream-3.0.114, stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
       - browser-lan:
           requires: [web-client]
           filters:
             branches:
-              only: [integrate-upstream-3.0.114, stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
+              only: [agent-owned-usb-bridge, integrate-upstream-3.0.114, stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
       - windows-agent:
           filters:
             branches:
               only:
+                - agent-owned-usb-bridge
                 - integrate-upstream-3.0.114
                 - stable-go1269-2026-10-10
                 - agent-capability-policy
@@ -180,8 +181,8 @@ workflows:
       - linux-agent:
           filters:
             branches:
-              only: [integrate-upstream-3.0.114, stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
+              only: [agent-owned-usb-bridge, integrate-upstream-3.0.114, stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
       - macos-agent:
           filters:
             branches:
-              only: [integrate-upstream-3.0.114, stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
+              only: [agent-owned-usb-bridge, integrate-upstream-3.0.114, stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]

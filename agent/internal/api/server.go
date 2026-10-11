@@ -113,7 +113,10 @@ type Server struct {
 	sunshinePort int
 	sec          *SecurityMiddleware
 
-	usb *usbpass.Service
+	usb                  *usbpass.Service
+	usbBridgeMu          sync.RWMutex
+	usbBridge            *USBPassBridge
+	usbBridgeUnavailable bool
 
 	// selfHTTPPort is this agent's own plain-HTTP listen port (cfg.HTTPPort,
 	// wired via SetSelfHTTPPort) -- StartUSBPassBridge's "API" preamble

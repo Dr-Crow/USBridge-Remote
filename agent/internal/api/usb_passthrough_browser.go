@@ -2,10 +2,12 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"crypto/hmac"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -387,13 +389,6 @@ func (s *Server) usbPassthroughBrowserPen(w http.ResponseWriter, r *http.Request
 	}
 }
 
-// usbPassBridgePreambleMaxLen bounds the one-line preamble StartUSBPassBridge
-// reads off each new connection before treating it as an opaque relay --
-// generous enough for "GAMEPAD browser-pen-1234567890123\n" with room to
-// spare, tight enough that a misbehaving/garbled dialer can't make this read
-// forever.
-const usbPassBridgePreambleMaxLen = 256
-
 // StartUSBPassBridge starts a new localhost-only TCP listener that rustshine
 // (not the browser -- see this file's top doc comment) dials into once per
 // browser-sourced USB passthrough DataChannel, and returns its address for
@@ -432,30 +427,32 @@ const usbPassBridgePreambleMaxLen = 256
 // port never handed to the browser or advertised outside this machine --
 // same trust model as s.usb.ListenPort()'s own broker port, which is
 // likewise a bare loopback TCP listener with no handshake of its own.
-func (s *Server) StartUSBPassBridge() (string, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return "", fmt.Errorf("usbpass bridge: listen: %w", err)
+func (s *Server) StartUSBPassBridge(ctx context.Context) (*USBPassBridge, error) {
+	s.usbBridgeMu.Lock()
+	defer s.usbBridgeMu.Unlock()
+	if s.usbBridge != nil {
+		return nil, errors.New("usbpass bridge: already started")
 	}
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go s.handleUSBPassBridgeConn(conn)
-		}
-	}()
-	return ln.Addr().String(), nil
+	bridge, err := startUSBPassBridgeOwner(ctx, func() (net.Listener, error) {
+		return net.Listen("tcp4", "127.0.0.1:0")
+	}, s.handleUSBPassBridgeConn)
+	s.usbBridge, s.usbBridgeUnavailable = bridge, err != nil
+	return bridge, err
 }
 
-func (s *Server) handleUSBPassBridgeConn(conn net.Conn) {
+func (s *Server) handleUSBPassBridgeConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
+	if conn.SetReadDeadline(time.Now().Add(5*time.Second)) != nil {
+		return
+	}
 	reader := bufio.NewReaderSize(conn, usbPassBridgePreambleMaxLen)
-	line, err := reader.ReadString('\n')
+	line, err := readUSBPassBridgePreamble(reader)
 	if err != nil {
 		log.Printf("[api] usbpass bridge: reading preamble: %v", err)
+		return
+	}
+	if conn.SetReadDeadline(time.Time{}) != nil {
 		return
 	}
 	trimmed := strings.TrimSuffix(line, "\n")
@@ -469,7 +466,7 @@ func (s *Server) handleUSBPassBridgeConn(conn net.Conn) {
 		return
 	}
 	if trimmed == "API" {
-		s.usbPassBridgeAPI(conn, reader)
+		s.usbPassBridgeAPI(ctx, conn, reader)
 		return
 	}
 
@@ -481,7 +478,7 @@ func (s *Server) handleUSBPassBridgeConn(conn net.Conn) {
 
 	switch verb {
 	case "ATTACH":
-		s.usbPassBridgeAttach(conn, reader)
+		s.usbPassBridgeAttach(ctx, conn, reader)
 	case "GAMEPAD":
 		s.usbPassBridgeGamepad(conn, reader, busID)
 	case "PEN":
@@ -500,27 +497,13 @@ func (s *Server) handleUSBPassBridgeConn(conn net.Conn) {
 // length-prefixes its own frames, so it round-trips correctly over any
 // transport that preserves ordering, WebSocket or this raw TCP relay alike
 // -- see usbPassthroughBrowserAttach's now-legacy WS equivalent.
-func (s *Server) usbPassBridgeAttach(conn net.Conn, reader *bufio.Reader) {
+func (s *Server) usbPassBridgeAttach(ctx context.Context, conn net.Conn, reader *bufio.Reader) {
 	if s.usb == nil {
 		return
 	}
-	broker, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", s.usb.ListenPort()))
-	if err != nil {
-		log.Printf("[api] usbpass bridge attach: dial broker: %v", err)
-		return
+	if err := relayUSBPassBridge(ctx, conn, reader, fmt.Sprintf("127.0.0.1:%d", s.usb.ListenPort())); err != nil {
+		log.Printf("[api] usbpass bridge attach: relay ended: %v", err)
 	}
-	defer broker.Close()
-
-	done := make(chan struct{}, 2)
-	go func() {
-		defer func() { done <- struct{}{} }()
-		_, _ = io.Copy(broker, reader)
-	}()
-	go func() {
-		defer func() { done <- struct{}{} }()
-		_, _ = io.Copy(conn, broker)
-	}()
-	<-done
 }
 
 // usbPassBridgeAPI relays raw bytes between the bridge connection (an "API"
@@ -543,28 +526,14 @@ func (s *Server) usbPassBridgeAttach(conn net.Conn, reader *bufio.Reader) {
 // (SetSelfHTTPPort not called, e.g. an older agent build) -- same
 // "nothing to relay into" handling as usbPassBridgeAttach's s.usb == nil
 // check above.
-func (s *Server) usbPassBridgeAPI(conn net.Conn, reader *bufio.Reader) {
+func (s *Server) usbPassBridgeAPI(ctx context.Context, conn net.Conn, reader *bufio.Reader) {
 	if s.selfHTTPPort == 0 {
 		log.Printf("[api] usbpass bridge api: selfHTTPPort not configured")
 		return
 	}
-	local, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", s.selfHTTPPort))
-	if err != nil {
-		log.Printf("[api] usbpass bridge api: dial self: %v", err)
-		return
+	if err := relayUSBPassBridge(ctx, conn, reader, fmt.Sprintf("127.0.0.1:%d", s.selfHTTPPort)); err != nil {
+		log.Printf("[api] usbpass bridge api: relay ended: %v", err)
 	}
-	defer local.Close()
-
-	done := make(chan struct{}, 2)
-	go func() {
-		defer func() { done <- struct{}{} }()
-		_, _ = io.Copy(local, reader)
-	}()
-	go func() {
-		defer func() { done <- struct{}{} }()
-		_, _ = io.Copy(conn, local)
-	}()
-	<-done
 }
 
 // readUSBPassBridgeFrame reads one 2-byte-big-endian-length-prefixed message
@@ -706,4 +675,18 @@ func (s *Server) usbPassBridgePen(conn net.Conn, reader *bufio.Reader, busID str
 		}
 		session.PushReport(data)
 	}
+}
+
+// USBPassBridgeState is closed status, not an error string or an address. A
+// running native broker does not imply its separate browser bridge is usable.
+func (s *Server) USBPassBridgeState() string {
+	s.usbBridgeMu.RLock()
+	defer s.usbBridgeMu.RUnlock()
+	if s.usbBridge != nil {
+		return s.usbBridge.State()
+	}
+	if s.usbBridgeUnavailable {
+		return "unavailable"
+	}
+	return "not_started"
 }

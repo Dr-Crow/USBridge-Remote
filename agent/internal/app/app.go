@@ -685,12 +685,8 @@ func New() (*App, error) {
 	}
 	instance.usbBroker = usbpass.New(instance.exeDir, cfg.StateDir, cfg.MasterKey, cfg.UsbPassthroughPort, usbBridgeAddr)
 	apiServer.SetUSBPassthrough(instance.usbBroker)
-	if addr, err := apiServer.StartUSBPassBridge(); err != nil {
-		log.Printf("[app] usbpass webrtc bridge: %v (browser gamepad/pen passthrough over WebRTC will not work; legacy WebSocket path unaffected)", err)
-	} else {
-		instance.usbPassBridgeAddr = addr
-		applyStreamUSBPassBridgeAddr(instance.stream, addr)
-	}
+	// The browser bridge is started and owned by Run, before the streamer.
+	// Constructing an App for local settings/preview must not open a listener.
 	instance.apiServer = apiServer
 	handler := apiServer.Routes()
 	instance.handler = handler
@@ -801,6 +797,21 @@ func (a *App) Run(headless, startHidden bool) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	a.runCtx = ctx
+
+	return withUSBPassBridge(ctx, func(ctx context.Context) (ownedUSBBridge, error) {
+		bridge, err := a.apiServer.StartUSBPassBridge(ctx)
+		if err != nil {
+			return nil, err
+		}
+		a.usbPassBridgeAddr = bridge.Addr()
+		applyStreamUSBPassBridgeAddr(a.stream, a.usbPassBridgeAddr)
+		return bridge, nil
+	}, func() error { defer cancel(); return a.runEngine(ctx, cancel, headless, startHidden) }, func(err error) {
+		log.Printf("[app] usbpass webrtc bridge: %v (browser gamepad/pen passthrough over WebRTC will not work; legacy WebSocket path unaffected)", err)
+	})
+}
+
+func (a *App) runEngine(ctx context.Context, cancel context.CancelFunc, headless, startHidden bool) error {
 
 	// Diagnostic-only, additive: signal.Notify fans a delivered signal out to
 	// every channel registered for it, so this doesn't steal anything from
@@ -2642,11 +2653,16 @@ func (a *App) DownloadRustShine(onProgress entitlement.ProgressFunc) error {
 // other a.usbBroker != nil guard in this file rather than assuming that
 // stays true.
 func (a *App) USBPassthroughStatus() usbpass.Status {
+	bridgeState := "not_started"
+	if a.apiServer != nil {
+		bridgeState = a.apiServer.USBPassBridgeState()
+	}
 	if a.usbBroker == nil {
-		return usbpass.Status{Available: false, Platform: "disabled", ConsentGiven: a.cfg.USBBrokerConsentGiven()}
+		return usbpass.Status{Available: false, Platform: "disabled", ConsentGiven: a.cfg.USBBrokerConsentGiven(), BrowserBridgeState: bridgeState}
 	}
 	st := a.usbBroker.Status()
 	st.ConsentGiven = a.cfg.USBBrokerConsentGiven()
+	st.BrowserBridgeState = bridgeState
 	return st
 }
 

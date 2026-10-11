@@ -987,6 +987,9 @@ func (w *Window) refreshUSBPassthroughUI(st entitlement.Status, usb usbpass.Stat
 				label = loc().NotStaged
 			}
 		}
+		if usb.BrowserBridgeState != "" && usb.BrowserBridgeState != "ready" {
+			label += " · Browser bridge unavailable"
+		}
 		w.usbBrokerStatusLabel.Text = label
 		w.usbBrokerStatusLabel.Refresh()
 	}
