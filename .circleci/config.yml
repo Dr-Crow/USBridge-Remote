@@ -1,186 +1,27 @@
 version: 2.1
 
-# Branch builds produce testable agents and a source-built Go web client.
-# No release publishing, credential embedding or vendor archive modification.
+# Isolated signature-owner prerequisite branch. No agent, viewer, broker,
+# acquired media, release build or source/binary artifact publication.
 jobs:
-  lan-host:
-    docker:
-      - image: cimg/base:2026.10@sha256:5c3b1d7f9597fe92f818ce7e075476a18ced9fbd1730b14382d4d01bfb76389e
-    resource_class: medium
-    steps:
-      - checkout
-      - setup_remote_docker
-      - run:
-          name: Build and test source LAN Docker host on an internal network
-          command: bash .circleci/test-lan-docker.sh
-          no_output_timeout: 30m
-      - store_artifacts:
-          path: artifacts/lan-host
-          destination: lan-host
-  web-client:
-    docker:
-      # CircleCI 2026.10 amd64 manifest, verified via Docker Registry.
-      - image: cimg/base:2026.10@sha256:5c3b1d7f9597fe92f818ce7e075476a18ced9fbd1730b14382d4d01bfb76389e
-    resource_class: medium
-    steps:
-      - checkout
-      - restore_cache:
-          keys:
-            - web-client-go1269-v1-{{ checksum "client/go.sum" }}
-      - run:
-          name: Test, build and verify complete Go WASM web bundle
-          command: bash .circleci/build-web.sh
-          no_output_timeout: 20m
-      - save_cache:
-          key: web-client-go1269-v1-{{ checksum "client/go.sum" }}
-          paths:
-            - ~/go/pkg/mod
-            - ~/.cache/go-build
-      - store_artifacts:
-          path: artifacts/web-client
-          destination: web-client
-      - persist_to_workspace:
-          root: .
-          paths:
-            - artifacts/web-client
-
-  browser-lan:
-    machine:
-      image: ubuntu-2204:current
-    resource_class: medium
-    steps:
-      - checkout
-      - attach_workspace:
-          at: .
-      - run:
-          name: Install pinned browser test tooling
-          command: |
-            sudo apt-get update
-            sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y python3-venv
-            python3 -m venv .browser-venv
-            .browser-venv/bin/pip install playwright==1.62.0
-            sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l .browser-venv/bin/python -m playwright install-deps chromium
-            .browser-venv/bin/python -m playwright install chromium
-          no_output_timeout: 20m
-      - run:
-          name: Load source WASM and verify strict browser request boundaries
-          command: .browser-venv/bin/python .circleci/browser-lan-smoke.py
-      - store_artifacts:
-          path: artifacts/browser-lan
-          destination: browser-lan
-
-  windows-agent:
+  windows-signature-owner:
     resource_class: windows.medium
     machine:
       image: windows-server-2022-gui:2026.05.1
       shell: powershell.exe -NoProfile -ExecutionPolicy Bypass
-    environment:
-      GOTOOLCHAIN: local
     steps:
       - checkout
-      - restore_cache:
-          keys:
-            - audited-components-v03131-windows-v1-{{ checksum "agent/internal/localruntime/pinned.go" }}
-      - restore_cache:
-          keys:
-            - windows-agent-go1269-v1-{{ checksum "agent/go.sum" }}
       - run:
-          name: Install verified Go and MSYS2 toolchains
-          command: .\.circleci\setup-windows.ps1
-          no_output_timeout: 15m
-      - run:
-          name: Test, vet and package Windows agent
-          command: |
-            $ErrorActionPreference = 'Stop'
-            $env:CHERE_INVOKING = 'yes'
-            $env:MSYSTEM = 'UCRT64'
-            $env:USBRIDGE_CI_ROOT = (Get-Location).Path
-            & 'C:\ci\msys64\usr\bin\bash.exe' --login .circleci/build-windows.sh
-            if ($LASTEXITCODE -ne 0) { throw "Agent build failed: $LASTEXITCODE" }
-          no_output_timeout: 20m
-      - save_cache:
-          key: windows-agent-go1269-v1-{{ checksum "agent/go.sum" }}
-          paths:
-            - C:\ci\gopath\pkg\mod
-      - save_cache:
-          key: audited-components-v03131-windows-v1-{{ checksum "agent/internal/localruntime/pinned.go" }}
-          paths:
-            - artifacts/components
+          name: Verify extracted signature-only owner on native Windows
+          command: .\.circleci\test-signature-owner.ps1
+          no_output_timeout: 10m
       - store_artifacts:
-          path: artifacts
-          destination: windows-agent
-
-  linux-agent:
-    machine:
-      image: ubuntu-2204:current
-    resource_class: medium
-    steps:
-      - checkout
-      - restore_cache:
-          keys:
-            - audited-components-v03131-linux-v1-{{ checksum "agent/internal/localruntime/pinned.go" }}
-      - run:
-          name: Test and package Linux x86_64
-          command: bash .circleci/build-unix.sh
-          no_output_timeout: 20m
-      - save_cache:
-          key: audited-components-v03131-linux-v1-{{ checksum "agent/internal/localruntime/pinned.go" }}
-          paths:
-            - artifacts/components
-      - store_artifacts:
-          path: artifacts
-          destination: linux-agent
-  macos-agent:
-    macos:
-      xcode: "16.4.0"
-    resource_class: m4pro.medium
-    steps:
-      - checkout
-      - restore_cache:
-          keys:
-            - audited-components-v03131-macos-v1-{{ checksum "agent/internal/localruntime/pinned.go" }}
-      - run:
-          name: Test native macOS and package Apple Silicon and Intel
-          command: bash .circleci/build-unix.sh
-          no_output_timeout: 20m
-      - save_cache:
-          key: audited-components-v03131-macos-v1-{{ checksum "agent/internal/localruntime/pinned.go" }}
-          paths:
-            - artifacts/components
-      - store_artifacts:
-          path: artifacts
-          destination: macos-agent
+          path: signature-owner-evidence
+          destination: signature-owner-evidence
 
 workflows:
-  agent-capability-build:
+  signature-owner-prerequisite:
     jobs:
-      - lan-host:
+      - windows-signature-owner:
           filters:
             branches:
-              only: [stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
-      - web-client:
-          filters:
-            branches:
-              only: [stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
-      - browser-lan:
-          requires: [web-client]
-          filters:
-            branches:
-              only: [stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
-      - windows-agent:
-          filters:
-            branches:
-              only:
-                - stable-go1269-2026-10-10
-                - agent-capability-policy
-                - integrate-upstream-2026-10-09
-                - circleci-project-setup
-                - main
-      - linux-agent:
-          filters:
-            branches:
-              only: [stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
-      - macos-agent:
-          filters:
-            branches:
-              only: [stable-go1269-2026-10-10, agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main]
+              only: windows-signature-owner-tests

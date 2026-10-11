@@ -1,2 +1,5 @@
 # Signed fixtures must preserve their exact bytes on Windows checkout.
 agent/internal/streamerlaunch/testdata/* -text
+
+# Exact signature-owner provenance blobs must preserve Git bytes on Windows.
+signatureowner/** -text

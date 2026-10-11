@@ -1,0 +1,89 @@
+{
+  "repository": "https://github.com/Dr-Crow/USBridge-Remote",
+  "source_commit": "c451d77c6bd24028f7281e69ab8aa29c0ff2d1c8",
+  "source_directory": ".circleci/source/windows-preview-acceptance",
+  "upstream_files": [
+    {
+      "path": ".circleci/source/windows-preview-acceptance/graphics_modules_windows.go",
+      "git_blob": "1a3bc9c865afc0184a4059b6f786197a3cf21285",
+      "sha256": "9e404348e10c4c5e85fcbad84e4d4681739262d6a3465a04498fccfbd8fbc8e0",
+      "snapshot": "testdata/upstream/graphics_modules_windows.go"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/graphics_signature.go",
+      "git_blob": "9d23557cd6cdf928c08ed827789da0d473da0885",
+      "sha256": "5064a89729bb4143827954f0e978a3f49ad23c89c34c076f555ee8fe47055b7d",
+      "snapshot": "testdata/upstream/graphics_signature.go"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/graphics_signature_probe_windows_test.go",
+      "git_blob": "473dbef1f1c4dfd0d321219348afb8ca9bde121b",
+      "sha256": "83458b86fc9023ad0ca59a6e4cc30bbf1ca0254296bdd759eceb2a556d5a4d0a",
+      "snapshot": "testdata/upstream/graphics_signature_probe_windows_test.go"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/graphics_signature_windows.go",
+      "git_blob": "96d51ed5624d87b4dab58a02db93438a127dc84b",
+      "sha256": "ab2003868a3a5439173a178120238ced09b2a22a9a9b566cf8703f23e2a338dc",
+      "snapshot": "testdata/upstream/graphics_signature_windows.go"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/main.go",
+      "git_blob": "2d8f62484083a65b25e574f366da6227b1dbd300",
+      "sha256": "98fe084e4fc5d78b9275e3da47df640f6817214d3e0c5728c5705f827fc72c23",
+      "snapshot": "testdata/upstream/main.go"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/powershell_literal_windows_test.go",
+      "git_blob": "a92d32b7598781086d2c949fb1d15e476382775e",
+      "sha256": "31958e61f3020a3e60f5486db4d0324aa85c657e9ace3bd649a16c9b3051b21f",
+      "snapshot": "testdata/upstream/powershell_literal_windows_test.go"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/retirement.go",
+      "git_blob": "bc344159456892c20e9d3408b34689b5f84433a4",
+      "sha256": "76c3208e7776a389160c3fe9f7e4905739599d05c2f0298467e3d100bb520cdc",
+      "snapshot": "testdata/upstream/retirement.go"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/retirement_test.go",
+      "git_blob": "ac708d547f71a17c6c647a7294102b75d6da2282",
+      "sha256": "b3321bbd09677808a584d715b724afcc45d20aa6e54b80b27e816e2297e6d554",
+      "snapshot": "testdata/upstream/retirement_test.go"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/signature_owner.go",
+      "git_blob": "e37d67f6128d83a795da85c67dbdc0abd69498fd",
+      "sha256": "92b2af71a71c6a96f3407cbb2c8434e974f14ae191e2f60067cef86e4d1655bc",
+      "snapshot": "testdata/upstream/signature_owner.go"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/signature_owner_test.go",
+      "git_blob": "66efe7e09bb17da61b76f4d63d8618942db78a46",
+      "sha256": "b1dd50e32c54c6df0c0788e81d9e5691db5f371d5b51ac0a0d2b19e27350187c",
+      "snapshot": "testdata/upstream/signature_owner_test.go"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/signature_owner_windows.go",
+      "git_blob": "a457c6eb6bdf016cf46cf647f7604d3f0e07b884",
+      "sha256": "c669cdfbba23c29167c157af29dd23fac9fead5a622f070fc507718a24e46498",
+      "snapshot": "testdata/upstream/signature_owner_windows.go"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/winapi_windows.go",
+      "git_blob": "a54178ec84087e6de6fce8c6c77b669a07e7905e",
+      "sha256": "2f62d3db6cc2c68d2d347629da907de21873b1a844652ec207c999fd6d03895d",
+      "snapshot": "testdata/upstream/winapi_windows.go"
+    },
+    {
+      "path": "LICENSE",
+      "git_blob": "9cecc1d4669ee8af2ca727a5d8cde10cd8b2d7cc",
+      "sha256": "589ed823e9a84c56feb95ac58e7cf384626b9cbf4fda2a907bc36e103de1bad2",
+      "snapshot": "LICENSE"
+    }
+  ],
+  "original_native_receipt_sha256": "ada175276345d65cfc6673fc0f41cbd07ea6cff5373b261397085ef364558342",
+  "original_native_receipt_commit": "c451d77c6bd24028f7281e69ab8aa29c0ff2d1c8",
+  "original_receipt_is_extraction_native_proof": false,
+  "extracted_package_native_execution": "not_run"
+}

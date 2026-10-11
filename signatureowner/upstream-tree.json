@@ -1,0 +1,213 @@
+{
+  "commit": "c451d77c6bd24028f7281e69ab8aa29c0ff2d1c8",
+  "tree": [
+    {
+      "path": ".circleci/source/windows-preview-acceptance/README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "167de2f5b05ee7e7d3e768feda93d4550a0c2772",
+      "size": 18579,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/167de2f5b05ee7e7d3e768feda93d4550a0c2772"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/go.mod",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dc3e01fb48a36e10824503f65919cb9e331b4781",
+      "size": 59,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/dc3e01fb48a36e10824503f65919cb9e331b4781"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/graphics_diagnostics.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9d43070bca8c1b997f81d85c6c72a3b89e5b89fe",
+      "size": 1860,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/9d43070bca8c1b997f81d85c6c72a3b89e5b89fe"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/graphics_diagnostics_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ae83bbe22e33decd3fae40982a8ece67cb96c8cc",
+      "size": 1932,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/ae83bbe22e33decd3fae40982a8ece67cb96c8cc"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/graphics_modules_windows.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "1a3bc9c865afc0184a4059b6f786197a3cf21285",
+      "size": 6498,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/1a3bc9c865afc0184a4059b6f786197a3cf21285"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/graphics_probe_windows_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "5308a5cb2a026d460193f929f778251f056ef6fb",
+      "size": 8061,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/5308a5cb2a026d460193f929f778251f056ef6fb"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/graphics_signature.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9d23557cd6cdf928c08ed827789da0d473da0885",
+      "size": 5348,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/9d23557cd6cdf928c08ed827789da0d473da0885"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/graphics_signature_probe_windows_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "473dbef1f1c4dfd0d321219348afb8ca9bde121b",
+      "size": 3029,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/473dbef1f1c4dfd0d321219348afb8ca9bde121b"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/graphics_signature_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4415ed46715d4e13e052bdda167b84f2959cd255",
+      "size": 3531,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/4415ed46715d4e13e052bdda167b84f2959cd255"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/graphics_signature_windows.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "96d51ed5624d87b4dab58a02db93438a127dc84b",
+      "size": 7248,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/96d51ed5624d87b4dab58a02db93438a127dc84b"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/main.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2d8f62484083a65b25e574f366da6227b1dbd300",
+      "size": 16481,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/2d8f62484083a65b25e574f366da6227b1dbd300"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/main_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b74c0078fa9244a5f69a19b9d4e3f8344583367a",
+      "size": 9160,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/b74c0078fa9244a5f69a19b9d4e3f8344583367a"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/platform_other.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6aeb1751eebbc9d8e16f7ad50fb53b5c2063618a",
+      "size": 236,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/6aeb1751eebbc9d8e16f7ad50fb53b5c2063618a"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/powershell_literal_windows_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a92d32b7598781086d2c949fb1d15e476382775e",
+      "size": 9185,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/a92d32b7598781086d2c949fb1d15e476382775e"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/retirement.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "bc344159456892c20e9d3408b34689b5f84433a4",
+      "size": 1370,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/bc344159456892c20e9d3408b34689b5f84433a4"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/retirement_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ac708d547f71a17c6c647a7294102b75d6da2282",
+      "size": 3087,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/ac708d547f71a17c6c647a7294102b75d6da2282"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/run_windows.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "31c148b2c8faaf19ff789afc3cde5e3e2383a787",
+      "size": 14893,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/31c148b2c8faaf19ff789afc3cde5e3e2383a787"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/safety_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "fd497a2bd9e22e0d9db2e1001106ee0859cc6f70",
+      "size": 1719,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/fd497a2bd9e22e0d9db2e1001106ee0859cc6f70"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/signature_owner.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e37d67f6128d83a795da85c67dbdc0abd69498fd",
+      "size": 1900,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/e37d67f6128d83a795da85c67dbdc0abd69498fd"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/signature_owner_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "66efe7e09bb17da61b76f4d63d8618942db78a46",
+      "size": 2861,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/66efe7e09bb17da61b76f4d63d8618942db78a46"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/signature_owner_windows.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a457c6eb6bdf016cf46cf647f7604d3f0e07b884",
+      "size": 9464,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/a457c6eb6bdf016cf46cf647f7604d3f0e07b884"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/winapi_windows.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a54178ec84087e6de6fce8c6c77b669a07e7905e",
+      "size": 18733,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/a54178ec84087e6de6fce8c6c77b669a07e7905e"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/winapi_windows_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "889cd094af0f9d93eee4be954968384954011516",
+      "size": 11531,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/889cd094af0f9d93eee4be954968384954011516"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/window_startup.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "714f20a8e4327eb5ab3f625c912aff2e1c0f08b1",
+      "size": 3725,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/714f20a8e4327eb5ab3f625c912aff2e1c0f08b1"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/window_startup_test.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "6c7afccca5331ba54384444f0799bf5c360f13fc",
+      "size": 1606,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/6c7afccca5331ba54384444f0799bf5c360f13fc"
+    },
+    {
+      "path": ".circleci/source/windows-preview-acceptance/window_startup_windows.go",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f3c2f9dbe2f3ad732ed08b6f6c4ca6ca87cc7578",
+      "size": 4475,
+      "url": "https://api.github.com/repos/Dr-Crow/USBridge-Remote/git/blobs/f3c2f9dbe2f3ad732ed08b6f6c4ca6ca87cc7578"
+    }
+  ]
+}
