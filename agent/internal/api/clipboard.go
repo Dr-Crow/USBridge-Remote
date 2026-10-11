@@ -223,14 +223,18 @@ func (s *Server) clipboardWS(w http.ResponseWriter, r *http.Request) {
 
 	var writeMu sync.Mutex
 
-	stopPush := make(chan struct{})
-	defer close(stopPush)
-	go func() {
+	workers := newSocketWorkers(r.Context(), conn.Close)
+	defer func() {
+		if err := workers.closeAndJoin(); err != nil {
+			log.Printf("[api] clipboard_ws socket retirement failed: %v", err)
+		}
+	}()
+	workers.goWorker(func() {
 		ticker := time.NewTicker(wsPingInterval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-stopPush:
+			case <-workers.ctx.Done():
 				return
 			case <-ticker.C:
 				writeMu.Lock()
@@ -238,12 +242,12 @@ func (s *Server) clipboardWS(w http.ResponseWriter, r *http.Request) {
 				writeMu.Unlock()
 				if err != nil {
 					log.Printf("[api] clipboard_ws ping failed, closing: %v", err)
-					conn.Close()
+					workers.closeIO()
 					return
 				}
 			}
 		}
-	}()
+	})
 
 	s.runClipboardDuplex(mgr, conn, &writeMu, func(err error) {
 		if err != nil && !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {

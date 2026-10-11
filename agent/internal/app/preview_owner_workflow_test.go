@@ -30,7 +30,7 @@ func TestPreviewOwnerWorkflowReceiptsOnly(t *testing.T) {
 	}
 	jobs := config["jobs"].(map[string]any)
 	workflow := config["workflows"].(map[string]any)["agent-capability-build"].(map[string]any)
-	for _, branch := range []string{"source-preview-experiment", "source-preview-owned-engine"} {
+	for _, branch := range []string{"source-preview-experiment", "source-preview-owned-engine", "source-preview-lifecycle-coherent"} {
 		var admitted, artifacts, runs []string
 		for _, item := range workflow["jobs"].([]any) {
 			for name, raw := range item.(map[string]any) {
@@ -253,6 +253,25 @@ func TestPreviewOwnerReceiptAndWrapperShareManifest(t *testing.T) {
 				if !strings.Contains(s, expected) {
 					t.Fatalf("wrapper omitted %s", expected)
 				}
+			}
+		}
+	}
+}
+
+func TestPreviewLifecycleBothPlatformsRequireWorkers(t *testing.T) {
+	for _, file := range []string{"test-source-preview-engine.sh", "test-source-preview-windows-media.sh"} {
+		raw, err := os.ReadFile("../../../.circleci/" + file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(raw)
+		for _, expected := range []string{
+			"^Test(USBBridge|HTTPServerOwner|AppRunCannotReuseRetiredOwner|PreviewOwner|PreviewCloseAccounting|EngineWorkers|SocketWorkers|RelayWebsocketBroker|MouseAndClipboardRoutes|LegacyAttach|MouseOldOwner|Clipboard|Admin)",
+			"./internal/api ./internal/app ./internal/adminapi",
+			"-count=20 -timeout=3m",
+		} {
+			if !strings.Contains(s, expected) {
+				t.Fatalf("%s omitted lifecycle regression command: %s", file, expected)
 			}
 		}
 	}

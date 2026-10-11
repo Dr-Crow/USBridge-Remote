@@ -63,7 +63,19 @@ func (f *fakeBackend) snapshot() clipboard.Content {
 // *fakeBackend doesn't).
 type fakeFileEnumeratorBackend struct {
 	fakeBackend
-	files []clipboard.FileSummary
+	files           []clipboard.FileSummary
+	initialRead     chan struct{}
+	initialReadOnce sync.Once
+}
+
+// Test-only resync barrier: records a completed empty snapshot before a
+// polling test changes its synthetic backend. Production has no test hooks.
+func (f *fakeFileEnumeratorBackend) Read() (clipboard.Content, bool, error) {
+	content, ok, err := f.fakeBackend.Read()
+	if f.initialRead != nil {
+		f.initialReadOnce.Do(func() { close(f.initialRead) })
+	}
+	return content, ok, err
 }
 
 func (f *fakeFileEnumeratorBackend) EnumerateFiles() ([]clipboard.FileSummary, bool) {
@@ -279,12 +291,11 @@ func TestClipboardWS_AgentToClient_Text(t *testing.T) {
 
 func TestClipboardWS_AgentToClient_FilePendingBeforeReal(t *testing.T) {
 	secret := []byte("test-master-key-clipboard")
-	backend := &fakeFileEnumeratorBackend{}
+	backend := &fakeFileEnumeratorBackend{initialRead: make(chan struct{})}
 	mgr := clipboard.NewManager(backend, 10*1024*1024)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go mgr.Run(ctx)
 
 	srv := NewServerWithAuth(&stubApp{clip: mgr}, secret, 0)
 	ts := httptest.NewServer(srv.Routes())
@@ -292,6 +303,12 @@ func TestClipboardWS_AgentToClient_FilePendingBeforeReal(t *testing.T) {
 
 	client := dialTestClipboardClient(t, ts.URL, secret)
 	defer client.close()
+	select {
+	case <-backend.initialRead:
+	case <-time.After(3 * time.Second):
+		t.Fatal("empty initial clipboard resync did not complete")
+	}
+	go mgr.Run(ctx)
 
 	backend.mu.Lock()
 	backend.files = []clipboard.FileSummary{
@@ -305,6 +322,11 @@ func TestClipboardWS_AgentToClient_FilePendingBeforeReal(t *testing.T) {
 	backend.stamp++
 	backend.mu.Unlock()
 
+	assertPendingThenFile(t, client)
+}
+
+func assertPendingThenFile(t *testing.T, client *testClipboardClient) {
+	t.Helper()
 	pending := client.recv(3 * time.Second)
 	if !pending.Pending || pending.Kind != string(clipboard.KindFile) {
 		t.Fatalf("expected a pending pre-announce first, got: %+v", pending)
@@ -320,6 +342,21 @@ func TestClipboardWS_AgentToClient_FilePendingBeforeReal(t *testing.T) {
 	if real.Pending || real.Kind != string(clipboard.KindFile) || real.BlobID == "" {
 		t.Fatalf("expected the real event to follow with a usable BlobID, got: %+v", real)
 	}
+}
+
+func TestClipboardWS_InitialFileResyncPendingBeforeReal(t *testing.T) {
+	secret := []byte("test-master-key-clipboard")
+	backend := &fakeFileEnumeratorBackend{
+		fakeBackend: fakeBackend{content: clipboard.Content{Kind: clipboard.KindFile, Files: []clipboard.FileItem{{Name: "a.jpg", Data: []byte("aaa")}, {Name: "b.jpg", Data: []byte("bbb")}}}},
+		files:       []clipboard.FileSummary{{Name: "a.jpg", Size: 1_000_000}, {Name: "b.jpg", Size: 2_000_000}},
+	}
+	mgr := clipboard.NewManager(backend, 10*1024*1024)
+	srv := NewServerWithAuth(&stubApp{clip: mgr}, secret, 0)
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+	client := dialTestClipboardClient(t, ts.URL, secret)
+	defer client.close()
+	assertPendingThenFile(t, client)
 }
 
 func TestClipboardWS_ClientToAgent_Text(t *testing.T) {

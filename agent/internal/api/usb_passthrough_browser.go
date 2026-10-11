@@ -20,8 +20,6 @@ import (
 
 	"usbridge-client/pkg/usbpasscore"
 	"usbridge_agent/internal/browserusb"
-
-	"github.com/gorilla/websocket"
 )
 
 // Browser-sourced USB/IP passthrough: a browser tab has no OS-level USB
@@ -173,43 +171,14 @@ func (s *Server) usbPassthroughBrowserAttach(w http.ResponseWriter, r *http.Requ
 	}
 	defer conn.Close()
 
-	broker, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", s.usb.ListenPort()))
+	broker, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(r.Context(), "tcp", fmt.Sprintf("127.0.0.1:%d", s.usb.ListenPort()))
 	if err != nil {
 		log.Printf("[api] usb_browser_attach: dial broker: %v", err)
 		return
 	}
-	defer broker.Close()
-
-	done := make(chan struct{}, 2)
-
-	go func() {
-		defer func() { done <- struct{}{} }()
-		buf := make([]byte, 64*1024)
-		for {
-			n, err := broker.Read(buf)
-			if n > 0 {
-				if werr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); werr != nil {
-					return
-				}
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-	go func() {
-		defer func() { done <- struct{}{} }()
-		for {
-			_, data, err := conn.ReadMessage()
-			if err != nil {
-				return
-			}
-			if _, werr := broker.Write(data); werr != nil {
-				return
-			}
-		}
-	}()
-	<-done
+	if err := relayWebsocketBroker(r.Context(), conn, broker); err != nil {
+		log.Printf("[api] usb_browser_attach relay retirement failed: %v", err)
+	}
 }
 
 // browserGamepadFrameLen is the wire size of one X360 state sample sent by

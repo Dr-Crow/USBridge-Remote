@@ -61,7 +61,7 @@ PY
 (
  cd agent
  # Loopback-only engine ownership regressions, compiled with the full App.
- go test -json -tags ci -count=20 -timeout=3m -run '^Test(USBBridge|HTTPServerOwner|AppRunCannotReuseRetiredOwner|PreviewOwnerWorkflow)' ./internal/api ./internal/app | tee "$WORK/tests/engine-owners.jsonl"
+ go test -json -tags ci -count=20 -timeout=3m -run '^Test(USBBridge|HTTPServerOwner|AppRunCannotReuseRetiredOwner|PreviewOwner|PreviewCloseAccounting|EngineWorkers|SocketWorkers|RelayWebsocketBroker|MouseAndClipboardRoutes|LegacyAttach|MouseOldOwner|Clipboard|Admin)' ./internal/api ./internal/app ./internal/adminapi | tee "$WORK/tests/engine-owners.jsonl"
  go test -json -count=5 -timeout=3m ./internal/sourcestreamer | tee "$WORK/tests/source-supervisor.jsonl"
  go build -trimpath -ldflags '-H=windowsgui -X usbridge_agent/internal/update.Channel=manual' -o "$WORK/agent/USBridgeAgent.exe" ./cmd/usbridge_agent
 )

@@ -3,6 +3,7 @@ package adminapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -141,8 +142,10 @@ type Server struct {
 	ts         TSBackend
 	cfgFn      func() config.Config
 
-	listener net.Listener
-	httpSrv  *http.Server
+	listener  net.Listener
+	httpSrv   *http.Server
+	closeOnce sync.Once
+	closeErr  error
 
 	mu      sync.Mutex
 	subs    map[int]chan string
@@ -150,7 +153,8 @@ type Server struct {
 }
 
 // NewServer builds the socket listener and route table but does not start
-// serving — call Serve (typically in its own goroutine) to do that.
+// serving — call Serve (typically in its own goroutine) to do that. A nonnil
+// Server returned with an error still owns a listener and must be closed.
 func NewServer(socketPath string, token TokenBackend, perms PermsBackend, ts TSBackend, cfgFn func() config.Config) (*Server, error) {
 	// A stale socket file left behind by a previous crash makes a fresh
 	// Listen fail with "address already in use" even though nothing is
@@ -163,26 +167,28 @@ func NewServer(socketPath string, token TokenBackend, perms PermsBackend, ts TSB
 	if err != nil {
 		return nil, fmt.Errorf("listen admin socket: %w", err)
 	}
-	if err := os.Chmod(socketPath, 0o600); err != nil {
-		ln.Close()
-		return nil, fmt.Errorf("chmod admin socket: %w", err)
+	s, err := adminServerFromListener(socketPath, ln, os.Chmod)
+	if err != nil {
+		return s, err
 	}
-
-	s := &Server{
-		socketPath: socketPath,
-		token:      token,
-		perms:      perms,
-		ts:         ts,
-		cfgFn:      cfgFn,
-		listener:   ln,
-		subs:       make(map[int]chan string),
-	}
+	s.token, s.perms, s.ts, s.cfgFn = token, perms, ts, cfgFn
+	s.subs = make(map[int]chan string)
 
 	if ts != nil {
 		ts.SetAuthURLHandler(s.broadcastAuthURL)
 	}
 
 	s.httpSrv = &http.Server{Handler: s.routes()}
+	return s, nil
+}
+
+// Preserve acquired ownership even if setting the required permission fails.
+// The caller can then join Close and retain any release error.
+func adminServerFromListener(socketPath string, ln net.Listener, chmod func(string, os.FileMode) error) (*Server, error) {
+	s := &Server{socketPath: socketPath, listener: ln, httpSrv: &http.Server{}}
+	if err := chmod(socketPath, 0o600); err != nil {
+		return s, fmt.Errorf("chmod admin socket: %w", err)
+	}
 	return s, nil
 }
 
@@ -198,9 +204,32 @@ func (s *Server) Serve() error {
 
 // Close shuts down the listener and removes the socket file.
 func (s *Server) Close() error {
-	err := s.httpSrv.Close()
-	_ = os.Remove(s.socketPath)
-	return err
+	s.closeOnce.Do(func() {
+		s.closeErr = s.httpSrv.Close()
+		// Server.Close only knows listeners after Serve registers them. The
+		// listener was acquired by NewServer and must also close if startup
+		// fails or shutdown wins before Serve's first instruction.
+		s.closeErr = errors.Join(s.closeErr, adminListenerCloseError(s.listener.Close()))
+		if err := os.Remove(s.socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			s.closeErr = errors.Join(s.closeErr, err)
+		}
+	})
+	return s.closeErr
+}
+
+// Ignore an ordinary already-closed listener, never a joined substantive error.
+func adminListenerCloseError(err error) error {
+	original := err
+	for i := 0; err != nil && i < 64; i++ {
+		if err == net.ErrClosed {
+			return nil
+		}
+		if _, joined := err.(interface{ Unwrap() []error }); joined {
+			return original
+		}
+		err = errors.Unwrap(err)
+	}
+	return original
 }
 
 func (s *Server) routes() http.Handler {
