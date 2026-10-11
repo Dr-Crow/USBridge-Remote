@@ -1,4 +1,4 @@
-//go:build !vm330_signature_probe
+//go:build !vm331_signature_probe
 
 package main
 

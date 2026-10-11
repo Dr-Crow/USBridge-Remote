@@ -1,6 +1,6 @@
-# VM330 read-only GDI+ signature prerequisite
+# VM331 read-only GDI+ signature prerequisite
 
-This test-only profile is compiled with `signatureprobe,vm330_signature_probe`.
+This test-only profile is compiled with `signatureprobe,vm331_signature_probe`.
 It queries three times one of the two exact installed WinSxS assemblies recorded
 in the test and requires SHA-256
 `50453fb310b9863066b40a0cda1204e86b6b86f261aa4f806e7cb89aa51215ee`.
@@ -15,12 +15,12 @@ loads GDI+, captures a screen, starts a viewer or admits an OS module. Successfu
 query evidence is required before reviewing a separate VM viewer fixture change.
 
 Build with official Go 1.26.9, CGO disabled:
-`go test -c -tags=signatureprobe,vm330_signature_probe -o vm330-signature-query.exe .`
+`go test -c -tags=signatureprobe,vm331_signature_probe -o vm331-signature-query.exe .`
 
 In the already approved ordinary desktop PowerShell session, set `CIRCLE_SHA1`
 to this exact source commit and `WINDOWS_SIGNATURE_GDIPLUS_RECEIPT` to a fresh
 absolute JSON path in an existing writable directory. Then run:
-`./vm330-signature-query.exe -test.run=^TestWindowsSignatureVerifierExactGDIPlus$ -test.v -test.timeout=60s`
+`./vm331-signature-query.exe -test.run=^TestWindowsSignatureVerifierExactGDIPlus$ -test.v -test.timeout=60s`
 
 The receipt must say passed=true, viewer_module_accepted=false and have three
 strict inspections with zero exits, natural cleanup and no safety closure.
@@ -38,13 +38,25 @@ Raw stderr is cleared and is never written into a receipt.
 
 ## Approved VM-only child process policy
 
-The `vm330_signature_probe` build uses the fixed additional PowerShell command
-line `-ExecutionPolicy RemoteSigned`. The operator approved this process-only
-policy for the reviewed VM330 test scripts. It expires with that child and does
-not call `Set-ExecutionPolicy`, change persistent scopes, or affect default CI,
-viewer, source, or module trust. The default build retains its exact prior argv.
+The `vm331_signature_probe` build uses the fixed additional PowerShell command
+line `-ExecutionPolicy RemoteSigned`. This process-only test policy requires
+explicit approval for the selected replacement host; it is not inferred from
+approval for an earlier VM. The coordinating owner verified that approval and
+the replacement host's inventory before preparing this kit. It expires with
+the child, does not call `Set-ExecutionPolicy`, does not change persistent scopes,
+and does not affect default CI, viewer, source or module trust.
 The 00166 VM diagnostic observed 407 stderr bytes containing disabled-script
 and UnauthorizedAccess patterns before the startup marker; no signature query
 ran and cleanup joined. The diagnostic category remained `unclassified` and is
 not rewritten retrospectively. The new build must establish the actual query
 and natural cleanup separately.
+
+## Replacement host gate
+
+Prepared for the independently cloned replacement VM331. The coordinating
+owner verified the ordinary non-elevated desktop, Windows build 26200.6584 and
+both exact installed GDI+ file hashes/signatures on 2026-10-11. The private
+handoff manifest records the selected machine identity; this source profile
+contains no network address or machine UUID. VM330 has been retired and must
+not be used. This kit performs only the exact signature query. It does not
+authorize input injection, capture, module admission or viewer execution.

@@ -1,8 +1,8 @@
-//go:build signatureprobe && vm330_signature_probe
+//go:build signatureprobe && vm331_signature_probe
 
 package main
 
-// Query-only fixture for the two installed VM330 OS assemblies independently
+// Query-only fixture for the two installed VM331 OS assemblies independently
 // inventoried on 2026-10-11. This file is a test: production helper admission
 // still uses verifiedGdiplusSHA and cannot enable these bytes through this tag.
 const gdiplusProbeSHA = "50453fb310b9863066b40a0cda1204e86b6b86f261aa4f806e7cb89aa51215ee"

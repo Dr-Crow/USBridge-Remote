@@ -1,10 +1,10 @@
-//go:build signatureprobe && vm330_signature_probe
+//go:build signatureprobe && vm331_signature_probe
 
 package main
 
 import "testing"
 
-func TestVM330QueryOnlyGdiplusProof(t *testing.T) {
+func TestVM331QueryOnlyGdiplusProof(t *testing.T) {
 	zero := uint32(0)
 	good := graphicsOSInspection{FileSHA: gdiplusProbeSHA, FinalPathMatches: true, NaturalCleanup: true, CleanupJoined: true, SuspendedRootVerified: true, StartupHandshakeVerified: true, ConsoleHostVerified: true, TotalOwnedProcesses: 2, ExitCode: &zero, Signature: &graphicsSignature{Schema: 1, Status: 0, OSBinary: true, Type: "Catalog", Publisher: "Microsoft Windows", Issuer: "Microsoft Windows Production PCA 2011", Thumbprint: verifiedWindowsSigner, FileSHA: gdiplusProbeSHA}}
 	if !gdiplusProbeProof(&good) {

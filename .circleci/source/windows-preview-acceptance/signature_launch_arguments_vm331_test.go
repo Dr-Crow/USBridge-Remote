@@ -1,4 +1,4 @@
-//go:build vm330_signature_probe
+//go:build vm331_signature_probe
 
 package main
 
@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestVM330SignaturePolicyIsFixedProcessOnly(t *testing.T) {
+func TestVM331SignaturePolicyIsFixedProcessOnly(t *testing.T) {
 	want := []string{"-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned", "-File", "owned-script.ps1"}
 	if !reflect.DeepEqual(graphicsSignatureLaunchArguments("owned-script.ps1"), want) {
 		t.Fatal("VM test policy must be exact")

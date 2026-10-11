@@ -1,4 +1,4 @@
-//go:build vm330_signature_probe
+//go:build vm331_signature_probe
 
 package main
 
@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestVM330StartupDiagnosticClosedCategories(t *testing.T) {
+func TestVM331StartupDiagnosticClosedCategories(t *testing.T) {
 	policy := []byte("C:\\private\\user\\file.ps1 cannot be loaded because running scripts is disabled on this system. PSSecurityException FullyQualifiedErrorId : UnauthorizedAccess")
 	for _, tc := range []struct {
 		name     string

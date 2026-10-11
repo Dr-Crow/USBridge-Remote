@@ -1,4 +1,4 @@
-//go:build windows && !vm330_signature_probe
+//go:build windows && !vm331_signature_probe
 
 package main
 
