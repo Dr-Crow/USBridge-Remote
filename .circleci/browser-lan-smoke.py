@@ -94,7 +94,7 @@ with tempfile.TemporaryDirectory(prefix='usbridge-browser-') as tmp:
               const endpoint='https://127.0.0.1:8444/webtransport';
               class MockTransport {constructor(){this.ready=Promise.resolve();this.closed=closed;}createBidirectionalStream(){return Promise.resolve({readable,writable});}close(){closes++;ended();}}
               const signal=new AbortController();
-              const owner=await negotiateControl({grant:{protocol:PROTOCOL,session_id:welcome.session_id,ticket:'A'.repeat(43),endpoint,origin:location.origin,expires_at_ms:Date.now()+10000,width:128,height:72,fps:30},authorizedEndpoint:endpoint,capabilityStatus:200,capabilityBody:json({protocol:PROTOCOL,ready:true,endpoint,tls_mode:'trusted',codec:'h264',audio:'opus',input:false,channels:[]}),signal:signal.signal},{Transport:MockTransport});
+              const owner=await negotiateControl({grant:{protocol:PROTOCOL,session_id:welcome.session_id,ticket:'A'.repeat(43),endpoint,origin:location.origin,ticket_expires_at_ms:Date.now()+10000,session_expires_at_ms:Date.now()+10000,width:128,height:72,fps:30},authorizedEndpoint:endpoint,capabilityStatus:200,capabilityBody:json({protocol:PROTOCOL,ready:true,endpoint,tls_mode:'trusted',codec:'h264',audio:'opus',input:false,channels:[]}),signal:signal.signal},{Transport:MockTransport});
               signal.abort();const result=await owner.closed;
               return {helloVerified,parentCancelled:result.reason==='cancelled',joined:result.joined,closedOnce:closes===1,locksReleased:!readable.locked&&!writable.locked,mediaStarted:owner.mediaStarted,realQUIC:false};
             }''')

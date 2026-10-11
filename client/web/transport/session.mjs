@@ -9,10 +9,10 @@ export async function negotiateControl({grant,authorizedEndpoint,capabilityStatu
   {Transport=globalThis.WebTransport,now=()=>Date.now(),monotonic=()=>performance.now(),pageOrigin=globalThis.location?.origin,cleanupTimeoutMs=5000}={}) {
   if(!Number.isInteger(cleanupTimeoutMs)||cleanupTimeoutMs<1||cleanupTimeoutMs>5000)throw fail('cleanup_budget');
   if(lifetime!==undefined&&!(lifetime instanceof Lifetime))throw fail('setup_lifetime');
-  exactObject(grant,['protocol','session_id','ticket','endpoint','origin','expires_at_ms','width','height','fps']);
+  exactObject(grant,['protocol','session_id','ticket','endpoint','origin','ticket_expires_at_ms','session_expires_at_ms','width','height','fps']);
   endpoint(grant.endpoint,authorizedEndpoint);
-  const time=now(),started=monotonic(),expiresAt=grant.expires_at_ms;
-  if(typeof pageOrigin!=='string'||grant.origin!==pageOrigin||!Number.isSafeInteger(expiresAt)||expiresAt<=time||expiresAt-time>300000)throw fail('grant_scope');
+  const time=now(),started=monotonic(),expiresAt=grant.session_expires_at_ms,ticketExpiresAt=grant.ticket_expires_at_ms;
+  if(typeof pageOrigin!=='string'||grant.origin!==pageOrigin||!Number.isSafeInteger(expiresAt)||expiresAt<=time||expiresAt-time>300000||!Number.isSafeInteger(ticketExpiresAt)||ticketExpiresAt<=time||ticketExpiresAt-time>30000||ticketExpiresAt>expiresAt)throw fail('grant_scope');
   const candidate=discovery(capabilityStatus,capabilityBody,authorizedEndpoint);
   if(!candidate.available)throw fail(candidate.reason);
   if(typeof Transport!=='function')throw fail('transport_unavailable');
@@ -27,7 +27,7 @@ export async function negotiateControl({grant,authorizedEndpoint,capabilityStatu
   const active=new Set();
   const track=p=>{const task=Promise.resolve(p);active.add(task);void task.then(()=>active.delete(task),()=>active.delete(task));return task;};
   const parser=new ControlParser([1,7]);let welcome;
-  const checkLive=()=>{setup.check();if(closing||parentSignals.some(s=>s.aborted))throw fail('cancelled');if(now()>=expiresAt||monotonic()-started>=expiresAt-time)throw fail('grant_expired');};
+  const checkLive=()=>{setup.check();if(closing||parentSignals.some(s=>s.aborted))throw fail('cancelled');if(now()>=ticketExpiresAt||monotonic()-started>=ticketExpiresAt-time)throw fail('ticket_expired');if(now()>=expiresAt||monotonic()-started>=expiresAt-time)throw fail('grant_expired');};
   let resolveClosed,rejectClosed;
   const closed=new Promise((resolve,reject)=>{resolveClosed=resolve;rejectClosed=reject;});
   // Background failure is retained on the public closed promise, even if its

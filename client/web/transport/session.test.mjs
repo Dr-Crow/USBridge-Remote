@@ -8,7 +8,7 @@ const deferred=()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve
 const url='https://127.0.0.1:8444/webtransport',origin='https://127.0.0.1:8443';
 const welcome={protocol:PROTOCOL,session_id:'session_1',codec:'h264',width:128,height:72,fps:30,audio:{codec:'opus',sample_rate:48000,channels:2},input:false,channels:[]};
 const capability={protocol:PROTOCOL,ready:true,endpoint:url,tls_mode:'trusted',codec:'h264',audio:'opus',input:false,channels:[]};
-function params(extra={}){return {grant:{protocol:PROTOCOL,session_id:'session_1',ticket:'A'.repeat(43),endpoint:url,origin,expires_at_ms:Date.now()+10000,width:128,height:72,fps:30},authorizedEndpoint:url,capabilityStatus:200,capabilityBody:json(capability),...extra};}
+function params(extra={}){return {grant:{protocol:PROTOCOL,session_id:'session_1',ticket:'A'.repeat(43),endpoint:url,origin,ticket_expires_at_ms:Date.now()+1000,session_expires_at_ms:Date.now()+10000,width:128,height:72,fps:30},authorizedEndpoint:url,capabilityStatus:200,capabilityBody:json(capability),...extra};}
 function fixture(options={}) {
   const state={starts:0,closes:0,cancels:0,aborts:0,writes:0,acquires:0},ended=deferred(),ready=deferred(),acquired=deferred(),write=deferred();
   let input,output;
@@ -39,7 +39,7 @@ test('capability absence allows no connection; auth and trust errors never becom
   const f=fixture();await assert.rejects(negotiateControl(params({capabilityBody:json({...capability,tls_mode:'hash'})}),f.options),{code:'capability_unsupported'});assert.equal(f.state.starts,0);
 });
 test('grant destination, origin, video bounds, expiry and canonical key reject before connection',async()=>{
-  for(const patch of [{endpoint:url+'?ticket=x'},{origin:'https://10.0.0.2'},{width:129},{fps:0},{ticket:'B'.repeat(43)},{expires_at_ms:Date.now()-1},{expires_at_ms:Date.now()+400000}]){const f=fixture(),p=params();Object.assign(p.grant,patch);await assert.rejects(negotiateControl(p,f.options));assert.equal(f.state.starts,0);}
+  for(const patch of [{endpoint:url+'?ticket=x'},{origin:'https://10.0.0.2'},{width:129},{fps:0},{ticket:'B'.repeat(43)},{session_expires_at_ms:Date.now()-1},{session_expires_at_ms:Date.now()+400000}]){const f=fixture(),p=params();Object.assign(p.grant,patch);await assert.rejects(negotiateControl(p,f.options));assert.equal(f.state.starts,0);}
 });
 test('WELCOME may not widen the authorized dimensions or capabilities',async()=>{
   for(const patch of [{width:256},{session_id:'other'},{input:true},{channels:['clipboard']}]){const f=fixture({welcome:{...welcome,...patch}});await assert.rejects(negotiateControl(params(),f.options));assert.equal(f.state.closes,1);assert.equal(f.stream.readable.locked,false);assert.equal(f.stream.writable.locked,false);}
@@ -64,7 +64,7 @@ test('terminal takeover and control protocol failure close the same owner',async
   for(const [frame,reason] of [[encodeMessage(7,new Uint8Array()),'taken_over'],[encodeMessage(1,json(welcome)),'control_failed'],[new Uint8Array([1,255,255,255,255]),'control_failed']]){const f=fixture();const owner=await negotiateControl(params(),f.options);f.input.enqueue(frame);assert.equal((await owner.closed).reason,reason);assert.equal(f.state.closes,1);}
 });
 test('grant expiry after setup initiates natural owner cleanup',async()=>{
-  const f=fixture(),p=params();p.grant.expires_at_ms=Date.now()+25;const owner=await negotiateControl(p,f.options);assert.equal((await owner.closed).reason,'expired');assert.equal(f.state.closes,1);
+  const f=fixture(),p=params();p.grant.ticket_expires_at_ms=p.grant.session_expires_at_ms=Date.now()+25;const owner=await negotiateControl(p,f.options);assert.equal((await owner.closed).reason,'expired');assert.equal(f.state.closes,1);
 });
 test('transport failures are typed and never expose browser error details',async()=>{
   const f=fixture({readyStuck:true});f.ready.reject(Error('secret private endpoint detail'));await assert.rejects(negotiateControl(params(),f.options),error=>error.code==='transport_failed'&&!error.message.includes('secret'));assert.equal(f.state.closes,1);
@@ -90,8 +90,8 @@ test('never settled HELLO write is uncertain and retained bytes are not mutated 
   try{await assert.rejects(negotiateControl(params({lifetime}),f.options),{code:'session_cleanup_incomplete',primaryCode:'setup_timeout'});assert.ok(f.state.frame.some(n=>n!==0));}finally{lifetime.dispose();}
 });
 test('expiry during setup rejects WELCOME even when setup budget remains',async()=>{
-  const f=fixture({noWelcome:true}),p=params();let now=Date.now();p.grant.expires_at_ms=now+1000;
-  const attempt=negotiateControl(p,{...f.options,now:()=>now});await tick();now+=1001;f.input.enqueue(encodeMessage(1,json(welcome)));await assert.rejects(attempt,{code:'grant_expired'});assert.equal(f.state.closes,1);
+  const f=fixture({noWelcome:true}),p=params();let now=Date.now();p.grant.ticket_expires_at_ms=p.grant.session_expires_at_ms=now+1000;
+  const attempt=negotiateControl(p,{...f.options,now:()=>now});await tick();now+=1001;f.input.enqueue(encodeMessage(1,json(welcome)));await assert.rejects(attempt,{code:'ticket_expired'});assert.equal(f.state.closes,1);
 });
 test('truncated control EOF before and after WELCOME is fatal and releases locks',async()=>{
   for(const established of [false,true]){const f=fixture({noWelcome:!established});const pending=negotiateControl(params(),f.options);let owner;if(established)owner=await pending;else await tick();f.input.enqueue(new Uint8Array([1,0,0]));f.input.close();if(established)assert.equal((await owner.closed).reason,'control_failed');else await assert.rejects(pending,{code:'control_truncated'});assert.equal(f.stream.readable.locked,false);assert.equal(f.stream.writable.locked,false);}
@@ -101,8 +101,8 @@ test('writer abort failure cannot produce a joined receipt',async()=>{
 });
 
 test('wall clock rollback cannot extend the initially authorized elapsed lease',async()=>{
-  const f=fixture({noWelcome:true}),p=params();let wall=Date.now(),mono=0;p.grant.expires_at_ms=wall+1000;
-  const pending=negotiateControl(p,{...f.options,now:()=>wall,monotonic:()=>mono});await tick();wall-=5000;mono=1001;f.input.enqueue(encodeMessage(1,json(welcome)));await assert.rejects(pending,{code:'grant_expired'});
+  const f=fixture({noWelcome:true}),p=params();let wall=Date.now(),mono=0;p.grant.ticket_expires_at_ms=p.grant.session_expires_at_ms=wall+1000;
+  const pending=negotiateControl(p,{...f.options,now:()=>wall,monotonic:()=>mono});await tick();wall-=5000;mono=1001;f.input.enqueue(encodeMessage(1,json(welcome)));await assert.rejects(pending,{code:'ticket_expired'});
 });
 
 test('expired setup still observes rejecting release promises without leaking raw errors',async()=>{
@@ -111,6 +111,14 @@ test('expired setup still observes rejecting release promises without leaking ra
 });
 
 test('grant expiry while transport becomes ready prevents stream acquisition and HELLO',async()=>{
-  const f=fixture({readyStuck:true}),p=params();let wall=Date.now();p.grant.expires_at_ms=wall+1000;
-  const pending=negotiateControl(p,{...f.options,now:()=>wall});await tick();wall+=1001;f.ready.resolve();await assert.rejects(pending,{code:'grant_expired'});assert.equal(f.state.acquires,0);assert.equal(f.state.writes,0);
+  const f=fixture({readyStuck:true}),p=params();let wall=Date.now();p.grant.ticket_expires_at_ms=p.grant.session_expires_at_ms=wall+1000;
+  const pending=negotiateControl(p,{...f.options,now:()=>wall});await tick();wall+=1001;f.ready.resolve();await assert.rejects(pending,{code:'ticket_expired'});assert.equal(f.state.acquires,0);assert.equal(f.state.writes,0);
+});
+
+test('established session outlives redemption expiry but closes at authorization expiry',async()=>{
+  const f=fixture(),p=params();const now=Date.now();p.grant.ticket_expires_at_ms=now+30;p.grant.session_expires_at_ms=now+80;
+  const owner=await negotiateControl(p,f.options);await new Promise(resolve=>setTimeout(resolve,40));assert.equal(f.state.closes,0);assert.equal((await owner.closed).reason,'expired');
+});
+test('ticket and session expiries are separate exact bounded fields',async()=>{
+  for(const patch of [{ticket_expires_at_ms:Date.now()+31000},{ticket_expires_at_ms:Date.now()+20000},{ticket_expires_at_ms:0},{session_expires_at_ms:Date.now()+301000},{expires_at_ms:Date.now()+1000}]){const f=fixture(),p=params();Object.assign(p.grant,patch);await assert.rejects(negotiateControl(p,f.options));assert.equal(f.state.starts,0);}
 });

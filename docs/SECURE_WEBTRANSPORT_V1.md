@@ -32,7 +32,7 @@ browser acceptance are integrated. A static-worker pass is not a streaming pass.
   Strict LAN additionally requires a literal local/private IP.
 - The server checks the exact configured browser Origin before accepting.
 - A fresh 32-byte random ticket is supplied by the authenticated agent, bound to
-  session, origin, media configuration and expiry, and atomically consumed once.
+  session, origin, media configuration and two explicit expiry times, and atomically consumed once.
   Source consumes this grant; it does not enroll an account or mint persistent
   credentials. No capture/media/channel starts before ticket validation.
 - Five seconds maximum for pre-authentication. Client setup uses one five-second
@@ -118,3 +118,36 @@ Node tests and the strict-CSP Chromium gate exercise genuine stream primitives
 with a fake transport. They prove control ownership only. Actual HTTP/3/TLS,
 server-side one-use redemption, media decoding, stream-credit limits and the
 four-frame media owner remain required before enabling the transport.
+
+## Disposable browser trust fixture
+
+The approved CircleCI-only test helper creates an isolated temporary HOME,
+Chromium profile and NSS database. Its P-256 CA and leaf expire after one hour;
+the CA has a critical 127.0.0.1/32 IP name constraint, and the leaf has only the
+127.0.0.1 SAN. The CA private key is never serialized. The leaf key, certificate,
+profile and database are removed after the browser/server retirement checks,
+including failure cleanup. None is cached or uploaded. Receipts contain only
+public fingerprints, fixed outcomes and cleanup booleans.
+
+The test compares an untrusted fresh browser home with the CA-bearing fresh
+home against the same loopback TLS1.3 endpoint. Chromium sandbox and ordinary
+certificate validation stay enabled; no certificate-error, public-key hash or
+host trust override is used. This establishes the isolated TLS prerequisite,
+not HTTP/3 or media behavior. The private integration owns its real server and
+fetches this exact public helper separately.
+
+Chromium documents its Linux NSS database selection, including the existing
+`$HOME/.pki/nssdb` fallback, in its
+[certificate management guide](https://chromium.googlesource.com/chromium/src.git/+/refs/heads/main/docs/linux/cert_management.md).
+The fixture uses Playwright's documented
+[persistent context and explicit environment API](https://playwright.dev/python/docs/api/class-browsertype#browser-type-launch-persistent-context).
+
+The authorized client grant distinguishes `ticket_expires_at_ms` (at most30
+seconds to redeem during setup) from `session_expires_at_ms` (at most300 seconds
+for the entire authorized session, no earlier than ticket expiry). Both are
+issuer-supplied. HELLO retains only protocol/session/ticket; the server binds the
+two deadlines to that one-use ticket. Every setup I/O stage checks redemption
+expiry. After WELCOME the owner preserves the session deadline, rather than
+ending a valid session when the redemption window closes. Monotonic elapsed
+limits prevent wall-clock rollback from extending either initial allowance.
+The UI remains disabled while actual HTTP/3 interoperability is being proved.

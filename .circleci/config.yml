@@ -56,15 +56,20 @@ jobs:
           name: Install pinned browser test tooling
           command: |
             sudo apt-get update
-            sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y python3-venv
+            sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y python3-venv libnss3-tools
             python3 -m venv .browser-venv
-            .browser-venv/bin/pip install playwright==1.62.0
+            .browser-venv/bin/pip install playwright==1.62.0 cryptography==50.0.0
             sudo env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l .browser-venv/bin/python -m playwright install-deps chromium
             .browser-venv/bin/python -m playwright install chromium
           no_output_timeout: 20m
       - run:
           name: Load source WASM and verify strict browser request boundaries
           command: .browser-venv/bin/python .circleci/browser-lan-smoke.py
+      - run:
+          name: Verify ephemeral loopback TLS trust and complete profile retirement
+          command: |
+            .browser-venv/bin/python -m unittest discover -s .circleci -p 'test_browser_*.py' -v
+            .browser-venv/bin/python .circleci/browser-tls-profile-smoke.py
       - store_artifacts:
           path: artifacts/browser-lan
           destination: browser-lan
