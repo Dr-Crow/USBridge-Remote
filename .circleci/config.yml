@@ -19,7 +19,7 @@ jobs:
             $env:MSYSTEM = 'UCRT64'
             $env:USBRIDGE_CI_ROOT = (Get-Location).Path
             New-Item -ItemType Directory -Force 'artifacts\windows-manager-staging' | Out-Null
-            & 'C:\ci\msys64\usr\bin\bash.exe' --login -c 'cd "$(cygpath -u "$USBRIDGE_CI_ROOT")" && export PATH="/ucrt64/bin:/usr/bin:$PATH" && PYTHONPATH=.circleci/source python3 -m unittest discover -s .circleci/source -p test_windows_manager_staging_diagnostics.py && python3 .circleci/source/run_windows_manager_staging_tests.py --output "$(cygpath -m "$PWD/artifacts/windows-manager-staging/result.json")" --commit "$CIRCLE_SHA1"'
+            & 'C:\ci\msys64\usr\bin\bash.exe' --login .circleci/test-windows-manager-staging.sh
             if ($LASTEXITCODE -ne 0) { throw 'Synthetic staging diagnostic failed' }
           no_output_timeout: 5m
       - store_artifacts:
