@@ -172,7 +172,8 @@ workflows:
             branches:
               only:
                 - agent-owned-usb-bridge
-                - agent-owned-http-servers, agent-owned-websocket-workers
+                - agent-owned-http-servers
+                - agent-owned-websocket-workers
                 - integrate-upstream-3.0.114
                 - stable-go1269-2026-10-10
                 - agent-capability-policy
