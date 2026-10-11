@@ -33,6 +33,11 @@ import (
 
 const managerFixtureSource = "2e07af3484369bc68bc8091d5a04969867eff0f9"
 
+// Match the independently hash-verified native staging bounds. The source
+// remains64MiB; job439 measured the viewer at87,555,125 bytes.
+const managerSourceLimit int64 = 64 << 20
+const managerViewerLimit int64 = 96 << 20
+
 func managerFailure(code string) error { return errors.New(code) }
 
 // Cleanup observations never replace the primary fixed failure category or
@@ -586,7 +591,7 @@ func managerNativeRunCase(m *Manager, c managerNativeConfig, approval Approval, 
 		viewerPath != filepath.Join(approval.Components.StateDir, "local-components", "source-preview-viewer", filepath.FromSlash(c.viewerEntry)) || viewerPath != ob.viewerPath {
 		return managerFailure("staged_entry_identity_mismatch")
 	}
-	stagedSource, err := managerHoldFile(sourcePath, c.sourceSHA, 64<<20)
+	stagedSource, err := managerHoldFile(sourcePath, c.sourceSHA, managerSourceLimit)
 	if err != nil {
 		return err
 	}
@@ -595,7 +600,7 @@ func managerNativeRunCase(m *Manager, c managerNativeConfig, approval Approval, 
 			result = managerWithCleanup(result, "staged_source_handle_close_failed", true)
 		}
 	}()
-	stagedViewer, err := managerHoldFile(viewerPath, c.viewerSHA, 64<<20)
+	stagedViewer, err := managerHoldFile(viewerPath, c.viewerSHA, managerViewerLimit)
 	if err != nil {
 		return err
 	}
@@ -835,7 +840,22 @@ func TestWindowsProductionManagerGeneratedAcceptance(t *testing.T) {
 // These native helper tests use only generated text files and pure decisions;
 // they never invoke a preview, process launcher, token-changing or input API.
 func TestWindowsManagerAcceptancePinsAndRoles(t *testing.T) {
+	if managerSourceLimit != 64<<20 || managerViewerLimit != 96<<20 {
+		t.Fatal("manager_role_size_policy_changed")
+	}
 	root := t.TempDir()
+	oversized := filepath.Join(root, "oversized-viewer.exe")
+	large, err := os.Create(oversized)
+	if err != nil {
+		t.Fatal("oversize_fixture_create_failed")
+	}
+	truncateErr, closeErr := large.Truncate(managerViewerLimit+1), large.Close()
+	if truncateErr != nil || closeErr != nil {
+		t.Fatal("oversize_fixture_prepare_failed")
+	}
+	if held, err := managerHoldFile(oversized, strings.Repeat("0", 64), managerViewerLimit); err == nil || held != nil {
+		t.Fatal("oversized_viewer_accepted")
+	}
 	fixture := filepath.Join(root, "ffmpeg-fixture.exe")
 	data := []byte("generated pin test, never executable")
 	if os.WriteFile(fixture, data, 0600) != nil {

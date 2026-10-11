@@ -56,3 +56,31 @@ recheck use the same role-specific bound. The test retains a sparse limit+1
 rejection with exact role/limit diagnosis and verifies complete hashed copying
 at the exact viewer limit using scaled constants. This does not admit an extra
 EXE, unpinned file, changed hash or larger aggregate.
+
+## Next native Manager runtime gate
+
+The116fc2b/job449 receipt proves all three CLI changing-pixel/cleanup cases and
+nonexecuting Manager staging. It does not run Manager or App.New. The tagged
+`TestWindowsProductionManagerGeneratedAcceptance` is the next smaller runtime
+step. It calls the production Manager constructor/launchers, requires an existing
+non-elevated interactive token, and uses only the exact generated encoder fixture.
+It verifies missing consent, overlapping start rejection, Manager.Stop and parent
+cancellation, new session/key identities, owned-window colors, listener reuse and
+natural child joins. Its staged-viewer recheck now uses the same96MiB bound as the
+verified stager; source remains64MiB. A native sparse limit+1 regression rejects
+oversize before hashing or executing it.
+
+Manager.New only installs dependencies; the settings Window constructor remains
+lazy and its Windows action remains gated. App.New is a distinct later acceptance
+step: it initializes state/auth material and starts a loopback browser-USB bridge.
+The current bridge function starts an accept goroutine but does not return its
+listener owner. Strict-local policy suppresses vendor/Tailscale activity, but
+that alone does not prove constructor resource cleanup. The broader constructor
+must have an explicit close/join proof before treating it as a disposable Windows
+Manager fixture. The source-only Manager gate creates no account, TLS credential,
+Tailscale enrollment or updater activity.
+
+VM330 and VM331 are retired and must never be reused. Actual execution requires
+a separately approved fresh root-controlled interactive test environment and
+its own exact graphics-file trust proof. CI preparation does not override token
+eligibility or grant that runtime approval.
