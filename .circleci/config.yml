@@ -263,7 +263,9 @@ jobs:
           no_output_timeout: 15m
       - when:
           condition:
-            equal: [source-preview-experiment, << pipeline.git.branch >>]
+            or:
+              - equal: [source-preview-experiment, << pipeline.git.branch >>]
+              - equal: [source-preview-owned-engine, << pipeline.git.branch >>]
           steps:
             - run:
                 name: Build real source preview viewer and verify presented pixels on isolated displays
@@ -285,7 +287,9 @@ jobs:
       # receipts only. It must not upload a rebuilt source-containing archive.
       - when:
           condition:
-            equal: [source-preview-experiment, << pipeline.git.branch >>]
+            or:
+              - equal: [source-preview-experiment, << pipeline.git.branch >>]
+              - equal: [source-preview-owned-engine, << pipeline.git.branch >>]
           steps:
             - run:
                 name: Collect source-free native preview receipts
@@ -298,7 +302,9 @@ jobs:
                 destination: linux-agent/preview-evidence
       - unless:
           condition:
-            equal: [source-preview-experiment, << pipeline.git.branch >>]
+            or:
+              - equal: [source-preview-experiment, << pipeline.git.branch >>]
+              - equal: [source-preview-owned-engine, << pipeline.git.branch >>]
           steps:
             - store_artifacts:
                 path: artifacts
@@ -353,16 +359,16 @@ workflows:
       - linux-agent:
           filters:
             branches:
-              only: [agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main, source-preview-experiment]
+              only: [agent-capability-policy, integrate-upstream-2026-10-09, circleci-project-setup, main, source-preview-experiment, source-preview-owned-engine]
       - windows-preview-process:
           filters:
             branches:
-              only: [source-preview-experiment, preview-owner-stop-diagnostic]
+              only: [source-preview-experiment, source-preview-owned-engine, preview-owner-stop-diagnostic]
       - windows-source-preview:
           requires: [windows-preview-process]
           filters:
             branches:
-              only: [source-preview-experiment]
+              only: [source-preview-experiment, source-preview-owned-engine]
       - macos-agent:
           filters:
             branches:

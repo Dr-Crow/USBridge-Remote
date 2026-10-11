@@ -18,10 +18,12 @@ func (s *Server) SetSelfHTTPPort(port int) {
 
 func (s *Server) usbPassthroughStatus(w http.ResponseWriter, r *http.Request) {
 	if s.usb == nil {
-		s.ok(w, "usb_passthrough", usbpass.Status{Available: false, Platform: "disabled"})
+		s.ok(w, "usb_passthrough", usbpass.Status{Available: false, Platform: "disabled", BrowserBridgeState: s.USBPassBridgeState()})
 		return
 	}
-	s.ok(w, "usb_passthrough", s.usb.Status())
+	st := s.usb.Status()
+	st.BrowserBridgeState = s.USBPassBridgeState()
+	s.ok(w, "usb_passthrough", st)
 }
 
 func (s *Server) usbPassthroughInstall(w http.ResponseWriter, r *http.Request) {

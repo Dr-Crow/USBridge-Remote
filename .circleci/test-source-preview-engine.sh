@@ -25,6 +25,7 @@ mkdir -p "$WORK/context/agent" "$WORK/context/gate"
 # The CI software Fyne driver is NEVER used in these two executables.
 (cd agent && go build -trimpath -o "$WORK/context/agent/usbridge-agent" ./cmd/usbridge_agent)
 (cd agent && go build -trimpath -tags source_preview_engine_acceptance -o "$WORK/context/agent/usbridge-agent-observed" ./cmd/usbridge_agent)
+(cd agent && go test -race -tags ci -count=20 -timeout=3m -run '^Test(USBBridge|HTTPServerOwner|AppRunCannotReuseRetiredOwner|PreviewOwnerWorkflow)' ./internal/api ./internal/app)
 (cd agent && go test -race -tags ci,source_preview_engine_acceptance -run '^TestEnginePreview' ./internal/ui ./internal/app)
 python3 -m unittest discover -s .circleci/source -p test_engine_preview.py -v
 python3 -m unittest discover -s .circleci/source -p test_preview_processes.py -v

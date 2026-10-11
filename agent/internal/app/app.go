@@ -89,18 +89,23 @@ type App struct {
 	// benchmark's statistics. Guarded by streamMu.
 	lastSwitch api.BackendSwitchTiming
 
-	state     *deviceState
-	input     *input.Controller
-	screen    *capture.Service
-	perms     *permissions.Service
-	ts        *tailscale.Service
-	usbBridge *tailscale.UsbTunnelBridge
-	stream    streamhost.Backend
-	tsProxy   *tailscale.StreamProxy
-	server    *http.Server
-	tsHTTP    *http.Server
-	tlsServer *http.Server
-	tlsMgr    *tlshost.Manager
+	state              *deviceState
+	input              *input.Controller
+	screen             *capture.Service
+	perms              *permissions.Service
+	ts                 *tailscale.Service
+	usbBridge          *tailscale.UsbTunnelBridge
+	stream             streamhost.Backend
+	tsProxy            *tailscale.StreamProxy
+	server             *http.Server
+	tsHTTP             *http.Server
+	tlsServer          *http.Server
+	httpServers        *httpServerOwner
+	httpShutdownOnce   sync.Once
+	httpShutdownErr    error
+	engineShutdownOnce sync.Once
+	runStarted         atomic.Bool
+	tlsMgr             *tlshost.Manager
 	// runCtx is Run's own signal.NotifyContext, stashed here (rather than
 	// only passed to the watchdogs started synchronously in Run) so
 	// restartTLS can start deviceCertWatchdog on demand if the user enables
@@ -684,12 +689,8 @@ func New() (*App, error) {
 	}
 	instance.usbBroker = usbpass.New(instance.exeDir, cfg.StateDir, cfg.MasterKey, cfg.UsbPassthroughPort, usbBridgeAddr)
 	apiServer.SetUSBPassthrough(instance.usbBroker)
-	if addr, err := apiServer.StartUSBPassBridge(); err != nil {
-		log.Printf("[app] usbpass webrtc bridge: %v (browser gamepad/pen passthrough over WebRTC will not work; legacy WebSocket path unaffected)", err)
-	} else {
-		instance.usbPassBridgeAddr = addr
-		applyStreamUSBPassBridgeAddr(instance.stream, addr)
-	}
+	// The browser bridge is started and owned by Run, before the streamer.
+	// Constructing an App for local settings/preview must not open a listener.
 	instance.apiServer = apiServer
 	handler := apiServer.Routes()
 	instance.handler = handler
@@ -795,11 +796,33 @@ func resolveConfigPath() string {
 // GUI window backed directly by this same in-process engine (headless==false).
 // startHidden is forwarded to ui.Window.SetStartHidden when a window is
 // shown at all -- see StartOptions.Tray's doc comment.
-func (a *App) Run(headless, startHidden bool) error {
+func (a *App) Run(headless, startHidden bool) (runErr error) {
+	if !a.runStarted.CompareAndSwap(false, true) {
+		return errEngineAlreadyRun
+	}
 	a.headless = headless
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	a.runCtx = ctx
+	a.httpServers = newHTTPServerOwner(ctx, cancel)
+	defer func() { runErr = errors.Join(runErr, a.stopHTTPServers()) }()
+
+	return withUSBPassBridge(ctx, func(ctx context.Context) (ownedUSBBridge, error) {
+		bridge, err := a.apiServer.StartUSBPassBridge(ctx)
+		if err != nil {
+			return nil, err
+		}
+		a.usbPassBridgeAddr = bridge.Addr()
+		applyStreamUSBPassBridgeAddr(a.stream, a.usbPassBridgeAddr)
+		return bridge, nil
+	}, func() error { defer cancel(); return a.runEngine(ctx, cancel, headless, startHidden) }, func(err error) {
+		log.Printf("[app] usbpass webrtc bridge: %v (browser gamepad/pen passthrough over WebRTC will not work; legacy WebSocket path unaffected)", err)
+	})
+}
+
+func (a *App) runEngine(ctx context.Context, cancel context.CancelFunc, headless, startHidden bool) error {
+	// Roll back listeners and already-started components on every return path.
+	defer a.shutdownEngine()
 
 	// Diagnostic-only, additive: signal.Notify fans a delivered signal out to
 	// every channel registered for it, so this doesn't steal anything from
@@ -877,7 +900,9 @@ func (a *App) Run(headless, startHidden bool) error {
 		go a.webrtcSignalRelayWatchdog(ctx)
 	}
 	go a.usbBrokerWatchdog(ctx)
-	go func() { _ = a.server.ListenAndServe() }()
+	if err := a.httpServers.start("http", a.server, a.server.ListenAndServe, nil); err != nil {
+		return err
+	}
 	// Gated by the "Enable HTTPS" checkbox (see ui's HTTP Listen Address
 	// dialog, UpdateTLSAddr) -- on by default (TLSEnabledOK's nil-means-true
 	// convention), so this runs for every existing install unless a user
@@ -897,7 +922,10 @@ func (a *App) Run(headless, startHidden bool) error {
 		if err := a.tlsMgr.EnsureSelfSigned(selfSignedIPs, nil); err != nil {
 			log.Printf("[app] self-signed TLS cert unavailable: %v", err)
 		}
-		go func() { _ = a.tlsServer.ListenAndServeTLS("", "") }()
+		tlsServer := a.tlsServer
+		if err := a.httpServers.start("https", tlsServer, func() error { return tlsServer.ListenAndServeTLS("", "") }, nil); err != nil {
+			return err
+		}
 		a.startDeviceCertWatchdogOnce()
 	}
 	if a.usbBroker != nil && a.cfg.USBBrokerConsentGiven() {
@@ -1262,19 +1290,28 @@ func (a *App) initTailscale(ctx context.Context) {
 }
 
 func (a *App) startTailscaleHTTP(_ context.Context) {
-	tsSrv, err := a.ts.Server()
-	if err != nil {
-		log.Printf("[app] tsnet server unavailable: %v", err)
+	if a.httpServers == nil {
 		return
 	}
-	ln, err := tsSrv.Listen("tcp", fmt.Sprintf(":%d", a.cfg.HTTPPort))
-	if err != nil {
-		log.Printf("[app] tsnet listen error: %v", err)
-		return
-	}
-	log.Printf("[app] tsnet http listening on :%d", a.cfg.HTTPPort)
-	if err := a.tsHTTP.Serve(ln); err != nil && err != http.ErrServerClosed {
-		log.Printf("[app] tsnet http server error: %v", err)
+	server := a.tsHTTP
+	// Register before Server/Listen as well, so delayed startup remains an owned
+	// worker and cannot be mistaken for a fully joined shutdown.
+	if err := a.httpServers.start("tailscale-http", server, func() error {
+		tsSrv, err := a.ts.Server()
+		if err != nil {
+			return err
+		}
+		ln, err := tsSrv.Listen("tcp", fmt.Sprintf(":%d", a.cfg.HTTPPort))
+		if err != nil {
+			if ln != nil {
+				err = errors.Join(err, cleanHTTPClosed(ln.Close()))
+			}
+			return err
+		}
+		log.Printf("[app] tsnet http listening on :%d", a.cfg.HTTPPort)
+		return server.Serve(ln)
+	}, nil); err != nil {
+		log.Printf("[app] tsnet http registration failed: %v", err)
 	}
 }
 
@@ -1294,25 +1331,38 @@ func (a *App) handleShutdown(ctx context.Context, cancel context.CancelFunc) {
 // shutdownEngine tears down everything Run started except the GUI: the HTTP
 // server(s), Sunshine, the tsnet stream proxy/service, and the admin socket.
 func (a *App) shutdownEngine() {
-	_ = a.server.Shutdown(context.Background())
-	if a.tsHTTP != nil && a.tsHTTP.Addr != "" {
-		_ = a.tsHTTP.Shutdown(context.Background())
-	}
-	if a.tsProxy != nil {
-		a.tsProxy.Stop()
-	}
-	if a.ts != nil {
-		_ = a.ts.Close()
-	}
-	if a.stream != nil {
-		_ = a.stream.Stop()
-	}
-	if a.usbBroker != nil {
-		a.usbBroker.Stop()
-	}
-	if a.adminSrv != nil {
-		_ = a.adminSrv.Close()
-	}
+	a.engineShutdownOnce.Do(func() {
+		_ = a.stopHTTPServers()
+		if a.tsProxy != nil {
+			a.tsProxy.Stop()
+		}
+		if a.ts != nil {
+			_ = a.ts.Close()
+		}
+		if a.stream != nil {
+			_ = a.stream.Stop()
+		}
+		if a.usbBroker != nil {
+			a.usbBroker.Stop()
+		}
+		if a.adminSrv != nil {
+			_ = a.adminSrv.Close()
+		}
+	})
+}
+
+// One shared deadline covers all engine HTTP generations, HTTPS and tsHTTP.
+// Preserve the first uncertainty even if a later observer sees final retirement.
+func (a *App) stopHTTPServers() error {
+	a.httpShutdownOnce.Do(func() {
+		if a.httpServers == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		a.httpShutdownErr = a.httpServers.close(ctx)
+	})
+	return a.httpShutdownErr
 }
 
 func (a *App) RegenerateMasterKey() (config.Config, error) {
@@ -2640,11 +2690,16 @@ func (a *App) DownloadRustShine(onProgress entitlement.ProgressFunc) error {
 // other a.usbBroker != nil guard in this file rather than assuming that
 // stays true.
 func (a *App) USBPassthroughStatus() usbpass.Status {
+	bridgeState := "not_started"
+	if a.apiServer != nil {
+		bridgeState = a.apiServer.USBPassBridgeState()
+	}
 	if a.usbBroker == nil {
-		return usbpass.Status{Available: false, Platform: "disabled", ConsentGiven: a.cfg.USBBrokerConsentGiven()}
+		return usbpass.Status{Available: false, Platform: "disabled", ConsentGiven: a.cfg.USBBrokerConsentGiven(), BrowserBridgeState: bridgeState}
 	}
 	st := a.usbBroker.Status()
 	st.ConsentGiven = a.cfg.USBBrokerConsentGiven()
+	st.BrowserBridgeState = bridgeState
 	return st
 }
 
@@ -4688,23 +4743,20 @@ func (a *App) UpdateListenAddr(host string, port int) (config.Config, error) {
 // restartMainHTTP shuts down the current main HTTP server and starts a new one
 // on the address currently in a.cfg. Used for hot-apply of listen address changes.
 func (a *App) restartMainHTTP() {
-	old := a.server
-	if old != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_ = old.Shutdown(ctx)
+	if a.httpServers == nil {
+		log.Printf("[app] http restart ignored: engine not running")
+		return
 	}
 	addr := fmt.Sprintf("%s:%d", a.cfg.EffectiveListenHost(), a.cfg.HTTPPort)
-	next := &http.Server{
-		Addr:              addr,
-		Handler:           a.handler,
-		ReadHeaderTimeout: 10 * time.Second,
+	next := &http.Server{Addr: addr, Handler: a.handler, ReadHeaderTimeout: 10 * time.Second}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := a.httpServers.replace(ctx, "http", next, next.ListenAndServe); err != nil {
+		log.Printf("[app] http replacement failed: %v", err)
+		return
 	}
 	a.server = next
 	log.Printf("[app] http restarted on %s", addr)
-	if err := next.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Printf("[app] http server error: %v", err)
-	}
 }
 
 // UpdateTLSAddr updates the agent's HTTPS listen port and "Enable HTTPS"
@@ -4727,32 +4779,29 @@ func (a *App) UpdateTLSAddr(port int, enabled bool) (config.Config, error) {
 // down (used for both "port changed" and "HTTPS just got turned off").
 // Mirrors restartMainHTTP's shape exactly; see that doc comment.
 func (a *App) restartTLS() {
-	old := a.tlsServer
-	if old != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_ = old.Shutdown(ctx)
+	if a.httpServers == nil {
+		log.Printf("[app] https restart ignored: engine not running")
+		return
 	}
-	if !a.cfg.TLSEnabledOK() {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	var next *http.Server
+	var serve func() error
+	if a.cfg.TLSEnabledOK() && a.tlsMgr != nil {
+		next = &http.Server{Addr: fmt.Sprintf("%s:%d", a.cfg.EffectiveListenHost(), a.cfg.TLSPort), Handler: a.handler, TLSConfig: &tls.Config{GetCertificate: a.tlsMgr.GetCertificate, MinVersion: tls.VersionTLS12}, ReadHeaderTimeout: 10 * time.Second}
+		serve = func() error { return next.ListenAndServeTLS("", "") }
+	}
+	if err := a.httpServers.replace(ctx, "https", next, serve); err != nil {
+		log.Printf("[app] https replacement failed: %v", err)
+		return
+	}
+	if next == nil {
 		log.Printf("[app] https disabled, not restarting")
 		return
 	}
-	if a.tlsMgr == nil {
-		return
-	}
-	addr := fmt.Sprintf("%s:%d", a.cfg.EffectiveListenHost(), a.cfg.TLSPort)
-	next := &http.Server{
-		Addr:              addr,
-		Handler:           a.handler,
-		TLSConfig:         &tls.Config{GetCertificate: a.tlsMgr.GetCertificate, MinVersion: tls.VersionTLS12},
-		ReadHeaderTimeout: 10 * time.Second,
-	}
 	a.tlsServer = next
-	log.Printf("[app] https restarted on %s", addr)
+	log.Printf("[app] https restarted on %s", next.Addr)
 	a.startDeviceCertWatchdogOnce()
-	if err := next.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-		log.Printf("[app] https server error: %v", err)
-	}
 }
 
 // startDeviceCertWatchdogOnce starts deviceCertWatchdog the first time

@@ -35,12 +35,15 @@ const (
 )
 
 type Status struct {
-	Available   bool   `json:"available"`
-	Platform    string `json:"platform"`
-	BrokerAlive bool   `json:"broker_alive"`
-	StubDriver  bool   `json:"stub_driver"`
-	VhciDriver  bool   `json:"vhci_driver"`
-	ListenPort  int    `json:"listen_port"`
+	// Separate local browser relay status; this says nothing about a physical
+	// device, broker driver, consent, or successful browser attachment.
+	BrowserBridgeState string `json:"browser_bridge_state,omitempty"`
+	Available          bool   `json:"available"`
+	Platform           string `json:"platform"`
+	BrokerAlive        bool   `json:"broker_alive"`
+	StubDriver         bool   `json:"stub_driver"`
+	VhciDriver         bool   `json:"vhci_driver"`
+	ListenPort         int    `json:"listen_port"`
 	// ConfiguredPort is usb_passthrough_port; differs from ListenPort when
 	// pickURBPort had to fall back because something else held it.
 	ConfiguredPort int      `json:"configured_port,omitempty"`
