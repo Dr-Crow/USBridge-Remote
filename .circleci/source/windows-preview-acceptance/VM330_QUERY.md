@@ -24,7 +24,8 @@ absolute JSON path in an existing writable directory. Then run:
 
 The receipt must say passed=true, viewer_module_accepted=false and have three
 strict inspections with zero exits, natural cleanup and no safety closure.
-No account, token, certificate, execution-policy or machine setting is changed.
+No account, token, certificate or persistent machine setting is changed. The
+VM-only process policy is explicitly described below.
 
 ## Closed startup diagnostic variant
 
@@ -34,3 +35,16 @@ variants keep any stderr fatal. A missing marker remains the primary failure;
 classification never admits a module or changes policy. Incomplete, invalid
 encoding, read-failed or mixed known errors are not classified as policy proof.
 Raw stderr is cleared and is never written into a receipt.
+
+## Approved VM-only child process policy
+
+The `vm330_signature_probe` build uses the fixed additional PowerShell command
+line `-ExecutionPolicy RemoteSigned`. The operator approved this process-only
+policy for the reviewed VM330 test scripts. It expires with that child and does
+not call `Set-ExecutionPolicy`, change persistent scopes, or affect default CI,
+viewer, source, or module trust. The default build retains its exact prior argv.
+The 00166 VM diagnostic observed 407 stderr bytes containing disabled-script
+and UnauthorizedAccess patterns before the startup marker; no signature query
+ran and cleanup joined. The diagnostic category remained `unclassified` and is
+not rewritten retrospectively. The new build must establish the actual query
+and natural cleanup separately.

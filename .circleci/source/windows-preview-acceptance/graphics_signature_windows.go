@@ -256,7 +256,7 @@ func runGraphicsSignatureScript(final, systemRoot string, r *graphicsOSInspectio
 			}
 		}
 	}()
-	args, env := graphicsSignatureArguments(scriptPath), childEnvironment(systemRoot, work)
+	args, env := graphicsSignatureLaunchArguments(scriptPath), childEnvironment(systemRoot, work)
 	if signatureBudgetErr(ctx) != nil {
 		return failure("signature_owner_timeout")
 	}
