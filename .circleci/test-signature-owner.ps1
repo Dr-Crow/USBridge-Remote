@@ -17,6 +17,7 @@ $counts = [ordered]@{}
 $proofs = New-Object 'Collections.Generic.List[object]'
 $failedTests = @{}
 $failureCategories = @{}
+$candidateCodes = @{}
 $archiveSHA = 'd722201a9c0c086d1610e111c48203009af690892ed708072bd5ae20160e7a59'
 $scriptSHA = 'f8af1cb208563f542d50b40d7c2b2959f5baa3ecc64518f5df3ad5b67a0805fb'
 $ownerCodes = @('atomic_job_attribute_failed', 'bounded_protocol_failed', 'child_nonzero_exit', 'component_identity_changed', 'component_lock_failed', 'component_path_failed', 'extra_child_output', 'file_bounds_failed', 'file_read_failed', 'handle_list_failed', 'job_create_failed', 'job_inventory_failed', 'job_limits_failed', 'nonregular_component', 'owned_job_not_empty', 'owned_process_open_failed', 'owned_process_path_failed', 'pipe_create_failed', 'pipe_inheritance_failed', 'process_arguments_failed', 'process_environment_failed', 'protocol_ended_early', 'safety_job_closed', 'signature_budget_invalid', 'signature_cleanup_failed', 'signature_cleanup_incomplete', 'signature_context_missing', 'signature_dependency_bounds', 'signature_dependency_invalid', 'signature_duplicate_member', 'signature_final_path_failed', 'signature_host_final_path_failed', 'signature_host_hash_failed', 'signature_host_identity_failed', 'signature_host_lock_failed', 'signature_host_membership_failed', 'signature_host_not_observed_before_result', 'signature_host_pin_mismatch', 'signature_input_bounds', 'signature_input_failed', 'signature_input_invalid', 'signature_input_lines', 'signature_input_partial', 'signature_input_timeout', 'signature_inventory_failed', 'signature_job_accounting_failed', 'signature_member_inspection_failed', 'signature_member_not_owned', 'signature_output_bounds', 'signature_output_invalid', 'signature_owner_retirement_failed', 'signature_path_invalid', 'signature_pin_invalid', 'signature_pinned_final_path_failed', 'signature_pinned_hash_failed', 'signature_process_nonzero_exit', 'signature_process_wait_failed', 'signature_resource_close_uncertain', 'signature_root_hash_failed', 'signature_root_identity_failed', 'signature_root_membership_failed', 'signature_root_pin_missing', 'signature_script_location_invalid', 'signature_startup_early_exit', 'signature_startup_early_output', 'signature_startup_graph_incomplete', 'signature_startup_host_exited', 'signature_startup_inventory_failed', 'signature_startup_marker_invalid', 'signature_startup_marker_missing', 'signature_startup_timeout', 'signature_suspended_root_incomplete', 'signature_system_binary_path_invalid', 'signature_system_directory_failed', 'signature_system_directory_mismatch', 'signature_unknown_or_late_member', 'signature_work_identity_failed', 'signature_work_invalid', 'signature_work_lock_failed', 'suspended_launch_failed', 'unexpected_child_stderr', 'unretired_job_member')
@@ -75,6 +76,56 @@ function Invoke-Bounded([string]$file, [string[]]$arguments, [string]$stdout, [s
         $process.Dispose()
     }
 }
+function Add-Owner-Candidates([string]$message, [hashtable]$candidates) {
+    # Strings in positive JSON may be field names (safety_job_closed:false).
+    # This collection is diagnostic-only; it cannot decide whether tests failed.
+    foreach ($code in $ownerCodes) { if ($message.Contains($code)) { $candidates[$code] = $true } }
+    if ($message.Contains('context deadline exceeded')) { $candidates['context_deadline_exceeded'] = $true }
+    if ($message.Contains('panic: test timed out')) { $candidates['go_test_timeout'] = $true }
+}
+function Promote-Failed-Diagnostics([hashtable]$categories, [hashtable]$candidates, [int]$exitCode) {
+    $actualFailure = $exitCode -ne 0 -or $categories.ContainsKey('fail') -or $categories.ContainsKey('skip') -or $categories.ContainsKey('build-fail')
+    if ($actualFailure) { foreach ($code in $candidates.Keys) { $categories[$code] = $true } }
+}
+function Test-Diagnostic-Classification {
+    # Deterministic, dependency-free regression runs before native tools. The
+    # same diagnostic string must stay harmless for pass and informative for fail.
+    $positiveCandidates = @{}
+    Add-Owner-Candidates '{"safety_job_closed":false}' $positiveCandidates
+    if (-not $positiveCandidates.ContainsKey('safety_job_closed')) { throw 'classification_fixture_invalid' }
+    $success = @{}
+    Promote-Failed-Diagnostics $success $positiveCandidates 0
+    if ($success.Count -ne 0) { throw 'positive_diagnostic_became_failure' }
+    # Exercise the actual closed-field proof parser, not substring inference.
+    $proof = [pscustomobject][ordered]@{
+        resources_released=$true; startup_handshake_verified=$true
+        suspended_total_processes=1; suspended_active_processes=1; suspended_members=1; suspended_root_verified=$true
+        verifier_sha256=('a' * 64); verifier_script_sha256=$scriptSHA; console_host_sha256=('b' * 64)
+        console_host_identity_verified=$true; total_owned_processes=2; natural_cleanup=$true
+        cleanup_joined=$true; watchdog_joined=$true; safety_job_closed=$false
+        root_exit_code=0; console_host_exit_code=0; elapsed_ms=1
+    }
+    $null = Exact-Positive-Proof $proof
+    $proof.safety_job_closed = $true
+    $forcedRejected = $false
+    try { $null = Exact-Positive-Proof $proof } catch { $forcedRejected = $true }
+    if (-not $forcedRejected) { throw 'forced_cleanup_proof_accepted' }
+    $forcedCandidates = @{}
+    Add-Owner-Candidates '{"safety_job_closed":true}' $forcedCandidates
+    $forcedFailure = @{fail=$true}
+    Promote-Failed-Diagnostics $forcedFailure $forcedCandidates 0
+    if (-not $forcedFailure.ContainsKey('safety_job_closed') -or $forcedFailure.Count -ne 2) { throw 'forced_failure_diagnostic_missing' }
+    $failedCandidates = @{}
+    Add-Owner-Candidates 'signature_host_identity_failed' $failedCandidates
+    foreach ($action in @('fail', 'skip', 'build-fail')) {
+        $failure = @{}; $failure[$action] = $true
+        Promote-Failed-Diagnostics $failure $failedCandidates 0
+        if (-not $failure.ContainsKey('signature_host_identity_failed') -or $failure.Count -ne 2) { throw 'failed_diagnostic_missing' }
+    }
+    $nonzero = @{}
+    Promote-Failed-Diagnostics $nonzero $failedCandidates 1
+    if (-not $nonzero.ContainsKey('signature_host_identity_failed') -or $nonzero.Count -ne 1) { throw 'nonzero_diagnostic_missing' }
+}
 function Exact-Positive-Proof($proof) {
     $fields = @('resources_released', 'startup_handshake_verified', 'suspended_total_processes', 'suspended_active_processes', 'suspended_members', 'suspended_root_verified', 'verifier_sha256', 'verifier_script_sha256', 'console_host_sha256', 'console_host_identity_verified', 'total_owned_processes', 'natural_cleanup', 'cleanup_joined', 'watchdog_joined', 'safety_job_closed', 'root_exit_code', 'console_host_exit_code', 'elapsed_ms')
     $actual = @($proof.PSObject.Properties.Name)
@@ -101,6 +152,7 @@ try {
     if ((Test-Path -LiteralPath $work) -or (Test-Path -LiteralPath $out)) { throw 'fresh_directories_required' }
     New-Item -ItemType Directory $work, $out | Out-Null
     $outputOwned = $true
+    $stage = 'classification_self_test'; Test-Diagnostic-Classification
     $observedCommit = (& git rev-parse HEAD).Trim()
     if ($LASTEXITCODE -ne 0 -or $observedCommit -cnotmatch '^[0-9a-f]{40}$' -or $observedCommit -cne $env:CIRCLE_SHA1) { throw 'source_commit_invalid' }
     $commit = $observedCommit
@@ -141,12 +193,6 @@ try {
                 $failureCategories[$row.Action] = $true
                 if ($null -ne $row.PSObject.Properties['Test'] -and $row.Test -cmatch '^Test[A-Za-z0-9_]{1,128}(/[A-Za-z0-9_]{1,128})?$') { $failedTests[$row.Test] = $true }
             }
-            if ($null -ne $row.PSObject.Properties['Output']) {
-                $message = [string]$row.Output
-                foreach ($code in $ownerCodes) { if ($message.Contains($code)) { $failureCategories[$code] = $true } }
-                if ($message.Contains('context deadline exceeded')) { $failureCategories['context_deadline_exceeded'] = $true }
-                if ($message.Contains('panic: test timed out')) { $failureCategories['go_test_timeout'] = $true }
-            }
             if ($row.Action -ceq 'pass') {
                 if ($null -ne $row.PSObject.Properties['Test']) { if ($counts.Contains($row.Test)) { $counts[$row.Test]++ } }
                 else { if ($row.Package -cne 'github.com/Dr-Crow/USBridge-Remote/signatureowner') { throw 'test_package_invalid' }; $packagePasses++ }
@@ -158,6 +204,22 @@ try {
                     $proofs.Add((Exact-Positive-Proof ($match.Groups[1].Value | ConvertFrom-Json)))
                 }
             }
+        }
+        # Classify outcomes first. Only an already failed suite can collect
+        # diagnostic strings, and successful proof JSON is never scanned as an
+        # error message. Prefer the exact failed test (or package-level output).
+        if ($testExit -ne 0 -or $failureCategories.Count -ne 0) {
+            foreach ($line in Get-Content -LiteralPath $log) {
+                $row = $line | ConvertFrom-Json
+                if ($null -eq $row.PSObject.Properties['Output']) { continue }
+                $message = [string]$row.Output
+                if ($message.Contains('SIGNATURE_OWNER_PROOF_JSON=')) { continue }
+                $packageOutput = $null -eq $row.PSObject.Properties['Test']
+                $failedTestOutput = -not $packageOutput -and $failedTests.ContainsKey([string]$row.Test)
+                $unclassifiedNonzero = $testExit -ne 0 -and $failedTests.Count -eq 0
+                if ($packageOutput -or $failedTestOutput -or $unclassifiedNonzero) { Add-Owner-Candidates $message $candidateCodes }
+            }
+            Promote-Failed-Diagnostics $failureCategories $candidateCodes $testExit
         }
         if ($testExit -ne 0 -or $failureCategories.Count -ne 0 -or $packagePasses -ne 1 -or $proofs.Count -ne 3) { throw 'native_suite_failed' }
         foreach ($name in $required) { if ($counts[$name] -ne 3) { throw 'native_repetition_missing' } }
