@@ -12,27 +12,8 @@ export GOENV=off GOWORK=off GOFLAGS='-trimpath -mod=readonly' GOCACHEPROG= GOEXP
 [[ "$(git rev-parse HEAD)" == "${CIRCLE_SHA1:?exact source commit required}" ]]
 START="$(date +%s)"
 python3 -c "import compression.zstd, tarfile"
-PYTHONPATH=.circleci/source python3 - "$OUT/manager-staging-tests.json" "$CIRCLE_SHA1" <<'PYTEST'
-import io,json,pathlib,sys,unittest
-import test_windows_manager_components
-suite=unittest.defaultTestLoader.loadTestsFromModule(test_windows_manager_components)
-result=unittest.TextTestRunner(stream=io.StringIO()).run(suite)
-allowed={
- 'test_case_collision_on_disk_is_rejected':'case-insensitive filesystem cannot represent both basenames',
- 'test_destination_file_and_dangling_symlink_are_rejected':'native unprivileged symlink creation unavailable',
- 'test_symlink_executable_dependency_and_parent_are_rejected':'native unprivileged symlink creation unavailable',
- 'test_destination_parent_symlink_is_rejected':'native unprivileged symlink creation unavailable',
-}
-skips=[{'test':test.id().rsplit('.',1)[-1],'reason':reason} for test,reason in result.skipped]
-valid_skips=all(allowed.get(x['test'])==x['reason'] for x in skips)
-passed=result.wasSuccessful() and result.testsRun==36 and valid_skips
-receipt={'schema_version':1,'commit':sys.argv[2],'passed':passed,'tests_run':result.testsRun,
-         'tests_passed':result.testsRun-len(result.failures)-len(result.errors)-len(skips),
-         'failures':len(result.failures),'errors':len(result.errors),'skips':skips,
-         'synthetic_files_only':True,'component_execution_performed':False,'source_or_binary_artifacts_published':False}
-pathlib.Path(sys.argv[1]).write_text(json.dumps(receipt,indent=2)+'\n')
-if not passed:raise SystemExit('Manager staging checks failed; see source-free test receipt')
-PYTEST
+PYTHONPATH=.circleci/source python3 -m unittest discover -s .circleci/source -p 'test_windows_manager_staging_diagnostics.py'
+python3 .circleci/source/run_windows_manager_staging_tests.py --output "$(cygpath -m "$OUT/manager-staging-tests.json")" --commit "$CIRCLE_SHA1"
 python3 .circleci/source/windows-graphics-probe/test_probe_source.py
 gcc -std=c11 -Wall -Wextra -Werror -fsyntax-only .circleci/source/windows-graphics-probe/probe.c
 python3 .circleci/source/windows_preview_preflight.py --extract --root "$(cygpath -m "$ROOT")" --work "$(cygpath -m "$WORK")"
